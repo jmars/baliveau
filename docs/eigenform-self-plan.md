@@ -267,6 +267,37 @@ lands as a distinguishable class rather than a pass) is still not this design �
 what the *first* one looks like, and it needed no held-out suite at all: it needed the system's own
 provenance relations.
 
+#### The numerator's growth path, and why the tool table is not the bound
+
+**USER (2026-10-13): "there will be more long workloads, the agent may write MCP servers for itself."**
+Two consequences, and the second is a correction to an assumption of mine.
+
+**(a) The JIT's justification is a workload CLASS, not a single case — and it inverts my earlier
+reasoning.** I had argued the JIT might not pay because "the agent's scripts are short". But the
+guest's real profile is not short scripts: it is the Osier→Lua **compiler**, and **agent-authored MCP
+servers** — long-running, CPU-bound processes. Amortised trace compilation is exactly right for those.
+JIT stays ON, and it is enforced rather than incidental: `tools/build-luajit.sh` GATE 3 is two-sided
+(the same probe with the JIT on must start >= 1 trace, and with `jit.off()` must start exactly 0, so a
+stubbed JIT OR a broken counter fails it). MEASURED: `JIT gate OK: traces started with JIT on=1, with
+jit.off()=0`, on every build.
+
+**(b) THE TOOL TABLE IS NOT THE CAPABILITY BOUND — the runtime surface is.** There are now two tiers
+of tools: the **declared, frozen, audited** fx-verbs server, and **agent-authored MCP servers** the
+agent writes for itself. An agent that can write and spawn its own servers is not bounded by a tool
+list; it is bounded by **what a Lua program can reach**, which is LuaJIT's reduced stdlib with FFI off.
+This is why `tests/luajit-audit.sh` is the load-bearing artifact and the verb table is only an
+interface. State it, because it is easy to mistake the one for the other.
+
+**(c) And this is the numerator's growth path — which is a good sign for the metric, because it grows
+by RUNNING things.** An agent-authored MCP server written in Osier, activated as a **service**, appears
+in the generation's `svc_bin`/`svc_argv` — exactly the numerator above. So the share rises by executing
+agent-written components, never by adding dead code. It also gives the whole loop its first concrete,
+checkable task:
+
+> **the agent writes an MCP server in Osier, activates it as a service, and the share moves from 0% to
+> non-zero.** Services are already supervised by fx-init (restart/backoff/probe), and the harness
+> already spawns stdio MCP servers, so the machinery exists end to end.
+
 ### 7.2 Trial vs accepted GC roots
 `gc --retain N` exists. A self-reboot loop accumulates generations. Decide which generations are
 collectable trials and which are pinned accepted history — or the store grows without bound, or the
