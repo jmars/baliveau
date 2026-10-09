@@ -80,6 +80,25 @@
  *        driven by hand in the ordering review).  The list is a precedence
  *        order, not a set of disjoint patterns.
  *
+ *        THE DAMAGE RULE (decided this round; was todo.md §3): a line the
+ *        loader cannot read POISONS the record for the task it names.  A torn
+ *        (unterminated) line proves the file was mid-write, so "the record
+ *        has no unaccounted attempt for this task" is not something the
+ *        record can be trusted to say; a well-formed `result` line dropped
+ *        for want of any readable attempt says the same thing from the other
+ *        side (its attempt line is missing — torn or never written).  The
+ *        poison forbids exactly one verdict: RUN.  Where RUN would issue
+ *        (either RUN row below), UNRESOLVED issues instead, with a report
+ *        that names the damage.  A done in force is NOT poisoned: `done` is
+ *        positive evidence, not an inference from absence, and both verdicts
+ *        are stops — wedging a completed task behind operator action would
+ *        buy no safety.  The poison also lapses once a LATER COMPLETE attempt
+ *        is on record: the damage hid an attempt that an accounted one has
+ *        since superseded.
+ *
+ *        no activation recorded, record DAMAGED  -> UNRESOLVED (never RUN off
+ *          for the task (a torn line naming it,   a record that provably lost
+ *          or an orphan result line)              a line — the re-issuing hole)
  *        no activation recorded, not done        -> RUN
  *        no activation recorded, done in force   -> ALREADY_DONE (do not re-run)
  *        A failed in the bootlog                 -> ACTIVATION_FAILED
@@ -97,7 +116,10 @@
  *                                                   completed task someone
  *                                                   re-attempted is not a licence
  *                                                   to issue a THIRD activation)
- *        C == A, no done                         -> RUN (the ordinary re-run)
+ *        C == A, no done                         -> RUN (the ordinary re-run;
+ *                                                   NOT if the record is
+ *                                                   DAMAGED for the task — the
+ *                                                   damage rule above)
  *        A unaccounted (no result line, or the result named no generation),
  *          done in force                         -> ALREADY_DONE (complete wins:
  *                                                   the done follows the attempt,
@@ -199,6 +221,20 @@ typedef struct {
     char          task[FX_OUTCOME_TASK_CAP];
     int           has_attempt;   /* an activation attempt is recorded */
     int           has_result;    /* its outcome was recorded */
+    int           has_torn_line; /* a line for THIS task was skipped because it
+                                  * was UNTERMINATED (torn mid-write).  The
+                                  * DAMAGE RULE (see the table above): what the
+                                  * line was is unreadable, but its existence
+                                  * proves the file was mid-write, so "no
+                                  * unaccounted attempt" is not a claim this
+                                  * record can be trusted to make — verdicts
+                                  * steer RUN to UNRESOLVED while it is set. */
+    int           has_orphan_result; /* a well-formed `result` line for this
+                                  * task was DROPPED because no attempt it
+                                  * could account was readable (its attempt
+                                  * line torn or never written).  Same damage
+                                  * rule as has_torn_line: the record cannot
+                                  * be trusted to say "no attempt". */
     unsigned long version;       /* the generation the activation produced */
     char          session[264];  /* the session that made the attempt (sid) */
     char          run[64];       /* the run that made the attempt (run_id) */
@@ -246,7 +282,14 @@ int fx_outcome_record(const char *data_dir, const char *task, const char *step,
  * mid-write leaves a PREFIX of a line, and a prefix that cuts inside a field
  * can still parse as a full field set (a truncated version token looks like a
  * version) — adopting that would decide a verdict from a corrupt record, the
- * one thing fail-open must never do.  `done` is POSITION-AWARE: it settles
+ * one thing fail-open must never do.  The skip is not blind, though: a torn
+ * line whose task token IS readable marks the record DAMAGED for that task
+ * (has_torn_line), and a `result` line dropped because no attempt could be
+ * read marks it too (has_orphan_result) — the DAMAGE RULE in the table above
+ * steers RUN to UNRESOLVED for a damaged record, so the conservative skip
+ * stays conservative for a torn ATTEMPT line as well (it was once not: the
+ * attempt vanished, the result survived, and the verdict was RUN).
+ * `done` is POSITION-AWARE: it settles
  * only the attempts that PRECEDE it, so a LATER attempt line for the task
  * suspends it (the file is append-only with one writer, so line order is
  * write order — a `done` that predates a later unaccounted attempt must not

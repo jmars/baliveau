@@ -41,6 +41,13 @@
 #     session plus a 511-char config, which silently lost the record at 768);
 #   * a record appended after a TORN tail survives (phase 5g tailrepair —
 #     O_APPEND used to merge the new record into the torn prefix);
+#   * the four cells the ordering review found UNGATED are pinned (phase 5g):
+#     the overlapping cell's ROW PRECEDENCE (ok ∧ C==A ∧ no done -> SUPERSEDED,
+#     not RUN), done->attempt->result at C!=A (UNRESOLVED), the v0-result
+#     reinstatement (ALREADY_DONE), and the DAMAGE RULE — a torn attempt line
+#     whose result survived used to read RUN (the re-issuing direction,
+#     asymmetried against PINNED 014ebb7); it now reads UNRESOLVED, and a done
+#     in force stays ALREADY_DONE (the decision: positive evidence, not poisoned);
 #   * fx_write's write surface is the HOST-DECLARED writable set: the record
 #     path is refused (loudly, naming path and set) while the task config
 #     still writes, the DOCUMENTED root-relative entry spelling grants it,
@@ -674,6 +681,38 @@ note "$("$TMP/probe" "$TMP/probe-data.2" | sed 's/^/   /')"
 #                   later attempt now clears the done ONLY while that attempt
 #                   is UNACCOUNTED: the result puts the done back in force
 #                   (fixed: ALREADY_DONE; 648984f: RUN — the bug, this round).
+#   ok-ca         : THE OVERLAPPING CELL — A ok in the bootlog AND C == A AND
+#                   no done.  The rows are a PRECEDENCE order, not disjoint
+#                   patterns: the bootlog verdict on A is reached before the
+#                   C == A comparison, so this cell is SUPERSEDED, not RUN.
+#                   FAILS IF the branches are reordered (the C == A row would
+#                   decide RUN) — nothing else pinned the precedence.
+#   dar-cneqa     : done -> attempt -> result at C != A (the 5g probe planted
+#                   CURRENT == A only).  The reinstated done must not leak a
+#                   completion claim into the never-judged row: UNRESOLVED, a
+#                   conservative stop.  FAILS IF the final row starts
+#                   consulting `done` (ALREADY_DONE) or the reinstatement
+#                   changes so the attempt reads unaccounted (RUN).
+#   v0-reinstate  : a result naming NO generation (v0) still ACCOUNTS the
+#                   attempt, so the suspended done returns to force:
+#                   ALREADY_DONE, with no store needed.  FAILS IF the
+#                   reinstatement grows a version check — the done would stay
+#                   suspended and the verdict would become UNRESOLVED.
+#   torn-attempt  : THE DAMAGE RULE (was todo.md §3's re-issuing hole): the
+#     (+ -tail,     attempt line torn mid-step-token (ENOSPC), then the
+#      +orphan-done) result write SUCCEEDS — the writer's tail repair closes
+#                   the torn prefix as its own unparsable line and the result
+#                   lands complete.  The attempt is unreadable, the result is
+#                   an ORPHAN: fixed -> UNRESOLVED, NEVER RUN off a record
+#                   that provably lost a line; the pinned pre-damage-rule
+#                   source (014ebb7) shows RUN — the measured hole, both
+#                   arms.  -tail is the torn attempt as the LAST line (no
+#                   repair): same UNRESOLVED via the torn-line flag (its
+#                   visible counterpart — a complete attempt with no result —
+#                   is UNRESOLVED too).  orphan-done pins the DECISION half:
+#                   a done in force is positive evidence and is NOT poisoned
+#                   (ALREADY_DONE, before and after — wedging a completed
+#                   task would buy no safety).
 #
 # THE PRE-FIX ARMS ARE PINNED REVISIONS, NEVER HEAD: this phase once read
 # `git show HEAD:` — a MOVING ref that was the pre-fix source only while the
@@ -714,6 +753,24 @@ if [ -z "$MID86" ]; then
     [ -z "$MID86" ] && cmp -s "$TMP/midfix/llm2/outcome.c" "$ROOT/src/llm2/outcome.c" \
         && MID86="the $PIN_FALSE outcome.c is IDENTICAL to the working tree — the false-run arm would compare the code to itself"
 fi
+# the DAMAGE-RULE pin: 014ebb7 is the committed outcome.c where a torn
+# attempt + surviving result still reads RUN (the re-issuing hole).  Same
+# rules: a fixed revision, a cat-file guard, and a cmp proof that the pin
+# differs from the working tree (identical would mean the damage rule was
+# reverted, and the fail-before arm would compare the code to itself).
+PIN_ORPHAN="014ebb7"
+ORPH86=""
+git -C "$ROOT" cat-file -e "$PIN_ORPHAN^{commit}" 2>/dev/null \
+    || ORPH86="revision $PIN_ORPHAN unavailable (shallow clone or rewritten history)"
+mkdir -p "$TMP/orphfix/llm2" || fail "phase 5g: cannot create the damage-rule source dir"
+if [ -z "$ORPH86" ]; then
+    git -C "$ROOT" show "$PIN_ORPHAN:src/llm2/outcome.c" > "$TMP/orphfix/llm2/outcome.c" 2>/dev/null \
+        || ORPH86="cannot extract src/llm2/outcome.c at $PIN_ORPHAN"
+    git -C "$ROOT" show "$PIN_ORPHAN:src/llm2/outcome.h" > "$TMP/orphfix/llm2/outcome.h" 2>/dev/null \
+        || ORPH86="cannot extract src/llm2/outcome.h at $PIN_ORPHAN"
+    [ -z "$ORPH86" ] && cmp -s "$TMP/orphfix/llm2/outcome.c" "$ROOT/src/llm2/outcome.c" \
+        && ORPH86="the $PIN_ORPHAN outcome.c is IDENTICAL to the working tree — the damage-rule arm would compare the code to itself (was the rule reverted?)"
+fi
 echo "== phase 5g: done ordering + torn-tail repair — unit asymmetry vs pinned pre-fix sources"
 cat > "$TMP/ordprobe.c" <<'CEOF'
 /* The record's ORDER and TAIL invariants, straight at the API.  argv:
@@ -742,6 +799,27 @@ static const char *vname(FxVerdict v) {
     case FX_VERDICT_UNRESOLVED: return "UNRESOLVED";
     default: return "ERROR";
     }
+}
+
+/* plant a store: CURRENT=cur, one optional bootlog line ("v status epoch") */
+static int plant_store2(const char *st, unsigned long cur, const char *bootlog) {
+    char b[4096];
+    if (mkdir(st, 0755) != 0 && errno != EEXIST) return -1;
+    snprintf(b, sizeof b, "%s/.db", st);
+    if (mkdir(b, 0755) != 0 && errno != EEXIST) return -1;
+    snprintf(b, sizeof b, "%s/.db/snapshots", st);
+    if (mkdir(b, 0755) != 0 && errno != EEXIST) return -1;
+    snprintf(b, sizeof b, "%s/.db/snapshots/CURRENT", st);
+    FILE *f = fopen(b, "w");
+    if (!f) return -1;
+    fprintf(f, "%lu\n", cur);
+    fclose(f);
+    snprintf(b, sizeof b, "%s/.bootlog", st);
+    f = fopen(b, "w");
+    if (!f) return -1;
+    if (bootlog && *bootlog) fprintf(f, "%s\n", bootlog);
+    fclose(f);
+    return 0;
 }
 
 int main(int argc, char **argv) {
@@ -797,6 +875,112 @@ int main(int argc, char **argv) {
         printf("%s\n", vname(vd));
         return 0;
     }
+    if (strcmp(argv[1], "ok-ca") == 0) {
+        /* THE OVERLAPPING CELL: A ok in the bootlog AND C == A AND no done.
+         * The rows are evaluated in order, so the bootlog verdict on A
+         * decides before the C == A comparison: SUPERSEDED, not RUN. */
+        if (argc < 5) return 2;
+        unsigned long v = strtoul(argv[4], NULL, 10);
+        char bl[128];
+        snprintf(bl, sizeof bl, "%lu ok 1700000000", v);
+        if (plant_store2(argv[3], v, bl) != 0) return 2;
+        if (fx_outcome_record(argv[2], task, "attempt", "s1", "r1", 0,
+                              "/fx/disk/agent-config.dhall") != 0) return 2;
+        if (fx_outcome_record(argv[2], task, "result", "s1", "r1", v,
+                              "/fx/disk/agent-config.dhall") != 0) return 2;
+        FxOutcome o; char rep[512];
+        FxVerdict vd = fx_outcome_verdict(argv[2], task, argv[3], NULL, &o,
+                                          rep, sizeof rep, NULL, 0);
+        printf("%s\n", vname(vd));
+        return 0;
+    }
+    if (strcmp(argv[1], "dar-cneqa") == 0) {
+        /* done -> attempt -> result at C != A: the reinstated done must not
+         * leak a completion claim into the never-judged row. */
+        if (argc < 5) return 2;
+        unsigned long v = strtoul(argv[4], NULL, 10);
+        if (plant_store2(argv[3], 9, NULL) != 0) return 2; /* C = 9 != A */
+        if (fx_outcome_record(argv[2], task, "done", "s1", "r1", 0, NULL) != 0) return 2;
+        if (fx_outcome_record(argv[2], task, "attempt", "s2", "r2", 0,
+                              "/fx/disk/agent-config.dhall") != 0) return 2;
+        if (fx_outcome_record(argv[2], task, "result", "s2", "r2", v,
+                              "/fx/disk/agent-config.dhall") != 0) return 2;
+        FxOutcome o; char rep[512];
+        FxVerdict vd = fx_outcome_verdict(argv[2], task, argv[3], NULL, &o,
+                                          rep, sizeof rep, NULL, 0);
+        printf("%s\n", vname(vd));
+        return 0;
+    }
+    if (strcmp(argv[1], "v0-reinstate") == 0) {
+        /* a result naming NO generation (v0) still ACCOUNTS the attempt, so
+         * the suspended done returns to force.  Needs no store: the
+         * unaccounted branch is decided before any store read. */
+        if (fx_outcome_record(argv[2], task, "done", "s1", "r1", 0, NULL) != 0) return 2;
+        if (fx_outcome_record(argv[2], task, "attempt", "s2", "r2", 0,
+                              "/fx/disk/agent-config.dhall") != 0) return 2;
+        if (fx_outcome_record(argv[2], task, "result", "s2", "r2", 0,
+                              "/fx/disk/agent-config.dhall") != 0) return 2;
+        FxOutcome o; char rep[512];
+        FxVerdict vd = fx_outcome_verdict(argv[2], task, NULL, NULL, &o,
+                                          rep, sizeof rep, NULL, 0);
+        printf("%s\n", vname(vd));
+        return 0;
+    }
+    if (strcmp(argv[1], "torn-attempt") == 0) {
+        /* THE DAMAGE RULE: the attempt line torn mid-step-token (an ENOSPC
+         * partial write), then the result write SUCCEEDS — the writer's
+         * tail repair closes the torn prefix as its own unparsable line and
+         * the result lands complete.  The attempt is unreadable; the result
+         * is an ORPHAN.  Line 1: the verdict; line 2: the report (asserted
+         * to name the escape). */
+        char path[1024];
+        snprintf(path, sizeof path, "%s/attempts.jsonl", dir);
+        FILE *f = fopen(path, "ab");
+        if (!f) return 2;
+        fputs("1700000000 ", f); fputs(task, f); fputs(" at", f); /* torn "attempt" */
+        fclose(f);
+        if (fx_outcome_record(dir, task, "result", "s1", "r1", 5,
+                              "/fx/disk/agent-config.dhall") != 0) return 2;
+        FxOutcome o; char rep[1024];
+        FxVerdict vd = fx_outcome_verdict(dir, task, NULL, NULL, &o,
+                                          rep, sizeof rep, NULL, 0);
+        printf("%s\n%s\n", vname(vd), rep);
+        return 0;
+    }
+    if (strcmp(argv[1], "torn-attempt-tail") == 0) {
+        /* the torn attempt is the LAST line (no repair, no result): the
+         * torn-line flag itself must forbid RUN — its visible counterpart
+         * (a complete attempt with no result) is UNRESOLVED too. */
+        char path[1024];
+        snprintf(path, sizeof path, "%s/attempts.jsonl", dir);
+        FILE *f = fopen(path, "ab");
+        if (!f) return 2;
+        fputs("1700000000 ", f); fputs(task, f); fputs(" at", f);
+        fclose(f);
+        FxOutcome o; char rep[512];
+        FxVerdict vd = fx_outcome_verdict(dir, task, NULL, NULL, &o,
+                                          rep, sizeof rep, NULL, 0);
+        printf("%s\n", vname(vd));
+        return 0;
+    }
+    if (strcmp(argv[1], "orphan-done") == 0) {
+        /* the DECISION half: a done in force is positive evidence and is
+         * NOT poisoned — ALREADY_DONE before and after the damage rule. */
+        if (fx_outcome_record(dir, task, "done", "s1", "r1", 0, NULL) != 0) return 2;
+        char path[1024];
+        snprintf(path, sizeof path, "%s/attempts.jsonl", dir);
+        FILE *f = fopen(path, "ab");
+        if (!f) return 2;
+        fputs("1700000000 ", f); fputs(task, f); fputs(" at", f);
+        fclose(f);
+        if (fx_outcome_record(dir, task, "result", "s1", "r1", 5,
+                              "/fx/disk/agent-config.dhall") != 0) return 2;
+        FxOutcome o; char rep[512];
+        FxVerdict vd = fx_outcome_verdict(dir, task, NULL, NULL, &o,
+                                          rep, sizeof rep, NULL, 0);
+        printf("%s\n", vname(vd));
+        return 0;
+    }
     if (strcmp(argv[1], "tailrepair") == 0) {
         const char *t2 = "9999999999999999";
         if (fx_outcome_record(dir, task, "attempt", "s1", "r1", 0, "a") != 0) return 2;
@@ -837,6 +1021,15 @@ if [ -z "$MID86" ]; then
        || fail "phase 5g: cannot build the order probe against $PIN_FALSE's outcome.c"
 else
     echo "SKIP outcome: phase 5g (false-run arm): $MID86"
+fi
+ORPHV="$TMP/ordprobe-orphan"
+if [ -z "$ORPH86" ]; then
+    cc -std=c11 -O2 -Wall -Wextra -I"$TMP/orphfix/llm2" \
+       -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
+       -o "$ORPHV" "$TMP/ordprobe.c" "$TMP/orphfix/llm2/outcome.c" \
+       || fail "phase 5g: cannot build the order probe against $PIN_ORPHAN's outcome.c"
+else
+    echo "SKIP outcome: phase 5g (damage-rule arm): $ORPH86"
 fi
 if [ -z "$PRE86" ]; then
 W=$("$PFXV" done-first "$TMP/od-pre") || fail "phase 5g: pre-fix done-first probe failed"
@@ -906,6 +1099,53 @@ W=$("$TMP/suspprobe" "$TMP/od-susp2" "$TMP/od-susp2-store") \
     || fail "phase 5g: suspension probe failed"
 [ "$W" = "UNRESOLVED" ] \
     || fail "phase 5g: a done did not re-suspend behind a SECOND unaccounted attempt ('$W') — sticky done is back"
+# ── the cells the ordering review found ungated (all four, each with its
+#    fail direction named in the ordprobe comment above) ──
+W=$("$FIXV" ok-ca "$TMP/od-okca" "$TMP/od-okca-store" 5) \
+    || fail "phase 5g: overlapping-cell probe failed"
+[ "$W" = "SUPERSEDED" ] \
+    || fail "phase 5g: the OVERLAPPING CELL (A ok, C==A, no done) returned '$W' — row precedence changed (want SUPERSEDED, the ok row decides before C==A)"
+W=$("$FIXV" dar-cneqa "$TMP/od-dar-cna" "$TMP/od-dar-cna-store" 5) \
+    || fail "phase 5g: done-attempt-result-at-C!=A probe failed"
+[ "$W" = "UNRESOLVED" ] \
+    || fail "phase 5g: done->attempt->result at C!=A returned '$W' (want UNRESOLVED — the never-judged row must stay conservative even with a done in force)"
+W=$("$FIXV" v0-reinstate "$TMP/od-v0r") \
+    || fail "phase 5g: v0-reinstatement probe failed"
+[ "$W" = "ALREADY_DONE" ] \
+    || fail "phase 5g: done->attempt->result(v0) returned '$W' (want ALREADY_DONE — a result naming no generation still accounts the attempt)"
+# ── THE DAMAGE RULE: torn attempt + surviving result ──
+if [ -z "$ORPH86" ]; then
+W=$("$ORPHV" torn-attempt "$TMP/od-torn-pre") \
+    || fail "phase 5g: $PIN_ORPHAN torn-attempt probe failed"
+[ "$W" = "RUN" ] \
+    || fail "phase 5g: $PIN_ORPHAN no longer returns RUN for a torn attempt + surviving result ('$W') — the asymmetry probe proves nothing"
+W=$("$ORPHV" torn-attempt-tail "$TMP/od-torntail-pre") \
+    || fail "phase 5g: $PIN_ORPHAN torn-attempt-tail probe failed"
+[ "$W" = "RUN" ] \
+    || fail "phase 5g: $PIN_ORPHAN no longer returns RUN for a torn attempt as the last line ('$W')"
+fi
+"$FIXV" torn-attempt "$TMP/od-torn-fix" > "$TMP/od-torn-fix.out" \
+    || fail "phase 5g: fixed torn-attempt probe failed"
+W=$(head -1 "$TMP/od-torn-fix.out")
+[ "$W" = "UNRESOLVED" ] \
+    || fail "phase 5g: a torn attempt + surviving result returned '$W' (want UNRESOLVED — never RUN off a record that provably lost a line)"
+assert_escape "phase 5g (damaged record)" "$(tail -n +2 "$TMP/od-torn-fix.out")"
+printf '%s\n' "$(tail -n +2 "$TMP/od-torn-fix.out")" | grep -q "DAMAGED" \
+    || { cat "$TMP/od-torn-fix.out" >&2; fail "phase 5g: the damaged-record report does not say the record is damaged"; }
+W=$("$FIXV" torn-attempt-tail "$TMP/od-torntail-fix") \
+    || fail "phase 5g: fixed torn-attempt-tail probe failed"
+[ "$W" = "UNRESOLVED" ] \
+    || fail "phase 5g: a torn attempt as the last line returned '$W' (want UNRESOLVED — the torn line proves mid-write)"
+W=$("$FIXV" orphan-done "$TMP/od-orphan-done") \
+    || fail "phase 5g: orphan-done probe failed"
+[ "$W" = "ALREADY_DONE" ] \
+    || fail "phase 5g: done + torn attempt + orphan result returned '$W' (want ALREADY_DONE — a done in force is positive evidence and is NOT poisoned; changing this verdict is a DECISION change, see outcome.h)"
+if [ -z "$ORPH86" ]; then
+W=$("$ORPHV" orphan-done "$TMP/od-orphan-done-pre") \
+    || fail "phase 5g: $PIN_ORPHAN orphan-done probe failed"
+[ "$W" = "ALREADY_DONE" ] \
+    || fail "phase 5g: $PIN_ORPHAN reads '$W' for done + torn attempt + orphan result (want ALREADY_DONE — the rule must have changed the cell it promised not to)"
+fi
 if [ -z "$PRE86" ]; then
 W=$("$PFXV" tailrepair "$TMP/tr-pre") || fail "phase 5g: pre-fix tailrepair probe failed"
 [ "$W" = "lost" ] \
@@ -915,6 +1155,7 @@ W=$("$FIXV" tailrepair "$TMP/tr-fix") || fail "phase 5g: fixed tailrepair probe 
 [ "$W" = "visible" ] \
     || fail "phase 5g: a record appended after a torn tail was LOST ('$W') — the next boot would read nothing and RUN"
 note "unit asymmetry: done-before-attempt ALREADY_DONE(pre-fix) -> UNRESOLVED(fixed); done->attempt->RESULT RUN(648984f) -> ALREADY_DONE(fixed) and re-suspended behind a second unaccounted attempt; attempt-then-done unchanged; a torn tail no longer eats the next record"
+note "ungated cells now pinned: (ok, C==A, no done) -> SUPERSEDED by precedence; d-a-r at C!=A -> UNRESOLVED; d-a-r(v0) -> ALREADY_DONE; and the DAMAGE RULE: torn attempt + surviving result RUN(014ebb7) -> UNRESOLVED(fixed), torn tail alone -> UNRESOLVED, done-in-force NOT poisoned (ALREADY_DONE, before and after)"
 
 # ── phase 6: the store is NEVER guessed ────────────────────────────────────
 echo "== phase 6: a verdict that needs the store FAILS LOUDLY when it is absent"

@@ -234,15 +234,27 @@ int fx_outcome_record_load(const char *data_dir, const char *task, FxOutcome *ou
          * still yield a full field set — a truncated version token parses as a
          * version, and a truncated version that matches a real bootlog line
          * would decide ACTIVATION_FAILED or ALREADY_DONE from a CORRUPT record.
-         * THE BOUND OF THIS SKIP, stated because the short version of it is
-         * FALSE: it is conservative for a torn RESULT line (the task then has no
-         * result, i.e. the UNRESOLVED branch — never a silent "done"), but it is
-         * NOT conservative for a torn ATTEMPT line whose result line DID land —
-         * the attempt vanishes, the result survives, and the verdict is RUN, the
-         * re-issuing direction.  Reachable only through a partial write followed
-         * by a successful one (ENOSPC); ungated and pre-existing, recorded in
-         * todo.md section 3 rather than papered over here. */
-        if (!strchr(line, '\n')) continue;
+         * THE BOUND OF THIS SKIP, and how it is closed: skipping is
+         * conservative for a torn RESULT line (the task then has no result,
+         * i.e. the UNRESOLVED branch — never a silent "done"), but it is NOT
+         * conservative for a torn ATTEMPT line whose result line DID land:
+         * the attempt vanished, the result was dropped for want of an attempt
+         * to account, and the verdict was RUN — the re-issuing direction (the
+         * hole MEASURED by the ordering review).  The DAMAGE RULE closes it:
+         * a torn line whose TASK token survived the tear marks the record
+         * damaged for that task, a dropped orphan result marks it too, and
+         * fx_outcome_verdict refuses RUN off a damaged record.  A torn line
+         * whose task token itself was cut is not attributable to any task and
+         * stays a plain skip (cross-task poisoning would wedge unrelated
+         * tasks forever). */
+        if (!strchr(line, '\n')) {
+            unsigned long tep = 0;
+            char ttask[FX_OUTCOME_TASK_CAP] = {0};
+            if (sscanf(line, "%lu %16s", &tep, ttask) == 2 &&
+                strcmp(ttask, task) == 0)
+                out->has_torn_line = 1;
+            continue;
+        }
         unsigned long epoch = 0, version = 0;
         char rtask[FX_OUTCOME_TASK_CAP] = {0};
         char step[16] = {0};
@@ -262,6 +274,13 @@ int fx_outcome_record_load(const char *data_dir, const char *task, FxOutcome *ou
         if (strcmp(step, "attempt") == 0) {
             out->has_attempt = 1;
             out->has_result = 0;
+            /* A COMPLETE attempt line ends any damage recorded so far: the
+             * damage rule protects exactly the claim "no attempt for this
+             * task", and there now IS one the record can read.  Whatever a
+             * torn or orphaned EARLIER line hid is superseded by this one
+             * (damage AFTER it still marks — a torn line proves mid-write). */
+            out->has_torn_line = 0;
+            out->has_orphan_result = 0;
             /* A done line may only settle attempts that PRECEDE it: this
              * attempt was recorded AFTER any done seen so far, so that done
              * cannot speak for it.  Without this the loader's done was sticky
@@ -299,6 +318,14 @@ int fx_outcome_record_load(const char *data_dir, const char *task, FxOutcome *ou
                     out->done = 1;
                     out->done_suspended = 0;
                 }
+            } else {
+                /* An ORPHAN result: well-formed, terminated, naming this
+                 * task — but no attempt it could account was ever read (its
+                 * attempt line was torn, or never written).  Dropped for
+                 * verdict purposes, but NOT silently: the record cannot be
+                 * trusted to say "no attempt for this task" while it holds a
+                 * result line for it, so it marks the damage rule. */
+                out->has_orphan_result = 1;
             }
         } else if (strcmp(step, "done") == 0) {
             out->done = 1;
@@ -504,6 +531,44 @@ static FxVerdict report(FxVerdict v, char *text, size_t textcap, const char *fmt
     return v;
 }
 
+/* The DAMAGE RULE's report (the table in outcome.h): the record provably lost
+ * a line for this task, so wherever the rule would say RUN — "nothing on
+ * record", "the ordinary re-run" — it says this instead.  A STOP, because a
+ * record that was mid-write cannot be trusted to say there is no unaccounted
+ * activation for the task; a false STOP is the safer error.  `where` names
+ * the RUN row that was about to fire. */
+static FxVerdict report_damaged(FxOutcome *o, const char *data_dir,
+                                const char *agent, const char *where,
+                                char *text, size_t textcap, const char *escape) {
+    char damage[320];
+    if (o->has_torn_line && o->has_orphan_result)
+        snprintf(damage, sizeof damage,
+                 "an unterminated (torn) line naming this task was skipped, and a\n"
+                 "             result line was dropped with no attempt line to account it");
+    else if (o->has_torn_line)
+        snprintf(damage, sizeof damage,
+                 "an unterminated (torn) line naming this task was skipped — the file\n"
+                 "             was mid-write, and what that line was is unreadable");
+    else
+        snprintf(damage, sizeof damage,
+                 "a result line for this task was dropped: no attempt line it could\n"
+                 "             account was ever read (torn, or never written)");
+    return report(FX_VERDICT_UNRESOLVED, text, textcap,
+        "fx-harness: THE ATTEMPT RECORD FOR THIS TASK IS DAMAGED. NOT RE-RUNNING IT.\n"
+        "  task     : %s (agent %s)\n"
+        "  where    : %s\n"
+        "  damage   : %s\n"
+        "  rule     : a torn line proves the file was mid-write, so the record cannot\n"
+        "             be trusted to say there is no unaccounted activation for this\n"
+        "             task — the verdict RUN is refused off a damaged record\n"
+        "  record   : %s/attempts.jsonl\n"
+        "  action   : this run stops here (exit 0); no activation is issued.  Repair\n"
+        "             the record, or remove this task's lines from it, before re-running\n"
+        "%s",
+        o->task, agent ? agent : "", where, damage,
+        data_dir ? data_dir : "(unset)", escape);
+}
+
 FxVerdict fx_outcome_verdict(const char *data_dir, const char *task,
                              const char *store, const char *agent,
                              FxOutcome *out, char *text, size_t textcap,
@@ -532,7 +597,17 @@ FxVerdict fx_outcome_verdict(const char *data_dir, const char *task,
 
     /* ── no activation is on record ── */
     if (!out->has_attempt) {
-        if (!out->done) return FX_VERDICT_RUN;
+        if (!out->done) {
+            /* the DAMAGE RULE first: a record that provably lost a line for
+             * this task must not be read as "nothing on record" — the RUN
+             * this branch would return re-issues an activation whose attempt
+             * line is exactly what the record can no longer show. */
+            if (out->has_torn_line || out->has_orphan_result)
+                return report_damaged(out, data_dir, agent,
+                    "the record reads as \"no activation on record\" for this task",
+                    text, textcap, escape);
+            return FX_VERDICT_RUN;
+        }
         return report(FX_VERDICT_ALREADY_DONE, text, textcap,
             "fx-harness: TASK ALREADY COMPLETE — NOT RE-RUNNING IT.\n"
             "  task     : %s (agent %s)\n"
@@ -711,7 +786,18 @@ FxVerdict fx_outcome_verdict(const char *data_dir, const char *task,
     }
 
     if (current == out->version) {
-        if (!out->done) return FX_VERDICT_RUN;
+        if (!out->done) {
+            /* the DAMAGE RULE holds here too: "the ordinary re-run" is a
+             * claim about the record's LAST attempt, and a torn line after
+             * it (or an orphan result) means the record cannot be trusted to
+             * make that claim — stop instead. */
+            if (out->has_torn_line || out->has_orphan_result)
+                return report_damaged(out, data_dir, agent,
+                    "the activation on record is the CURRENT generation and would be\n"
+                    "             re-run as \"the ordinary re-run\"",
+                    text, textcap, escape);
+            return FX_VERDICT_RUN;
+        }
         return report(FX_VERDICT_ALREADY_DONE, text, textcap,
             "fx-harness: TASK ALREADY COMPLETE — NOT RE-RUNNING IT.\n"
             "  task     : %s (agent %s)\n"

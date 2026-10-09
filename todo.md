@@ -64,17 +64,22 @@ certifies coherence; neither says "improved".
 
 ## 3. Known defects, pre-existing, not hidden
 
-- [ ] **The store cannot attribute a src_hash to a generation** (found by the osier-share review,
-      worked around — not fixed — this round). `srcstore` is append-only and its rows are reaped only
-      when the NAME becomes unreachable, while `provides`/`install`/`svc_*` are cleared per
-      activation — so a package whose source changed and was re-activated has **several live srcstore
-      rows for one name in the CURRENT snapshot**, and `fxstore facts` prints them in a
-      **non-contractual** order. Nothing links a derivation hash to the src hash it was folded from,
-      so no reader (the oracle included) can tell which source the running generation was built from.
-      `fx-osier-share` now REFUSES when more than one candidate survives its narrowing checks
-      (`tests/test_osier_share.sh` A4 pins it), but the honest fix is a **fact binding derivation
-      hash → src hash, committed by the activation in fx-init** (`commitClosureMeta`,
-      `activate.zig:890-915`) — fx-init's repo, not this one.
+- [x] **The store CAN attribute a src_hash to a generation — `src_of` landed and the oracle consumes it**
+      (was: "the store cannot attribute", found by the osier-share review). `srcstore` is append-only
+      and its rows are reaped only when the NAME becomes unreachable, while `provides`/`install`/`svc_*`
+      are cleared per activation — so a rebuilt package has several live srcstore rows for one name and
+      nothing linked either to the derivation in use. Fixed at the writer (fx-init `9b20161`:
+      `commitClosureMeta` commits `src_of(deriv_hash, src_hash, name)` in the activation txn, col0 being
+      the same field `provides` uses; fx-init's own gate is `tests/probe-src-of.sh`) and at the reader
+      (fxstore `0e831a4`: the relation is in `RELATION_SCHEMAS`). `fx-osier-share` now resolves each
+      component through `src_of` FIRST (attribution `src_of` in the output and an `attribution` summary
+      line — "the store attributed it" and "only one srcstore candidate survived" are different claims),
+      and the ambiguity REFUSAL fires only where the store genuinely cannot answer: no `src_of` row for
+      the generation's derivation AND more than one verifying srcstore candidate. `tests/test_osier_share.sh`
+      A4 pins BOTH behaviours: the NEW writer's ambiguous store RESOLVES to the current generation's own
+      hash (version-bound, the older snapshot keeps its own), and the OLD writer's (pinned fx-init
+      `2feedf6`, `cmp`-guarded) still refuses, naming both candidates. RESIDUAL, stated: `src_of` rows
+      are never gc-reaped (growth is bounded by the rebuild count, not time — fx-init's commit message).
 - [ ] **`fxstore verify` reports 5 drifts on a STOCK system.** fx-init's `install` fact for a `/bin`
       link records the package **DIR** while its buildfile symlinks the **BINARY** (`activate.zig:616-621`,
       `:1372-1382`). The B2 test pins that class so it still discriminates — **and a pinned class can
@@ -98,18 +103,31 @@ certifies coherence; neither says "improved".
 - [ ] **`tests/qemu-agent-b2.sh:~602` carries the comment-blind substring `console_pin`** that
       `tests/qemu-agent-observe.sh` had fixed (a `console = Some "console"` inside a COMMENT passes a
       non-console row). Same one-line `strip_comments` fix; out of the 648984f lane's scope.
-- [ ] **A torn ATTEMPT line can yield RUN — the re-issuing direction.** The loader skips an
-      unterminated record line, which is conservative for a torn *result* line (no result → the
-      UNRESOLVED branch, never a silent `done`) but NOT for a torn *attempt* line whose result line
-      did land: the attempt vanishes, the result survives, and the verdict is RUN. MEASURED at the
-      API by `handoff-order-review`; reachable only through a partial write followed by a successful
-      one (ENOSPC). Pre-existing and ungated — now stated in the `outcome.c` skip comment, which
-      previously claimed the skip was conservative without qualification. A fix must decide whether a
-      torn line POISONS the record for that task or is merely skipped; do not paper it over.
-- [ ] **The outcome verdict table's overlapping cell is ungated.** `A ok ∧ C == A ∧ no done` is
-      decided by row ORDER (MEASURED → SUPERSEDED), and the table now says so, but no assertion pins
-      the precedence — reordering the branches would change a verdict silently. Also ungated: the
-      `done→attempt→result` order at `C ≠ A`, and the v0-result reinstatement.
+- [x] **A torn ATTEMPT line can no longer yield RUN — the DAMAGE RULE (decided and implemented).**
+      The loader skipped an unterminated record line, which was conservative for a torn *result* line
+      (no result → the UNRESOLVED branch, never a silent `done`) but NOT for a torn *attempt* line
+      whose result line did land: the attempt vanished, the result survived, and the verdict was RUN.
+      MEASURED at the API by `handoff-order-review`. DECISION: a torn line POISONS the record for the
+      task it names — a torn line proves the file was mid-write, so "the record has no unaccounted
+      attempt for this task" is not something the record can be trusted to say — and the poison
+      forbids exactly one verdict: RUN. Two flags carry it (`has_torn_line`: an unterminated line
+      whose task token survived the tear; `has_orphan_result`: a well-formed result line dropped for
+      want of any readable attempt — that one catches the REPAIRED torn line, which is terminated but
+      unparsable), both reset by a later COMPLETE attempt. Where RUN would issue ("nothing on record",
+      "the ordinary re-run" at C==A) a damaged record gets UNRESOLVED with a report that names the
+      damage; a done in force is NOT poisoned (`done` is positive evidence, not an inference from
+      absence — both verdicts are stops, wedging a completed task would buy no safety). Gated in
+      `tests/test_outcome.sh` phase 5g: `torn-attempt`/`torn-attempt-tail` → UNRESOLVED (pinned
+      `014ebb7` shows the old RUN — the measured hole), `orphan-done` → ALREADY_DONE before and after.
+      BOUND, stated: a torn line whose TASK token itself was cut is not attributable to any task and
+      stays a plain skip (cross-task poisoning would wedge unrelated tasks forever).
+- [x] **The outcome verdict table's four ungated cells are gated** (`tests/test_outcome.sh` phase 5g,
+      each with its fail direction in the probe comment): (1) the OVERLAPPING CELL `A ok ∧ C == A ∧ no
+      done` → SUPERSEDED by row precedence (a mutation that lets the C==A row decide first returns RUN
+      and fails the arm); (2) `done → attempt → result` at `C ≠ A` → UNRESOLVED (the 5g probe had
+      planted `CURRENT == A` only); (3) the v0-result reinstatement → ALREADY_DONE (a result naming no
+      generation still accounts the attempt; a version check on the reinstatement fails it); (4) the
+      torn-attempt DAMAGE RULE arm (see the entry above).
 
 ## 4. Design items awaiting a decision
 

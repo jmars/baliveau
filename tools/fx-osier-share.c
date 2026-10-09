@@ -39,15 +39,26 @@
  * unreachability, so a srcstore-driven closure counts packages a LATER
  * config dropped — store history, not the generation).
  *
- * SRCSTORE IS AMBIGUOUS ON REBUILD, AND THE ORACLE DOES NOT GUESS.  A
- * package whose source changed and was re-activated has SEVERAL live
- * srcstore rows for one name in the CURRENT snapshot; every row is a
- * candidate, narrowed by every independent check available (the -src
- * artifact exists AND hashes back to the candidate), and where more than
- * one candidate survives the tool REFUSES, naming the package and the
- * hashes: a number it cannot justify is worse than no number.  The real
- * fix — a fact binding each derivation hash to the src hash it was folded
- * from, committed by the activation — is recorded in todo.md §3.
+ * SRC_OF ANSWERS; THE REFUSAL IS THE FALLBACK, NOT THE RULE.  srcstore is
+ * append-only (rows reaped only when the NAME becomes unreachable) while
+ * provides/install/svc_* are cleared per activation, so a REBUILT package
+ * has several live srcstore rows for one name and srcstore alone cannot say
+ * which source THIS generation was folded from.  src_of(deriv_hash,
+ * src_hash, name) — committed in the activation's own transaction, col0
+ * being the SAME field provides uses for the <hash> of <hash>-<pkg> — can.
+ * So each component's src_hash is resolved through src_of FIRST, keyed by
+ * the <hash> of the generation's own provides row (attribution "src_of" in
+ * the output: the STORE attributed it), and only when that generation's
+ * activation PREDATES the fact (no src_of row for its derivation hash — an
+ * older snapshot, or a store written by an older fx-activate) does the tool
+ * fall back to narrowing the append-only srcstore candidates by every
+ * independent check it has (attribution "srcstore": resolved only because
+ * exactly ONE candidate survived — a weaker claim than store attribution,
+ * and printed as one).  Where NEITHER path can answer — no src_of row AND
+ * more than one surviving srcstore candidate — the tool REFUSES, naming the
+ * package and the hashes: a number it cannot justify is worse than no
+ * number.  An entry the activation could not attribute gets NO src_of row;
+ * absence is read as "cannot attribute", never as "any".
  *
  * TWO NUMBERS, never averaged:
  *   (a) run-set share — over the components the generation RUNS.  THE
@@ -152,18 +163,23 @@ static char *xstrdup(const char *s) {
  * must not make (see the srcstore refusal below). */
 typedef struct {
     char **k, **v;
+    char **w;            /* THIRD column when the relation has one (src_of's
+                          * package name); NULL otherwise.  Two-column
+                          * relations leave it NULL. */
     size_t n, cap;
 } rows_t;
 
-static void rows_add(rows_t *m, const char *k, const char *v) {
+static void rows_add3(rows_t *m, const char *k, const char *v, const char *w) {
     if (m->n == m->cap) {
         m->cap = m->cap ? m->cap * 2 : 16;
         m->k = realloc(m->k, m->cap * sizeof *m->k);
         m->v = realloc(m->v, m->cap * sizeof *m->v);
-        if (!m->k || !m->v) die("out of memory");
+        m->w = realloc(m->w, m->cap * sizeof *m->w);
+        if (!m->k || !m->v || !m->w) die("out of memory");
     }
     m->k[m->n] = xstrdup(k);
     m->v[m->n] = xstrdup(v);
+    m->w[m->n] = w ? xstrdup(w) : NULL;
     m->n++;
 }
 
@@ -232,11 +248,18 @@ static void fxstore_lines(const char *args, rows_t *out, int flip, const char *w
         *tab = 0;
         /* the value is the SECOND column ONLY: install rows are 4-col
          * (target, origin, mode, genhash) and the mode/genhash tail must
-         * not ride along in the lookup value */
+         * not ride along in the lookup value.  A THIRD column (src_of's
+         * package name) is kept in w and truncated at the next tab. */
         char *tab2 = strchr(tab + 1, '\t');
-        if (tab2) *tab2 = 0;
-        if (flip) rows_add(out, tab + 1, line);
-        else rows_add(out, line, tab + 1);
+        const char *col2 = NULL;
+        if (tab2) {
+            *tab2 = 0;
+            col2 = tab2 + 1;
+            char *tab3 = strchr(col2, '\t');
+            if (tab3) *tab3 = 0;
+        }
+        if (flip) rows_add3(out, tab + 1, line, col2);
+        else rows_add3(out, line, tab + 1, col2);
     }
     int rc = pclose(p);
     if (rc != 0)
@@ -604,6 +627,9 @@ typedef struct {
     const char *pkg;      /* component name */
     const char *src_hash; /* version-bound srcstore hash */
     const char *origin;   /* store | host-verified */
+    const char *attrib;   /* src_of | srcstore — WHICH path produced the
+                           * source: "the store attributed it" and "only one
+                           * candidate survived" are different claims */
     tally_t t;
     int resolved;
     int run;
@@ -614,6 +640,34 @@ static const char *pkg_of_dir(const rows_t *provides, const char *dir) {
     for (size_t i = 0; i < provides->n; i++)
         if (!strcmp(provides->k[i], dir)) return provides->v[i];
     return NULL;
+}
+
+/* The mirror: a package name -> its provides store dir ("<hash>-<pkg>"),
+ * or NULL.  provides is cleared per activation and holds one row per
+ * closure package, so the first match is the only match. */
+static const char *dir_of_pkg(const rows_t *provides, const char *pkg) {
+    for (size_t i = 0; i < provides->n; i++)
+        if (!strcmp(provides->v[i], pkg)) return provides->k[i];
+    return NULL;
+}
+
+/* The src_of resolution: the src_hash the store binds to (deriv_hash, name).
+ * Returns the first row's value and sets *ndist to the number of DISTINCT
+ * values bound (0 = no row — the activation predates the fact, or the entry
+ * had no source; >1 = the store is internally inconsistent and the CALLER
+ * refuses). */
+static const char *srcof_get(const rows_t *srcof, const char *deriv,
+                             const char *name, size_t *ndist) {
+    const char *first = NULL;
+    *ndist = 0;
+    for (size_t i = 0; i < srcof->n; i++) {
+        if (strcmp(srcof->k[i], deriv) != 0 || !srcof->w[i] ||
+            strcmp(srcof->w[i], name) != 0)
+            continue;
+        if (!first) { first = srcof->v[i]; (*ndist)++; }
+        else if (strcmp(srcof->v[i], first) != 0) (*ndist)++;
+    }
+    return first;
 }
 
 int main(int argc, char **argv) {
@@ -650,6 +704,12 @@ int main(int argc, char **argv) {
     fxstore_lines("facts svc_bin", &svcbin, 0, "run set");
     fxstore_lines("facts srcstore", &srcstore, 1, "closure set");
     fxstore_lines("facts install", &install, 0, "run set");
+    /* src_of rows are (deriv_hash, src_hash, name), NOT flipped: the lookup
+     * keys on the deriv hash (the <hash> of the generation's own provides
+     * row) and must also carry the name — a deriv hash shared by two names
+     * (not expected: it names one derivation) must not cross-attribute. */
+    rows_t srcof = { 0 };
+    fxstore_lines("facts src_of", &srcof, 0, "source attribution");
 
     /* Resolve a store dir ("<hash>-<pkg>") to its package name via
      * provides, or NULL when no provides row carries it. */
@@ -772,31 +832,65 @@ int main(int argc, char **argv) {
         }
     }
 
-    /* step 4: source content per component — every live srcstore row for
-     * the name is a CANDIDATE, narrowed by every independent check this
-     * tool has, and a survivor set larger than one is a LOUD refusal: the
-     * store cannot attribute one src hash to this generation, and a number
-     * read through an arbitrary pick would not be the quantity the label
-     * names.  (srcstore is append-only and its rows are reaped only when
-     * the NAME becomes unreachable, so a package whose source changed and
-     * was re-activated genuinely has two live rows.  The real fix is a
-     * fact binding each derivation hash to the src hash it was folded
-     * from, committed by the activation — recorded in todo.md §3; it is
-     * another repo's change.) */
+    /* step 4: source content per component.  TWO paths, and the output says
+     * which one produced every component's source (see the header):
+     *   src_of    the generation's own provides row names its derivation
+     *             hash; src_of(deriv, src, name) — committed in that
+     *             activation's own transaction — names the exact src it was
+     *             folded from.  The store attributed it.
+     *   srcstore  NO src_of row for that derivation (the activation predates
+     *             the fact): every live srcstore row for the name is a
+     *             CANDIDATE, narrowed by the independent checks below, and a
+     *             survivor set larger than one is a LOUD refusal — the store
+     *             cannot attribute this generation's source to one of them.
+     *             Resolving here means "only one candidate survived", which
+     *             is a weaker claim than store attribution and prints as one.
+     */
     /* >= PATH_MAX + message + strerror so snprintf never truncates */
     char err[8192];
     for (size_t i = 0; i < ncomps; i++) {
         comp_t *c = &comps[i];
+        /* path 1: src_of, keyed by the <hash> of the provides store dir */
+        const char *attr = NULL;
+        const char *dir = dir_of_pkg(&provides, c->pkg);
+        if (dir) {
+            const char *dash = strchr(dir, '-');
+            if (!dash || dash == dir)
+                die("component '%s': provides dir '%s' is not <hash>-<pkg> as-of version %u — cannot key src_of", c->pkg, dir, ver);
+            char deriv[256];
+            size_t dl = (size_t)(dash - dir);
+            if (dl >= sizeof deriv)
+                die("component '%s': derivation hash in '%s' is too long", c->pkg, dir);
+            memcpy(deriv, dir, dl);
+            deriv[dl] = 0;
+            size_t ndist = 0;
+            attr = srcof_get(&srcof, deriv, c->pkg, &ndist);
+            if (ndist > 1)
+                die("component '%s': src_of binds %zu distinct src hashes to derivation %s as-of version %u — the store is inconsistent; refusing rather than guessing",
+                    c->pkg, ndist, deriv, ver);
+        }
         const char *cand[64];
         size_t ncand = rows_get_all(&srcstore, c->pkg, cand, 64);
-        if (ncand == 0) {
+        if (!attr && ncand == 0) {
             if (c->run)
-                die("RUN component '%s' has no srcstore row as-of version %u — cannot classify its source", c->pkg, ver);
+                die("RUN component '%s' has no src_of row and no srcstore row as-of version %u — cannot classify its source", c->pkg, ver);
             c->resolved = 0; /* closure-only: reported unresolved, not fatal */
             continue;
         }
-        if (ncand == 64)
+        if (!attr && ncand == 64)
             die("component '%s' has 64+ live srcstore rows as-of version %u — refusing to enumerate", c->pkg, ver);
+        /* the candidate set: the ONE attributed hash, or every live row */
+        const char **set;
+        size_t nset;
+        if (attr) {
+            set = &attr;
+            nset = 1;
+            c->attrib = "src_of";
+        } else {
+            set = cand;
+            nset = ncand;
+            c->attrib = "srcstore";
+        }
         /* origin 1: the store's own clean-source artifact.  A candidate
          * SURVIVES only if the artifact exists AND this tool's own walk
          * hashes it back to the candidate hash — an unverified tree is
@@ -806,9 +900,9 @@ int main(int argc, char **argv) {
         const char *surv[64];
         tally_t survt[64];
         size_t nsurv = 0;
-        for (size_t j = 0; j < ncand; j++) {
+        for (size_t j = 0; j < nset; j++) {
             char art[4096];
-            if (snprintf(art, sizeof art, "%s/%s-%s-src", g_store, cand[j], c->pkg) >= (int)sizeof art)
+            if (snprintf(art, sizeof art, "%s/%s-%s-src", g_store, set[j], c->pkg) >= (int)sizeof art)
                 die("store artifact path too long for %s", c->pkg);
             struct stat st;
             if (stat(art, &st) != 0 || !S_ISDIR(st.st_mode)) continue;
@@ -817,20 +911,23 @@ int main(int argc, char **argv) {
             char h[65];
             if (walk(art, "", NULL, 0, &t, h, err, sizeof err) != 0)
                 die("component '%s': walking store artifact %s: %s", c->pkg, art, err);
-            if (strcmp(h, cand[j]) != 0) continue; /* exists but does not verify */
-            surv[nsurv] = cand[j];
+            if (strcmp(h, set[j]) != 0) continue; /* exists but does not verify */
+            surv[nsurv] = set[j];
             survt[nsurv] = t;
             nsurv++;
         }
         if (nsurv > 1) {
             /* name every surviving candidate: the operator must see exactly
-             * what the store failed to decide */
+             * what the store failed to decide.  Reachable only on the
+             * srcstore path (an attributed hash is one candidate) — the
+             * generation's activation predates src_of AND the narrowing
+             * could not cut the candidates to one. */
             char names[64 * 71];
             size_t nl = 0;
             for (size_t j = 0; j < nsurv; j++)
                 nl += (size_t)snprintf(names + nl, sizeof names - nl, "%s%s",
                                        j ? ", " : "", surv[j]);
-            die("component '%s': srcstore binds %zu live src hashes as-of version %u and %zu of them VERIFY against their store artifacts (%s) — the store cannot attribute this generation's source to one of them; refusing rather than guessing (the fix is a derivation->src fact committed at activation; todo.md §3)",
+            die("component '%s': srcstore binds %zu live src hashes as-of version %u, %zu of them verify against their store artifacts (%s), and this generation's activation committed no src_of row — the store cannot attribute its source to one of them; refusing rather than guessing",
                 c->pkg, ncand, ver, nsurv, names);
         }
         if (nsurv == 1) {
@@ -842,7 +939,9 @@ int main(int argc, char **argv) {
         }
         /* origin 2: the host tree, accepted ONLY on hash equality with a
          * candidate — the recompute can only cause false REFUSALS, never
-         * false acceptances. */
+         * false acceptances.  On the src_of path the tree must hash to the
+         * ATTRIBUTED hash; accepting any other row would defeat the
+         * attribution. */
         const pkg_t *P = pkgset_find(c->pkg);
         if (!P || !P->src_path)
             die("component '%s': no verifying store artifact and no package-set src.path to verify against (as-of %u)", c->pkg, ver);
@@ -852,16 +951,18 @@ int main(int argc, char **argv) {
         if (walk(P->src_path, "", P->excludes, P->nex, &t, h, err, sizeof err) != 0)
             die("component '%s': walking host tree %s: %s", c->pkg, P->src_path, err);
         size_t match = 0;
-        for (size_t j = 0; j < ncand; j++)
-            if (strcmp(h, cand[j]) == 0) { match = j + 1; break; }
+        for (size_t j = 0; j < nset; j++)
+            if (strcmp(h, set[j]) == 0) { match = j + 1; break; }
         if (!match) {
             if (c->run)
-                die("component '%s': host tree %s clean-hashes to %s but version %u's srcstore candidates do not include it — unverified tree refused",
-                    c->pkg, P->src_path, h, ver);
+                die("component '%s': host tree %s clean-hashes to %s but %s — unverified tree refused",
+                    c->pkg, P->src_path, h,
+                    attr ? "src_of attributes this generation to a different src hash"
+                         : "the version's srcstore candidates do not include it");
             c->resolved = 0;
             continue;
         }
-        c->src_hash = cand[match - 1];
+        c->src_hash = set[match - 1];
         c->t = t;
         c->origin = "host-verified";
         c->resolved = 1;
@@ -906,13 +1007,28 @@ int main(int argc, char **argv) {
     for (size_t i = 0; i < ncomps; i++) {
         comp_t *c = &comps[i];
         if (!c->resolved) {
-            printf("component %s %s unresolved %s\n", c->pkg,
-                   c->src_hash ? c->src_hash : "-", c->run ? "RUN" : "closure-only");
+            printf("component %s %s %s unresolved %s\n", c->pkg,
+                   c->src_hash ? c->src_hash : "-",
+                   c->attrib ? c->attrib : "-", c->run ? "RUN" : "closure-only");
             continue;
         }
-        printf("component %s %s %s %lu %lu %lu %lu %s\n", c->pkg, c->src_hash, c->origin,
+        printf("component %s %s %s %lu %lu %lu %lu %s %s\n", c->pkg, c->src_hash, c->origin,
                c->t.osier_bytes, c->t.total_bytes, c->t.osier_files, c->t.total_files,
-               c->run ? "run" : "closure-only");
+               c->run ? "run" : "closure-only", c->attrib);
+    }
+    /* the attribution split, stated as a count too: "the store attributed
+     * it" and "only one srcstore candidate survived" are different claims,
+     * and a reader of the headline should not have to walk every row to
+     * learn which one this number rests on. */
+    {
+        size_t n_srcof = 0, n_srcstore = 0;
+        for (size_t i = 0; i < ncomps; i++) {
+            if (!comps[i].resolved) continue;
+            if (comps[i].attrib && !strcmp(comps[i].attrib, "src_of")) n_srcof++;
+            else n_srcstore++;
+        }
+        printf("attribution src_of %zu srcstore-narrowed %zu (of %zu resolved)\n",
+               n_srcof, n_srcstore, cl_res);
     }
     printf("run_set_osier_bytes %lu\n", ra.osier_bytes);
     printf("run_set_total_bytes %lu\n", ra.total_bytes);

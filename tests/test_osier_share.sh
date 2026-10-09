@@ -75,6 +75,50 @@ fi
 [ -x "$ZB/activate_paths" ] || fail "no $ZB/activate_paths"
 [ -x "$ZB/fx-activate" ] || fail "no $ZB/fx-activate"
 
+# ── the NEW pair is REQUIRED: the fixture drives whatever binaries the
+# staging holds, and the staging is a CACHE — a build from before src_of
+# landed would silently drive the OLD writer and the resolution arms below
+# would fail for the wrong reason (or worse, skip their premises).  Probe
+# the CAPABILITY, not a ref: the fxstore must know the src_of relation, and
+# the staged fx-activate must carry the writer that commits it.
+grep -aq src_of "$ZB/fx-activate" || {
+    skip "staged fx-activate at $ZB predates src_of — the staging froze on an OLD fx-init; rm -rf build/guest-payload/init-x86_64-musl and re-run to rebuild it"
+}
+
+# ── the OLD-writer control (PINNED fx-init revision, never its HEAD): the
+#    ambiguity REFUSAL must still fire on a store whose activations predate
+#    the src_of fact.  Same discipline as every pin in this repo: a FIXED
+#    revision, a cat-file guard, and a cmp proof that the pinned
+#    activate.zig DIFFERS from the working tree (identical would compare the
+#    code to itself and prove nothing).  The pinned tree sits DIRECTLY under
+#    $SIBS as a dot-dir (fx-init's build.zig resolves siblings as ../..),
+#    shared with fx-init's own probe-src-of.sh.
+OLD_INIT_REV="2feedf6"     # fx-init @ activate.zig WITHOUT src_of
+OLD_INIT_SRC="$SIBS/.probe-pin-init-$OLD_INIT_REV"
+OLD_INIT_OUT="$REPO/build/pin-init-$OLD_INIT_REV"
+HAVE_OLD_WRITER=0
+if git -C "$INIT" cat-file -e "$OLD_INIT_REV^{commit}" 2>/dev/null; then
+    if [ ! -f "$OLD_INIT_SRC/zig/src/activate.zig" ]; then
+        rm -rf "$OLD_INIT_SRC"; mkdir -p "$OLD_INIT_SRC"
+        git -C "$INIT" archive "$OLD_INIT_REV" | tar -x -C "$OLD_INIT_SRC" \
+            || fail "cannot extract fx-init $OLD_INIT_REV"
+    fi
+    if cmp -s "$OLD_INIT_SRC/zig/src/activate.zig" "$INIT/zig/src/activate.zig"; then
+        skip "pinned $OLD_INIT_REV activate.zig is IDENTICAL to the working fx-init — the old-writer arm would compare the code to itself (fx-init's HEAD is not post-src_of?)"
+    fi
+    if [ ! -x "$OLD_INIT_OUT/bin/fx-activate" ] || [ ! -x "$OLD_INIT_OUT/bin/activate_paths" ]; then
+        command -v zig >/dev/null 2>&1 \
+            || skip "old-writer arm: pinned binaries absent and zig not found to build them"
+        echo "test_osier_share: building the pinned OLD writer (fx-init $OLD_INIT_REV)"
+        ( cd "$OLD_INIT_SRC/zig" && zig build -Dtarget=x86_64-linux-musl -Doptimize=ReleaseSafe \
+            -p "$OLD_INIT_OUT" --cache-dir "$OLD_INIT_OUT-cache" ) \
+            || fail "zig build of pinned fx-init $OLD_INIT_REV failed"
+    fi
+    HAVE_OLD_WRITER=1
+else
+    echo "test_osier_share: SKIP (old-writer arm): fx-init revision $OLD_INIT_REV unavailable (shallow clone?)"
+fi
+
 # the oracle itself (built by the Makefile target that runs this script)
 OSIER="${OSIER_BIN:-$REPO/build/fx-osier-share}"
 [ -x "$OSIER" ] || fail "no oracle binary at $OSIER (make test-osier-share builds it)"
@@ -87,6 +131,15 @@ else
 fi
 STORE="$WORK/store"
 mkdir -p "$STORE" || fail "cannot create the store"
+
+# the fxstore reader capability (needs a dir, hence here): on an EMPTY store
+# a KNOWN relation fails with "no published snapshot" while an unknown one
+# fails with "unknown relation 'src_of'" — the stale-binary case is a SKIP
+# with the reason, not a mystery failure inside the oracle later.
+mkdir -p "$WORK/capprobe"
+if "$FXSTORE" facts src_of --store "$WORK/capprobe" 2>&1 | grep -q "unknown relation 'src_of'"; then
+    skip "fxstore at $FXSTORE predates 'facts src_of' — rebuild the sibling checkout (zig build)"
+fi
 
 # ── the synthetic components ────────────────────────────────────────────
 # Fixed-content sources (sizes are MEASURED below, never hardcoded — the
@@ -419,13 +472,25 @@ else
 echo "test_osier_share: A6: pre-fix arm skipped"
 fi
 
-# ── A4: srcstore ambiguity on rebuild REFUSES, naming the candidates ────
+# ── A4: srcstore ambiguity on rebuild — the src_of fact ANSWERS, and the
+#    refusal survives only where the store genuinely cannot ───────────────
 # A package whose source changed and was re-activated has TWO live srcstore
 # rows for one name in the CURRENT snapshot (srcstore is append-only; rows
-# are reaped only when the NAME becomes unreachable).  With both -src
-# artifacts materialized and verifying, NO independent check can attribute
-# the generation's source to one of them — the oracle must REFUSE rather
-# than print a number read through an arbitrary first-wins pick.
+# are reaped only when the NAME becomes unreachable).  BOTH behaviours are
+# pinned, because they are different claims about the SAME shape of store:
+#   A4-resolve  with the NEW writer (working fx-init), src_of names the
+#               exact src the CURRENT generation was folded from: the
+#               oracle RESOLVES — to the v2 hash, NOT the v1 one — and says
+#               so (attribution src_of); the older snapshot of the same
+#               store resolves its OWN v1 hash (version-bound, no
+#               retroactive claim).
+#   A4-refuse   with the OLD writer (PINNED fx-init 2feedf6, whose
+#               activate.zig predates src_of — cmp-guarded above), the
+#               activations committed no src_of row: with both -src
+#               artifacts materialized and verifying, NO independent check
+#               can attribute the generation's source to one of them — the
+#               oracle must REFUSE rather than print a number read through
+#               an arbitrary first-wins pick.
 mkdir -p "$SRC/ambig"
 { echo "-- the ambiguity fixture's osier module, revision 1"; } > "$SRC/ambig/A.elm"
 cfg_write "$WORK/AMB.dhall" "$TOOLS, \"ambig\"" "$(svc_sh), { name = \"ambigd\", argv = [ \"ambig\" ], pkg = Some \"ambig\", on = \"all\", restart = Some \"always\", backoffMs = Some 500, probe = None Probe, env = None (List { key : Text, value : Text }), console = None Text }"
@@ -451,15 +516,95 @@ NAMB_ROWS=$(FXSTORE_BIN="$FXSTORE" "$FXSTORE" facts srcstore --as-of "$V_AMB2" -
     || fail "A4 precondition: expected 2 live srcstore rows for ambig as-of $V_AMB2, saw $NAMB_ROWS (the ambiguity mechanism did not reproduce — check the review's Blocker 1 trace)"
 cp -r "$WORK/ambig-v1" "$STORE/$AMB_H1-ambig-src" || fail "cannot materialize the v1 artifact"
 cp -r "$SRC/ambig" "$STORE/$AMB_H2-ambig-src" || fail "cannot materialize the v2 artifact"
-# FIXED: refuse loudly, naming the package and BOTH candidate hashes
-if run_oracle > "$WORK/out.AMB" 2>"$WORK/err.AMB"; then
-    fail "ASSERTION A4 FAILED: the ambiguous store produced a NUMBER (exit 0) instead of refusing"
+# premise: the NEW writer is really driving — ambig HAS a src_of row as-of
+# V_AMB2 (a stale staged fx-activate would leave this empty and the resolve
+# arm below would be testing the refusal against the wrong writer)
+AMB_DIR=$(FXSTORE_BIN="$FXSTORE" "$FXSTORE" facts provides --as-of "$V_AMB2" --store "$STORE" \
+    | awk -F'\t' '$1 == "ambig" { print $2; exit }')
+AMB_DERIV=${AMB_DIR%%-*}
+NAMB_SRCOF=$(FXSTORE_BIN="$FXSTORE" "$FXSTORE" facts src_of --as-of "$V_AMB2" --store "$STORE" \
+    | awk -F'\t' -v d="$AMB_DERIV" '$1 == d && $3 == "ambig"' | wc -l | tr -d ' ')
+[ "$NAMB_SRCOF" = 1 ] \
+    || fail "A4 premise: ambig has $NAMB_SRCOF src_of rows keyed by its provides hash as-of $V_AMB2 (want 1 — is the staged fx-activate the src_of writer?)"
+
+# A4-resolve: the oracle ANSWERS, through the store's own attribution —
+# the v2 hash for the CURRENT generation, attribution src_of, and the
+# measured v2 bytes (a first-wins pick of the WRONG row would print the v1
+# bytes and this fails).
+AMB_V1_BYTES=$(sz "$WORK/ambig-v1/A.elm")
+AMB_V2_BYTES=$(sz "$SRC/ambig/A.elm")
+[ "$AMB_V1_BYTES" != "$AMB_V2_BYTES" ] || fail "A4 fixture degenerate: v1 and v2 elm bytes are equal"
+run_oracle > "$WORK/out.AMB" 2>"$WORK/err.AMB" || fail "A4-resolve: the oracle REFUSED a store src_of can answer: $(cat "$WORK/err.AMB")"
+grep -q "^component ambig $AMB_H2 store $AMB_V2_BYTES $AMB_V2_BYTES 1 1 run src_of$" "$WORK/out.AMB" \
+    || fail "A4-resolve: ambig is not resolved to the v2 hash $AMB_H2 with attribution src_of: $(grep '^component ambig' "$WORK/out.AMB")"
+grep -q "^component ambig $AMB_H1 " "$WORK/out.AMB" \
+    && fail "A4-resolve: ambig resolved to the WRONG (v1) hash $AMB_H1"
+[ "$(field "$WORK/out.AMB" run_set_osier_bytes)" = "$AMB_V2_BYTES" ] \
+    || fail "A4-resolve: run_set_osier_bytes is not the measured v2 bytes"
+# version-bound: the SAME store's older snapshot resolves its OWN v1 hash —
+# no retroactive claim
+run_oracle --as-of "$V_AMB1" > "$WORK/out.AMBv1" 2>"$WORK/err.AMBv1" || fail "A4-resolve: --as-of $V_AMB1 refused: $(cat "$WORK/err.AMBv1")"
+grep -q "^component ambig $AMB_H1 store $AMB_V1_BYTES $AMB_V1_BYTES 1 1 run src_of$" "$WORK/out.AMBv1" \
+    || fail "A4-resolve: as-of $V_AMB1 ambig must resolve to the v1 hash $AMB_H1 (version-bound): $(grep '^component ambig' "$WORK/out.AMBv1")"
+grep -q "^attribution src_of 5 srcstore-narrowed 0 (of 5 resolved)$" "$WORK/out.AMB" \
+    || fail "A4-resolve: the attribution summary is not 'src_of 5, narrowed 0': $(grep '^attribution' "$WORK/out.AMB")"
+echo "test_osier_share: A4 RESOLVES: ambig -> $AMB_H2 (not $AMB_H1) via src_of; v$V_AMB1 -> $AMB_H1; attribution printed"
+
+# A4-refuse: the OLD writer's store — no src_of row for the generation, two
+# verifying candidates, and the oracle must still REFUSE, naming both
+if [ "$HAVE_OLD_WRITER" = 1 ]; then
+STORE_OLD="$WORK/store-oldwriter"; mkdir -p "$STORE_OLD"
+old_prov() { # pre-create the OLD store's closure dirs (pinned writer)
+    _p=$(LD_LIBRARY_PATH="$DL" "$OLD_INIT_OUT/bin/activate_paths" --store "$STORE_OLD" \
+        --package-set "$PKGSET" dhake fx-init fxctl fx-activate ambig) \
+        || fail "old activate_paths failed: $_p"
+    for _pd in $_p; do mkdir -p "$STORE_OLD/$_pd" || fail "cannot create $_pd (old store)"; done
+}
+old_act() { # old_act CFG -> version N on stdout
+    _o=$(LD_LIBRARY_PATH="$DL" "$OLD_INIT_OUT/bin/fx-activate" --store "$STORE_OLD" \
+        --package-set "$PKGSET" --config "$WORK/AMB.dhall" 2>&1) \
+        || fail "OLD fx-activate failed: $_o"
+    echo "$_o" | sed -n 's/.*as version \([0-9][0-9]*\).*/\1/p' | head -1
+}
+echo "-- old-writer fixture revision 3 (a fresh source state for the OLD store)" >> "$SRC/ambig/A.elm"
+cp -r "$SRC/ambig" "$WORK/ambig-v3" || fail "cannot save the v3 tree"
+old_prov
+OV1=$(old_act); [ -n "$OV1" ] || fail "no version from the OLD activation 1"
+OH1=$(FXSTORE_BIN="$FXSTORE" "$FXSTORE" facts srcstore --as-of "$OV1" --store "$STORE_OLD" \
+    | awk -F'\t' '$2 == "ambig" { print $1; exit }')
+[ -n "$OH1" ] || fail "no srcstore row for ambig as-of $OV1 (old store)"
+echo "-- old-writer fixture revision 4 (the second live row)" >> "$SRC/ambig/A.elm"
+old_prov
+OV2=$(old_act); [ -n "$OV2" ] || fail "no version from the OLD activation 2"
+OH2=$(FXSTORE_BIN="$FXSTORE" "$FXSTORE" facts srcstore --as-of "$OV2" --store "$STORE_OLD" \
+    | awk -F'\t' '$2 == "ambig" && $1 != "'"$OH1"'" { print $1; exit }')
+NOLD_ROWS=$(FXSTORE_BIN="$FXSTORE" "$FXSTORE" facts srcstore --as-of "$OV2" --store "$STORE_OLD" \
+    | awk -F'\t' '$2 == "ambig"' | wc -l | tr -d ' ')
+[ "$NOLD_ROWS" = 2 ] && [ -n "$OH2" ] \
+    || fail "A4-refuse precondition: expected 2 live srcstore rows for ambig as-of $OV2 (old store), saw $NOLD_ROWS"
+# the PREMISE of the refusal: the OLD writer committed NO src_of row — the
+# store genuinely cannot attribute this generation's source
+NOLD_SRCOF=$(FXSTORE_BIN="$FXSTORE" "$FXSTORE" facts src_of --as-of "$OV2" --store "$STORE_OLD" \
+    | awk -F'\t' '$3 == "ambig"' | wc -l | tr -d ' ')
+[ "$NOLD_SRCOF" = 0 ] \
+    || fail "A4-refuse premise: the OLD writer committed $NOLD_SRCOF src_of rows (the pin is not the pre-src_of writer?)"
+cp -r "$WORK/ambig-v3" "$STORE_OLD/$OH1-ambig-src" || fail "cannot materialize the old-store v3 artifact"
+cp -r "$SRC/ambig" "$STORE_OLD/$OH2-ambig-src" || fail "cannot materialize the old-store v4 artifact"
+if FXSTORE_BIN="$FXSTORE" "$OSIER" --store "$STORE_OLD" --package-set "$PKGSET" \
+        > "$WORK/out.OLD" 2>"$WORK/err.OLD"; then
+    fail "ASSERTION A4-refuse FAILED: the OLD writer's ambiguous store produced a NUMBER (exit 0) instead of refusing"
 fi
-grep -q 'FAIL' "$WORK/err.AMB" || fail "A4: no FAIL on stderr"
-grep -q "ambig" "$WORK/err.AMB" || fail "A4: the refusal does not NAME the package"
-grep -q "$AMB_H1" "$WORK/err.AMB" || fail "A4: the refusal does not name candidate $AMB_H1"
-grep -q "$AMB_H2" "$WORK/err.AMB" || fail "A4: the refusal does not name candidate $AMB_H2"
-grep -q "cannot attribute" "$WORK/err.AMB" || fail "A4: the refusal does not say the store cannot attribute one: $(cat "$WORK/err.AMB")"
+grep -q 'FAIL' "$WORK/err.OLD" || fail "A4-refuse: no FAIL on stderr"
+grep -q "ambig" "$WORK/err.OLD" || fail "A4-refuse: the refusal does not NAME the package"
+grep -q "$OH1" "$WORK/err.OLD" || fail "A4-refuse: the refusal does not name candidate $OH1"
+grep -q "$OH2" "$WORK/err.OLD" || fail "A4-refuse: the refusal does not name candidate $OH2"
+grep -q "cannot attribute" "$WORK/err.OLD" || fail "A4-refuse: the refusal does not say the store cannot attribute one: $(cat "$WORK/err.OLD")"
+grep -q "run_set_share_fraction" "$WORK/out.OLD" 2>/dev/null \
+    && fail "A4-refuse: the refusal printed a share"
+echo "test_osier_share: A4 REFUSES (old writer $OLD_INIT_REV, no src_of): names $OH1 and $OH2"
+else
+echo "test_osier_share: A4-refuse: old-writer arm skipped (pinned fx-init unavailable)"
+fi
 # ASYMMETRY: the committed oracle printed a number through an arbitrary pick
 if [ -n "$OSIER_PRE" ]; then
 run_pre > "$WORK/out.AMBpre" 2>"$WORK/err.AMBpre" \
@@ -468,7 +613,7 @@ grep -q "^component ambig " "$WORK/out.AMBpre" \
     || fail "A4 pre-fix asymmetry: no ambig component row in the committed oracle's output"
 grep -q "^run_set_share_fraction " "$WORK/out.AMBpre" \
     || fail "A4 pre-fix asymmetry: the committed oracle printed no share"
-echo "test_osier_share: A4 AMBIGUITY: fixed REFUSES naming both hashes; $PRE_ORACLE_REV printed a number (first-wins pick)"
+echo "test_osier_share: A4 asymmetry: fixed RESOLVES via src_of (and refuses only pre-fact stores); $PRE_ORACLE_REV printed a number (first-wins pick)"
 else
 echo "test_osier_share: A4: pre-fix arm skipped"
 fi
