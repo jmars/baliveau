@@ -164,6 +164,16 @@ certifies coherence; neither says "improved".
       the Zig port only, and a deployment missing it fails LOUDLY at the oracle's capability probe
       (measured — the probe was added precisely because a stale neighbouring binary was found).
 
+- [ ] **The `console_pin` now carries more weight than when it was written.** `414b26c` made an
+      unreadable bootlog or record `FX_VERDICT_ERROR`, and `agent_main.c:646` returns **2** for that —
+      where the same read errors previously produced `RUN` and exit **0**. Exit-non-zero is safe ONLY
+      because the agent service is `console = Some "console"` (fx-init ignores the exit status for a
+      console service and pins a FAILED verdict for a non-console one), so the pin is now the thing
+      standing between a READ ERROR and a roll-forward spiral on any deployment whose agent service is
+      not console. The pin is a TEXT heuristic (and `tests/qemu-agent-b2.sh` still carries the
+      comment-blind copy), so this is the strongest argument yet for hardening it — or for deciding,
+      deliberately, that a read error on the deployment's own record SHOULD fail the boot. Right now
+      it is an unstated consequence rather than a decision.
 - [x] **An unreadable `.bootlog` collapses to RUN — the re-issuing direction.** MEASURED by
       `handoff-loud-truncation` and NOT fixed there (out of its write scope): with a DIRECTORY at
       `<store>/.bootlog` and `CURRENT == version`, the verdict is `FX_VERDICT_RUN` where a readable
