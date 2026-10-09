@@ -1,0 +1,3 @@
+# build outputs — produced by `make` and by tools/build.sh
+build/
+*.o
