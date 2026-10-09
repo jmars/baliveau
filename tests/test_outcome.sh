@@ -57,6 +57,17 @@
 #     absent and from zero (phase 9g) — MEASURED, a directory where the journal
 #     belongs used to read as "0 roll-forwards … the FIRST time", a measurement
 #     that was never made;
+#   * an unreadable BOOTLOG is FX_VERDICT_ERROR naming the path — never RUN,
+#     which re-issues the activation (phase 11) — MEASURED, a directory (or a
+#     mode-000 file) where .bootlog belongs, with CURRENT == the activated
+#     generation, used to fall through to "no verdict line" and RUN; the same
+#     phase pins the bootlog's own DAMAGE RULE (a torn tail NAMING the
+#     activated generation refuses the ordinary re-run, scoped to the named
+#     generation), the ABSENT bootlog as SILENCE (a store that predates
+#     .bootlog — the journal's absent-is-a-state rule; the done-in-force cell
+#     stays ALREADY_DONE under an unreadable bootlog too), and the record's
+#     unreadable state (a directory at attempts.jsonl is not "no record"),
+#     each with its readable control;
 #   * A CUT REPORT IS LOUD (phase 10): report() emits an explicit truncation
 #     marker naming the byte count and FX_OUTCOME_MSG_CAP, into the tail of the
 #     buffer so the marker cannot itself be cut; the cap is DERIVED from the
@@ -646,7 +657,7 @@ int main(int argc, char **argv) {
         return 1;
     }
     FxOutcome o;
-    if (fx_outcome_record_load(argv[1], task, &o) != 0) { fprintf(stderr, "probe: load failed\n"); return 1; }
+    if (fx_outcome_record_load(argv[1], task, &o, NULL, 0) != 0) { fprintf(stderr, "probe: load failed\n"); return 1; }
     if (!o.has_attempt) {
         fprintf(stderr, "probe: the worst-case record was LOST — the next boot would read nothing and RUN\n");
         return 1;
@@ -1014,7 +1025,14 @@ int main(int argc, char **argv) {
         /* the NEXT record must not merge into the torn prefix */
         if (fx_outcome_record(dir, t2, "attempt", "s1", "r1", 0, "b") != 0) return 2;
         FxOutcome o;
+        /* this probe is built against BOTH the pinned pre-fix sources and
+         * this tree; the err-params signature arrived with the unreadable-
+         * record state, so the macro that came with it selects the arity */
+#ifdef FX_OUTCOME_ERR_CAP
+        if (fx_outcome_record_load(dir, t2, &o, NULL, 0) != 0) return 2;
+#else
         if (fx_outcome_record_load(dir, t2, &o) != 0) return 2;
+#endif
         printf("%s\n", o.has_attempt ? "visible" : "lost");
         return 0;
     }
@@ -1773,7 +1791,13 @@ int main(int argc, char **argv) {
     size_t tlen = call(data, store, task, agent, big, sizeof big);
     size_t plen = call(data, store, task, agent, prod, sizeof prod);
     call(data, store, task, agent, smallbuf, sizeof smallbuf);
+    /* built against this tree AND the pinned pre-fix sources (capprobe-pin):
+     * the err-params signature arrived with FX_OUTCOME_ERR_CAP */
+#ifdef FX_OUTCOME_ERR_CAP
+    fx_outcome_record_load(data, task, &o, NULL, 0);
+#else
     fx_outcome_record_load(data, task, &o);
+#endif
     printf("cap=%d\nlen_true=%zu\nlen_cap=%zu\nmargin=%d\n", FX_OUTCOME_MSG_CAP,
            tlen, plen, FX_OUTCOME_MSG_CAP - (int)tlen);
     printf("marker_at_cap=%d\nmarker_count_at_cap=%d\nescape_at_cap=%d\n",
@@ -1946,6 +1970,268 @@ else
     note "phase 10e: clause asymmetry SKIPPED ($NOREC86)"
 fi
 
+# ── phase 11: AN UNREADABLE BOOTLOG IS NOT "NO VERDICT LINE" ═══════════════
+# THE DEFECT THIS PHASE CLOSES (todo.md's own entry, MEASURED by
+# handoff-loud-truncation and re-measured on this tree before the fix): with a
+# DIRECTORY at <store>/.bootlog (glibc fopen ACCEPTS a directory; the first
+# read then fails EISDIR — a read error, not an empty file) and CURRENT == the
+# activated generation, fx_outcome_verdict returned RUN, where a readable
+# bootlog carrying the failure line returns ACTIVATION_FAILED.  RUN re-issues
+# the activation; the bootlog is how the loop LEARNS its activation failed,
+# and a read error is the ABSENCE OF EVIDENCE, never evidence of nothing.
+# Every sub-phase names what makes it FAIL.
+echo "== phase 11: an unreadable .bootlog is FX_VERDICT_ERROR naming the path — never RUN"
+# 11a — THE MEASURED CELL: directory at .bootlog, CURRENT == activated, an
+# accounted activation on record.  FAILS (as the original defect did) if the
+# run PROCEEDS (rc=0, the marker on stdout = the task re-ran = the blind
+# re-apply), or if the refusal does not name the PATH and the errno, or if it
+# is not LOUD (anything but exit 2 would be deciding on a store it cannot
+# read).
+newdata
+plant_store 8 "8 in-progress 1700000000"
+rm -f "$STORE/.bootlog"
+mkdir "$STORE/.bootlog" || fail "phase 11a: cannot plant a directory where the bootlog belongs"
+record "1700000000 $TASK attempt - - 0 /fx/disk/agent-config.dhall"
+record "1700000000 $TASK result - - 8 /fx/disk/agent-config.dhall"
+out=$(run "$BIN" --store "$STORE"); rc=$?
+[ "$rc" = 2 ] || { echo "out=$out"; cat "$TMP/err" >&2; fail "phase 11a: rc=$rc (want 2 — an unreadable bootlog must FAIL LOUDLY, not decide; rc=0 with the marker would be the defect: the task re-ran)"; }
+case "$out" in *"$MARKER"*) fail "phase 11a: the task RAN off an unreadable bootlog — the re-issuing direction";; esac
+grep -q "observation loop" "$TMP/err" || { cat "$TMP/err" >&2; fail "phase 11a: the refusal is not attributed to the observation loop"; }
+grep -q "\.bootlog: cannot be read: Is a directory" "$TMP/err" \
+    || { cat "$TMP/err" >&2; fail "phase 11a: the refusal does not name the path and the errno"; }
+grep -q "the store is never guessed" "$TMP/err" \
+    || { cat "$TMP/err" >&2; fail "phase 11a: the refusal does not carry the store rule's own words"; }
+# 11b — THE CONTROL, the cell the MEASUREMENT compared against: the SAME store
+# shape with a READABLE bootlog carrying the failure line is still (verbatim)
+# ACTIVATION_FAILED.  FAILS if the new guard over-refuses — a readable failed
+# bootlog must never become an error — or if the verdict itself changed.
+newdata
+plant_store 8 "8 in-progress 1700000000" "8 failed 1700000020"
+record "1700000000 $TASK attempt - - 0 /fx/disk/agent-config.dhall"
+record "1700000000 $TASK result - - 8 /fx/disk/agent-config.dhall"
+out=$(run "$BIN" --store "$STORE"); rc=$?
+[ "$rc" = 0 ] || { cat "$TMP/err" >&2; fail "phase 11b: rc=$rc (want 0 — a READABLE failed bootlog is the ordinary refusal)"; }
+echo "$out" | grep -q "THE ACTIVATION THIS HARNESS RECORDED FAILED" \
+    || { echo "$out" >&2; fail "phase 11b: the readable-control verdict changed (over-refusal: the guard must fire on the READ, not on the store shape)"; }
+assert_escape "phase 11b" "$out"
+# 11c — EACCES, the OTHER way in (fopen itself fails; the directory case gets
+# past fopen).  GATED ON A NON-ROOT uid: as root the mode bits are advisory
+# and the arm would pass against a reader that never looked at errno.
+if [ "$(id -u)" != 0 ]; then
+    chmod 000 "$STORE/.bootlog"
+    out=$(run "$BIN" --store "$STORE"); rc=$?
+    chmod 644 "$STORE/.bootlog"
+    [ "$rc" = 2 ] || fail "phase 11c: rc=$rc on an EACCES bootlog (want 2)"
+    grep -q "\.bootlog: cannot be opened: Permission denied" "$TMP/err" \
+        || { cat "$TMP/err" >&2; fail "phase 11c: the EACCES case does not carry the errno that explains it"; }
+else
+    note "phase 11c: EACCES arm SKIPPED (uid 0 — mode bits are advisory, the arm could not fail)"
+fi
+# 11d — ABSENT bootlog (ENOENT): SILENCE, not an error — the journal's
+# absent-is-a-state rule, and phase 5g's planted no-bootlog store already
+# gates the done-in-force cell (ALREADY_DONE).  A store that predates
+# .bootlog judges NOTHING, so its silence about any generation is true of the
+# store, and the ordinary re-run proceeds.  This arm pins that DECISION (and
+# its residual: a REMOVED bootlog also reads as silence — indistinguishable
+# from a pre-bootlog store from this seat, and reachable only by a host-side
+# actor; the model's write surface is closed to .bootlog).  FAILS if absence
+# becomes an error (the pre-bootlog store would be wedged forever with no
+# escape short of touching the file) or if it stops being silence.
+newdata
+plant_store 8
+rm -f "$STORE/.bootlog"
+record "1700000000 $TASK attempt - - 0 /fx/disk/agent-config.dhall"
+record "1700000000 $TASK result - - 8 /fx/disk/agent-config.dhall"
+out=$(run "$BIN" --store "$STORE"); rc=$?
+[ "$rc" = 0 ] || { cat "$TMP/err" >&2; fail "phase 11d: rc=$rc (want 0 — an absent bootlog is silence; a pre-bootlog store must keep its ordinary re-runs)"; }
+case "$out" in *"$MARKER"*) ;; *) echo "out=$out"; fail "phase 11d: the task did not run off an absent (silent) bootlog — absence is not a read error";; esac
+note "absent bootlog: SILENCE (the ordinary rows) — distinct from the directory/EACCES refusals above"
+# 11d-2 — THE EXEMPTION: done in force at C==A decides on the RECORD's own
+# positive evidence, so even a bootlog that exists but CANNOT BE READ must not
+# wedge a completed task (the damage rule's own "a done is not poisoned"
+# reasoning, extended to the store's file).  FAILS if the unreadable bootlog
+# errors here (over-refusal wedging a completed task) — and the readable
+# counterpart (absent/done) is phase 5g's done-first-result arm.
+newdata
+plant_store 8 "8 in-progress 1700000000"
+rm -f "$STORE/.bootlog"
+mkdir "$STORE/.bootlog" || fail "phase 11d-2: cannot plant the directory"
+record "1700000000 $TASK attempt - - 0 /fx/disk/agent-config.dhall"
+record "1700000000 $TASK result - - 8 /fx/disk/agent-config.dhall"
+record "1700000025 $TASK done - - 0 -"
+out=$(run "$BIN" --store "$STORE"); rc=$?
+[ "$rc" = 0 ] || { cat "$TMP/err" >&2; fail "phase 11d-2: rc=$rc (want 0 — a done in force is positive record evidence; an unreadable bootlog must not wedge a completed task)"; }
+echo "$out" | grep -q "TASK ALREADY COMPLETE" \
+    || { echo "$out" >&2; fail "phase 11d-2: the done-in-force verdict changed under an unreadable bootlog"; }
+assert_escape "phase 11d-2" "$out"
+# 11e — THE BOOTLOG'S OWN DAMAGE RULE: a TORN LAST LINE naming the activated
+# generation must not license the ordinary re-run (its silence about v8 is a
+# mid-write hole, not a judgement — the record's damage rule, applied to the
+# store's file).  FAILS if the task runs (the torn "8 fail" read as no-verdict
+# + C==A = RUN = the re-issuing direction), or if the stop is silent about
+# WHY (an operator must be able to tell a torn bootlog from a supersession).
+newdata
+plant_store 8 "8 in-progress 1700000000"
+printf '%s' "8 fail" >> "$STORE/.bootlog"     # torn: no newline
+record "1700000000 $TASK attempt - - 0 /fx/disk/agent-config.dhall"
+record "1700000000 $TASK result - - 8 /fx/disk/agent-config.dhall"
+out=$(run "$BIN" --store "$STORE"); rc=$?
+[ "$rc" = 0 ] || { cat "$TMP/err" >&2; fail "phase 11e: rc=$rc (want 0 — a torn bootlog is a STOP, not a service failure)"; }
+case "$out" in *"$MARKER"*) fail "phase 11e: the task RAN off a torn bootlog naming its generation";; esac
+echo "$out" | grep -q "THE STORE'S BOOTLOG IS DAMAGED" \
+    || { echo "$out" >&2; fail "phase 11e: a torn tail naming the activated generation is not its own loud state"; }
+echo "$out" | grep -q "UNTERMINATED" \
+    || { echo "$out" >&2; fail "phase 11e: the report does not say the line is torn"; }
+assert_escape "phase 11e" "$out"
+# 11f — the same torn tail with C != A: the UNRESOLVED report must not claim
+# "superseded before it ever booted" off a bootlog that was mid-write ABOUT
+# MY GENERATION.  FAILS if the old unqualified claim stands (a false claim in
+# a stop report is still false), or if the verdict changes.
+newdata
+plant_store 9 "8 in-progress 1700000000"
+printf '%s' "8 fail" >> "$STORE/.bootlog"
+record "1700000000 $TASK attempt - - 0 /fx/disk/agent-config.dhall"
+record "1700000000 $TASK result - - 8 /fx/disk/agent-config.dhall"
+out=$(run "$BIN" --store "$STORE"); rc=$?
+[ "$rc" = 0 ] || fail "phase 11f: rc=$rc"
+echo "$out" | grep -q "THE STORE CANNOT ACCOUNT FOR MY ACTIVATION" \
+    || { echo "$out" >&2; fail "phase 11f: the verdict changed on a torn tail (still UNRESOLVED — a stop)"; }
+echo "$out" | grep -q "is UNKNOWN" \
+    || { echo "$out" >&2; fail "phase 11f: whether my generation was judged is not said UNKNOWN off a torn tail naming it"; }
+echo "$out" | grep -q "superseded before it ever booted" \
+    && { echo "$out" >&2; fail "phase 11f: the unqualified supersession claim stands over a torn tail naming my generation"; }
+# 11g — THE SCOPE of the poison: a torn tail naming ANOTHER generation (5)
+# does not poison mine — cross-version poisoning would wedge unrelated
+# activations forever, the same bound the record's damage rule draws around
+# tasks.  FAILS if the plain (correct) supersession wording disappears.
+newdata
+plant_store 9 "8 in-progress 1700000000"
+printf '%s' "5 fai" >> "$STORE/.bootlog"
+record "1700000000 $TASK attempt - - 0 /fx/disk/agent-config.dhall"
+record "1700000000 $TASK result - - 8 /fx/disk/agent-config.dhall"
+out=$(run "$BIN" --store "$STORE"); rc=$?
+[ "$rc" = 0 ] || fail "phase 11g: rc=$rc"
+echo "$out" | grep -q "superseded before it ever booted" \
+    || { echo "$out" >&2; fail "phase 11g: a torn tail naming ANOTHER version poisoned mine — the damage rule is unscoped"; }
+note "bootlog damage rule: torn-names-mine refuses RUN and says UNKNOWN at C!=A; torn-names-other changes nothing"
+# 11h — THE RECORD'S OWN UNREADABLE STATE (the sweep found it in the same
+# class): a directory where attempts.jsonl belongs is not "no record on
+# file" — the no-record row is what RUN is issued on, and phase 0's ordinary
+# first boot (ABSENT record -> RUN) is its control and stays green.  FAILS if
+# the run proceeds off a record it never read (rc=0 = the blind re-apply), or
+# if the refusal does not name the record path.
+newdata
+plant_store 9 "8 in-progress 1700000000" "8 failed 1700000020"
+rm -f "$TMP/data/attempts.jsonl"
+mkdir "$TMP/data/attempts.jsonl" || fail "phase 11h: cannot plant a directory where the record belongs"
+out=$(run "$BIN" --store "$STORE"); rc=$?
+[ "$rc" = 2 ] || { echo "out=$out"; fail "phase 11h: rc=$rc (want 2 — a record that exists but cannot be read is not 'nothing on record')"; }
+grep -q "attempts.jsonl: cannot be read: Is a directory" "$TMP/err" \
+    || { cat "$TMP/err" >&2; fail "phase 11h: the refusal does not name the record path and the errno"; }
+if [ "$(id -u)" != 0 ]; then
+    newdata
+    plant_store 9 "8 in-progress 1700000000" "8 failed 1700000020"
+    record "1700000000 $TASK attempt - - 0 /fx/disk/agent-config.dhall"
+    record "1700000000 $TASK result - - 8 /fx/disk/agent-config.dhall"
+    chmod 000 "$TMP/data/attempts.jsonl"
+    out=$(run "$BIN" --store "$STORE"); rc=$?
+    chmod 644 "$TMP/data/attempts.jsonl"
+    [ "$rc" = 2 ] || fail "phase 11h: rc=$rc on an EACCES record (want 2)"
+    grep -q "attempts.jsonl: cannot be opened: Permission denied" "$TMP/err" \
+        || { cat "$TMP/err" >&2; fail "phase 11h: the EACCES record does not carry the errno"; }
+fi
+# 11i — the VERB surface: the bootlog's three read states are DISTINCT words
+# there too (the journal's discipline).  FAILS if an unreadable or absent
+# bootlog prints a COUNT ("boots 0" is a measurement never made), or if the
+# states collapse into each other.
+rm -rf "$VV/fx/disk/store/.bootlog"
+mkdir "$VV/fx/disk/store/.bootlog" || fail "phase 11i: cannot plant the verb-side directory"
+TXT=$(outverb "$VS" "$VV")
+printf '%s\n' "$TXT" | grep -q "^exit=0$" \
+    || { printf '%s\n' "$TXT" >&2; fail "phase 11i: an unreadable bootlog made the verb fail (CURRENT is readable; the bootlog is reported, not fatal)"; }
+printf '%s\n' "$TXT" | grep -q "^bootlog UNREADABLE: .*\.bootlog: cannot be read: Is a directory$" \
+    || { printf '%s\n' "$TXT" >&2; fail "phase 11i: the verb does not report the unreadable bootlog naming the path and errno"; }
+printf '%s\n' "$TXT" | grep -q "^last UNKNOWN (the bootlog is UNREADABLE)" \
+    || { printf '%s\n' "$TXT" >&2; fail "phase 11i: 'last' claims a verdict off a bootlog that could not be read"; }
+printf '%s\n' "$TXT" | grep -qE "^boots " \
+    && { printf '%s\n' "$TXT" >&2; fail "phase 11i: the verb printed a BOOTS COUNT for a bootlog it could not read"; }
+rm -rf "$VV/fx/disk/store/.bootlog"
+TXT=$(outverb "$VS" "$VV")
+printf '%s\n' "$TXT" | grep -q "^bootlog absent (no .bootlog on this store" \
+    || { printf '%s\n' "$TXT" >&2; fail "phase 11i: an absent bootlog is not its own state on the verb"; }
+printf '%s\n' "$TXT" | grep -q "UNKNOWN, not zero" \
+    || { printf '%s\n' "$TXT" >&2; fail "phase 11i: absence is not worded as unknown-vs-zero (the journal's own distinction)"; }
+printf '%s\n' "$TXT" | grep -qE "^boots " \
+    && { printf '%s\n' "$TXT" >&2; fail "phase 11i: an ABSENT bootlog printed a count"; }
+{ printf '8 in-progress 1700000000\n8 failed 1700000020\n'; printf '%s' "9 in-prog"; } > "$VV/fx/disk/store/.bootlog"
+TXT=$(outverb "$VS" "$VV")
+printf '%s\n' "$TXT" | grep -q "^boots 2$" \
+    || { printf '%s\n' "$TXT" >&2; fail "phase 11i: the torn line changed the count (want exactly the 2 complete lines)"; }
+printf '%s\n' "$TXT" | grep -q "^bootlog_torn 1 line(s) skipped .*boots is a FLOOR" \
+    || { printf '%s\n' "$TXT" >&2; fail "phase 11i: the torn tail is not reported as a floor"; }
+printf '%s\n' "$TXT" | grep -q "^last 8 failed$" \
+    || { printf '%s\n' "$TXT" >&2; fail "phase 11i: the last verdict was displaced by the torn tail"; }
+note "verb side: UNREADABLE names path+errno / absent is unknown-not-zero / torn is a floor — and no count without a read"
+# 11j — ASYMMETRY against the PINNED pre-fix tree (a FIXED revision, not a
+# moving ref): $PIN_UNREADABLE is the last commit before the fix; its
+# fx_outcome_verdict collapses the directory to RUN.  cmp proves the pin is
+# not the working tree (the arm compares two different codes, never itself).
+PIN_UNREADABLE="7afa0c2"
+UNREAD_PIN=""
+git -C "$ROOT" cat-file -e "$PIN_UNREADABLE^{commit}" 2>/dev/null \
+    || UNREAD_PIN="revision $PIN_UNREADABLE unavailable (shallow clone or rewritten history)"
+mkdir -p "$TMP/unreadpin/llm2" || fail "phase 11j: cannot create the pinned source dir"
+if [ -z "$UNREAD_PIN" ]; then
+    git -C "$ROOT" show "$PIN_UNREADABLE:src/llm2/outcome.c" > "$TMP/unreadpin/llm2/outcome.c" 2>/dev/null \
+        || UNREAD_PIN="cannot extract src/llm2/outcome.c at $PIN_UNREADABLE"
+    git -C "$ROOT" show "$PIN_UNREADABLE:src/llm2/outcome.h" > "$TMP/unreadpin/llm2/outcome.h" 2>/dev/null \
+        || UNREAD_PIN="cannot extract src/llm2/outcome.h at $PIN_UNREADABLE"
+    [ -z "$UNREAD_PIN" ] && cmp -s "$TMP/unreadpin/llm2/outcome.c" "$ROOT/src/llm2/outcome.c" \
+        && UNREAD_PIN="the pinned $PIN_UNREADABLE outcome.c is IDENTICAL to the working tree — the arm would compare the code to itself"
+fi
+if [ -n "$UNREAD_PIN" ]; then
+    echo "SKIP outcome: phase 11j (pre-fix asymmetry): $UNREAD_PIN"
+else
+    cat > "$TMP/unreadprobe.c" <<'CEOF'
+#define _POSIX_C_SOURCE 200809L
+#include <stdio.h>
+#include "llm2/outcome.h"
+int main(int argc, char **argv) {
+    if (argc < 4) return 2;
+    FxOutcome o;
+    char rep[FX_OUTCOME_MSG_CAP];
+    char err[512] = {0};
+    FxVerdict v = fx_outcome_verdict(argv[1], argv[2], argv[3], NULL,
+                                     &o, rep, sizeof rep, err, sizeof err);
+    printf("verdict=%d err=[%s]\n", (int)v, err);
+    return 0;
+}
+CEOF
+    cc -std=c11 -O2 -Wall -Wextra -I"$TMP/unreadpin" \
+       -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
+       -o "$TMP/unreadprobe-pin" "$TMP/unreadprobe.c" "$TMP/unreadpin/llm2/outcome.c" \
+       || fail "phase 11j: cannot build the probe against the pinned $PIN_UNREADABLE outcome.c"
+    cc -std=c11 -O2 -Wall -Wextra -I"$ROOT/src" -I"$ROOT/src/llm2" \
+       -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
+       -o "$TMP/unreadprobe-fix" "$TMP/unreadprobe.c" "$ROOT/src/llm2/outcome.c" \
+       || fail "phase 11j: cannot build the probe against this tree"
+    newdata
+    mkdir -p "$TMP/unreadstore/.db/snapshots"
+    printf '8\n' > "$TMP/unreadstore/.db/snapshots/CURRENT"
+    mkdir "$TMP/unreadstore/.bootlog" || fail "phase 11j: cannot plant the probe-side directory"
+    record "1700000000 $TASK attempt - - 0 /fx/disk/agent-config.dhall"
+    record "1700000000 $TASK result - - 8 /fx/disk/agent-config.dhall"
+    PINV=$("$TMP/unreadprobe-pin" "$TMP/data" "$TASK" "$TMP/unreadstore") \
+        || fail "phase 11j: the pinned probe failed"
+    case "$PINV" in verdict=0\ err=[]) ;;
+        *) fail "phase 11j: the pinned $PIN_UNREADABLE tree does not collapse the directory to a silent RUN ('$PINV') — the before-direction is not the measured defect";; esac
+    FIXV=$("$TMP/unreadprobe-fix" "$TMP/data" "$TASK" "$TMP/unreadstore") \
+        || fail "phase 11j: the fixed probe failed"
+    case "$FIXV" in verdict=5\ err=\[*bootlog*) ;;
+        *) fail "phase 11j: this tree does not refuse naming the bootlog ('$FIXV')";; esac
+    note "ASYMMETRY PROVEN: identical store with a DIRECTORY at .bootlog — the pinned $PIN_UNREADABLE tree returns RUN (silent); this tree returns FX_VERDICT_ERROR naming the path"
+fi
+
 echo "PASS outcome: nothing-on-record RUNS and records the attempt; a run the TURN LIMIT"
 echo "              stopped records NO done (and a run that FINISHED does); an activation that"
 echo "              TOOK is not re-run, and a completion the record does not hold is never"
@@ -1955,7 +2241,13 @@ echo "              read beside the bootlog: counted, absent-worded-as-unknown (
 echo "              floor on a torn tail, same-genhash recurrence bounded by the journal's"
 echo "              own honesty limit, on the report AND the verb, and the pinned pre-read"
 echo "              server prints none of it; an unreadable journal is its OWN state on both"
-echo "              surfaces — never absent, never zero; a truncated report SAYS SO, and the"
+echo "              surfaces — never absent, never zero; a bootlog that EXISTS but cannot"
+echo "              be read never collapses to \"no verdict line\" (FX_VERDICT_ERROR"
+echo "              naming the path at every silence-deciding row, the done-in-force cell"
+echo "              exempt), an absent one stays SILENCE, a torn tail NAMING mine refuses"
+echo "              the re-run, a directory at attempts.jsonl is never \"no record\", and"
+echo "              the pinned pre-fix tree still RUNs the very cell this tree refuses;"
+echo "              a truncated report SAYS SO, and the"
 echo "              cap it is derived against is measured at the field caps; a torn last line"
 echo "              cannot decide a"
 echo "              verdict; an unaccounted activation is settled by a completing run and is"

@@ -791,9 +791,14 @@ static int outcome_line_cb(void *u, unsigned long version, const char *status,
  * never-recovered are reported as the DISTINCT states they are, and a recurring
  * genhash is reported as the same fault RETURNING, never as a live oscillation —
  * the journal's own header limits it that far and this verb does not exceed it),
- * how many boots are recorded, and then every line.  Exit 1 only when CURRENT
- * could not be read: a missing bootlog or journal is reported in place
- * ("cannot be opened" / "recovery absent") but is not itself fatal. */
+ * how many boots are recorded, and then every line.  THE BOOTLOG'S OWN READ
+ * STATES are distinct here too, the same three the journal gets: ABSENT (no
+ * .bootlog — the store predates it; never worded as "boots 0"), UNREADABLE (a
+ * directory where the file belongs gets PAST fopen and fails the read — before
+ * the distinct state existed it printed "boots 0", a measurement never made),
+ * and a TORN tail (skipped lines said as a floor).  Exit 1 only when CURRENT
+ * could not be read: a missing or unreadable bootlog or journal is reported in
+ * place but is not itself fatal. */
 static int native_outcome(Capture *out, int *exitcode) {
     char *store = store_if_present();
     if (!store) { store_scope_refuse(out, "fx_outcome"); *exitcode = 1; return 0; }
@@ -802,6 +807,17 @@ static int native_outcome(Capture *out, int *exitcode) {
     int n = snprintf(line, sizeof line, "store %s\n", FX_STORE_PATH);
     if (n > 0) cap_append(out, line, (size_t)n);
 
+    /* the bootlog is read ONCE, up front, so the `last` line, the `boots`
+     * count and the history all describe the SAME read (a second read could
+     * see a concurrently appended line and contradict itself); the history
+     * lines are captured and spliced in at their usual place below. */
+    Capture hist;
+    int have_hist = cap_init(&hist); /* on OOM the state lines still print;
+                                      * only the per-boot history is lost */
+    FxBootlog bl;
+    fx_outcome_bootlog_read(store, have_hist ? outcome_line_cb : NULL,
+                            have_hist ? &hist : NULL, &bl);
+
     unsigned long cur = 0;
     char err[512] = {0};
     int have_cur = (fx_outcome_current(store, &cur, err, sizeof err) == 0);
@@ -809,10 +825,13 @@ static int native_outcome(Capture *out, int *exitcode) {
     else          snprintf(line, sizeof line, "current UNREADABLE: %s\n", err);
     cap_append_str(out, line);
 
-    unsigned long lv = 0;
-    char ls[FX_OUTCOME_STATUS_CAP] = {0};
-    if (fx_outcome_bootlog_last(store, &lv, ls, sizeof ls))
-        snprintf(line, sizeof line, "last %lu %s\n", lv, ls);
+    if (bl.unreadable)
+        snprintf(line, sizeof line, "last UNKNOWN (the bootlog is UNREADABLE)\n");
+    else if (bl.absent)
+        snprintf(line, sizeof line, "last UNKNOWN (no %s on this store)\n",
+                 FX_OUTCOME_BOOTLOG_FILE);
+    else if (bl.have_last)
+        snprintf(line, sizeof line, "last %lu %s\n", bl.last_version, bl.last_status);
     else
         snprintf(line, sizeof line, "last none\n");
     cap_append_str(out, line);
@@ -865,17 +884,31 @@ static int native_outcome(Capture *out, int *exitcode) {
         }
     }
 
-    int seen = fx_outcome_bootlog_each(store, outcome_line_cb, out);
-    if (seen < 0) {
-        n = snprintf(line, sizeof line, "bootlog %s: cannot be opened\n",
+    /* THE BOOTLOG'S OWN READ STATES, in the journal's discipline: a count is
+     * printed only for a bootlog that was actually READ — absent and
+     * unreadable are their own words, never "boots 0" (which would be a
+     * measurement never made). */
+    if (bl.unreadable) {
+        n = snprintf(line, sizeof line, "bootlog UNREADABLE: %s\n", bl.err);
+        if (n > 0) cap_append(out, line, (size_t)n);
+    } else if (bl.absent) {
+        n = snprintf(line, sizeof line,
+                     "bootlog absent (no %s on this store — the store predates it;\n"
+                     "             whether any boot was judged is UNKNOWN, not zero)\n",
                      FX_OUTCOME_BOOTLOG_FILE);
         if (n > 0) cap_append(out, line, (size_t)n);
-        *exitcode = have_cur ? 0 : 1;
-        free(store);
-        return 0;
+    } else {
+        n = snprintf(line, sizeof line, "boots %d\n", bl.lines);
+        if (n > 0) cap_append(out, line, (size_t)n);
+        if (bl.torn > 0) {
+            n = snprintf(line, sizeof line,
+                         "bootlog_torn %d line(s) skipped (torn/unparsable) — "
+                         "boots is a FLOOR\n", bl.torn);
+            if (n > 0) cap_append(out, line, (size_t)n);
+        }
+        if (have_hist) cap_append(out, hist.data, hist.len);
     }
-    n = snprintf(line, sizeof line, "boots %d\n", seen);
-    if (n > 0) cap_append(out, line, (size_t)n);
+    if (have_hist) cap_free(&hist);
     *exitcode = have_cur ? 0 : 1;
     free(store);
     return 0;

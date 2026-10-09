@@ -216,7 +216,8 @@ int fx_outcome_record(const char *data_dir, const char *task, const char *step,
     return rc;
 }
 
-int fx_outcome_record_load(const char *data_dir, const char *task, FxOutcome *out) {
+int fx_outcome_record_load(const char *data_dir, const char *task, FxOutcome *out,
+                           char *err, size_t errcap) {
     if (!out) return -1;
     memset(out, 0, sizeof *out);
     if (!data_dir || !*data_dir || !task) return 0;
@@ -225,7 +226,20 @@ int fx_outcome_record_load(const char *data_dir, const char *task, FxOutcome *ou
     char path[PATH_MAX];
     if (record_path(path, sizeof path, data_dir) < 0) return 0;
     FILE *f = fopen(path, "rb");
-    if (!f) return 0; /* no record yet: the ordinary first-boot case */
+    if (!f) {
+        /* ABSENT is the ordinary first boot (no record yet) and stays the
+         * ordinary RUN; EVERY OTHER open failure is a read error on a file
+         * the verdict needs — reporting it as "nothing on record" would be
+         * reporting a measurement that was never made, and the measurement
+         * it fakes (no attempt) is the one RUN is issued on. */
+        if (errno != ENOENT) {
+            if (err && errcap)
+                snprintf(err, errcap, "%s: cannot be opened: %s", path,
+                         strerror(errno));
+            return -1;
+        }
+        return 0;
+    }
 
     char line[FX_OUTCOME_LINE_CAP + 2];
     while (fgets(line, (int)sizeof line, f) != NULL) {
@@ -351,6 +365,21 @@ int fx_outcome_record_load(const char *data_dir, const char *task, FxOutcome *ou
         }
         /* any other step: ignored (a future record kind must not be misread) */
     }
+    /* A FILE THAT OPENED BUT COULD NOT BE READ IS ITS OWN FAILURE — the same
+     * state the journal's reader got: glibc fopen() SUCCEEDS on a directory
+     * and the first fgets fails EISDIR, so before this check a directory at
+     * attempts.jsonl read as an EMPTY record ("no attempt on record"), and
+     * the verdict was RUN off a record it never saw.  A read error also
+     * means anything parsed so far is PARTIAL; returning it as the record
+     * would be deciding off half the evidence, so the whole read is refused. */
+    int rerr = errno;
+    if (ferror(f)) {
+        if (err && errcap)
+            snprintf(err, errcap, "%s: cannot be read: %s", path,
+                     strerror(rerr ? rerr : EIO));
+        fclose(f);
+        return -1;
+    }
     fclose(f);
     return 0;
 }
@@ -424,26 +453,99 @@ int fx_outcome_current(const char *store, unsigned long *out, char *err, size_t 
     return 0;
 }
 
-int fx_outcome_bootlog_each(const char *store,
+int fx_outcome_bootlog_read(const char *store,
                             int (*cb)(void *u, unsigned long version,
                                       const char *status, unsigned long epoch),
-                            void *u) {
-    if (!store || !*store) return -1;
+                            void *u, FxBootlog *out) {
+    if (!out) return -1;
+    memset(out, 0, sizeof *out);
+    if (!store || !*store) {
+        snprintf(out->err, sizeof out->err,
+                 "no store path given (the store is never guessed)");
+        out->unreadable = 1;
+        return -1;
+    }
     char path[PATH_MAX];
-    if (path_join(path, sizeof path, store, FX_OUTCOME_BOOTLOG_FILE) < 0) return -1;
+    if (path_join(path, sizeof path, store, FX_OUTCOME_BOOTLOG_FILE) < 0) {
+        snprintf(out->err, sizeof out->err, "store path too long");
+        out->unreadable = 1;
+        return -1;
+    }
     FILE *f = fopen(path, "r");
-    if (!f) return -1;
+    if (!f) {
+        /* ABSENT is filled in as its own state (the informational callers
+         * report it as absent, never as zero boots) but the err message is
+         * the same shape as every other open failure: the VERDICT treats
+         * absent and unreadable alike — it needs the file — and its refusal
+         * names why, and why for ENOENT is "No such file or directory". */
+        snprintf(out->err, sizeof out->err, "%s: cannot be opened: %s", path,
+                 strerror(errno));
+        if (errno == ENOENT) {
+            out->absent = 1;
+            return 0;
+        }
+        out->unreadable = 1;
+        return -1;
+    }
     char line[512];
-    int seen = 0;
     while (fgets(line, (int)sizeof line, f) != NULL) {
+        if (!strchr(line, '\n')) {
+            int ch;
+            while ((ch = fgetc(f)) != EOF && ch != '\n') {} /* drain */
+            /* A line is only real if it is TERMINATED — the record's own
+             * rule, for the same reason: fx-init's bootlog_append writes one
+             * fprintf per line and fsyncs, so an unterminated tail is a crash
+             * mid-write, and a prefix that cuts inside a field can still
+             * PARSE ("8 failed 17000000" torn from a longer epoch adopts a
+             * verdict off a truncated line).  Skipped, but not blindly: the
+             * torn tail's VERSION token, when that much survived, is kept —
+             * a torn line naming the activated generation means the bootlog
+             * was mid-write about THAT generation, which is exactly the
+             * claim "no verdict line for it" can no longer be trusted to
+             * make.  (A torn "8" may be a torn "85"; the misattribution is
+             * conservative — it can only refuse RUN, never grant it.) */
+            out->torn++;
+            unsigned long tv = 0;
+            if (!out->torn_names_ok && sscanf(line, "%lu", &tv) == 1) {
+                out->torn_names = tv;
+                out->torn_names_ok = 1;
+            }
+            continue;
+        }
         unsigned long v = 0, epoch = 0;
         char status[FX_OUTCOME_STATUS_CAP] = {0};
-        if (sscanf(line, "%lu %31s %lu", &v, status, &epoch) != 3) continue;
-        seen++;
+        if (sscanf(line, "%lu %31s %lu", &v, status, &epoch) != 3) {
+            /* terminated but not the writer's shape (forged, or a foreign
+             * format): skipped as damaged, same accounting as the journal's
+             * torn lines — lines stays a FLOOR while torn > 0 */
+            out->torn++;
+            continue;
+        }
+        out->lines++;
+        if (strcmp(status, "ok") == 0 || strcmp(status, "failed") == 0) {
+            out->have_last = 1;
+            out->last_version = v;
+            copy_str(out->last_status, sizeof out->last_status, status);
+        }
         if (cb && cb(u, v, status, epoch) != 0) break;
     }
+    int rerr = errno;
+    /* THE UNREADABLE STATE, and the defect this guard closes: glibc's fopen()
+     * SUCCEEDS on a directory, the first fgets then fails EISDIR, and before
+     * this check the reader returned "0 lines" — which the verdict read as
+     * "no verdict line for my generation", and with CURRENT == that
+     * generation the verdict was RUN, where a readable bootlog carrying the
+     * failure line says ACTIVATION_FAILED.  The read error is the ABSENCE OF
+     * EVIDENCE, not evidence of nothing. */
+    if (ferror(f)) {
+        snprintf(out->err, sizeof out->err, "%s: cannot be read: %s", path,
+                 strerror(rerr ? rerr : EIO));
+        out->unreadable = 1;
+        fclose(f);
+        return -1;
+    }
     fclose(f);
-    return seen;
+    return 0;
 }
 
 typedef struct {
@@ -466,48 +568,12 @@ static int verdict_cb(void *u, unsigned long version, const char *status,
     return 1; /* stop */
 }
 
-int fx_outcome_bootlog_verdict(const char *store, unsigned long version,
-                               char *status_out, size_t scap) {
-    VerdictScan s;
-    memset(&s, 0, sizeof s);
-    s.version = version;
-    s.status = status_out;
-    s.scap = scap;
-    if (status_out && scap) status_out[0] = '\0';
-    if (fx_outcome_bootlog_each(store, verdict_cb, &s) < 0) return 0;
-    return s.found;
-}
-
-typedef struct {
-    unsigned long version;
-    char         *status;
-    size_t        scap;
-    int           found;
-} LastScan;
-
-static int last_cb(void *u, unsigned long version, const char *status,
-                   unsigned long epoch) {
-    (void)epoch;
-    LastScan *s = (LastScan *)u;
-    if (strcmp(status, "ok") != 0 && strcmp(status, "failed") != 0) return 0;
-    s->version = version;
-    copy_str(s->status, s->scap, status);
-    s->found = 1;
-    return 0; /* keep walking: the LAST one wins */
-}
-
-int fx_outcome_bootlog_last(const char *store, unsigned long *version_out,
-                            char *status_out, size_t scap) {
-    LastScan s;
-    memset(&s, 0, sizeof s);
-    s.status = status_out;
-    s.scap = scap;
-    if (status_out && scap) status_out[0] = '\0';
-    if (fx_outcome_bootlog_each(store, last_cb, &s) < 0) return 0;
-    if (!s.found) return 0;
-    if (version_out) *version_out = s.version;
-    return 1;
-}
+/* (No fx_outcome_bootlog_verdict / _last wrappers any more: the bootlog has
+ * ONE reader, fx_outcome_bootlog_read, and the verdict calls it directly so
+ * the read's own state — absent, unreadable, torn tail — reaches the rule
+ * instead of being flattened to "no verdict line" by a wrapper that had no
+ * channel for it.  That flattening was the defect: a directory at .bootlog
+ * became "no verdict line", and "no verdict line" + C == A is RUN.) */
 
 /* ── the recovery journal ───────────────────────────────────────────────── */
 
@@ -657,11 +723,12 @@ int fx_outcome_recovery(const char *store, FxRecovery *out, char *err,
  * fit, and the marker is the thing a reader cannot miss.
  *
  * WHERE THIS CAN HAPPEN — every call site that builds a report string.  All of
- * them go through report(): the eight verdict reports in fx_outcome_verdict
- * (ALREADY_DONE x4, UNRESOLVED x2, ACTIVATION_FAILED, SUPERSEDED) plus the
+ * them go through report(): the nine verdict reports in fx_outcome_verdict
+ * (ALREADY_DONE x4, UNRESOLVED x3, ACTIVATION_FAILED, SUPERSEDED) plus the
  * damaged-record report, which lives in report_damaged() with three wordings
- * and is reached from two places in fx_outcome_verdict — nine report() call
- * sites in this file, and no report is built anywhere else.  The buffer belongs
+ * and is reached from two places in fx_outcome_verdict — ten report() call
+ * sites in this file (the tenth is the bootlog-torn refusal in the C==A row),
+ * and no report is built anywhere else.  The buffer belongs
  * to the CALLER, and the only production caller whose buffer can truncate is
  * src/llm2/agent_main.c:642 — `char rep[FX_OUTCOME_MSG_CAP]`, printed with
  * fputs to the refusing run's stdout and to the console.  The oracle
@@ -776,6 +843,19 @@ static FxVerdict report_damaged(FxOutcome *o, const char *data_dir,
         data_dir ? data_dir : "(unset)", escape);
 }
 
+/* The refusal an UNREADABLE bootlog earns at any row that would otherwise
+ * decide on its silence — the same words an unreadable CURRENT earns, so a
+ * reader sees one rule for both files the verdict needs. */
+static FxVerdict bootlog_refuse(const char *store, const FxBootlog *bl,
+                                char *err, size_t errcap) {
+    if (err && errcap)
+        snprintf(err, errcap,
+                 "cannot read the store's outcome files: %s "
+                 "(store '%s'; the store is never guessed)",
+                 bl->err, store && *store ? store : "(none)");
+    return FX_VERDICT_ERROR;
+}
+
 FxVerdict fx_outcome_verdict(const char *data_dir, const char *task,
                              const char *store, const char *agent,
                              FxOutcome *out, char *text, size_t textcap,
@@ -785,7 +865,23 @@ FxVerdict fx_outcome_verdict(const char *data_dir, const char *task,
     if (text && textcap) text[0] = '\0';
     if (err && errcap) err[0] = '\0';
     if (!task || !*task) return FX_VERDICT_RUN;
-    if (fx_outcome_record_load(data_dir, task, out) != 0) return FX_VERDICT_RUN;
+    {
+        char lerr[512] = {0};
+        if (fx_outcome_record_load(data_dir, task, out, lerr, sizeof lerr) != 0) {
+            /* The record decides EVERY row of the rule, so a record that
+             * EXISTS but cannot be read is not "nothing on record" — that
+             * would be a measurement never made, and the one it fakes ("no
+             * attempt") is exactly the measurement RUN is issued on.  The
+             * refusal is the store rule's, applied to the harness's own
+             * file: name the path, fail loudly, decide nothing. */
+            if (err && errcap)
+                snprintf(err, errcap,
+                         "cannot read the attempt record: %s "
+                         "(data dir '%s'; the record is never guessed either)",
+                         lerr, data_dir && *data_dir ? data_dir : "(none)");
+            return FX_VERDICT_ERROR;
+        }
+    }
 
     /* The ONE legitimate way out of a refusal, NAMED IN EVERY STOP REPORT.  The
      * record is unwedged only by a LATER COMPLETED run of the same task (which
@@ -894,10 +990,49 @@ FxVerdict fx_outcome_verdict(const char *data_dir, const char *task,
     /* ── the store decides.  Read the BOOTLOG verdict for the generation I
      *    activated FIRST: it distinguishes "my boot failed and the store rolled
      *    forward" (the oscillator) from "it booted ok and a later activation
-     *    superseded it" — which "current != mine" alone cannot tell apart. ── */
+     *    superseded it" — which "current != mine" alone cannot tell apart.
+     *    An UNREADABLE bootlog is NOT "no verdict line": the bootlog is how
+     *    this loop learns its activation failed, and a read error (a
+     *    directory at .bootlog — glibc fopen accepts it, the first read
+     *    fails EISDIR; or a mode-000 file; or the file gone entirely) is the
+     *    ABSENCE OF EVIDENCE, never evidence of nothing.  Before this guard
+     *    the error fell through to "no verdict" + the C==A row: RUN, the
+     *    re-issuing direction, MEASURED.  Same refusal as an unreadable
+     *    CURRENT: name the path, fail loudly. */
     char status[FX_OUTCOME_STATUS_CAP] = {0};
-    int have_verdict = fx_outcome_bootlog_verdict(store, out->version, status,
-                                                  sizeof status);
+    FxBootlog bl;
+    VerdictScan vs;
+    memset(&vs, 0, sizeof vs);
+    vs.version = out->version;
+    vs.status = status;
+    vs.scap = sizeof status;
+    /* bl_bad is EXISTS-BUT-UNREADABLE only: an ABSENT bootlog (bl.absent,
+     * ENOENT) is a state of the store, not a failure of the reader — the
+     * journal's own absent-is-a-state rule — so it falls through to the
+     * silence rows exactly as before (a store that predates .bootlog keeps
+     * its ordinary re-runs; tests/test_outcome.sh phase 5g plants one and
+     * gates it).  What an unreadable bootlog may NOT do is fall through: the
+     * rows below the failed/ok branches decide on its SILENCE, and silence
+     * off a file that exists but cannot be read is a measurement never made.
+     * The refusal is placed at each silence-deciding row, so the one row
+     * that decides on the RECORD's own positive evidence (done in force at
+     * C == A -> ALREADY_DONE) still decides: a done is not an inference from
+     * the bootlog, and wedging a completed task behind a broken store read
+     * buys no safety — the damage rule's own exception, extended by its own
+     * reasoning (a done loses to a READABLE "failed" verdict by row order,
+     * and loses to nothing it cannot read). */
+    int bl_bad = (fx_outcome_bootlog_read(store, verdict_cb, &vs, &bl) != 0);
+    int have_verdict = vs.found;
+    /* THE BOOTLOG'S DAMAGE RULE: a torn LAST line naming my generation means
+     * the file was mid-write ABOUT MY GENERATION — its silence is then a
+     * hole, not a judgement, and the rows below that would decide on that
+     * silence (the C==A RUN row, and the "superseded before it ever booted"
+     * UNRESOLVED) must not.  Only a SILENT bootlog is poisoned: a complete
+     * verdict for my generation above the torn tail governs (found==1) and
+     * the tail is a later boot's line. */
+    out->bootlog_torn =
+        (!have_verdict && !bl_bad && bl.torn_names_ok &&
+         bl.torn_names == out->version);
     unsigned long current = 0;
     int have_current = 0;
     char cerr[512] = {0};
@@ -1088,6 +1223,44 @@ FxVerdict fx_outcome_verdict(const char *data_dir, const char *task,
                     "the activation on record is the CURRENT generation and would be\n"
                     "             re-run as \"the ordinary re-run\"",
                     text, textcap, escape);
+            /* THIS row is the defect's own cell: it decides on the bootlog's
+             * SILENCE ("no verdict line for my generation"), and a bootlog
+             * that exists but cannot be read makes that silence a
+             * measurement never made — a readable one carrying "failed"
+             * would have said ACTIVATION_FAILED a whole branch ago. */
+            if (bl_bad)
+                return bootlog_refuse(store, &bl, err, errcap);
+            /* THE BOOTLOG'S DAMAGE RULE, same cell: this row decides on the
+             * bootlog's SILENCE ("no verdict line for my generation"), and a
+             * torn tail that names my generation makes that silence a
+             * mid-write hole instead of a judgement — the re-run is refused
+             * for the same reason the record's torn line refuses it.  A
+             * readable silence (no line, file whole) still runs: that is the
+             * store's own measurement that this generation was never judged. */
+            if (out->bootlog_torn)
+                return report(FX_VERDICT_UNRESOLVED, text, textcap,
+                    "fx-harness: THE STORE'S BOOTLOG IS DAMAGED. NOT RE-RUNNING OFF IT.\n"
+                    "  task     : %s (agent %s)\n"
+                    "  activated: %s -> generation v%lu\n"
+                    "  bootlog  : %s/%s — its LAST line is UNTERMINATED (torn mid-write)\n"
+                    "             and names v%lu: the file was mid-write about the very\n"
+                    "             generation this row would re-run\n"
+                    "  rule     : the bootlog is how this loop learns its activation FAILED;\n"
+                    "             a torn tail naming my generation means \"no verdict line\n"
+                    "             for it\" is a hole, not a judgement — RUN is refused off a\n"
+                    "             bootlog that was mid-write (the same poisoning a torn\n"
+                    "             record line gets)\n"
+                    "  record   : %s/attempts.jsonl (session %s, epoch %lu)\n"
+                    "  action   : this run stops here (exit 0); no activation is issued.\n"
+                    "             Inspect the store's %s and the boot it was mid-writing\n"
+                    "             before re-running\n"
+                    "%s",
+                    out->task, agent ? agent : "",
+                    out->config[0] ? out->config : "-", out->version,
+                    store, FX_OUTCOME_BOOTLOG_FILE, out->version,
+                    data_dir ? data_dir : "(unset)",
+                    out->session[0] ? out->session : "-", out->epoch,
+                    FX_OUTCOME_BOOTLOG_FILE, escape);
             return FX_VERDICT_RUN;
         }
         return report(FX_VERDICT_ALREADY_DONE, text, textcap,
@@ -1106,15 +1279,35 @@ FxVerdict fx_outcome_verdict(const char *data_dir, const char *task,
     }
 
     /* The generation I activated is neither the one this boot runs nor judged by
-     * the bootlog: something moved the store without a verdict for my version. */
+     * the bootlog: something moved the store without a verdict for my version.
+     * A bootlog that exists but CANNOT BE READ refuses here too — the row's
+     * claim ("never judged") would be read off a file the reader never saw,
+     * and the "failed" line that should have decided a branch ago is exactly
+     * what an unreadable bootlog can hide.  A TORN tail naming my version
+     * weakens even the readable wording — "was never judged" is then unknown,
+     * not measured — so the bootlog line says so instead of asserting the
+     * supersession. */
+    if (bl_bad)
+        return bootlog_refuse(store, &bl, err, errcap);
+    char blline[320];
+    if (out->bootlog_torn)
+        snprintf(blline, sizeof blline,
+                 "no \"v%lu ok\" and no \"v%lu failed\" line, and the LAST line is\n"
+                 "             TORN and names v%lu — whether my generation was ever judged\n"
+                 "             is UNKNOWN (the file was mid-write about it), not measured",
+                 out->version, out->version, out->version);
+    else
+        snprintf(blline, sizeof blline,
+                 "no \"v%lu ok\" and no \"v%lu failed\" line — my activation was\n"
+                 "             superseded before it ever booted",
+                 out->version, out->version);
     return report(FX_VERDICT_UNRESOLVED, text, textcap,
         "fx-harness: OBSERVED OUTCOME — THE STORE CANNOT ACCOUNT FOR MY ACTIVATION.\n"
         "            NOT REPEATING IT.\n"
         "  task     : %s (agent %s)\n"
         "  activated: %s -> generation v%lu\n"
         "  running  : generation v%lu (%s/%s)\n"
-        "  bootlog  : no \"v%lu ok\" and no \"v%lu failed\" line — my activation was\n"
-        "             superseded before it ever booted\n"
+        "  bootlog  : %s\n"
         "  rule     : \"if the generation I am running in is not the one I activated,\n"
         "              my activation failed — do not repeat it\"\n"
         "  record   : %s/attempts.jsonl (session %s, epoch %lu)\n"
@@ -1123,7 +1316,7 @@ FxVerdict fx_outcome_verdict(const char *data_dir, const char *task,
         out->task, agent ? agent : "",
         out->config[0] ? out->config : "-", out->version,
         current, store, FX_OUTCOME_CURRENT_FILE,
-        out->version, out->version,
+        blline,
         data_dir ? data_dir : "(unset)",
         out->session[0] ? out->session : "-", out->epoch, escape);
 }

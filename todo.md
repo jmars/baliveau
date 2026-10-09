@@ -164,7 +164,7 @@ certifies coherence; neither says "improved".
       the Zig port only, and a deployment missing it fails LOUDLY at the oracle's capability probe
       (measured — the probe was added precisely because a stale neighbouring binary was found).
 
-- [ ] **An unreadable `.bootlog` collapses to RUN — the re-issuing direction.** MEASURED by
+- [x] **An unreadable `.bootlog` collapses to RUN — the re-issuing direction.** MEASURED by
       `handoff-loud-truncation` and NOT fixed there (out of its write scope): with a DIRECTORY at
       `<store>/.bootlog` and `CURRENT == version`, the verdict is `FX_VERDICT_RUN` where a readable
       bootlog gives `ACTIVATION_FAILED`. The bootlog is how the loop learns its activation FAILED, so
@@ -173,6 +173,33 @@ certifies coherence; neither says "improved".
       is exactly the rule this path breaks. RUN re-issues an activation; a false stop is the safer
       error. The journal's reader got its `UNREADABLE` state in that same round; the bootlog's still
       collapses.
+      **CLOSED (bootlog-unreadable round, re-measured then fixed):** the collapse reproduced exactly
+      as stated (isolated probe: directory AND chmod-000 at `.bootlog` with `CURRENT==A` → RUN), and
+      the sweep found the SAME collapse in two more readers. Fixed, all in `fx_outcome_bootlog_read`
+      (the ONE reader now — `_each`/`_verdict`/`_last` wrappers removed, they were the flattening):
+      (1) a bootlog that EXISTS but cannot be read (EISDIR past fopen, EACCES at fopen, mid-read
+      error) is `FX_VERDICT_ERROR` naming path+errno at every row that would decide on its silence
+      (the C==A RUN row — the measured cell — and the C!=A "never judged" UNRESOLVED); (2) a TORN
+      last line whose version token names the activated generation poisons the RUN row
+      (UNRESOLVED with its own report) and re-words the C!=A cell's "superseded before it ever
+      booted" claim to UNKNOWN — scoped to the NAMED generation, like the record's rule; (3) the
+      RECORD's own file-level read errors (directory/EACCES at attempts.jsonl) are `FX_VERDICT_ERROR`
+      naming the path (ENOENT stays the ordinary first boot → RUN), and the verb (`fx_outcome`)
+      reports the bootlog's three states as distinct words (UNREADABLE / absent-unknown-not-zero /
+      torn-floor) instead of "boots 0". DECIDED, not inherited: an ABSENT bootlog (ENOENT) stays
+      SILENCE — the journal's absent-is-a-state rule; phase 5g's planted no-bootlog store already
+      gated done-in-force there, and a store that predates `.bootlog` would otherwise be wedged
+      forever; a done in force at C==A stays ALREADY_DONE even under an unreadable bootlog (the
+      damage rule's "a done is positive evidence, never wedged" exception, re-derived for the
+      store's file). Residual, accepted and stated: a REMOVED bootlog reads as silence
+      (indistinguishable from a pre-bootlog store from this seat; host-side actor required — the
+      model's write surface is closed to `.bootlog`); and `fx_outcome_bindings` (the drift sensor,
+      informational) still reads a broken record as "nothing bound" on the `--reconsider`/`--resume`
+      paths, where the verdict's new record refusal never runs — self-announcing only via the
+      binding WRITE's own loud failure on the same broken file. Gated: tests/test_outcome.sh phase 11
+      (a–j: the measured cell, the readable control, EACCES, absent-is-silence, the done exemption,
+      torn poison + scope, the record directory/EACCES, the verb's three states, and the pinned
+      7afa0c2 pre-fix asymmetry — RUN vs ERROR on the identical fixture).
 - [ ] **Two ungated oracle paths**: the two-origins-one-install-target refusal and the
       `<store>/<hash>-<pkg>/` argv spelling are implemented but have no fixture. Also ungated: the
       64-candidate cap, the shallow-clone SKIP paths, and the in-guest `done→attempt→result` order
@@ -219,6 +246,61 @@ certifies coherence; neither says "improved".
 
 ## 5. The Osier lane (BLOCKED — the Lua backend is not ready)
 
+- [x] **THE GROUND FOR THE FIRST TASK IS BUILT AND PROVEN (with the compiler
+      still absent)** — the slot decision below was implemented, not just
+      recommended.  **The slot:** `fx-init/m3/package-set-slot.dhall` (a
+      SIBLING of the self-hosting set, never mixed with it) declares the
+      package `oslot`, whose `src.path` is the in-guest directory
+      `/fx/disk/agent-src/oslot`.  The agent writes EXACTLY ONE FILE there —
+      MEASURED refinement of this item's own wording: `FX_AGENT_WRITABLE` is
+      colon-separated EXACT paths (never prefixes), so the task's set names
+      the FILE `/fx/disk/agent-src/oslot/Mcp.elm` plus the task config, and
+      `fx_write` cannot mkdir parents, so the DEPLOYMENT pre-creates the
+      directory on the disk (the seat), the agent fills the file.
+      **The recipe is host-frozen and is a STUB, labelled at the artifact:**
+      one Shell action that installs the agent's `Mcp.elm` beside a
+      host-written `#!/bin/sh` stand-in runner and a `STUB-NOTE` saying what
+      it is NOT; executed by the REAL `fxstore build` (bwrap hidden from its
+      probe on this merged-usr host = fxstore's own sanctioned LOUD
+      non-hermetic fallback, prov_e2e.sh's pattern).  **The build step is
+      HOST-SIDE (the open decision above, now decided for this ground):**
+      nothing in the guest can build, so the host reads the agent's source
+      back off the disk, builds into a read-back copy of the GUEST'S OWN
+      store, and injects the two content-addressed dirs (`<hash>-oslot`,
+      `<src_hash>-oslot-src`) into the disk image (e2fsck -fy + debugfs -w;
+      `rdump` cannot run unprivileged — per-file walks both ways).  The
+      slot package carries NO DEPS, and that is load-bearing: the derivation
+      hash serialises dep store PATHS, so a dep would make the host-built
+      hash and the in-guest hash disagree; dep-free they agree by
+      construction.  **The runner is a plain `#!/bin/sh` script, NOT
+      LuaJIT:** MEASURED, the qemu lane's pinned kernel has
+      `CONFIG_IA32_EMULATION` unset and the only LuaJIT artifact is i386 —
+      it cannot exec there at all; `CONFIG_BINFMT_SCRIPT=y` is asserted by
+      the gate.  The LuaJIT shape belongs to a kernel that can exec it.
+      **The service is NON-console** (`oslot-mcp`, svc_bin resolves to
+      `<hash>-oslot/mcp-stub-runner` via the pkg'd-row rule), stays alive
+      through the grace window (fx-init pins `failed` for ANY non-console
+      exit during grace, whatever the status) and proves it EXECUTED by a
+      marker file on the disk — its stdout goes to the log DB, not the
+      console.  **The proof** (`tests/qemu-agent-slot.sh`, `make
+      test-agent-slot`, a NEW gate — the observe gate is untouched): boot 1
+      the agent writes source+config in-guest and its record/store tamper
+      probes are REFUSED naming `FX_AGENT_WRITABLE`; host build; boot 2 the
+      agent's own `fx_activate` publishes v_slot on the DISK store; boot 3
+      v_slot boots and the service runs; `fx-osier-share` over the disk
+      store read back per-file reads **0.000000** before (slot not in the
+      closure; the agent row NONSTORE-UNATTRIBUTED) and **non-zero** after,
+      with `component oslot <src_hash> store <bytes> ... run src_of` —
+      attributed BY THE STORE, origin `store`, and the numerator exactly the
+      agent's .elm bytes.  Two fixture images are used because the stream
+      replays identically every boot: image A carries no `fx_activate` call
+      (no attempt line ⇒ boot 2's verdict is RUN — the rule that lets the
+      same task activate after the host step), image B adds the activation.
+      RESIDUAL, stated: the agent's source reaches the store only THROUGH
+      the host step (an in-guest builder would keep the bytes inside the
+      machine — nothing ships one yet); the boot-2/3 flow depends on the
+      image swap being a HOST decision at the build boundary, which is
+      exactly what the first task's deployment must schedule.
 - [ ] **The Osier→Lua backend** (§5a). Not ready. When it lands: the compiler (written in Osier,
       self-hosting) compiles to Lua ⇒ the compiler is **a Lua file** ⇒ LuaJIT runs it in-guest, and
       the guest holds the whole toolchain **as text** — no ELF, no zig, no AOT.
