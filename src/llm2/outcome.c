@@ -618,12 +618,77 @@ int fx_outcome_recovery(const char *store, FxRecovery *out, char *err,
             nseen++;
         }
     }
+    int rerr = errno; /* captured at the loop's exit, before free() can move it */
     free(seen);
+    /* A FILE THAT OPENED BUT COULD NOT BE READ IS ITS OWN STATE, and MEASURED
+     * it is reachable: glibc's fopen(<store>/.recovery, "rb") SUCCEEDS on a
+     * DIRECTORY, the first fgets then fails with EISDIR, and before this check
+     * the reader returned count=0 — which the callers report as "0 automatic
+     * roll-forwards on record ... this is the FIRST time this machine has had
+     * to recover".  That is a MEASUREMENT THAT WAS NEVER MADE, and it collapsed
+     * the unreadable state into the zero state (a chmod-000 journal, where
+     * fopen itself fails, was already loud; the directory case was not).  A
+     * read error also means any count read so far is PARTIAL — reported as a
+     * total it would be wrong, so the whole read is refused. */
+    if (ferror(f)) {
+        if (err && errcap)
+            snprintf(err, errcap, "%s: cannot be read: %s", path,
+                     strerror(rerr ? rerr : EIO));
+        fclose(f);
+        return -1;
+    }
     fclose(f);
     return 0;
 }
 
 /* ── the rule ───────────────────────────────────────────────────────────── */
+
+/* ── THE TRUNCATION MARKER ────────────────────────────────────────────────
+ * A report that does not fit its buffer is CUT, and a cut is silent unless it
+ * says so.  That silence has already cost something real: at the former
+ * 2048-byte cap the ACTIVATION_FAILED report was over budget in the corner
+ * case (a 511-char config + a 255-char session + the recovery-journal line),
+ * and what the cut removed was the ESCAPE CLAUSE — the tail naming the task's
+ * ONLY way out (--reconsider, or removing this task's lines).  A refusal whose
+ * escape is silently missing is a permanent wedge, and nothing in the tree
+ * noticed.  The cap was then raised to FX_OUTCOME_MSG_CAP — but A RAISED CAP
+ * IS NOT A GUARD: the next input that grows past it is cut just as silently.
+ * So every report built by report() now ENDS IN THIS MARKER when it did not
+ * fit, and the marker is the thing a reader cannot miss.
+ *
+ * WHERE THIS CAN HAPPEN — every call site that builds a report string.  All of
+ * them go through report(): the eight verdict reports in fx_outcome_verdict
+ * (ALREADY_DONE x4, UNRESOLVED x2, ACTIVATION_FAILED, SUPERSEDED) plus the
+ * damaged-record report, which lives in report_damaged() with three wordings
+ * and is reached from two places in fx_outcome_verdict — nine report() call
+ * sites in this file, and no report is built anywhere else.  The buffer belongs
+ * to the CALLER, and the only production caller whose buffer can truncate is
+ * src/llm2/agent_main.c:642 — `char rep[FX_OUTCOME_MSG_CAP]`, printed with
+ * fputs to the refusing run's stdout and to the console.  The oracle
+ * (tests/test_outcome.sh) passes 2x the cap so its greps see the whole text,
+ * and phase 10 drives a DELIBERATELY small cap to prove the marker is reached.
+ *
+ * HOW THE MARKER IS REACHED, and why it cannot itself be cut: it is written
+ * into the TAIL of the buffer only AFTER vsnprintf reported a shortfall, so it
+ * OVERWRITES the prose the cut landed in instead of competing with the body
+ * for room — a body that used all the space cannot drop it.  Its length is
+ * bounded by FX_OUTCOME_TRUNC_MARK_CAP and re-checked at RUN time (the
+ * snprintf return): if the format ever grew past the buffer, the SHORT marker
+ * is emitted instead, so the marker only ever gets SHORTER, never absent.  The
+ * one case no marker can cover — a caller buffer too small for even the short
+ * marker — is asserted below to be unreachable from FX_OUTCOME_MSG_CAP and is
+ * documented at the fallback rather than left as a hole. */
+#define FX_OUTCOME_TRUNC_MARK_CAP 128
+/* MEASURED: the marker's longest form — "\n... TRUNCATED at <20-digit count>
+ * bytes — the escape clause may be missing; raise FX_OUTCOME_MSG_CAP\n" — is
+ * 110 bytes, so 128 holds it with room and the runtime check is a guard, not
+ * the sizing. */
+static const char FX_OUTCOME_TRUNC_SHORT[] = "\n... TRUNCATED\n";
+
+_Static_assert(sizeof FX_OUTCOME_TRUNC_SHORT < FX_OUTCOME_MSG_CAP,
+               "FX_OUTCOME_MSG_CAP must hold the short truncation marker");
+_Static_assert(FX_OUTCOME_TRUNC_MARK_CAP < FX_OUTCOME_MSG_CAP,
+               "FX_OUTCOME_MSG_CAP must hold the full truncation marker");
 
 /* fmt a report and return the verdict — one exit path for each verdict, so the
  * text a reader greps is built in exactly one place.  The printf ATTRIBUTE is
@@ -636,11 +701,39 @@ static FxVerdict report(FxVerdict v, char *text, size_t textcap, const char *fmt
     __attribute__((format(printf, 4, 5)));
 
 static FxVerdict report(FxVerdict v, char *text, size_t textcap, const char *fmt, ...) {
-    if (text && textcap) {
-        va_list ap;
-        va_start(ap, fmt);
-        vsnprintf(text, textcap, fmt, ap);
-        va_end(ap);
+    if (!text || !textcap) return v;
+    va_list ap;
+    va_start(ap, fmt);
+    /* vsnprintf returns the length it WOULD have written: `n >= textcap` is the
+     * truncation, and before this marker existed that was the whole story. */
+    int n = vsnprintf(text, textcap, fmt, ap);
+    va_end(ap);
+    if (n < 0 || (size_t)n < textcap) return v;
+
+    char mark[FX_OUTCOME_TRUNC_MARK_CAP];
+    int m = snprintf(mark, sizeof mark,
+                     "\n... TRUNCATED at %zu bytes — the escape clause may be "
+                     "missing; raise FX_OUTCOME_MSG_CAP\n", (size_t)n);
+    size_t ml;
+    if (m > 0 && (size_t)m < sizeof mark) {
+        ml = (size_t)m;
+    } else {
+        memcpy(mark, FX_OUTCOME_TRUNC_SHORT, sizeof FX_OUTCOME_TRUNC_SHORT);
+        ml = sizeof FX_OUTCOME_TRUNC_SHORT - 1;
+    }
+    if (textcap > ml) {
+        /* the tail of the buffer, ending exactly on its NUL */
+        memcpy(text + textcap - 1 - ml, mark, ml + 1);
+    } else if (textcap >= sizeof FX_OUTCOME_TRUNC_SHORT) {
+        /* The caller's buffer cannot hold the full marker: keep the report LOUD
+         * at the cost of its body rather than silent with its body.  NOT
+         * reachable from FX_OUTCOME_MSG_CAP (asserted above) — it is here so a
+         * new caller with a smaller buffer degrades loudly instead of quietly. */
+        memcpy(text, FX_OUTCOME_TRUNC_SHORT, sizeof FX_OUTCOME_TRUNC_SHORT);
+    } else {
+        /* Nothing fits: a marker is impossible in this buffer.  Stated in the
+         * code because it is the one case the guard cannot reach. */
+        text[0] = '\0';
     }
     return v;
 }
@@ -702,7 +795,19 @@ FxVerdict fx_outcome_verdict(const char *data_dir, const char *task,
      * (see outcome.h): fx_write's surface is the host-declared closed set, and
      * this record is in no set — an agent that could erase the evidence of
      * its own failed activation could re-issue it blindly. */
-    char escape[FX_OUTCOME_PATH_CAP + 320];
+    /* THE ESCAPE CLAUSE'S OWN BUFFER, sized so it can never be cut.  The marker
+     * above catches a report that overruns FX_OUTCOME_MSG_CAP, but a snprintf
+     * into a too-small `escape` would cut the escape clause SILENTLY while the
+     * whole report stayed UNDER the cap — the marker would never fire, and the
+     * cut would land exactly where it hurts (the tail of this clause names
+     * attempts.jsonl, i.e. the way out).  The only variable input here is
+     * data_dir, and any data_dir that can produce a report at all is one the
+     * record could be OPENED with: fx_outcome_record_load() path_joins it into
+     * `char path[PATH_MAX]` and returns 0 (-> the ordinary RUN, no report) when
+     * it does not fit.  So PATH_MAX + 320 holds the clause for every input that
+     * can reach it: MEASURED, the fixed prose is 226 bytes including
+     * "/attempts.jsonl", and 226 + (PATH_MAX - 1) < PATH_MAX + 320. */
+    char escape[PATH_MAX + 320];
     snprintf(escape, sizeof escape,
         "  escape   : to force a re-run: re-run with --reconsider (an operator flag; a run\n"
         "             that COMPLETES records `done` and settles this task), or remove this\n"
@@ -826,8 +931,21 @@ FxVerdict fx_outcome_verdict(const char *data_dir, const char *task,
             FxRecovery rj;
             char rerr[256] = {0};
             if (fx_outcome_recovery(store, &rj, rerr, sizeof rerr) != 0) {
+                /* A journal that EXISTS but cannot be read is its OWN state.
+                 * "absent" (there is no journal) and "zero" (the journal is
+                 * there and has counted nothing) are both claims about the
+                 * file's CONTENT, and both were MEASURED; this one is a claim
+                 * about the READ, and reporting it as either of the others
+                 * would be reporting a measurement that was never made — the
+                 * unreadable journal would silently read as "absent" and the
+                 * three states would collapse into two.  The VERB spells the
+                 * same state with the same lead word (tools/fx-verbs-server.c:
+                 * "recovery UNREADABLE: ..."). */
                 snprintf(recovery, sizeof recovery,
-                         "no roll-forward count: %s", rerr);
+                         "UNREADABLE — %s\n"
+                         "             the journal is there but could not be read, so\n"
+                         "             whether this has happened before is UNKNOWN, not zero",
+                         rerr);
             } else if (rj.journal_absent) {
                 snprintf(recovery, sizeof recovery,
                          "no %s on this store (fx-init predates the journal, or\n"

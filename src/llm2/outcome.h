@@ -191,11 +191,61 @@ extern "C" {
 #define FX_OUTCOME_TASK_CAP 17
 #define FX_OUTCOME_PATH_CAP 512
 #define FX_OUTCOME_STATUS_CAP 32
-/* MEASURED: the ACTIVATION_FAILED report at the field caps (a 511-char config
- * plus a 255-char session) plus the recovery-journal line runs to ~2600 bytes
- * — the former 2048 cap already truncated the escape clause in that corner
- * (the tail that names the task's only way out), and the journal line widened
- * it.  3072 covers the worst case with margin. */
+/* THE REPORT BUFFER'S CAP, and the bound it is derived from rather than
+ * estimated against.  The former 2048 cap ALREADY truncated the escape clause
+ * in the corner case (the ACTIVATION_FAILED report with a 511-char config plus
+ * a 255-char session plus the recovery-journal line ran past it), and the tail
+ * that got cut names the task's ONLY way out — a refusal whose escape is
+ * silently missing is a permanent wedge.  3072 was raised against a stated
+ * estimate; the DERIVATION below replaces it, and every report now ends in an
+ * explicit TRUNCATION MARKER when it did not fit (src/llm2/outcome.c, report()),
+ * so a cut can never be mistaken for a complete report again.
+ *
+ * THE DERIVATION (byte counts at a 64-bit `unsigned long`, i.e. 20 decimal
+ * digits).  The largest of the nine reports is ACTIVATION_FAILED
+ * (src/llm2/outcome.c, the report() call above "running"), and its parts are:
+ *
+ *   fixed prose                              868
+ *   task id (FX_OUTCOME_TASK_CAP-1)           16
+ *   agent name                                 (NOT field-capped: see below)
+ *   config path (FX_OUTCOME_PATH_CAP-1)      511
+ *   activated version + running version      2*20 = 40
+ *   store path in the bootlog line             (NOT field-capped)
+ *   ".bootlog"                                 8
+ *   the recovery clause                    <= 559  (its own buffer: head 67,
+ *                                                  recurrence 255 and newest
+ *                                                  191 are EACH sub-buffered,
+ *                                                  so the clause is capped at
+ *                                                  559 whatever the inputs)
+ *   the running clause                         70  (the store path AGAIN)
+ *   data dir in the record line                (NOT field-capped)
+ *   session name                             255
+ *   run id                                    63
+ *   epoch                                     20
+ *   escape clause                            211 + the data dir AGAIN
+ *
+ * DERIVED MAXIMUM (every field at its cap, the digits at their widest, the
+ * guest's own paths /fx/disk/store and /fx/disk/agent-data): 2674 bytes.
+ * MEASURED, by a probe driving fx_outcome_verdict at EXACTLY those field caps
+ * (a 20-digit epoch/version/CURRENT, a 71-char genhash, 255/63/511-char
+ * session/run/config, tests/test_outcome.sh phase 10): 2635 bytes with a
+ * 12-byte data dir and a 13-byte store.  The derivation above reproduces that
+ * 2635 TO THE BYTE for the same shape (the 39-byte difference from the maximum
+ * is 2x7 bytes of data dir plus the 25 the journal clause gains before its own
+ * 560-byte buffer caps it, which the probe drives at 1-digit counters).
+ *
+ * SO 3072 IS RIGHT, WITH 398 BYTES TO SPARE — and the spare is NOT a margin
+ * against every input, because THREE components have NO field cap: the agent
+ * name (once), the store path (TWICE) and the data dir (TWICE: the record line
+ * and the escape clause).  MEASURED coefficients: +1 byte of agent name, +2 of
+ * data dir, +2 of store, per byte of input.  So ~199 extra characters of data
+ * dir, or ~398 spread over store + agent, reaches the cap and trips the marker
+ * — THE NEXT TRUNCATION COMES FROM THERE, not from the field caps, and the
+ * marker is what makes it visible instead of silent.
+ *
+ * The escape clause has its own buffer (PATH_MAX + 320) so it is never itself
+ * cut while the report stays under this cap — a second, silent cut sitting
+ * INSIDE a report the marker cannot see. */
 #define FX_OUTCOME_MSG_CAP 3072
 
 /* The longest record line the WRITER can produce — every field at the cap the

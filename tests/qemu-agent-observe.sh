@@ -275,8 +275,59 @@ done
 # header string) or the gate refuses to run — a stale cache is a loud failure,
 # not a silent wrong guest.  (MEASURED: a pre-4d6a8c2 cache made boot 1 read
 # "recovery absent" and the failure looked like a reader bug.)
-strings "$ZB/fx-init" 2>/dev/null | grep -q 'fx-init recovery journal' \
-    || fail "$ZB/fx-init predates the recovery journal (fx-init 4d6a8c2) — rebuild it: QEMU_AGENT_REBUILD_INIT=1 sh tests/qemu-agent-observe.sh"
+#
+# THE GUARD IS A FUNCTION because its FAILING PATH HAS TO BE RUN.  An
+# unexercised guard may be INERT — and an inert guard is exactly how the false
+# in-guest result got through (the reader was right; the CONTROL was lying).
+# init_journal_refusal BIN prints the refusal and returns 1 when BIN does not
+# carry the journal writer's header; the SELF-TEST immediately below drives that
+# arm against a stub of the same ELF class.
+init_journal_refusal() { # init_journal_refusal BIN
+    strings "$1" 2>/dev/null | grep -q 'fx-init recovery journal' && return 0
+    printf '%s predates the recovery journal (fx-init 4d6a8c2) — rebuild it: QEMU_AGENT_REBUILD_INIT=1 sh tests/qemu-agent-observe.sh\n' "$1"
+    return 1
+}
+JREF=""
+JREF="$(init_journal_refusal "$ZB/fx-init")" || fail "$JREF"
+
+# ─── THE GUARD'S OWN FAILING PATH, EXERCISED (not assumed) ────────────────
+# A guard nobody has ever seen fail is a guard nobody knows works.  The stub is
+# built to the SAME ELF class as the real binary (static, stripped, x86-64-musl)
+# so this arm is about THE STRING the guard reads and not about an obviously
+# different file.  FAILS if the guard passes a binary that lacks the journal
+# writer (INERT), if its refusal does not name QEMU_AGENT_REBUILD_INIT=1, or if
+# it refuses the REAL binary (a guard that refuses everything is inert in the
+# other direction) — and its premise is asserted: the stub really is the same
+# artifact class and really does not carry the string.
+# WHAT THIS COVERS: init_journal_refusal (the assertion, its input, its message)
+# and the caller's use of its exit status.
+# WHAT IT DOES NOT: the in-guest consequence of a stale cache (that the journal
+# assertions would then fail on a guest with no journal) — that needs the real
+# ~6-minute boot, and is covered by the journal assertions themselves, which are
+# what a stale cache would break.
+echo "=== qemu-agent-observe: exercising the stale-binary guard's FAILING path ==="
+STUB="$WORK/stale-fx-init"
+printf 'int main(void) { return 0; }\n' > "$WORK/stale-init.c"
+zig cc -target x86_64-linux-musl -std=gnu11 -O2 -static -s -o "$STUB" "$WORK/stale-init.c" \
+    || fail "the stale-binary guard's self-test cannot build its stub"
+assert_guest_elf "$STUB" "x86-64"
+strings "$STUB" 2>/dev/null | grep -q 'fx-init recovery journal' \
+    && fail "the guard self-test's stub CARRIES the journal header — the failing arm would pass for the wrong reason"
+SREF=""
+if SREF="$(init_journal_refusal "$STUB")"; then
+    fail "the stale-binary guard PASSED a binary that does not carry the journal writer — THE GUARD IS INERT (a stale cache boots a guest with no journal, and the failure would look like a reader bug)"
+fi
+case "$SREF" in
+    *QEMU_AGENT_REBUILD_INIT=1*) ;;
+    *) fail "the stale-binary guard refused the stub but does NOT name the rebuild switch: '$SREF'";;
+esac
+case "$SREF" in
+    *predates*recovery*journal*) ;;
+    *) fail "the stale-binary guard's refusal does not say what is stale: '$SREF'";;
+esac
+init_journal_refusal "$ZB/fx-init" >/dev/null \
+    || fail "the stale-binary guard REFUSES the real $ZB/fx-init — the guard is broken, not the cache"
+echo "[guard] stale-binary guard EXERCISED: it refuses a same-class stub that lacks the journal header, naming QEMU_AGENT_REBUILD_INIT=1, and still passes the real binary"
 KCONFIG="$KCACHE/kernel/config"
 if [ -r "$KCONFIG" ] && grep -q '^CONFIG_IA32_EMULATION=y' "$KCONFIG"; then
     fail "the pinned kernel HAS IA32 emulation — the guest-ABI premise is void, re-read this lane"

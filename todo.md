@@ -164,6 +164,20 @@ certifies coherence; neither says "improved".
       the Zig port only, and a deployment missing it fails LOUDLY at the oracle's capability probe
       (measured — the probe was added precisely because a stale neighbouring binary was found).
 
+- [ ] **An unreadable `.bootlog` collapses to RUN — the re-issuing direction.** MEASURED by
+      `handoff-loud-truncation` and NOT fixed there (out of its write scope): with a DIRECTORY at
+      `<store>/.bootlog` and `CURRENT == version`, the verdict is `FX_VERDICT_RUN` where a readable
+      bootlog gives `ACTIVATION_FAILED`. The bootlog is how the loop learns its activation FAILED, so
+      an unreadable one must be its OWN loud state — the rule the module already states for the store
+      ("a verdict that needs the store and cannot read it returns `FX_VERDICT_ERROR` naming the path")
+      is exactly the rule this path breaks. RUN re-issues an activation; a false stop is the safer
+      error. The journal's reader got its `UNREADABLE` state in that same round; the bootlog's still
+      collapses.
+- [ ] **Two ungated oracle paths**: the two-origins-one-install-target refusal and the
+      `<store>/<hash>-<pkg>/` argv spelling are implemented but have no fixture. Also ungated: the
+      64-candidate cap, the shallow-clone SKIP paths, and the in-guest `done→attempt→result` order
+      (it needs a qemu resume-crash fixture).
+
 ## 4. Design items awaiting a decision
 
 - [x] **`src_of` closes the store's attribution gap** (`fx-init 9b20161`, read by the oracle

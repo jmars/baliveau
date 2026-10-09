@@ -52,7 +52,17 @@
 #     path is refused (loudly, naming path and set) while the task config
 #     still writes, the DOCUMENTED root-relative entry spelling grants it,
 #     a '..' onto an allowed member still writes, and the PINNED pre-fix
-#     servers show both holes (phase 8).
+#     servers show both holes (phase 8);
+#   * the recovery journal's UNREADABLE state is its OWN state, distinct from
+#     absent and from zero (phase 9g) — MEASURED, a directory where the journal
+#     belongs used to read as "0 roll-forwards … the FIRST time", a measurement
+#     that was never made;
+#   * A CUT REPORT IS LOUD (phase 10): report() emits an explicit truncation
+#     marker naming the byte count and FX_OUTCOME_MSG_CAP, into the tail of the
+#     buffer so the marker cannot itself be cut; the cap is DERIVED from the
+#     format strings and MEASURED at exactly the field caps, and the asymmetry
+#     is shown against the pinned pre-marker outcome.c (which cuts the same
+#     report silently).
 #
 # WHAT IS REAL HERE, and what is planted:
 #   REAL      the harness binary, the REAL tool server (build/fx-verbs-server) as
@@ -1626,6 +1636,316 @@ esac
 note "ASYMMETRY PROVEN: identical store WITH a journal — the pinned $PIN_NOREC fx_outcome prints no recovery line at all (the seat nobody called); this tree counts it"
 fi
 
+# 9g — a journal that EXISTS but cannot be READ is its OWN state: not ABSENT
+# (there is no journal) and not ZERO (the journal is there and has counted
+# nothing).  Both of those are claims about the file's CONTENT; this one is a
+# claim about the READ, and reporting it as either would be reporting a
+# measurement that was never made.  MEASURED, the collapse was REAL and silent
+# before this arm existed — and it is the SECOND of the two cases this item
+# names: glibc's fopen() SUCCEEDS on a DIRECTORY, the first fgets then fails
+# with EISDIR, and the reader returned a count of 0, so a directory planted
+# where the journal belongs read as "0 automatic roll-forwards on record …
+# this is the FIRST time this machine has had to recover".  FAILS if the
+# directory reads as ZERO or as ABSENT, if the state does not carry WHY, if it
+# changes the verdict, or if the escape clause is lost from the report.
+newdata
+plant_store 9 "8 in-progress 1700000000" "8 failed 1700000020" "9 in-progress 1700000030"
+rm -f "$STORE/.recovery"
+mkdir "$STORE/.recovery" || fail "phase 9g: cannot plant a directory where the journal belongs"
+record "1700000000 $TASK attempt - - 0 /fx/disk/agent-config.dhall"
+record "1700000000 $TASK result - - 8 /fx/disk/agent-config.dhall"
+out=$(run "$BIN" --store "$STORE"); rc=$?
+[ "$rc" = 0 ] || fail "phase 9g: rc=$rc (an unreadable journal is information, not a service failure)"
+echo "$out" | grep -q "THE ACTIVATION THIS HARNESS RECORDED FAILED" \
+    || { echo "$out" >&2; fail "phase 9g: the verdict changed on an unreadable journal"; }
+echo "$out" | grep -q "recovery : UNREADABLE" \
+    || { echo "$out" >&2; fail "phase 9g: a journal that exists but cannot be read is not its own state"; }
+echo "$out" | grep -q "cannot be read" \
+    || { echo "$out" >&2; fail "phase 9g: the unreadable state does not carry WHY (the path and the errno)"; }
+echo "$out" | grep -q "UNKNOWN, not zero" \
+    || { echo "$out" >&2; fail "phase 9g: the unreadable state does not refuse the zero claim"; }
+echo "$out" | grep -q "0 automatic roll-forwards" \
+    && { echo "$out" >&2; fail "phase 9g: an UNREADABLE journal read as ZERO — a measurement that was never made"; }
+echo "$out" | grep -q "no .recovery on this store" \
+    && { echo "$out" >&2; fail "phase 9g: an UNREADABLE journal read as ABSENT — two distinct states collapsed"; }
+assert_escape "phase 9g" "$out"
+# the SAME state on the VERB surface (the model's own read) and the same
+# distinctness there: FAILS if the verb drops the state, prints a count for a
+# journal it could not read, or words it as absence.
+rm -f "$VV/fx/disk/store/.recovery"
+mkdir "$VV/fx/disk/store/.recovery" || fail "phase 9g: cannot plant the verb-side directory"
+TXT=$(outverb "$VS" "$VV")
+printf '%s\n' "$TXT" | grep -q "^exit=0\$" \
+    || { printf '%s\n' "$TXT" >&2; fail "phase 9g: an unreadable journal made the verb fail (it is not fatal)"; }
+printf '%s\n' "$TXT" | grep -q "^recovery UNREADABLE: " \
+    || { printf '%s\n' "$TXT" >&2; fail "phase 9g: the verb does not report the unreadable journal as its own state"; }
+printf '%s\n' "$TXT" | grep -qE "^recoveries " \
+    && { printf '%s\n' "$TXT" >&2; fail "phase 9g: the verb printed a COUNT for a journal it could not read"; }
+printf '%s\n' "$TXT" | grep -q "^recovery absent" \
+    && { printf '%s\n' "$TXT" >&2; fail "phase 9g: the verb collapsed unreadable into absent"; }
+# EACCES — the OTHER way in (fopen itself fails; the directory case above gets
+# past fopen).  GATED ON A NON-ROOT uid: as root the mode bits are advisory and
+# the arm would pass against a reader that never looked at errno — a test that
+# cannot fail is not a test.
+if [ "$(id -u)" != 0 ]; then
+    rm -rf "$STORE/.recovery"
+    plant_journal "1791556214 9 7 feedface0123456789abcdef"
+    chmod 000 "$STORE/.recovery"
+    out=$(run "$BIN" --store "$STORE"); rc=$?
+    chmod 644 "$STORE/.recovery"
+    [ "$rc" = 0 ] || fail "phase 9g: rc=$rc on an EACCES journal"
+    echo "$out" | grep -q "recovery : UNREADABLE" \
+        || { echo "$out" >&2; fail "phase 9g: a chmod-000 journal (fopen fails) is not reported as UNREADABLE"; }
+    echo "$out" | grep -q "Permission denied" \
+        || { echo "$out" >&2; fail "phase 9g: the EACCES case does not carry the errno that explains it"; }
+    note "unreadable: EISDIR (a directory, which glibc fopen ACCEPTS) and EACCES both read as UNREADABLE — never absent, never zero"
+else
+    note "unreadable: EACCES arm SKIPPED (uid 0 — mode bits are advisory, the arm could not fail)"
+fi
+
+# ── phase 10: A CUT REPORT IS LOUD, AND THE CAP IS DERIVED, NOT ESTIMATED ═══
+# WHY.  At the former 2048-byte cap the ACTIVATION_FAILED report was ALREADY
+# truncated in the corner case (a 511-char config plus a 255-char session plus
+# the recovery-journal line), and what the cut removed was the ESCAPE CLAUSE —
+# the tail naming the task's ONLY way out (--reconsider, or removing the
+# task's lines).  A refusal whose escape is silently missing is a permanent
+# wedge, and nothing in the tree noticed; the cap was raised against an
+# ESTIMATE.  Item 2 replaces the estimate with a derivation (outcome.h) and
+# Item 1 makes the cut LOUD (outcome.c, report()).
+# WHAT MAKES EACH ARM FAIL:
+#   10a FAILS if the cap is too small for the field caps (the marker fires where
+#       the whole report was supposed to fit), or if the probe's own record did
+#       not round-trip at the caps (then it would be measuring a smaller case —
+#       the premise is asserted, not assumed).
+#   10b FAILS if report() cuts SILENTLY (no marker: the pre-fix behaviour), if
+#       the marker is emitted twice, if it is not the LAST line (i.e. if the
+#       marker itself was cut by the cut it describes), or if it names the wrong
+#       byte count.
+#   10c FAILS if the escape clause is not the thing a real cut eats — the
+#       marker's own wording ("the escape clause may be missing") would then be
+#       alarm without a measurement.  It is also the standing demonstration of
+#       WHERE the next truncation comes from: an input with NO field cap.
+#   10d FAILS if the pinned pre-fix outcome.c ALSO emits the marker — then 10b
+#       would be comparing the fix to itself and could never have failed.
+#   10e FAILS if the ESCAPE CLAUSE is cut by its own buffer while the report is
+#       still under the cap — the one cut the marker cannot see — and it is
+#       asymmetried against the pinned tree, which loses the tail there.
+echo "== phase 10: the report's truncation marker + the derived cap (worst case at EXACTLY the field caps)"
+MAXU=$(python3 -c 'print(2**64-1)')          # 20 decimal digits: the widest a %lu prints
+LS=$(python3 -c 'print("s"*255)')            # a session is NAME_MAX wide
+LR=$(python3 -c 'print("r"*63)')
+LC=$(python3 -c 'print("c"*511)')            # FX_OUTCOME_PATH_CAP-1
+LG=$(python3 -c 'print("f"*71)')             # FX_OUTCOME_GENHASH_CAP-1
+newdata
+plant_store "$MAXU" "$MAXU in-progress 1700000000" "$MAXU failed 1700000020"
+plant_journal "$MAXU $MAXU $MAXU $LG" "$MAXU $MAXU $MAXU $LG"
+python3 -c 'import sys; sys.stdout.write("1"*600)' >> "$STORE/.recovery"  # torn tail: a FLOOR, not a count
+record "$MAXU $TASK attempt $LS $LR $MAXU $LC"
+record "$MAXU $TASK result $LS $LR $MAXU $LC"
+cat > "$TMP/capprobe.c" <<'CEOF'
+/* The report's OWN worst case, straight at the API.  Three buffer sizes:
+ * 8x the cap (the UNDISTORTED length), exactly the cap (what the harness's own
+ * caller, src/llm2/agent_main.c, hands it) and 512 (a cap nothing in the tree
+ * uses — the marker must fire for ANY cap that cuts, not just this one). */
+#define _POSIX_C_SOURCE 200809L
+#include <stdio.h>
+#include <string.h>
+#include "llm2/outcome.h"
+
+static char big[FX_OUTCOME_MSG_CAP * 8], prod[FX_OUTCOME_MSG_CAP], smallbuf[512];
+
+static size_t call(const char *d, const char *s, const char *t, const char *a,
+                   char *buf, size_t cap) {
+    FxOutcome o;
+    fx_outcome_verdict(d, t, s, a, &o, buf, cap, NULL, 0);
+    return strlen(buf);
+}
+static int count(const char *h, const char *n) {
+    int c = 0;
+    for (const char *p = h; (p = strstr(p, n)) != NULL; p += strlen(n)) c++;
+    return c;
+}
+int main(int argc, char **argv) {
+    if (argc < 4) return 2;
+    const char *data = argv[1], *store = argv[2], *task = argv[3];
+    const char *agent = argc > 4 ? argv[4] : "fx";
+    FxOutcome o;
+    size_t tlen = call(data, store, task, agent, big, sizeof big);
+    size_t plen = call(data, store, task, agent, prod, sizeof prod);
+    call(data, store, task, agent, smallbuf, sizeof smallbuf);
+    fx_outcome_record_load(data, task, &o);
+    printf("cap=%d\nlen_true=%zu\nlen_cap=%zu\nmargin=%d\n", FX_OUTCOME_MSG_CAP,
+           tlen, plen, FX_OUTCOME_MSG_CAP - (int)tlen);
+    printf("marker_at_cap=%d\nmarker_count_at_cap=%d\nescape_at_cap=%d\n",
+           strstr(prod, "... TRUNCATED at ") != NULL, count(prod, "... TRUNCATED at "),
+           (strstr(prod, "--reconsider") != NULL) && (strstr(prod, "/attempts.jsonl") != NULL));
+    printf("marker_at_small=%d\nmarker_count_at_small=%d\n",
+           strstr(smallbuf, "... TRUNCATED at ") != NULL,
+           count(smallbuf, "... TRUNCATED at "));
+    /* THE PROBE'S OWN PREMISE, asserted by the caller: the record really did
+     * round-trip at the field caps, so this is the worst case and not a
+     * smaller one wearing its name. */
+    printf("in_task=%zu\nin_session=%zu\nin_run=%zu\nin_config=%zu\n",
+           strlen(o.task), strlen(o.session), strlen(o.run), strlen(o.config));
+    printf("shape_data=%zu\nshape_store=%zu\nshape_agent=%zu\n",
+           strlen(data), strlen(store), strlen(agent));
+    printf("---small---\n%s\n---end---\n", smallbuf);
+    return 0;
+}
+CEOF
+cc -std=c11 -O2 -Wall -Wextra -I"$ROOT/src" -I"$ROOT/src/llm2" \
+   -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
+   -o "$TMP/capprobe" "$TMP/capprobe.c" "$ROOT/src/llm2/outcome.c" \
+   || fail "phase 10: cannot build the cap probe"
+MINDIR="$TMP/data"
+MINSTORE="$STORE"
+P=$("$TMP/capprobe" "$MINDIR" "$MINSTORE" "$TASK" fx) || fail "phase 10: the cap probe failed"
+gv() { printf '%s\n' "$P" | sed -n "s/^$1=//p"; }
+# 10a — the premise, then the worst case at the caps
+[ "$(gv in_task)" = 16 ] && [ "$(gv in_session)" = 255 ] && [ "$(gv in_run)" = 63 ] \
+    && [ "$(gv in_config)" = 511 ] \
+    || { printf '%s\n' "$P" >&2; fail "phase 10: the probe's record did NOT round-trip at the field caps (task $(gv in_task)/16, session $(gv in_session)/255, run $(gv in_run)/63, config $(gv in_config)/511) — a smaller case is wearing the worst case's name"; }
+CAP=$(gv cap)
+LEN=$(gv len_true)
+[ "$LEN" -lt "$CAP" ] \
+    || { printf '%s\n' "$P" >&2; fail "phase 10: the field-cap worst case is $LEN bytes and the cap is $CAP — RAISE FX_OUTCOME_MSG_CAP"; }
+[ "$(gv marker_at_cap)" = 0 ] \
+    || { printf '%s\n' "$P" >&2; fail "phase 10: the truncation marker fired AT the field caps — the report does not fit the cap it is built into"; }
+[ "$(gv escape_at_cap)" = 1 ] \
+    || { printf '%s\n' "$P" >&2; fail "phase 10: the ESCAPE CLAUSE is not intact at the field caps"; }
+note "worst case at the field caps (task 16, session 255, run 63, config 511, genhash 71, 20-digit versions): $LEN bytes of $CAP (margin $(gv margin)); data dir $(gv shape_data) B, store $(gv shape_store) B — the derivation in outcome.h reproduces this shape to the byte"
+# 10b — THE MARKER APPEARS, exactly once, AS THE LAST LINE, naming the true count
+[ "$(gv marker_at_small)" = 1 ] \
+    || { printf '%s\n' "$P" >&2; fail "phase 10: a report cut at a 512-byte cap carries NO truncation marker — the cut is silent (the pre-fix behaviour)"; }
+[ "$(gv marker_count_at_small)" = 1 ] \
+    || { printf '%s\n' "$P" >&2; fail "phase 10: the marker was emitted $(gv marker_count_at_small) times (want exactly 1)"; }
+SMALL_TAIL=$(printf '%s\n' "$P" | sed -n '/^---small---$/,/^---end---$/p' | sed '1d;$d' | sed -n '/./p' | tail -1)
+WANT_TAIL="... TRUNCATED at $LEN bytes — the escape clause may be missing; raise FX_OUTCOME_MSG_CAP"
+[ "$SMALL_TAIL" = "$WANT_TAIL" ] \
+    || { printf '%s\n' "$SMALL_TAIL" >&2; fail "phase 10: the last line of the cut report is not the marker verbatim (want '$WANT_TAIL') — the marker is itself cut, or names the wrong byte count"; }
+[ "$(gv len_cap)" = "$LEN" ] \
+    || fail "phase 10: the report built into the cap is $(gv len_cap) bytes but the undistorted report is $LEN — the field-cap worst case does NOT fit FX_OUTCOME_MSG_CAP"
+# 10c — WHERE THE NEXT TRUNCATION COMES FROM: an input with NO field cap.  A
+# path ~267 bytes longer than $TMP (a deep VIBE_RUNTIME_DIR / store) is counted
+# TWICE in the report (its own line, and the escape clause), and it takes the
+# whole ESCAPE CLAUSE out — the marker is then the only thing standing between
+# the reader and a wedge.
+DEEP="$TMP/deep/$(python3 -c 'print("d"*200)')/$(python3 -c 'print("e"*60)')"
+mkdir -p "$DEEP/data" "$DEEP/store/.db/snapshots" || fail "phase 10: cannot lay out the deep path"
+cp "$TMP/data/attempts.jsonl" "$DEEP/data/"
+cp "$STORE/.bootlog" "$DEEP/store/"
+cp "$STORE/.db/snapshots/CURRENT" "$DEEP/store/.db/snapshots/"
+cp "$STORE/.recovery" "$DEEP/store/"
+PL=$("$TMP/capprobe" "$DEEP/data" "$DEEP/store" "$TASK" fx) || fail "phase 10: the deep-path probe failed"
+gp() { printf '%s\n' "$PL" | sed -n "s/^$1=//p"; }
+[ "$(gp len_true)" -gt "$CAP" ] \
+    || { printf '%s\n' "$PL" >&2; fail "phase 10: a $(( $(gp shape_data) )) B data dir did NOT push the report past the cap ($(gp len_true) <= $CAP) — this arm proves nothing"; }
+[ "$(gp marker_at_cap)" = 1 ] \
+    || { printf '%s\n' "$PL" >&2; fail "phase 10: a report that does NOT fit the cap was printed WITHOUT the marker — the wedge is silent"; }
+[ "$(gp marker_count_at_cap)" = 1 ] \
+    || { printf '%s\n' "$PL" >&2; fail "phase 10: the marker was emitted $(gp marker_count_at_cap) times (want exactly 1)"; }
+[ "$(gp escape_at_cap)" = 0 ] \
+    || { printf '%s\n' "$PL" >&2; fail "phase 10: the cut did NOT reach the escape clause — 'the escape clause may be missing' would be alarm without a measurement"; }
+[ "$(gp in_config)" = 511 ] && [ "$(gp in_session)" = 255 ] \
+    || { printf '%s\n' "$PL" >&2; fail "phase 10: the deep-path arm is not at the field caps — the marker could be firing for the wrong reason"; }
+note "over cap: data dir $(( $(gp shape_data) )) B + store $(( $(gp shape_store) )) B -> $(gp len_true) B, cut to $((CAP - 1)), marker present, and the ESCAPE CLAUSE is gone (--reconsider absent) — LOUD, not wedged"
+# 10d — THE ASYMMETRY: the pinned pre-marker outcome.c cuts the same report the
+# same way and says NOTHING, so 10b could have failed before this change.  The
+# pin is a FIXED revision, cat-file guarded, and cmp-proven to differ.
+if [ -z "$NOREC86" ]; then
+    cc -std=c11 -O2 -Wall -Wextra -I"$TMP/norec" \
+       -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
+       -o "$TMP/capprobe-pin" "$TMP/capprobe.c" "$TMP/norec/llm2/outcome.c" \
+       || fail "phase 10: cannot build the cap probe against the pinned $PIN_NOREC outcome.c"
+    cmp -s "$TMP/norec/llm2/outcome.c" "$ROOT/src/llm2/outcome.c" \
+        && fail "phase 10: the pinned $PIN_NOREC outcome.c is IDENTICAL to the working tree — the arm would compare the fix to itself"
+    PP=$("$TMP/capprobe-pin" "$MINDIR" "$MINSTORE" "$TASK" fx) \
+        || fail "phase 10: the pinned cap probe failed (arm is vacuous)"
+    PP_CAP=$(printf '%s\n' "$PP" | sed -n 's/^cap=//p')
+    PP_LEN=$(printf '%s\n' "$PP" | sed -n 's/^len_true=//p')
+    PP_FILL=$(printf '%s\n' "$PP" | sed -n 's/^len_cap=//p')
+    # The pinned tree predates the JOURNAL READ, so its report is the shorter
+    # pre-journal one — stated here rather than papered over.  What matters is
+    # that its report is STILL over its own cap at these field caps: that is the
+    # headline defect reproduced independently, and the cut says nothing.
+    [ "$PP_LEN" -gt "$PP_CAP" ] \
+        || { printf '%s\n' "$PP" >&2; fail "phase 10: the pinned $PIN_NOREC report is $PP_LEN bytes and fits its own ${PP_CAP}-byte cap — the defect this phase is about does not reproduce there, so the arm is vacuous"; }
+    printf '%s\n' "$PP" | grep -q "^len_cap=$((PP_CAP - 1))$" \
+        || { printf '%s\n' "$PP" >&2; fail "phase 10: the pinned report did not fill its buffer at the cap (fill $PP_FILL, want $((PP_CAP - 1))) — there is no cut for the marker to miss"; }
+    printf '%s\n' "$PP" | grep -q "^marker_at_cap=0$" \
+        || { printf '%s\n' "$PP" >&2; fail "phase 10: the pinned $PIN_NOREC report carries the marker — 10b never could have failed, so it is not a guard"; }
+    printf '%s\n' "$PP" | grep -q "^marker_at_small=0$" \
+        || { printf '%s\n' "$PP" >&2; fail "phase 10: the pinned $PIN_NOREC report carries the marker at the 512-byte cap as well"; }
+    note "ASYMMETRY PROVEN: the pinned $PIN_NOREC outcome.c builds a $PP_LEN-byte ACTIVATION_FAILED report (pre-journal) against its 2048-byte cap and CUTS it to $PP_FILL with NO marker — the silent truncation this phase closes; this tree's $LEN-byte report fits $CAP and, when it does not, says so"
+else
+    note "phase 10: marker asymmetry SKIPPED ($NOREC86)"
+fi
+# 10e — THE ESCAPE CLAUSE'S OWN BUFFER, asserted on its own.  The marker catches
+# a report that overruns FX_OUTCOME_MSG_CAP, but a snprintf into a too-small
+# `escape` buffer cuts the clause SILENTLY while the whole report stays UNDER the
+# cap — the marker never fires, and the cut lands exactly where it hurts (the
+# tail of that clause names attempts.jsonl, the way out).  The buffer was
+# FX_OUTCOME_PATH_CAP+320 = 832 bytes, so a data dir over ~600 characters lost
+# its tail; it is PATH_MAX+320 now.  FAILS if any part of the clause is missing
+# at a data dir length the report can still be built for, or if the data dir
+# does not survive verbatim — and it asserts marker=0 first, so a marker firing
+# here could not be mistaken for the clause being intact.
+echo "== phase 10e: the escape clause is not cut in the clause's OWN buffer"
+D2="$DEEP/$(python3 -c 'print("g"*200)')/$(python3 -c 'print("h"*200)')/data"
+mkdir -p "$D2" || fail "phase 10e: cannot lay out the deep data dir"
+printf '1700000000 %s done - - 0 -\n' "$TASK" > "$D2/attempts.jsonl" \
+    || fail "phase 10e: cannot plant a completed-task record"
+cat > "$TMP/escprobe.c" <<'CEOF'
+/* The ALREADY_DONE report (the smallest of the nine) with a long data dir: the
+ * whole report stays under the cap, so the ONLY thing that can cut the escape
+ * clause here is the clause's own buffer. */
+#define _POSIX_C_SOURCE 200809L
+#include <stdio.h>
+#include <string.h>
+#include "llm2/outcome.h"
+static char rep[FX_OUTCOME_MSG_CAP * 8];
+int main(int argc, char **argv) {
+    if (argc < 3) return 2;
+    FxOutcome o;
+    FxVerdict v = fx_outcome_verdict(argv[1], argv[2], NULL, "fx", &o, rep,
+                                     sizeof rep, NULL, 0);
+    printf("verdict=%d\nlen=%zu\ncap=%d\nmarker=%d\n", (int)v, strlen(rep),
+           FX_OUTCOME_MSG_CAP, strstr(rep, "... TRUNCATED at ") != NULL);
+    printf("---tail---\n%s\n---end---\n", rep);
+    return 0;
+}
+CEOF
+cc -std=c11 -O2 -Wall -Wextra -I"$ROOT/src" -I"$ROOT/src/llm2" \
+   -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
+   -o "$TMP/escprobe" "$TMP/escprobe.c" "$ROOT/src/llm2/outcome.c" \
+   || fail "phase 10e: cannot build the escape-clause probe"
+D2LEN=${#D2}
+[ "$D2LEN" -gt 600 ] || fail "phase 10e: the deep data dir is only $D2LEN characters — it would not have cut the pre-fix clause, so the arm proves nothing"
+E=$("$TMP/escprobe" "$D2" "$TASK") || fail "phase 10e: the escape-clause probe failed"
+ge() { printf '%s\n' "$E" | sed -n "s/^$1=//p"; }
+[ "$(ge verdict)" = 2 ] || { printf '%s\n' "$E" >&2; fail "phase 10e: verdict $(ge verdict) (want 2, ALREADY_DONE) — the arm is not on the report it means to test"; }
+[ "$(ge marker)" = 0 ] || { printf '%s\n' "$E" >&2; fail "phase 10e: the report is over the cap, so the cut is the marker's, not the clause's own buffer's — the arm proves nothing"; }
+[ "$(ge len)" -lt "$(ge cap)" ] || { printf '%s\n' "$E" >&2; fail "phase 10e: the report does not fit the cap"; }
+E_TAIL=$(printf '%s\n' "$E" | sed -n '/^---tail---$/,/^---end---$/p' | sed '1d;$d' | sed -n '/./p' | tail -1)
+[ "$E_TAIL" = "             task's lines from $D2/attempts.jsonl" ] \
+    || { printf '%s\n' "$E_TAIL" >&2; fail "phase 10e: the escape clause is CUT (the report is under the cap, so nothing else could have done it) — want the full '... from $D2/attempts.jsonl'"; }
+note "escape clause intact at a $D2LEN-character data dir inside a $(ge len)-byte report (under the $(ge cap) cap, no marker): the clause's own buffer, not the report cap, is what keeps the way out readable"
+# the asymmetry, so this arm could have failed: the PINNED tree builds the same
+# clause into its own 832-byte buffer and loses the tail.
+if [ -z "$NOREC86" ]; then
+    cc -std=c11 -O2 -Wall -Wextra -I"$TMP/norec" \
+       -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
+       -o "$TMP/escprobe-pin" "$TMP/escprobe.c" "$TMP/norec/llm2/outcome.c" \
+       || fail "phase 10e: cannot build the escape-clause probe against the pinned $PIN_NOREC outcome.c"
+    PE=$("$TMP/escprobe-pin" "$D2" "$TASK") || fail "phase 10e: the pinned escape-clause probe failed"
+    PE_TAIL=$(printf '%s\n' "$PE" | sed -n '/^---tail---$/,/^---end---$/p' | sed '1d;$d' | sed -n '/./p' | tail -1)
+    [ "$PE_TAIL" != "$E_TAIL" ] \
+        || { printf '%s\n' "$PE" >&2; fail "phase 10e: the pinned $PIN_NOREC tree's clause is INTACT too — the arm proves nothing"; }
+    note "ASYMMETRY PROVEN: the pinned $PIN_NOREC tree cuts this clause at a $D2LEN-character data dir ('$PE_TAIL'); this tree keeps all of it"
+else
+    note "phase 10e: clause asymmetry SKIPPED ($NOREC86)"
+fi
+
 echo "PASS outcome: nothing-on-record RUNS and records the attempt; a run the TURN LIMIT"
 echo "              stopped records NO done (and a run that FINISHED does); an activation that"
 echo "              TOOK is not re-run, and a completion the record does not hold is never"
@@ -1634,7 +1954,10 @@ echo "              record untouched) with its way out NAMED — and with the RE
 echo "              read beside the bootlog: counted, absent-worded-as-unknown (never zero),"
 echo "              floor on a torn tail, same-genhash recurrence bounded by the journal's"
 echo "              own honesty limit, on the report AND the verb, and the pinned pre-read"
-echo "              server prints none of it; a torn last line cannot decide a"
+echo "              server prints none of it; an unreadable journal is its OWN state on both"
+echo "              surfaces — never absent, never zero; a truncated report SAYS SO, and the"
+echo "              cap it is derived against is measured at the field caps; a torn last line"
+echo "              cannot decide a"
 echo "              verdict; an unaccounted activation is settled by a completing run and is"
 echo "              escapable with --reconsider; a drifted task identity is said OUT LOUD; a"
 echo "              newline in the config cannot forge a record line; a --resume does not"
