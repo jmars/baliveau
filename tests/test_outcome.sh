@@ -29,11 +29,19 @@
 #     version token that matched a real bootlog line used to decide
 #     ALREADY_DONE from a corrupt record);
 #   * an unaccounted activation + a later COMPLETED run IS resolvable (phase 4d);
+#   * a done that PREDATES a later attempt does NOT settle it — the loader's
+#     done is position-aware (phase 4f, unit-asymmetried in 5g against the
+#     committed outcome.c);
 #   * the prompt axis is load-bearing and its DRIFT is LOUD (phase 5b);
 #   * a CR/LF in the model-supplied config cannot forge a record line (phase 5c);
 #   * a --resume must not re-record the seed's own activation (phase 5d);
 #   * the record survives its worst-case field sizes (phase 5e — a 255-char
-#     session plus a 511-char config, which silently lost the record at 768).
+#     session plus a 511-char config, which silently lost the record at 768);
+#   * a record appended after a TORN tail survives (phase 5g tailrepair —
+#     O_APPEND used to merge the new record into the torn prefix);
+#   * fx_write's write surface is the HOST-DECLARED writable set: the record
+#     path is refused (loudly, naming path and set) while the task config
+#     still writes, and the committed server shows the hole (phase 8).
 #
 # WHAT IS REAL HERE, and what is planted:
 #   REAL      the harness binary, the REAL tool server (build/fx-verbs-server) as
@@ -100,7 +108,8 @@ cat > "$TMP/cfg/config.dhall" <<DHALL
     , mcp_servers =
       [ { command = "$VS"
         , args = [] : List Text
-        , env = Some { FX_VERB_ROOT = "$STUB" }
+        , env = Some { FX_VERB_ROOT = "$STUB"
+                     , FX_AGENT_WRITABLE = "/fx/disk/agent-config.dhall" }
         }
       ]
     }
@@ -246,6 +255,25 @@ out=$(run "$BIN" --store "$STORE"); rc=$?
 [ "$(nsessions)" = 1 ] || fail "phase 1: the task did not create a session"
 note "the activation took (current v8 == activated v8): the task ran again, as it should"
 
+# ── phase 1b: current == activated and the task IS done -> ALREADY_DONE ────
+# The C==A branch's completion arm: the bootlog holds NO verdict line for A
+# (the store never judged it), so the rule falls through to CURRENT == A with
+# `done` on record.  Every STOP report must name its way out — the report is
+# the operator's only channel, and this one used to carry no escape line.
+echo "== phase 1b: current == activated, task done -> ALREADY_DONE, escape named"
+newdata
+plant_store 8
+record "1700000000 $TASK attempt - - 0 /fx/disk/agent-config.dhall"
+record "1700000000 $TASK result - - 8 /fx/disk/agent-config.dhall"
+record "1700000025 $TASK done - - 0 -"
+out=$(run "$BIN" --store "$STORE"); rc=$?
+[ "$rc" = 0 ] || fail "phase 1b: rc=$rc (want 0)"
+echo "$out" | grep -q "TASK ALREADY COMPLETE" || { echo "$out" >&2; fail "phase 1b: no ALREADY_DONE report"; }
+case "$out" in *"$MARKER"*) fail "phase 1b: a completed task was re-run";; esac
+[ "$(nsessions)" = 0 ] || fail "phase 1b: a session dir was created"
+assert_escape "phase 1b" "$out"
+note "C==A with done: ALREADY_DONE, and the escape is named"
+
 # ── phase 2: the roll-forward -> ACTIVATION_FAILED, and NOTHING is dispatched ─
 echo "== phase 2: my generation FAILED in the bootlog -> report, do NOT re-run"
 newdata
@@ -286,6 +314,7 @@ out=$(run "$BIN" --store "$STORE"); rc=$?
 echo "$out" | grep -q "TASK ALREADY COMPLETE" || { echo "$out" >&2; fail "phase 3: no ALREADY_DONE report"; }
 case "$out" in *"$MARKER"*) fail "phase 3: a completed task was re-run";; esac
 [ "$(nsessions)" = 0 ] || fail "phase 3: a session dir was created"
+assert_escape "phase 3" "$out"
 note "an activation that took is not repeated, and neither is a completed task"
 
 # ── phase 3b: it TOOK, but nothing on record says the TASK finished ─────────
@@ -420,6 +449,32 @@ grep -q "RECONSIDERING" "$TMP/err" \
     || { cat "$TMP/err" >&2; fail "phase 4e: the override was SILENT"; }
 [ "$(nsessions)" = 1 ] || fail "phase 4e: the task was not started"
 note "$(grep RECONSIDERING "$TMP/err")"
+
+# ── phase 4f: a done that PREDATES a later attempt does not settle it ──────
+# The loader's done used to be STICKY and POSITION-BLIND: ANY done line for
+# the task pre-empted ANY later unaccounted attempt, and the report claimed
+# "a LATER run of this task COMPLETED" over a record where the done PREDATES
+# the attempt — inverted.  A done may settle only the attempts that PRECEDE
+# it.  Here the completed run (done, epoch ...010) is FOLLOWED by a new,
+# never-accounted activation attempt (epoch ...020): the STOP stays (repeating
+# an unaccounted activation is the blind re-apply this unit exists to stop —
+# a false RUN is the guarded failure mode, a false stop is the SAFE error and
+# is escapable), and the REPORT becomes the honest UNRESOLVED one.
+echo "== phase 4f: done BEFORE a later unaccounted attempt -> UNRESOLVED, never ALREADY_DONE"
+newdata
+plant_store 8 "8 in-progress 1700000000" "8 ok 1700000010"
+record "1700000010 $TASK done - - 0 -"
+record "1700000020 $TASK attempt - - 0 /fx/disk/agent-config.dhall"
+out=$(run "$BIN" --store "$STORE"); rc=$?
+[ "$rc" = 0 ] || fail "phase 4f: rc=$rc (want 0)"
+echo "$out" | grep -q "STORE CANNOT ACCOUNT FOR" \
+    || { echo "$out" >&2; fail "phase 4f: no UNRESOLVED report for an attempt that POSTDATES the done"; }
+case "$out" in *"TASK ALREADY COMPLETE"*)
+    fail "phase 4f: a done line that PREDATES the attempt settled it — the loader's done is position-blind";; esac
+case "$out" in *"$MARKER"*) fail "phase 4f: the loop ran";; esac
+[ "$(nsessions)" = 0 ] || fail "phase 4f: a session dir was created"
+assert_escape "phase 4f" "$out"
+note "a done that predates the attempt no longer settles it: UNRESOLVED (still a stop, honestly reported)"
 
 # ── phase 5: a completed task that never activated -> do not re-run ─────────
 echo "== phase 5: a completed task with no activation -> ALREADY_DONE"
@@ -588,6 +643,125 @@ rm -rf "$TMP/probe-data"
 "$TMP/probe" "$TMP/probe-data" || fail "phase 5e: the record does not survive its own field caps"
 note "$("$TMP/probe" "$TMP/probe-data.2" | sed 's/^/   /')"
 
+# ── phase 5g: UNIT ASYMMETRY at the record API — done order + torn tail ────
+# Two invariants this oracle cannot observe through the binary's outside (the
+# report WORDING is covered by 4f; the loader's ORDER semantics and the
+# O_APPEND tail repair are not observable via any report), probed straight at
+# fx_outcome_* — once against THIS tree and once against the PRE-FIX
+# outcome.c (the committed source, git HEAD), so every assertion below is
+# shown to be able to FAIL:
+#   done-first    : done line, THEN a later unaccounted attempt.  The loader
+#                   must not let the earlier done settle the later attempt
+#                   (fixed: UNRESOLVED; pre-fix: ALREADY_DONE — the bug).
+#   attempt-first : the ORDINARY order (attempt, then done) must be UNCHANGED
+#                   by the fix: ALREADY_DONE in both builds.
+#   tailrepair    : a torn (unterminated) tail, then ONE well-formed record.
+#                   O_APPEND used to MERGE the new record into the torn
+#                   prefix — both lines lost, the next boot reads "nothing on
+#                   record" and RUNS; the writer now closes a torn tail with
+#                   a newline BEFORE appending (fixed: the record survives;
+#                   pre-fix: lost).
+echo "== phase 5g: done ordering + torn-tail repair — unit asymmetry vs the committed outcome.c"
+mkdir -p "$TMP/prefix/llm2" || fail "phase 5g: cannot create the pre-fix source dir"
+git show HEAD:src/llm2/outcome.c > "$TMP/prefix/llm2/outcome.c" 2>/dev/null \
+    || fail "phase 5g: cannot extract the committed src/llm2/outcome.c (git HEAD)"
+git show HEAD:src/llm2/outcome.h > "$TMP/prefix/llm2/outcome.h" 2>/dev/null \
+    || fail "phase 5g: cannot extract the committed src/llm2/outcome.h"
+cat > "$TMP/ordprobe.c" <<'CEOF'
+/* The record's ORDER and TAIL invariants, straight at the API.  argv:
+ *   ordprobe done-first DIR    record(done) then record(attempt) -> verdict name
+ *   ordprobe attempt-first DIR record(attempt) then record(done) -> verdict name
+ *   ordprobe tailrepair DIR    good record + torn tail + good record -> visible|lost
+ * Exit 0 always (2 on a setup error); the CALLER asserts the printed word. */
+#define _POSIX_C_SOURCE 200809L
+#include <stdio.h>
+#include <string.h>
+#include <sys/stat.h>
+#include "outcome.h"
+
+static const char *vname(FxVerdict v) {
+    switch (v) {
+    case FX_VERDICT_RUN: return "RUN";
+    case FX_VERDICT_ACTIVATION_FAILED: return "ACTIVATION_FAILED";
+    case FX_VERDICT_ALREADY_DONE: return "ALREADY_DONE";
+    case FX_VERDICT_SUPERSEDED: return "SUPERSEDED";
+    case FX_VERDICT_UNRESOLVED: return "UNRESOLVED";
+    default: return "ERROR";
+    }
+}
+
+int main(int argc, char **argv) {
+    if (argc < 3) return 2;
+    const char *dir = argv[2], *task = "0123456789abcdef";
+    (void)mkdir(dir, 0755);
+    if (strcmp(argv[1], "done-first") == 0) {
+        if (fx_outcome_record(dir, task, "done", "s1", "r1", 0, NULL) != 0) return 2;
+        if (fx_outcome_record(dir, task, "attempt", "s2", "r2", 0,
+                              "/fx/disk/agent-config.dhall") != 0) return 2;
+        FxOutcome o; char rep[512];
+        FxVerdict v = fx_outcome_verdict(dir, task, NULL, NULL, &o,
+                                         rep, sizeof rep, NULL, 0);
+        printf("%s\n", vname(v));
+        return 0;
+    }
+    if (strcmp(argv[1], "attempt-first") == 0) {
+        if (fx_outcome_record(dir, task, "attempt", "s1", "r1", 0,
+                              "/fx/disk/agent-config.dhall") != 0) return 2;
+        if (fx_outcome_record(dir, task, "done", "s1", "r1", 0, NULL) != 0) return 2;
+        FxOutcome o; char rep[512];
+        FxVerdict v = fx_outcome_verdict(dir, task, NULL, NULL, &o,
+                                         rep, sizeof rep, NULL, 0);
+        printf("%s\n", vname(v));
+        return 0;
+    }
+    if (strcmp(argv[1], "tailrepair") == 0) {
+        const char *t2 = "9999999999999999";
+        if (fx_outcome_record(dir, task, "attempt", "s1", "r1", 0, "a") != 0) return 2;
+        /* a torn tail: a prefix with NO terminating newline (crash mid-write) */
+        char path[1024];
+        snprintf(path, sizeof path, "%s/attempts.jsonl", dir);
+        FILE *f = fopen(path, "ab");
+        if (!f) return 2;
+        fputs("1700000000 ", f); fputs(t2, f); fputs(" resul", f); /* torn: "result" cut */
+        fclose(f);
+        /* the NEXT record must not merge into the torn prefix */
+        if (fx_outcome_record(dir, t2, "attempt", "s1", "r1", 0, "b") != 0) return 2;
+        FxOutcome o;
+        if (fx_outcome_record_load(dir, t2, &o) != 0) return 2;
+        printf("%s\n", o.has_attempt ? "visible" : "lost");
+        return 0;
+    }
+    return 2;
+}
+CEOF
+PFXV="$TMP/ordprobe-prefix"; FIXV="$TMP/ordprobe-fixed"
+cc -std=c11 -O2 -Wall -Wextra -I"$ROOT/src" -I"$ROOT/src/llm2" \
+   -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
+   -o "$FIXV" "$TMP/ordprobe.c" "$ROOT/src/llm2/outcome.c" \
+   || fail "phase 5g: cannot build the order probe against this tree"
+cc -std=c11 -O2 -Wall -Wextra -I"$TMP/prefix/llm2" \
+   -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
+   -o "$PFXV" "$TMP/ordprobe.c" "$TMP/prefix/llm2/outcome.c" \
+   || fail "phase 5g: cannot build the order probe against the committed outcome.c"
+W=$("$PFXV" done-first "$TMP/od-pre") || fail "phase 5g: pre-fix done-first probe failed"
+[ "$W" = "ALREADY_DONE" ] \
+    || fail "phase 5g: the PRE-FIX loader no longer shows the position-blind done ('$W') — the asymmetry probe proves nothing"
+W=$("$FIXV" done-first "$TMP/od-fix") || fail "phase 5g: fixed done-first probe failed"
+[ "$W" = "UNRESOLVED" ] \
+    || fail "phase 5g: the fixed loader let a done that PREDATES the attempt settle it ('$W')"
+W=$("$PFXV" attempt-first "$TMP/od-ord-pre") || fail "phase 5g: pre-fix attempt-first probe failed"
+[ "$W" = "ALREADY_DONE" ] || fail "phase 5g: the ordinary attempt-then-done order broke ('$W')"
+W=$("$FIXV" attempt-first "$TMP/od-ord-fix") || fail "phase 5g: fixed attempt-first probe failed"
+[ "$W" = "ALREADY_DONE" ] \
+    || fail "phase 5g: the fix changed the ORDINARY attempt-then-done case ('$W') — a genuine completion became a re-run"
+W=$("$PFXV" tailrepair "$TMP/tr-pre") || fail "phase 5g: pre-fix tailrepair probe failed"
+[ "$W" = "lost" ] \
+    || fail "phase 5g: the PRE-FIX writer did not merge the next record into the torn tail ('$W') — the asymmetry probe proves nothing"
+W=$("$FIXV" tailrepair "$TMP/tr-fix") || fail "phase 5g: fixed tailrepair probe failed"
+[ "$W" = "visible" ] \
+    || fail "phase 5g: a record appended after a torn tail was LOST ('$W') — the next boot would read nothing and RUN"
+note "unit asymmetry: done-before-attempt ALREADY_DONE(pre-fix) -> UNRESOLVED(fixed); attempt-then-done unchanged; a torn tail no longer eats the next record"
+
 # ── phase 6: the store is NEVER guessed ────────────────────────────────────
 echo "== phase 6: a verdict that needs the store FAILS LOUDLY when it is absent"
 newdata
@@ -618,6 +792,128 @@ grep -c " attempt " "$REC" | grep -q '^2$' \
     || { cat "$REC"; fail "phase 7: the blind build's re-activation is not on the record"; }
 note "ASYMETRY PROVEN: identical state, identical fixture — the blind build re-ran"
 note "and re-activated the task (2 attempts on record); the real build refused it."
+
+# ── phase 8: the tool-table bound — fx_write's surface is HOST-DECLARED ────
+# The review measured the hole at tools/fx-verbs-server.c native_write: it
+# resolved an ARBITRARY path under FX_VERB_ROOT and opened it O_TRUNC, so a
+# model could fx_read the record, learn its task id, and fx_write the record
+# back without its own lines — the next boot sees no attempt, decides RUN and
+# re-issues the crasher: the oscillator resurrected by a motivated model.
+# The loop's guarantee is now a FACT OF THE TOOL TABLE (outside the guest a
+# tool vocabulary is a policy; inside it is a fact): fx_write may write ONLY
+# the exact paths in the host-declared FX_AGENT_WRITABLE set, and the record
+# directory and the store are in NO default set.  ASYMMETRY, both directions,
+# against the PRE-FIX server built from the committed source: the record-path
+# write SUCCEEDS before the fix (the hole, re-measured here) and is REFUSED
+# after it, while the task-config write STILL SUCCEEDS after — a fix that
+# refuses everything is not a fix.
+echo "== phase 8: fx_write writes ONLY the host-declared set (record refused, config allowed)"
+mkdir -p "$TMP/prefix/tools" || fail "phase 8: cannot create the pre-fix source dir"
+git show HEAD:tools/fx-verbs-server.c > "$TMP/prefix/tools/fx-verbs-server.c" 2>/dev/null \
+    || fail "phase 8: cannot extract the committed tools/fx-verbs-server.c (git HEAD)"
+cc -std=c11 -O2 -Wall -Wextra -I"$TMP/prefix" -I"$ROOT/src/vendor/yyjson" \
+   -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
+   -o "$TMP/vs-prefix" "$TMP/prefix/tools/fx-verbs-server.c" \
+   "$TMP/prefix/llm2/outcome.c" "$ROOT/src/vendor/yyjson/yyjson.c" \
+   || fail "phase 8: cannot build the pre-fix fx-verbs-server"
+WR="$TMP/wroot"                       # the model's view: FX_VERB_ROOT
+WRP="$TMP/wroot-prefix"               # the PRE-FIX server's own root
+mkdir -p "$WR/fx/disk/agent-data" "$WRP/fx/disk/agent-data" \
+    || fail "phase 8: cannot lay out the writable-set roots"
+printf 'PRE-EXISTING RECORD LINE\n' > "$WRP/fx/disk/agent-data/attempts.jsonl"
+printf 'PRE-EXISTING RECORD LINE\n' > "$WR/fx/disk/agent-data/attempts.jsonl"
+WS_ENV="FX_AGENT_WRITABLE=/fx/disk/agent-config.dhall"
+drive() { # drive BIN ROOT ENVEXTRA PATH CONTENT -> "exitcode\nreply-text"
+    _b=$1 _r=$2 _e=$3 _p=$4 _c=$5
+    # `env` (not a shell assignment prefix): $_e expands AFTER parsing, so an
+    # assignment-prefix would be taken as the command name.
+    env FX_VERB_ROOT="$_r" $_e python3 - "$_b" "$_p" "$_c" <<'PYEOF' || fail "phase 8: driver failed"
+import json, os, subprocess, sys
+srv = subprocess.Popen([sys.argv[1]], stdin=subprocess.PIPE,
+                       stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+def req(obj):
+    srv.stdin.write((json.dumps(obj) + "\n").encode()); srv.stdin.flush()
+    return srv.stdout.readline().decode()
+req({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+srv.stdin.write((json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}) + "\n").encode()); srv.stdin.flush()
+d = json.loads(req({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                    "params": {"name": "fx_write",
+                               "arguments": {"path": sys.argv[2],
+                                             "content": sys.argv[3]}}}))
+srv.stdin.close(); srv.wait(timeout=5)
+text = d["result"]["content"][0]["text"]
+sys.stdout.write(text)
+PYEOF
+}
+# BEFORE (the hole, re-measured): the committed server writes the RECORD path.
+TXT=$(drive "$TMP/vs-prefix" "$WRP" "$WS_ENV" /fx/disk/agent-data/attempts.jsonl 'FORGED-RECORD-LINE')
+case "$TXT" in exit=0*) ;; *) printf '%s\n' "$TXT" >&2
+    fail "phase 8: the PRE-FIX server did NOT write the record path — the asymmetry probe proves nothing";; esac
+grep -q 'FORGED-RECORD-LINE' "$WRP/fx/disk/agent-data/attempts.jsonl" \
+    || fail "phase 8: the PRE-FIX write of the record did not land (probe is vacuous)"
+note "pre-fix: the record path was WRITABLE (the hole, measured): $(printf '%s\n' "$TXT" | head -1)"
+# AFTER: the fixed server REFUSES the record path, LOUDLY.
+TXT=$(drive "$VS" "$WR" "$WS_ENV" /fx/disk/agent-data/attempts.jsonl 'FORGED-RECORD-LINE')
+case "$TXT" in exit=1*) ;; *) printf '%s\n' "$TXT" >&2
+    fail "phase 8: fx_write on the record path did not exit 1 — the writable set does not hold";; esac
+printf '%s\n' "$TXT" | grep -q "fx/disk/agent-data/attempts.jsonl" \
+    || { printf '%s\n' "$TXT" >&2; fail "phase 8: the refusal does not NAME the path"; }
+printf '%s\n' "$TXT" | grep -q "FX_AGENT_WRITABLE" \
+    || { printf '%s\n' "$TXT" >&2; fail "phase 8: the refusal does not NAME the set"; }
+printf '%s\n' "$TXT" | grep -q "host-declared" \
+    || { printf '%s\n' "$TXT" >&2; fail "phase 8: the refusal does not say the set is host-declared"; }
+grep -q 'PRE-EXISTING RECORD LINE' "$WR/fx/disk/agent-data/attempts.jsonl" \
+    || fail "phase 8: the refused write MODIFIED the record"
+grep -q 'FORGED-RECORD-LINE' "$WR/fx/disk/agent-data/attempts.jsonl" \
+    && fail "phase 8: the refused write LANDED in the record"
+note "fixed: the record path is REFUSED (exit 1, path + set + host-declared named), file untouched"
+# AFTER: the TASK CONFIG path (the one path the harness tells the agent to
+# write) STILL SUCCEEDS — the other direction of the asymmetry.
+TXT=$(drive "$VS" "$WR" "$WS_ENV" /fx/disk/agent-config.dhall 'let x = 1 in x')
+case "$TXT" in exit=0*) ;; *) printf '%s\n' "$TXT" >&2
+    fail "phase 8: fx_write on the TASK CONFIG path was refused — the fix broke the product to close the hole";; esac
+[ "$(cat "$WR/fx/disk/agent-config.dhall")" = 'let x = 1 in x' ] \
+    || fail "phase 8: the allowed write did not land"
+note "fixed: the task-config write still succeeds (exit 0, content round-trips)"
+# AFTER: a '..' spelling cannot reach around the set (the membership check
+# runs on the CANONICALIZED path, so this spelling names exactly the record).
+TXT=$(drive "$VS" "$WR" "$WS_ENV" /fx/disk/agent-config.dhall/../agent-data/attempts.jsonl 'FORGED-RECORD-LINE')
+case "$TXT" in exit=1*) ;; *) printf '%s\n' "$TXT" >&2
+    fail "phase 8: a '..' spelling reached around the writable set";; esac
+grep -q 'FORGED-RECORD-LINE' "$WR/fx/disk/agent-data/attempts.jsonl" \
+    && fail "phase 8: the traversal write LANDED in the record"
+# AFTER, DEFAULT: with FX_AGENT_WRITABLE UNSET the set is exactly the task
+# config path — never "unrestricted", and never the record.
+TXT=$(drive "$VS" "$WR" "" /fx/disk/agent-config.dhall 'let y = 2 in y')
+case "$TXT" in exit=0*) ;; *) printf '%s\n' "$TXT" >&2
+    fail "phase 8: the DEFAULT set no longer contains the task config path";; esac
+TXT=$(drive "$VS" "$WR" "" /fx/disk/agent-data/attempts.jsonl 'FORGED-RECORD-LINE')
+case "$TXT" in exit=1*) ;; *) printf '%s\n' "$TXT" >&2
+    fail "phase 8: with FX_AGENT_WRITABLE unset, the record path was WRITABLE — the default re-opens the hole";; esac
+note "fixed, default (unset): exactly the task config is writable; the record still is not"
+# READS STAY OPEN (the honest bound, asserted so it cannot drift): the record
+# is not a secret, and fx_read settling nothing is the design (outcome.h).
+TXT=$(FX_VERB_ROOT="$WR" python3 - "$VS" <<'PYEOF' || fail "phase 8: read driver failed"
+import json, subprocess, sys
+srv = subprocess.Popen([sys.argv[1]], stdin=subprocess.PIPE,
+                       stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+def req(obj):
+    srv.stdin.write((json.dumps(obj) + "\n").encode()); srv.stdin.flush()
+    return srv.stdout.readline().decode()
+req({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+srv.stdin.write((json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}) + "\n").encode()); srv.stdin.flush()
+d = json.loads(req({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                    "params": {"name": "fx_read",
+                               "arguments": {"path": "/fx/disk/agent-data/attempts.jsonl"}}}))
+srv.stdin.close(); srv.wait(timeout=5)
+sys.stdout.write(d["result"]["content"][0]["text"])
+PYEOF
+)
+case "$TXT" in exit=0*) ;; *) printf '%s\n' "$TXT" >&2
+    fail "phase 8: fx_read of the record failed — the comment states reads are open; the code must match it";; esac
+printf '%s\n' "$TXT" | grep -q 'PRE-EXISTING RECORD LINE' \
+    || { printf '%s\n' "$TXT" >&2; fail "phase 8: fx_read did not return the record's content"; }
+note "fx_read of the record still works (reads are open by design — the bound is on WRITE)"
 
 echo "PASS outcome: nothing-on-record RUNS and records the attempt; a run the TURN LIMIT"
 echo "              stopped records NO done (and a run that FINISHED does); an activation that"

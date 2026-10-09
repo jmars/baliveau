@@ -24,10 +24,15 @@
 #   (the running root's bin wins; usr/fx-core/bin then beats the store decoy),
 #   the STORE-SCOPED refusal (a row carrying /fx/disk/store will not run when
 #   that store is absent — it names the path instead of exec'ing a stub that
-#   would have failed downstream), the scrubbed child env (RATTAN_*/LD_* absent
-#   from the verb's environment), and the failure paths (unknown tool ->
-#   JSON-RPC error, not a crash; oversize line -> error and the server
-#   survives; verb binary missing -> exit=127).
+#   would have failed downstream), the WRITABLE SET (fx_write refuses every
+#   path outside the host-declared FX_AGENT_WRITABLE set — including the
+#   harness's own record attempts.jsonl, a '..' spelling of it, and a symlink
+#   at the final path — while the set's own paths still write; and with the
+#   variable UNSET the default set is exactly /fx/disk/agent-config.dhall),
+#   the scrubbed child env (RATTAN_*/LD_* absent from the verb's environment),
+#   and the failure paths (unknown tool -> JSON-RPC error, not a crash;
+#   oversize line -> error and the server survives; verb binary missing ->
+#   exit=127).
 #
 # The guest (musl) build is verified by tools/build.sh; this test runs the
 # native build against the stub root.
@@ -140,6 +145,10 @@ bin = os.path.abspath(sys.argv[2])
 env = {
     "PATH": "/usr/bin:/bin",
     "FX_VERB_ROOT": root,
+    # the host-declared writable set for THIS smoke run: /note.txt, plus
+    # /note-link (a symlink fixture) so the O_NOFOLLOW check below reaches
+    # open() instead of being refused by the set gate first
+    "FX_AGENT_WRITABLE": "/note.txt:/note-link",
     # planted keys the verb child's scrubbed env must NOT contain:
     "RATTAN_ENABLE": "1",
     "LD_PRELOAD": "/tmp/evil.so",
@@ -323,6 +332,49 @@ ok("fx_write", tool_text(d).startswith("exit=0\n"), tool_text(d))
 ok("fx_write landed inside the root (sandboxed)",
    open(os.path.join(root, "note.txt")).read() == "hello fx\n"
    and not os.path.exists("/note.txt"))
+
+# 13b — THE WRITABLE SET: fx_write's surface is the host-declared closed set
+# (FX_AGENT_WRITABLE).  A path OUTSIDE the set is REFUSED loudly — it exits 1,
+# NAMES the path, NAMES the set and says the set is host-declared — and the
+# file is neither created nor touched.  The harness's own record path is in NO
+# set: a model that could rewrite attempts.jsonl could erase its own failed
+# activation and re-issue it blindly (the oscillator the observation loop
+# exists to stop).
+rec = os.path.join(root, "fx/disk/agent-data/attempts.jsonl")
+os.makedirs(os.path.dirname(rec), exist_ok=True)
+open(rec, "w").write("PRE-EXISTING RECORD LINE\n")
+d = call("fx_write", {"path": "/fx/disk/agent-data/attempts.jsonl",
+                      "content": "FORGED-RECORD-LINE"}, 70)
+txt = tool_text(d)
+ok("fx_write outside the writable set -> exit=1, REFUSED, naming path + set "
+   "+ host-declared",
+   txt.startswith("exit=1\n") and "REFUSED" in txt
+   and "/fx/disk/agent-data/attempts.jsonl" in txt
+   and "FX_AGENT_WRITABLE" in txt and "host-declared" in txt, txt)
+ok("the refused write left the record file untouched",
+   open(rec).read() == "PRE-EXISTING RECORD LINE\n", repr(open(rec).read()))
+# the membership check runs on the CANONICALIZED path, so a '..' spelling of
+# the record path cannot reach around the set
+d = call("fx_write", {"path": "/note.txt/../fx/disk/agent-data/attempts.jsonl",
+                      "content": "FORGED-RECORD-LINE"}, 71)
+txt = tool_text(d)
+ok("fx_write via a '..' spelling of a non-set path -> still REFUSED",
+   txt.startswith("exit=1\n") and "REFUSED" in txt, txt)
+ok("the traversal write did not land either",
+   open(rec).read() == "PRE-EXISTING RECORD LINE\n", repr(open(rec).read()))
+# a symlink at the final path must not redirect an allowed write: /note-link
+# IS in the writable set, so the set gate passes and open() itself must refuse
+# (O_NOFOLLOW — a pre-planted symlink must not redirect a granted write at
+# the record, or any other file)
+os.symlink(rec, os.path.join(root, "note-link"))
+d = call("fx_write", {"path": "/note-link", "content": "x"}, 72)
+txt = tool_text(d)
+ok("fx_write through a symlink at the final path -> refused at open (O_NOFOLLOW)",
+   txt.startswith("exit=1\n") and "cannot create" in txt, txt)
+ok("the symlinked record file was not redirected",
+   open(rec).read() == "PRE-EXISTING RECORD LINE\n", repr(open(rec).read()))
+os.unlink(os.path.join(root, "note-link"))
+
 d = call("fx_read", {"path": "/note.txt"}, 21)
 ok("fx_read round-trips", tool_text(d) == "exit=0\nhello fx\n", repr(tool_text(d)))
 d = call("fx_read", {"path": "/nope"}, 22)
@@ -473,6 +525,44 @@ ok("not store-scoped: fx_what still runs in the same store-less root",
    txt.startswith("exit=0\n") and "what:/usr/bin/fxsh:install" in txt, txt)
 s3.stdin.close()
 s3.wait(timeout=5)
+
+# ── fourth instance: FX_AGENT_WRITABLE UNSET — the DEFAULT set ───────────────
+# The default is the ONE path this harness's own deployment contract tells the
+# agent to write (/fx/disk/agent-config.dhall), NEVER "unrestricted": the
+# record, the store, the bootlog and CURRENT are in no default set, so a
+# deployment that never sets the variable cannot have its observation loop
+# defeated by an fx_write.  Pinned here so the default cannot silently drift
+# back toward "anywhere under the root" (which is where the review measured
+# the hole).
+env4 = dict(env); del env4["FX_AGENT_WRITABLE"]
+s4 = subprocess.Popen([bin], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                      stderr=subprocess.PIPE, env=env4)
+def req4(obj):
+    os.write(s4.stdin.fileno(), (json.dumps(obj) + "\n").encode())
+    return json.loads(s4.stdout.readline())
+req4({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+os.write(s4.stdin.fileno(), (json.dumps(
+    {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}) + "\n").encode())
+def call4(name, args, cid):
+    d = req4({"jsonrpc": "2.0", "id": cid, "method": "tools/call",
+              "params": {"name": name, "arguments": args}})
+    return d["result"]["content"][0]["text"]
+txt = call4("fx_write", {"path": "/fx/disk/agent-config.dhall", "content": "let x = 1 in x\n"}, 80)
+ok("default set (FX_AGENT_WRITABLE unset): the task config path is writable",
+   txt.startswith("exit=0\n")
+   and open(os.path.join(root, "fx/disk/agent-config.dhall")).read() == "let x = 1 in x\n",
+   txt)
+txt = call4("fx_write", {"path": "/note.txt", "content": "nope"}, 81)
+ok("default set: NOTHING ELSE is writable (the smoke's own /note.txt refused)",
+   txt.startswith("exit=1\n") and "REFUSED" in txt
+   and "FX_AGENT_WRITABLE" in txt, txt)
+ok("default set: the refusal NAMES the default it fell back to",
+   "/fx/disk/agent-config.dhall" in txt, txt)
+ok("default set: the refused write did not touch /note.txt",
+   open(os.path.join(root, "note.txt")).read() == "hello fx\n",
+   repr(open(os.path.join(root, "note.txt")).read()))
+s4.stdin.close()
+s4.wait(timeout=5)
 
 print("SMOKE: %d checks, %d failed" % (checks["n"], checks["failed"]))
 sys.exit(1 if checks["failed"] else 0)

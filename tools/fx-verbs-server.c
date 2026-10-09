@@ -38,7 +38,9 @@
  *                                             (native) the CURRENT generation,
  *                                             one number
  *   fx_read          read a file              (native: open/read under the root)
- *   fx_write         write a file             (native: open/write under the root)
+ *   fx_write         write a file             (native: ONLY inside the host-
+ *                                         declared FX_AGENT_WRITABLE set; see
+ *                                         THE WRITABLE SET above)
  *   fx_ls            list a directory         (native: opendir under the root)
  *
  * THE OUTCOME INSTRUMENT.  fx_outcome / fx_generation are HOW AN AGENT SEES THE
@@ -149,6 +151,27 @@ extern char **environ; /* the server's own environment (pass-through source) */
 
 /* ── the root ───────────────────────────────────────────────────────────── */
 
+/* THE WRITABLE SET — fx_write's write surface is a CLOSED, NAMED SET the
+ * HOST fixes, not a policy the model negotiates.  Outside the guest a tool
+ * vocabulary is a policy; inside it is a FACT, so the fact is enforced in
+ * the table: fx_write may only create-or-truncate a path in FX_AGENT_WRITABLE
+ * (env, read at call time like FX_VERB_ROOT: a colon-separated list of
+ * ROOT-RELATIVE, EXACT file paths — no directories, no globs), and a write
+ * outside the set is REFUSED loudly (exit 1, naming the path AND the set).
+ * See FX_DEFAULT_WRITABLE below for the unset case.  WHY THE SET EXISTS: the
+ * harness's observation loop rests on <VIBE_RUNTIME_DIR>/attempts.jsonl being
+ * beyond the model's WRITE reach — a model that could rewrite the record
+ * could erase its own failed activation and re-issue it blindly (the
+ * oscillator the loop exists to stop).  fx_read stays OPEN: the record is
+ * not a secret, a read settles and erases nothing, and the loop's input is
+ * the harness's own boot-time consume, not the model's.  The closed set is
+ * closed because the table has no other file-writing shape: fx_write can
+ * only open/create/truncate a regular file (opened O_NOFOLLOW, so a
+ * pre-planted symlink at the final path cannot redirect it — the table has
+ * no verb that creates a symlink, renames, chmods or unlinks), and the only
+ * other write-shaped rows (fx_activate, fx_rollback) write the STORE through
+ * the activator's own pinned argv, never arbitrary file content. */
+
 /* FX_VERB_ROOT: the filesystem root prefix every command lookup and file path
  * resolves under.  Read at call time so tests can set it per spawn. */
 static const char *fx_root(void) {
@@ -172,6 +195,92 @@ static char *root_join(const char *rel) {
     memcpy(out + rl + 1, rel, llen);
     out[rl + 1 + llen] = '\0';
     return out;
+}
+
+/* ── the writable set (fx_write's closed write surface) ─────────────────── */
+
+/* The DEFAULT set when FX_AGENT_WRITABLE is UNSET: exactly the ONE path this
+ * harness's own deployment contract tells the agent to write — the task
+ * config the guest prompt names (/fx/disk/agent-config.dhall).  The default
+ * is never "unrestricted" and never a directory: the harness's durable
+ * record (<VIBE_RUNTIME_DIR>/attempts.jsonl), the store, the bootlog and
+ * CURRENT are in NO default set, so a deployment that never sets the
+ * variable cannot have its observation loop defeated by an fx_write.  A
+ * SET-BUT-EMPTY FX_AGENT_WRITABLE means the host declares nothing writable
+ * (fx_write refuses everything) — distinct from unset by construction. */
+#define FX_DEFAULT_WRITABLE "/fx/disk/agent-config.dhall"
+
+/* The set in force, read at call time.  Never NULL; may be "" (refuse all). */
+static const char *writable_set(void) {
+    const char *w = getenv("FX_AGENT_WRITABLE");
+    return w ? w : FX_DEFAULT_WRITABLE;
+}
+
+/* Lexically canonicalize an ABSOLUTE path to its ROOT-RELATIVE form: resolve
+ * "." and ".." components, drop empty ones.  A ".." that would climb above
+ * the ROOT is a refusal (root_join only CONCATENATES strings, so
+ * "/../../etc/passwd" under a stub root would resolve to the HOST's
+ * /etc/passwd — and a ".." spelling must never reach around the writable
+ * set either).  Returns a malloc'd "a/b/c" ("" for the root itself), or NULL
+ * on a non-absolute / root-escaping / too-long path. */
+static char *canon_root_rel(const char *abs) {
+    if (!abs || abs[0] != '/') return NULL;
+    size_t cap = strlen(abs) + 1;
+    char *out = malloc(cap);
+    if (!out) return NULL;
+    size_t olen = 0;
+    int depth = 0;
+    const char *p = abs;
+    while (*p) {
+        while (*p == '/') p++;
+        if (!*p) break;
+        const char *seg = p;
+        while (*p && *p != '/') p++;
+        size_t sl = (size_t)(p - seg);
+        if (sl == 1 && seg[0] == '.') continue;
+        if (sl == 2 && seg[0] == '.' && seg[1] == '.') {
+            if (depth == 0) { free(out); return NULL; } /* escapes the root */
+            while (olen > 0 && out[olen - 1] != '/') olen--;
+            if (olen > 0) olen--;
+            depth--;
+            continue;
+        }
+        if (olen + sl + 1 >= cap) { free(out); return NULL; } /* bounded */
+        if (olen) out[olen++] = '/';
+        memcpy(out + olen, seg, sl);
+        olen += sl;
+        depth++;
+    }
+    out[olen] = '\0';
+    return out;
+}
+
+/* Is `canon` (a canonicalized root-relative path) an EXACT member of the
+ * writable set?  Every entry is canonicalized the SAME way before the
+ * comparison, so "/a//b/./c" in the set matches a request for "/a/b/c", and
+ * no ".." spelling can reach around the set. */
+static int in_writable_set(const char *canon, const char *set) {
+    const char *e = set;
+    while (e && *e) {
+        while (*e == ':') e++; /* empty entries are ignored */
+        if (!*e) break;
+        const char *end = e;
+        while (*end && *end != ':') end++;
+        size_t el = (size_t)(end - e);
+        char ent[PATH_MAX];
+        if (el > 0 && el < sizeof ent) {
+            memcpy(ent, e, el);
+            ent[el] = '\0';
+            char *cent = canon_root_rel(ent);
+            if (cent) {
+                int hit = (strcmp(cent, canon) == 0);
+                free(cent);
+                if (hit) return 1;
+            }
+        }
+        e = end;
+    }
+    return 0;
 }
 
 /* Look a verb command up under the root: first <ROOT>/bin — the RUNNING
@@ -466,9 +575,59 @@ static int native_read(const char *path, Capture *out, int *exitcode) {
 
 static int native_write(const char *path, const char *content, size_t clen,
                         Capture *out, int *exitcode) {
+    if (!path || path[0] != '/') {
+        cap_append_str(out, "fx-verbs: fx_write REFUSED: '");
+        cap_append_str(out, path ? path : "(null)");
+        cap_append_str(out, "' is not an absolute path (fx_write addresses files as "
+                            "absolute paths under FX_VERB_ROOT)\n");
+        *exitcode = 1;
+        return 0;
+    }
     char *full = root_join(path);
     if (!full) { cap_append_str(out, "fx-verbs: path too long\n"); *exitcode = 1; return 0; }
-    int fd = open(full, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    /* THE WRITABLE SET GATE (see FX_DEFAULT_WRITABLE): canonicalize FIRST, so
+     * no ".." or "//" spelling can reach around the set, then require EXACT
+     * membership.  A refusal NAMES the path and the set and says the set is
+     * host-declared: it must be loud, never a silent no-op. */
+    char *canon = canon_root_rel(path);
+    if (!canon) {
+        cap_append_str(out, "fx-verbs: fx_write REFUSED: ");
+        cap_append_str(out, path);
+        cap_append_str(out, " does not name a path inside FX_VERB_ROOT (root=");
+        cap_append_str(out, fx_root());
+        cap_append_str(out, "); a '..' that climbs above the root is not a writable path\n");
+        *exitcode = 1;
+        free(full);
+        return 0;
+    }
+    const char *set = writable_set();
+    if (!in_writable_set(canon, set)) {
+        cap_append_str(out, "fx-verbs: fx_write REFUSED: ");
+        cap_append_str(out, full);
+        cap_append_str(out, " is not in the host-declared writable set "
+                            "FX_AGENT_WRITABLE='");
+        cap_append_str(out, set);
+        cap_append_str(out, "'. Only the exact files the HOST lists there may be "
+                            "written (the harness's own record and the store are "
+                            "deliberately outside every default set); to grant "
+                            "more, the operator must change FX_AGENT_WRITABLE — "
+                            "the model cannot widen it\n");
+        *exitcode = 1;
+        free(full);
+        free(canon);
+        return 0;
+    }
+    /* open the CANONICAL spelling, never the raw request: a granted path with
+     * redundant "//", "." or ".." components then resolves exactly as the set
+     * names it, and no '..' ever reaches open(). */
+    free(full);
+    full = root_join(canon);
+    free(canon);
+    if (!full) { cap_append_str(out, "fx-verbs: path too long\n"); *exitcode = 1; return 0; }
+    /* O_NOFOLLOW: a pre-existing symlink at the final path must not redirect
+     * the write (the table has no verb that creates one, but nothing stops a
+     * symlink that is already there). */
+    int fd = open(full, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, 0644);
     if (fd < 0) {
         char msg[PATH_MAX + 128];
         snprintf(msg, sizeof(msg), "fx-verbs: cannot create %s: %s\n",
@@ -758,8 +917,11 @@ static const Verb VERBS[] = {
       "Read a file and return its content. Paths resolve under FX_VERB_ROOT. "
       "Capped at 1 MiB. Argument: path." },
     { "fx_write", NULL, { NULL, NULL },
-      "Write a file (truncate-or-create; paths resolve under FX_VERB_ROOT like "
-      "fx_read). Arguments: path, content." },
+      "Write a file (create-or-truncate). The write surface is a CLOSED, HOST-DECLARED "
+      "SET: only the exact paths listed in FX_AGENT_WRITABLE (colon-separated, "
+      "root-relative) may be written — a write to anything else is REFUSED "
+      "(exit=1) naming the path and the set, and the model cannot widen the set. "
+      "Does not follow a symlink at the final path. Arguments: path, content." },
     { "fx_ls", NULL, { NULL, NULL },
       "List a directory: one entry per line, directories suffixed '/'. Paths resolve "
       "under FX_VERB_ROOT. Argument: path (default: the root itself)." },

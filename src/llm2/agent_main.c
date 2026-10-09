@@ -764,7 +764,18 @@ int agent_main_entry(int argc, char **argv) {
      * boot) and for BOTH builds: this is a property of the record, not of the
      * consume path the blind artifact compiles out.  A --resume is exempt: its
      * -p is ignored by the loop (the loaded transcript IS the conversation), so
-     * a resumed run must not re-bind the task to a prompt it did not use. */
+     * a resumed run must not re-bind the task to a prompt it did not use.
+     *
+     * THE SENSOR'S BOUND, STATED WHERE IT LIVES (measured, not inherited from
+     * any doc): the drift sensor can only compare against a binding that
+     * EXISTS, and a binding is written only by the non-resumed path below.  It
+     * is therefore SILENT for (1) records that predate the binding writer
+     * (an old attempts.jsonl has no `agent` line to compare against) and
+     * (2) a task only ever run via --resume (the binding is skipped although
+     * resume runs DO write attempt lines) — in both cases a first prompt
+     * drift passes unreported.  The record's own `agent` lines are still
+     * there for an operator to read; what is missing is the loud warning,
+     * not the data. */
     if (!resumed) {
         FxOutcomeBind bind;
         if (fx_outcome_bindings(data, task_id, agent, &bind) == 0) {

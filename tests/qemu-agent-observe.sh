@@ -357,10 +357,44 @@ DHALL
 # failed on the rolled-forward generation, the next boot rolls forward, the agent
 # refuses again.  That is why the agent row's console-ness is ASSERTED here (the
 # row that will actually run in the guest), and why the assertion proves it can
-# FAIL by rejecting a mutated copy of the same config.
+# FAIL by rejecting a mutated copy of the same config.  The match runs on
+# COMMENT-STRIPPED text (a `console = Some "console"` inside a -- comment used
+# to pass a non-console row), and it self-tests that immunity.  REMAINING BOUND,
+# stated honestly: it is still a TEXT match on the field assignment, not a
+# parsed Dhall field, and only the configs HANDED TO console_pin are checked —
+# a config never passed here is unchecked no matter what it declares.
 console_pin() { # console_pin CFG... — every fx-agent service row must be a console service
     python3 - "$@" <<'PYEOF'
 import re, sys
+
+def strip_comments(txt):
+    # Dhall line (--) and block ({- -}) comments, quote-aware.  Good enough
+    # for these GENERATED configs: none of their strings carries "--" or "{-".
+    out, i, n, in_str = [], 0, len(txt), False
+    while i < n:
+        c = txt[i]
+        if in_str:
+            out.append(c)
+            if c == "\\" and i + 1 < n:
+                out.append(txt[i + 1]); i += 1
+            elif c == '"':
+                in_str = False
+            i += 1
+            continue
+        if c == '"':
+            in_str = True; out.append(c); i += 1; continue
+        if txt.startswith("--", i):
+            while i < n and txt[i] != "\n": i += 1
+            continue
+        if txt.startswith("{-", i):
+            depth, i = 1, i + 2
+            while i < n and depth:
+                if txt.startswith("{-", i): depth += 1; i += 2
+                elif txt.startswith("-}", i): depth -= 1; i += 2
+                else: i += 1
+            continue
+        out.append(c); i += 1
+    return "".join(out)
 
 def rows(txt):
     return [r for r in re.split(r"(?=\{ name =)", txt) if "fx-agent/bin/fx-agent" in r]
@@ -368,9 +402,23 @@ def rows(txt):
 def nonconsole(txt):
     return [r for r in rows(txt) if 'console = Some "console"' not in r]
 
+# SELF-TEST (a test helper that can pass vacuously is the thing this project
+# has been bitten by repeatedly): a console assignment INSIDE A COMMENT must
+# not pass a genuinely NON-console row...
+probe = ('{ name = "x", argv = [ "/usr/fx-agent/bin/fx-agent" ],'
+         ' console = None Text }  -- console = Some "console"')
+if not nonconsole(strip_comments(probe)):
+    sys.exit("console pin: the matcher is COMMENT-BLIND — 'console = Some \"console\"' "
+             "inside a comment passed a NON-console row")
+# ... and a contradicting comment must not fail a genuinely-console one.
+probe2 = ('{ name = "x", argv = [ "/usr/fx-agent/bin/fx-agent" ],'
+          ' console = Some "console" }  -- console = None Text')
+if nonconsole(strip_comments(probe2)):
+    sys.exit("console pin: a comment wrongly FAILED a console row")
+
 paths, n = sys.argv[1:], 0
 for p in paths:
-    txt = open(p).read()
+    txt = strip_comments(open(p).read())
     r = rows(txt)
     if not r:
         sys.exit("console pin: no fx-agent service row in %s" % p)
@@ -381,14 +429,14 @@ for p in paths:
                  % (p, b.strip()[:300]))
 
 # FIREABILITY: the predicate must REJECT the same rows with console removed.
-txt = open(paths[0]).read()
+txt = strip_comments(open(paths[0]).read())
 mutated = "".join(re.sub(r'console = Some "console"', 'console = None Text', p)
                   if "fx-agent/bin/fx-agent" in p else p
                   for p in re.split(r"(?=\{ name =)", txt))
 if mutated == txt or not nonconsole(mutated):
     sys.exit("console pin: the mutant is not non-console — the pin cannot fail")
-print("console pin: %d fx-agent service row(s) are console services, and a "
-      "NON-console mutant is rejected" % n)
+print("console pin: %d fx-agent service row(s) are console services (comment-stripped "
+      "match, self-tested), and a NON-console mutant is rejected" % n)
 PYEOF
 }
 {
@@ -446,8 +494,9 @@ for variant in obs blind; do
     , mcp_servers =
       [ { command = "/usr/fx-agent/bin/fx-verbs-server"
         , args = [] : List Text
+        , env = Some { FX_AGENT_WRITABLE = "$AGENT_CONFIG" }
         }
-      ] : List { command : Text, args : List Text }
+      ]
     }
   ]
 }
@@ -466,10 +515,19 @@ out, text, cfg_path, cfg_file = sys.argv[1:5]
 content = open(cfg_file).read()
 def ev(name, obj):
     return "event: %s\ndata: %s\n\n" % (name, json.dumps(obj))
+# THE 4TH CALL IS THE RECORD-TAMPERING PROBE (SF1, in-guest): fx_write the
+# harness's own durable record — the exact move that resurrects the oscillator
+# (read the record, rewrite it without your task's lines; the next boot sees
+# no attempt, decides RUN and re-issues the crasher).  The tool server must
+# REFUSE it inside the guest; the assertions on boot 1 check the refusal AND
+# that the declared config write (call 2) still succeeded.
+FORGED = "1799999999 0000000000000000 done - - 0 -\nFORGED-RECORD-PROBE"
 calls = [
     ("call_obs_outcome",  "fx_outcome",  {}),
     ("call_obs_write",    "fx_write",    {"path": cfg_path, "content": content}),
     ("call_obs_activate", "fx_activate", {"config": cfg_path}),
+    ("call_obs_tamper",   "fx_write",    {"path": "/fx/disk/agent-data/attempts.jsonl",
+                                          "content": FORGED}),
 ]
 s = [ev("response.created", {"type": "response.created",
                              "response": {"id": "obs-fixture", "status": "in_progress"}}),
@@ -647,9 +705,26 @@ cp "$WORK/obs-1-transcript.jsonl" "$EVID/obs-boot1-transcript.jsonl"
 grep -q 'fx_outcome' "$WORK/obs-1-transcript.jsonl" || fail "[obs] boot 1: the fixture's fx_outcome call is not in the transcript"
 grep -q "current $V_B" "$WORK/obs-1-transcript.jsonl" \
     || { grep -o 'exit=0.current [0-9]*' "$WORK/obs-1-transcript.jsonl" | head -3; fail "[obs] boot 1: the fx_outcome tool result does not report the guest's real CURRENT (v$V_B)"; }
+# THE RECORD IS NOT MODEL-WRITABLE, IN THE GUEST (SF1): the fixture's 4th call
+# fx_writes the record path itself.  The refusal must be IN THE TRANSCRIPT
+# (naming the host-declared set), the forged content must be NOWHERE in the
+# durable record on the disk, and the agent's own CONFIG write (the path the
+# host declared) must still have SUCCEEDED — a fix that refused it would have
+# broken the product to close the hole.
+grep -q 'fx_write REFUSED' "$WORK/obs-1-transcript.jsonl" \
+    || { grep -o 'fx_write.\{0,90\}' "$WORK/obs-1-transcript.jsonl" | head -4; \
+         fail "[obs] boot 1: the in-guest fx_write of the RECORD was not REFUSED — the writable set does not hold in the guest"; }
+grep -q 'FX_AGENT_WRITABLE' "$WORK/obs-1-transcript.jsonl" \
+    || fail "[obs] boot 1: the record-write refusal does not name the host-declared set"
+grep -q 'FORGED-RECORD-PROBE' "$WORK/obs-1-attempts.txt" \
+    && { cat "$WORK/obs-1-attempts.txt"; fail "[obs] boot 1: forged content REACHED the durable record — the model can erase its own history in the guest"; }
+grep -q "bytes to $AGENT_CONFIG" "$WORK/obs-1-transcript.jsonl" \
+    || { grep -o 'wrote [0-9]* bytes.\{0,50\}' "$WORK/obs-1-transcript.jsonl" | head -3; \
+         fail "[obs] boot 1: the agent's own CONFIG write was refused — the guest's writable set broke the agent's one legitimate write"; }
 echo "qemu-agent-observe: [obs] boot 1 GREEN — the agent READ the outcome through fx_outcome (current v$V_B),"
 echo "                    wrote + ACTIVATED the crasher: v$V_A (hash recorded in the transcript), and its"
 echo "                    record ($(wc -l < "$WORK/obs-1-attempts.txt") lines) is ON THE DISK at /agent-data/attempts.jsonl"
+echo "                    — and its fx_write of the RECORD ITSELF was refused in-guest (FX_AGENT_WRITABLE named)"
 
 echo "=== qemu-agent-observe: [obs] boot 2 — the crasher's generation v$V_A boots and FAILS ==="
 boot "$WORK/img-obs.cpio.gz" "$WORK/obs-2.log"

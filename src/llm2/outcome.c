@@ -173,12 +173,32 @@ int fx_outcome_record(const char *data_dir, const char *task, const char *step,
 
     /* ONE write() of the whole line: a crash mid-flush can only leave a PREFIX
      * of a line, which the reader skips (it accepts a line only when it ends
-     * with a newline — see fx_outcome_record_load). */
-    int fd = open(path, O_WRONLY | O_CREAT | O_APPEND, 0644);
+     * with a newline — see fx_outcome_record_load).  BUT a prefix left behind
+     * is only HALF contained: this file is opened O_APPEND, so the NEXT record
+     * would be appended straight onto the torn tail and MERGE with it into one
+     * unparsable line — destroying a VALID record too (both lost -> the next
+     * boot reads "nothing on record" and RUNS).  So the writer repairs the
+     * tail FIRST: when the file is non-empty and its last byte is not a
+     * newline, a single '\n' is written before the record, closing the torn
+     * prefix as its own (skipped) line.  A crash between the two writes only
+     * ever leaves a BLANK line, which the reader skips harmlessly. */
+    int fd = open(path, O_RDWR | O_CREAT | O_APPEND, 0644);
     if (fd < 0) return -1;
     int rc = 0;
+    off_t sz = lseek(fd, 0, SEEK_END);
+    if (sz < 0) rc = -1;
+    if (rc == 0 && sz > 0) {
+        char last = 0;
+        ssize_t got = pread(fd, &last, 1, sz - 1);
+        if (got != 1) {
+            rc = -1;
+        } else if (last != '\n') {
+            ssize_t w = write(fd, "\n", 1);
+            if (w != 1) rc = -1;
+        }
+    }
     size_t off = 0;
-    while (off < (size_t)n) {
+    while (rc == 0 && off < (size_t)n) {
         ssize_t w = write(fd, line + off, (size_t)n - off);
         if (w < 0) {
             if (errno == EINTR) continue;
@@ -236,6 +256,16 @@ int fx_outcome_record_load(const char *data_dir, const char *task, FxOutcome *ou
         if (strcmp(step, "attempt") == 0) {
             out->has_attempt = 1;
             out->has_result = 0;
+            /* A done line may only settle attempts that PRECEDE it: this
+             * attempt was recorded AFTER any done seen so far, so that done
+             * cannot speak for it.  Without this the loader's done was sticky
+             * and POSITION-BLIND — a `done` that PREDATES a later unaccounted
+             * attempt (a --resume/--reconsider run that died before its tool
+             * result) still pre-empted it, and the report claimed "a LATER
+             * run of this task COMPLETED", which is inverted for that record.
+             * Line order is write order (the file is append-only with one
+             * writer), so position is the exact ordering. */
+            out->done = 0;
             out->version = version;
             out->epoch = epoch;
             copy_str(out->session, sizeof out->session, session);
@@ -249,10 +279,15 @@ int fx_outcome_record_load(const char *data_dir, const char *task, FxOutcome *ou
             }
         } else if (strcmp(step, "done") == 0) {
             out->done = 1;
-            /* The done line's own run/session identify the COMPLETED run; the
-             * recorded ATTEMPT's are the ones a report about that attempt must
-             * name, so they only fall back to this line when there is no
-             * attempt on record. */
+            /* the done line's own provenance: WHO completed the task.  The
+             * recorded ATTEMPT's session/run/epoch are the ones a report
+             * about that attempt must name, so they only fall back to this
+             * line when there is no attempt on record. */
+            out->done_epoch = epoch;
+            if (session[0] && strcmp(session, "-") != 0)
+                copy_str(out->done_session, sizeof out->done_session, session);
+            if (run[0] && strcmp(run, "-") != 0)
+                copy_str(out->done_run, sizeof out->done_run, run);
             if (!out->has_attempt) {
                 out->epoch = epoch;
                 if (session[0] && strcmp(session, "-") != 0)
@@ -457,9 +492,11 @@ FxVerdict fx_outcome_verdict(const char *data_dir, const char *task,
     /* The ONE legitimate way out of a refusal, NAMED IN EVERY STOP REPORT.  The
      * record is unwedged only by a LATER COMPLETED run of the same task (which
      * writes `done`), so the operator either forces one (--reconsider) or
-     * removes this task's lines.  Nothing in the harness settles it silently,
-     * and nothing MODEL-reachable does: an agent that could erase the evidence
-     * of its own failed activation could re-issue it blindly. */
+     * removes this task's lines.  Nothing in the harness settles it silently;
+     * on the model side the bound is the TOOL TABLE's, not a secrecy claim
+     * (see outcome.h): fx_write's surface is the host-declared closed set, and
+     * this record is in no set — an agent that could erase the evidence of
+     * its own failed activation could re-issue it blindly. */
     char escape[FX_OUTCOME_PATH_CAP + 320];
     snprintf(escape, sizeof escape,
         "  escape   : to force a re-run: re-run with --reconsider (an operator flag; a run\n"
@@ -497,14 +534,19 @@ FxVerdict fx_outcome_verdict(const char *data_dir, const char *task,
                 "  task     : %s (agent %s)\n"
                 "  activated: %s (recorded before the call was dispatched; the verb named no\n"
                 "             generation, so the record cannot account for that activation)\n"
-                "  done     : a LATER run of this task COMPLETED (a `done` marker is on record),\n"
-                "             which is the strongest evidence the record can hold\n"
+                "  done     : a `done` marker FOLLOWS that activation on record (session %s,\n"
+                "             run %s, epoch %lu) — a run of the task completed after it, which\n"
+                "             is the strongest evidence the record can hold.  A done that\n"
+                "             PREDATED the activation would NOT settle it (see outcome.h)\n"
                 "  rule     : a completed task is not re-run\n"
                 "  record   : %s/attempts.jsonl (session %s, run %s, epoch %lu)\n"
                 "  action   : this run stops here (exit 0); the record is NOT deleted\n"
                 "%s",
                 out->task, agent ? agent : "",
                 out->config[0] ? out->config : "-",
+                out->done_session[0] ? out->done_session : "-",
+                out->done_run[0] ? out->done_run : "-",
+                out->done_epoch,
                 data_dir ? data_dir : "(unset)",
                 out->session[0] ? out->session : "-", out->run[0] ? out->run : "-",
                 out->epoch, escape);
@@ -633,12 +675,13 @@ FxVerdict fx_outcome_verdict(const char *data_dir, const char *task,
             "             %s (it booted); this boot runs v%lu, so the store has moved on\n"
             "  rule     : an activation that took is not repeated\n"
             "  record   : %s/attempts.jsonl (session %s, epoch %lu)\n"
-            "  action   : this run stops here (exit 0)\n",
+            "  action   : this run stops here (exit 0)\n"
+            "%s",
             out->task, agent ? agent : "",
             out->config[0] ? out->config : "-", out->version,
             FX_OUTCOME_BOOTLOG_FILE, current,
             data_dir ? data_dir : "(unset)",
-            out->session[0] ? out->session : "-", out->epoch);
+            out->session[0] ? out->session : "-", out->epoch, escape);
     }
 
     if (current == out->version) {
@@ -650,11 +693,12 @@ FxVerdict fx_outcome_verdict(const char *data_dir, const char *task,
             "             CURRENT): the activation took\n"
             "  rule     : a completed task is not re-run\n"
             "  record   : %s/attempts.jsonl (session %s, epoch %lu)\n"
-            "  action   : this run stops here (exit 0)\n",
+            "  action   : this run stops here (exit 0)\n"
+            "%s",
             out->task, agent ? agent : "",
             out->config[0] ? out->config : "-", out->version, out->version,
             data_dir ? data_dir : "(unset)",
-            out->session[0] ? out->session : "-", out->epoch);
+            out->session[0] ? out->session : "-", out->epoch, escape);
     }
 
     /* The generation I activated is neither the one this boot runs nor judged by

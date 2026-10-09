@@ -41,6 +41,12 @@
  *        fields are single tokens (session/run are validated identifiers,
  *        ^[A-Za-z0-9._-]+$, and task is 16 hex).   Every field is written
  *        through one_line(), so CR/LF cannot forge a second record line.
+ *        ORDER IS MEANING: the file is append-only and fx_outcome_record is
+ *        its ONLY writer, so line order IS write order, and `done` is only
+ *        ever read as settling the attempts that PRECEDE it — the loader
+ *        clears `done` when it sees a LATER attempt line for the task (a
+ *        done that predates a later unaccounted attempt does not settle it;
+ *        see fx_outcome_record_load).
  *   3. THE RULE, applied at the START of every run (the boot path):
  *
  *        "if the generation I am running in is not the one I activated,
@@ -65,10 +71,13 @@
  *                                                   "it is complete")
  *        C == A                                  -> RUN (it took; RUN unless the
  *                                                   task already completed)
- *        not judged, done recorded               -> ALREADY_DONE (an activation
+ *        not judged, done AFTER the attempt      -> ALREADY_DONE (an activation
  *                                                   whose fate was never recorded
- *                                                   followed by a COMPLETED run of
- *                                                   this task: complete wins)
+ *                                                   followed by a COMPLETED run
+ *                                                   of this task: complete wins)
+ *        not judged, done BEFORE the attempt     -> UNRESOLVED (a done line may
+ *                                                   only settle attempts that
+ *                                                   PRECEDE it)
  *        otherwise (A never judged)              -> UNRESOLVED
  *
  *      ACTIVATION_FAILED, SUPERSEDED and UNRESOLVED all STOP: the task is NOT
@@ -89,10 +98,24 @@
  *      record is only ever settled by a LATER COMPLETED run of the same task
  *      (which writes `done`), so the two legitimate escapes are an operator
  *      re-run with --reconsider, and removing this task's lines from
- *      <data-dir>/attempts.jsonl.  Both UNRESOLVED reports name them.  There is
- *      deliberately NO model-facing verb that clears the record: an agent that
- *      could erase the evidence of its own failed activation could re-issue it
- *      blindly, which is the oscillator this unit exists to stop.
+ *      <data-dir>/attempts.jsonl.  Every STOP report names them.
+ *
+ *      THE BOUND OF "NOT MODEL-REACHABLE" (a property of the TOOL TABLE,
+ *      stated exactly, not a secrecy claim): inside the guest the model's
+ *      only file-WRITING verb is fx_write, and its write surface is a
+ *      CLOSED, HOST-DECLARED SET (FX_AGENT_WRITABLE, read at call time by
+ *      tools/fx-verbs-server.c; a write outside the set is refused loudly,
+ *      naming the set) — this record, the store, the bootlog and CURRENT are
+ *      in NO default set, so no deployment that forgets the variable re-opens
+ *      the record to the model.  fx_read CAN read the record: reads settle
+ *      and erase nothing, and the loop's input is the harness's own
+ *      boot-time consume, not the model's.  The set is closed because the
+ *      table has no other file-writing shape (fx_write opens O_NOFOLLOW and
+ *      can only create-or-truncate a regular file; no verb creates a symlink,
+ *      renames, chmods or unlinks; fx_activate/fx_rollback write the store
+ *      through the activator's own pinned argv).  What an ACTIVATED
+ *      generation's own services could do to this file is beyond the verb
+ *      table — and judging activations is exactly what this unit is for.
  *
  * NEVER GUESS THE STORE.  A verdict that needs the store and cannot read it
  * returns FX_VERDICT_ERROR naming the path; the caller FAILS LOUDLY rather than
@@ -149,7 +172,14 @@ typedef struct {
     char          run[64];       /* the run that made the attempt (run_id) */
     char          config[FX_OUTCOME_PATH_CAP];
     unsigned long epoch;
-    int           done;          /* the task ran to completion */
+    int           done;          /* a run of the task completed AFTER the last
+                                  * recorded attempt (a done line that
+                                  * PRECEDES a later attempt does not count) */
+    unsigned long done_epoch;    /* the done line's own provenance — the report
+                                  * names WHO completed the task, and these are
+                                  * it (0/"" when no done is in force) */
+    char          done_session[264];
+    char          done_run[64];
     unsigned long current;       /* C — read only when the rule needs it */
     int           have_current;
     char          bootlog_status[FX_OUTCOME_STATUS_CAP]; /* verdict for `version` */
@@ -175,8 +205,11 @@ int fx_outcome_record(const char *data_dir, const char *task, const char *step,
  * mid-write leaves a PREFIX of a line, and a prefix that cuts inside a field
  * can still parse as a full field set (a truncated version token looks like a
  * version) — adopting that would decide a verdict from a corrupt record, the
- * one thing fail-open must never do.  Returns 0 (even when nothing matched),
- * -1 on OOM. */
+ * one thing fail-open must never do.  `done` is POSITION-AWARE: it settles
+ * only the attempts that PRECEDE it, so a LATER attempt line for the task
+ * clears it (the file is append-only with one writer, so line order is write
+ * order — a `done` that predates a later unaccounted attempt must not
+ * pre-empt it).  Returns 0 (even when nothing matched), -1 on OOM. */
 int fx_outcome_record_load(const char *data_dir, const char *task, FxOutcome *out);
 
 /* What the record says about WHO a task id belongs to (`agent` step lines). */
