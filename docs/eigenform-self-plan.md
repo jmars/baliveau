@@ -259,30 +259,43 @@ a function on a cold cache.
 
 ## 9. Build state and the queue
 
-**GREEN:** `fx-harness` native build + the loop offline (§4). Substrate (§2) built and tested by its
-own suites.
+**GREEN (all orchestrator-verified on the committed tree):**
+- `fx-harness` native build; the loop runs offline (§4).
+- **Resume is wired** — `make test` 5 phases PASS, and the asymmetry is proven by mutation
+  (`skip=0` → FAIL phase 3). Committed in `515fd14`.
+- **The MCP tool server** — 10 verbs, 37-check smoke green, and its guest artifact is a real
+  `ELF 32-bit LSB, Intel i386, statically linked` (§5).
+- **The guest build of the HARNESS is green** — `make musl` produces a 1,686,488 B stripped i386
+  static binary with zero `NEEDED`, and **that guest binary runs the offline arm on this host**
+  (`hello`, rc=0). Committed in `80222c2`.
+- Substrate (§2) built and tested by its own suites.
 
-**IN FLIGHT (dispatched, lanes disjoint):**
-- `planner` — resume wiring plan → `handoff-fx-harness-resume-{ctx,plan,result}`,
-  channel `fx-harness-resume`.
-- `coder` — MCP stdio tool server exposing the fx verbs → `handoff-fx-harness-tools-{ctx,result}`,
-  channel `fx-harness-tools`.
+**DONE SINCE THIS RECORD WAS WRITTEN (corrections, appended — the record above is kept as written):**
+1. ~~Resume wiring~~ → done, `515fd14`.
+2. ~~`make musl` blocked by the vendored dafsa~~ → **the C copy was the wrong engine.** The sibling
+   `datalog-dafsa` is the **Zig** engine and is what `fx-init`/`fxstore` already link; the C tree was
+   only the copy `vibe-runtime` vendored, and the 64-byte assert exists *only* there. `80222c2`
+   deletes it (47 files) and links the stack's engine: the sibling's `libdatalog.so` natively, and a
+   **static `libdatalog.a` built on demand from the sibling's own `zig/build.zig`** for musl
+   (`libdatalog.so` is incompatible with `elf_i386`). `DATALOG_DIR` fails loudly when the sibling is
+   absent. **No source file needed editing** — the `dl.h` include is resolved by a
+   `build/include` symlink shim. The tree no longer builds standalone; the sibling is required, as
+   for the rest of the stack.
+3. ~~The tool server~~ → done, 10 verbs, guest artifact builds (§5).
+4. Guest artifacts must be built **stripped** — measured: the tool server is 2,406,552 B unstripped
+   vs 325,336 B stripped (7.4×), against a 3,926,476 B total demo download.
 
 **QUEUED:**
-1. **Resume wiring** (per-turn pre-reboot durable flush + `ckpt_load` seeding), with a test that
-   **fails before and passes after**. Then the checkpoint must land on the **persistent disk**, not
-   the tmpfs root — otherwise it is lost exactly when the reboot happens.
-2. **Guest build path.** `make musl` is blocked by the *vendored* dafsa:
-   `_Static_assert(sizeof(State) == 64)` assumes 64-bit words. Do not patch vendored source —
-   **link the fx stack's own i386-built `libdatalog`** (the sibling `datalog-dafsa`), as `fx-init`
-   does. Then cross-build LuaJIT (`HOST_CC="gcc -m32"`; same pointer-size rule).
-3. **The tool server** (in flight) → then wire it into the image and the guest.
-4. **The v86 disk** (§7.4): ATA in an i386 kernel + `/dev/hda` in `fx-init` + harness device wiring.
-5. **The oracle** (§7.1) — design before building, because it shapes the loop.
+1. **Cross-build LuaJIT** (`HOST_CC="gcc -m32"`; the same pointer-size rule) and pin its stdlib to
+   the `lj_lib_load` subset (§5).
+2. **Wire the harness + tool server into the guest image**, and set the checkpoint's durable home
+   (`VIBE_RUNTIME_DIR`) to the persistent disk — not the tmpfs root.
+3. **The v86 disk** (§7.4): ATA in an i386 kernel + `/dev/hda` in `fx-init` + harness device wiring.
+4. **The oracle** (§7.1) — design before building, because it shapes the loop.
 
-**First end-to-end milestone after 1–3:** a script that inspects the generation over the chardev,
-writes a modified config, activates, reboots, reads the verdict, and runs `fxstore verify` — on
-**qemu**, where every ingredient already works and no kernel work is needed.
+**First end-to-end milestone:** a script that inspects the generation over the chardev, writes a
+modified config, activates, reboots, reads the verdict, and runs `fxstore verify` — on **qemu**,
+where every ingredient already works and no kernel work is needed.
 
 ---
 
