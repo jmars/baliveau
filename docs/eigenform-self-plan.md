@@ -166,6 +166,68 @@ arbitrary host execution** (`build.zig` is a host-native program, `@cImport` spa
 
 ---
 
+## 5a. The Osier→Lua backend, and where the compiler sits
+
+**USER (2026-10-13): "osier is self hosting, a lua backend would mean the compiler could be a lua file
+too, maybe that is enough to let the agent have it inside the guest?"** Yes — and the reason is that
+the property we were protecting was never about compilation.
+
+**THE PROPERTY, RESTATED.** LuaJIT is in the guest *precisely so the agent can run code*. The bound is
+not "the agent cannot run things"; it is **"a component becomes part of the system only through the
+store and a generation."** Running and *integrating* are different acts:
+
+| | governed by |
+|---|---|
+| **running** code in the guest | LuaJIT's presence — already there, already audited |
+| **integrating** code into the system | the store + a generation + activation |
+
+So putting the compiler in the guest does not dent observability, because integration is what is
+governed — the generation's `svc_bin`/`svc_argv` and the store's provenance relations.
+
+**WHY THE LUA BACKEND IS A GOOD FIT, AND NOT A TRANSPILER.** An earlier note of mine rejected a
+Python→Lua *transpiler* because a third-party translator's divergences are invisible. That objection
+was about third-party translators. Here: Osier is **your** language, with a **Lean mechanization** and
+**already two backends** (ZINC csexp for the VM; QBE for native, `tools/qbe/`). A Lua backend is a
+third backend in an existing structure. Payoffs:
+
+- **text → text is deterministic and trivially content-addressable** — no linker, no ELF identity
+  problem. This is the property already measured for Lua scripts: *a script is its own content.*
+- **LuaJIT is already built and audited in-guest** (static i386, FFI off, stdlib reduced).
+- **It removes the whole AOT chain** — `aotdump → gen.zig → zig build` — from the loop: no zig
+  toolchain, no per-component cross-build.
+- **The self-hosting closure restores fast iteration**: Osier→Lua ⇒ the compiler (written in Osier)
+  compiles to Lua ⇒ **the compiler is a Lua file** ⇒ LuaJIT runs it in-guest, and being self-hosting it
+  can compile the compiler. The guest then holds the whole toolchain **as text**. That reverses the cost
+  I had flagged (every test being a reboot): the agent compiles and runs locally, and integrates when
+  ready.
+- **Three backends give differential testing**: the same compiler through ZINC csexp, QBE native and
+  Lua, compared on one corpus — and `selfhost-gate.sh` is *already that shape* (self-compiled output
+  `cmp`-byte-identical to stock-compiled). So backend fidelity is checkable against the compiler
+  itself rather than being a leap of faith.
+
+**THE LINE THAT MUST HOLD — and it is the same rule as the oracle's:**
+
+> **The agent may have a compiler; it may not have the one that grades it.**
+
+If the compiler is a store node the generation runs, the agent can propose a generation containing a
+**modified** compiler — and if the checks (typecheck-for-gate, corpus byte-identity, the oracle) ran
+through that same compiler, the agent could make them pass by editing the checker. So:
+
+- **guest compiler** — the agent's working tool. Iteration, its own components. Normal store/generation
+  rules.
+- **host frozen compiler** — the grader. Never agent-writable.
+
+**THE AUDIT STILL DESCRIBES THE BOUND.** A compiler in the guest is a large **program**, not new
+**reach**: with FFI off, a Lua program can read and write files and compute — exactly what LuaJIT already
+permits — and cannot reach the kernel. That is why `tests/luajit-audit.sh` asserts the **runtime surface**
+rather than "the program is small".
+
+**NOT YET VERIFIED, and it is the enabling question for the in-guest checker:** whether Osier's pipeline
+has a **check-only (non-emitting) typecheck entry point**. The typechecker exists; I did not find a
+check-only mode. That matters because **typecheck-in-guest / compile-on-host** was the split that would
+give fast feedback without giving the agent a compiler — and if the agent is to have the compiler anyway,
+the split becomes a scheduling choice rather than a bound.
+
 ## 6. The capability model
 
 **The recipe is the host-execution capability.** `fxstore build` runs `Shell`/`Run` actions **on the
@@ -183,13 +245,16 @@ the strongest evidence available that it is the real one.
 
 ---
 
-## 7. What is NOT designed
+## 7. What is designed, and what is not
 
-### 7.1 The oracle — first, and the one that decides whether this is worth building
-Every remaining item below is a *build* problem with a working precedent. This is not. There is **no
-design for what makes a change an improvement**: the boot verdict certifies *viability* (it booted,
-it did not roll back), and `fxstore verify` certifies *coherence* (nothing drifted). Neither says a
-change is better.
+**As of 2026-10-13 §7.1 has a first instance (`osier-share`) and §7.1a a first design (egress as a
+type); the rest of this section is still open.** The founding statement was blunt and is kept: the
+oracle is the item that decides whether this is worth building.
+
+### 7.1 The oracle — a per-task frozen seat, and its first instance
+**THE FOUNDING PROBLEM, unchanged:** there is **no design for what makes a change an improvement** —
+the boot verdict certifies *viability* (it booted, it did not roll back), and `fxstore verify`
+certifies *coherence* (nothing drifted). Neither says a change is *better*.
 
 Without a **frozen, host-side evaluator that the agent cannot write**, the loop will faithfully
 reconfigure, activate, reboot, roll back on failure — and **change things while improving nothing**.
@@ -439,49 +504,58 @@ from these inputs does denote the same bytes here.
 9. **`fxstore verify` is scoped, not general:** "no install facts (or a snapshot predating them) →
    no scan: absence of knowledge is not drift."
 
+10. **"The image has no shell" IS RIGHT IN EFFECT, WRONG IN MECHANISM.** The initramfs **does** ship
+    busybox `/bin/sh` — a broken `rdinit` drops to a root prompt. It is **post-pivot** `/bin`, a
+    dhake-materialized tmpfs, that has no `sh`, so `fx-init`'s `exec_sh_retry` fallback
+    (`init.zig:370`) finds no target. **The agent's service runs post-pivot, so the
+    "`os.execute`/`io.popen` are inert" claim holds for the agent — but the LuaJIT audit's ARM 2 must
+    be scoped POST-PIVOT**, or it will assert something false about the pre-pivot boot.
+11. **`fx-init/zig/zig-out/bin` currently holds i386-musl binaries**; anything consuming that directory
+    directly gets an `ENOEXEC` rdinit. The qemu-agent gate now asserts the **ELF class** of every guest
+    binary it provisions.
+12. **Instrument instance (the "mechanism right, the reader wrong" pattern, again):** the disk belt's
+    `debugfs ls -p` parser rejected `…/<name>//` and accepted `.`, so it reported **"no transcript"** on
+    runs where the transcript **was** on the disk — a reader bug reported as a missing write.
+13. **The `fx-demo/evidence/image-contents.txt` claim is scoped to the browser lane's image.** I had
+    been repeating it as a claim about the system; it is a claim about *that* image.
+
 ---
 
 ## 9. Build state and the queue
 
-**GREEN (all orchestrator-verified on the committed tree):**
-- `fx-harness` native build; the loop runs offline (§4).
-- **Resume is wired** — `make test` 5 phases PASS, and the asymmetry is proven by mutation
-  (`skip=0` → FAIL phase 3). Committed in `515fd14`.
-- **The MCP tool server** — 10 verbs, 37-check smoke green, and its guest artifact is a real
-  `ELF 32-bit LSB, Intel i386, statically linked` (§5).
-- **The guest build of the HARNESS is green** — `make musl` produces a 1,686,488 B stripped i386
-  static binary with zero `NEEDED`, and **that guest binary runs the offline arm on this host**
-  (`hello`, rc=0). Committed in `80222c2`.
-- Substrate (§2) built and tested by its own suites.
+**GREEN — every item below is orchestrator-verified, and every one is committed.**
 
-**DONE SINCE THIS RECORD WAS WRITTEN (corrections, appended — the record above is kept as written):**
-1. ~~Resume wiring~~ → done, `515fd14`.
-2. ~~`make musl` blocked by the vendored dafsa~~ → **the C copy was the wrong engine.** The sibling
-   `datalog-dafsa` is the **Zig** engine and is what `fx-init`/`fxstore` already link; the C tree was
-   only the copy `vibe-runtime` vendored, and the 64-byte assert exists *only* there. `80222c2`
-   deletes it (47 files) and links the stack's engine: the sibling's `libdatalog.so` natively, and a
-   **static `libdatalog.a` built on demand from the sibling's own `zig/build.zig`** for musl
-   (`libdatalog.so` is incompatible with `elf_i386`). `DATALOG_DIR` fails loudly when the sibling is
-   absent. **No source file needed editing** — the `dl.h` include is resolved by a
-   `build/include` symlink shim. The tree no longer builds standalone; the sibling is required, as
-   for the rest of the stack.
-3. ~~The tool server~~ → done, 10 verbs, guest artifact builds (§5).
-4. Guest artifacts must be built **stripped** — measured: the tool server is 2,406,552 B unstripped
-   vs 325,336 B stripped (7.4×), against a 3,926,476 B total demo download.
+| what | commit | evidence |
+|---|---|---|
+| harness native build + the loop offline | `515fd14` | prints `hello`, rc=0; transcript written |
+| **resume wired** (reboot = resume) | `515fd14` | `make test` 5 phases PASS; **asymmetry proven by mutation** |
+| **the MCP tool server** (10 verbs) | `515fd14` | guest artifact i386 static; 37-check smoke, 0 failed |
+| **guest build** (engine swap) | `80222c2` | links the stack's own Zig `libdatalog`; `make musl` green; 1,686,488 B stripped i386 static, **0 NEEDED**, runs |
+| **LuaJIT** cross-built | `adbdb08` | 843,544 B stripped i386 static; **byte-reproducible** (4 from-clean builds, same sha256) |
+| **the LuaJIT capability bound** | `14f42b0` | stdlib 10→9; `debug` unlinked; `package` reduced so `require` survives; audit 19/19, **mutation-proven**; FFI-off gate; **JIT gate two-sided** |
+| **THE GUEST MILESTONE (B1)** | `564e3b3` | the harness loop **and** the tool server run **inside a qemu guest, post-pivot**, with the transcript on the virtio disk; 3-boot gate with a negative control; no cross-repo change needed |
+| substrate | — | built and tested by its own suites |
+
+**DONE SINCE THIS RECORD WAS WRITTEN (corrections — the text above is kept as written):**
+1. ~~Resume wiring~~ → `515fd14`. 2. ~~`make musl` blocked by the vendored dafsa~~ → **the C copy was
+the wrong engine**; `80222c2` links the stack's own Zig `libdatalog` and deletes it (47 files) with
+**zero source edits**. 3. ~~The tool server~~ → done. 4. Guest artifacts must be **stripped**. 5. The
+LuaJIT capability bound is **enforced** (§5a). 6. `osier-share` is the first oracle (§7.1). 7. Egress is
+a **type** (§7.1a). 8. The compiler may live **in the guest** (§5a).
 
 **QUEUED:**
-1. **Cross-build LuaJIT** (`HOST_CC="gcc -m32"`; the same pointer-size rule) and pin its stdlib to
-   the `lj_lib_load` subset (§5).
-2. **Wire the harness + tool server into the guest image**, and set the checkpoint's durable home
-   (`VIBE_RUNTIME_DIR`) to the persistent disk — not the tmpfs root.
-3. **The v86 disk** (§7.4): ATA in an i386 kernel + `/dev/hda` in `fx-init` + harness device wiring.
-4. **The oracle** (§7.1) — design before building, because it shapes the loop.
-
-**First end-to-end milestone:** a script that inspects the generation over the chardev, writes a
-modified config, activates, reboots, reads the verdict, and runs `fxstore verify` — on **qemu**,
-where every ingredient already works and no kernel work is needed.
-
----
+1. **B2 — the full loop in the guest.** B1's boot has **no control channel by design** (fx-init says so:
+   "no control channel … no virtio control port — fxctl cannot connect in this guest"), so B2 must
+   attach `qemu_ctrl.sh`'s `-chardev socket … -device virtio-serial-pci -device
+   virtserialport,chardev=fxctl0,name=fxctl0`. Then: inspect → write a config → `fxctl activate` →
+   reboot → verdict → `fxstore verify`.
+2. **THE FIRST SELF-MODIFICATION TASK**: the agent writes an **MCP server in Osier**, activates it as a
+   **service**, and the `osier-share` share moves **0% → non-zero** (§7.1c). Every piece exists.
+3. **The Osier→Lua backend** (host-side) — and answer the check-only-typecheck question (§5a).
+4. **The egress primitives**: the closed host-side catalog + the Dhall declaration extension (§7.1a).
+5. **The `osier-share` measurement** itself — host-side, over the generation's relations, plus the
+   declared-reach query.
+6. **The v86 disk** (§7.4) — unchanged; the browser lane still needs a purpose-built i386 kernel.
 
 ## 10. Where the evidence lives
 
