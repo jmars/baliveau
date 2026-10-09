@@ -224,6 +224,34 @@ byte-identical (symtab/strtab tail; `SOURCE_DATE_EPOCH` and strip do not close i
 Reproducibility is claimed only for repeat runs on a persistent work dir. So `image ↔ system` is not
 a function on a cold cache.
 
+**CORRECTION (appended 2026-10-13, MEASURED — the scope above is narrower than it reads).** That
+measurement is of **fx-init's image pipeline** (`zig build` of Zig code plus payload packing). It does
+**not** transfer to `fx-harness`'s own C compiles, and I had been carrying it as if it did — the
+"a fact measured on one filesystem applied to a store on another" failure shape. What actually holds
+for this tree, sha256-measured:
+
+| artifact | fixed path, from clean, **no** epoch pinning | different path |
+|---|---|---|
+| `build/fx-agent.musl` (shipped) | identical | **identical** |
+| `build/luajit.musl` (shipped) | identical | **identical** |
+| the sibling's **Zig-built** `libdatalog.a` | identical | — |
+| `build/fx-agent` (dev, `-g`, unstripped) | identical | differed, **now fixed** |
+
+So **there is no timestamp to pin**: no `SOURCE_DATE_EPOCH` is set, and a grep for `__DATE__`/`__TIME__`
+across our sources and every vendored dep finds none.
+
+**The rule this yields, and it generalises: STATIC + STRIPPED is what makes an artifact
+content-addressable.** The guest binaries carry no rpath and no debug info, so no build path *can*
+survive in them. The dev binary did, until `-ffile-prefix-map=$(CURDIR)=.` removed it — after which a
+full string-table diff of two builds at different paths shows exactly one differing string left: the
+**sibling's absolute path in the rpath**, which is the loader's business rather than the compiler's,
+and is only closable with a sibling prefix-map plus a `$ORIGIN` rpath. Not done: the dev artifact is
+not the one that ships, and the shipped one is static with zero `NEEDED`.
+
+**INTERPRETATION:** the addressability hazard in §7.5 is real for the *image*, and absent for the
+*artifacts this tree produces*. Which strengthens §8.2's caveat's counterpart: a store path derived
+from these inputs does denote the same bytes here.
+
 ---
 
 ## 8. Corrections carried (refuted claims must not propagate)
