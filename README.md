@@ -136,8 +136,19 @@ a real EOF.  No proxy, no network, deterministic.
 | `tcgetwinsize(3)` → `ioctl(TIOCGWINSZ)` | `src/llm2/tui.c` — `tcgetwinsize` is glibc≥2.36/POSIX-2024 and **absent from musl**, the libc every fx guest binary uses |
 
 Vendored in-tree: `dhall-c` (config evaluated **in-process**, so a config can be
-typechecked before it is activated), `datalog-dafsa` (the run store + checkpoint
-backend, the same engine fx-init and fxstore use), `yyjson`, `tomlc99`.
+typechecked before it is activated), `yyjson`, `tomlc99`.  The `datalog-dafsa`
+engine (the run store + checkpoint backend, the same engine fx-init and fxstore
+use) is NOT vendored: it is linked from the SIBLING Zig checkout
+`../datalog-dafsa` (override with `DATALOG_DIR=<path>`), so this tree cannot
+build standalone — the rest of the fx stack has the same requirement.  The
+legacy C copy this tree used to vendor is gone (its `dafsa_internal.h`
+64-byte cache-line static assert cannot hold on 32-bit x86-musl, where
+`sizeof(State)` is 60; the stack's real engine is the Zig port).  Native
+links the sibling's prebuilt `zig-out/lib/libdatalog.so` (rpath baked);
+the musl guest target links a STATIC `libdatalog.a` that make builds from
+the sibling's own `zig/build.zig` for `x86-linux-musl` into
+`build/datalog-musl/lib/` (a glibc-built `.so` is incompatible with
+`elf_i386`, and a dynamic link would defeat the static goal).
 
 ## Running it
 
@@ -163,16 +174,16 @@ Config: Dhall, at `$VIBE_RUNTIME_CONFIG_DIR/config.dhall` (default
    root, or it is lost exactly when the reboot happens.  It is a single env knob
    now (`VIBE_RUNTIME_DIR`, see *Where it lives*); setting it is the deployer's
    job, and nothing yet *enforces* that the path is not tmpfs.
-3. **The guest binary does not build: a PRE-EXISTING vendored failure.**
-   MEASURED — `make musl` fails on
-   `src/vendor/datalog-dafsa/vendor/dafsa_internal.h:72`,
-   `_Static_assert(sizeof(State) == 64, "State must be one cache line")`,
-   evaluating to `60 == 64` on 32-bit x86-musl.  It reproduces compiling that
-   vendor file alone (no fx-harness source in the command), so it is unrelated to
-   the resume work and is not a portability suspect in this tree's own code;
-   `fsync`/`O_DIRECTORY`/`fcntl` are fine under musl.  Fixing it is out of scope
-   here — either the vendor's cache-line assumption is 64-bit-only and needs a
-   32-bit branch, or the guest target must be 64-bit.
+3. **The datalog engine comes from the SIBLING checkout.** The legacy C copy
+   this tree vendored is removed (MEASURED — its
+   `vendor/dafsa_internal.h:72` `_Static_assert(sizeof(State) == 64)` failed
+   as `60 == 64` on 32-bit x86-musl, reproducing on that vendor file alone).
+   The tree now links the fx stack's Zig-built `libdatalog` from
+   `../datalog-dafsa` (native: the prebuilt `.so`; musl: a static `.a`
+   built by the sibling's own `zig/build.zig`), like fx-init and fxstore.
+   Consequence: **this tree cannot build standalone** —
+   `make` fails loudly when `../datalog-dafsa/zig-out/lib/libdatalog.so`
+   is absent; point it elsewhere with `DATALOG_DIR=<path>`.
 4. **No tool server yet.** Upstream takes its tools from `mcp_servers[0]` over
    stdio (`mcp_client.c`, `execvpe` with a scrubbed env — works without
    sockets).  The guest's verb table (a Lua module over the fx verbs) is not
@@ -191,6 +202,6 @@ Config: Dhall, at `$VIBE_RUNTIME_CONFIG_DIR/config.dhall` (default
 ```
 make          # build/fx-agent (native)
 make test     # the resume oracle (needs upstream's recorded SSE fixtures)
-make musl     # build/fx-agent.musl (static i386-musl, the guest target) — see gap 3
+make musl     # build/fx-agent.musl (static i386-musl, the guest target) — needs ../datalog-dafsa, see gap 3
 make clean
 ```

@@ -1,7 +1,11 @@
 /* src/runstore.c — DAFSA-backed RunStore (Slice 2).
  *
- * Port of vibe_runtime/jobs.py RunStore onto the vendored datalog-dafsa fact
- * store (src/vendor/datalog-dafsa).  Four fixed-arity relations over one
+ * Port of vibe_runtime/jobs.py RunStore onto the datalog-dafsa fact store —
+ * the fx stack's OWN Zig engine (sibling ../datalog-dafsa), linked as
+ * libdatalog.  The legacy C copy this tree used to vendor was removed in the
+ * engine swap; runstore.h's "vendor/datalog-dafsa/src/dl.h" include is resolved
+ * to the sibling's src/ by the Makefile's build/include shim.  Four fixed-arity
+ * relations over one
  * shared interner:
  *
  *   run(run_id)                              arity 1 — presence/identity

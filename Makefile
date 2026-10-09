@@ -18,10 +18,35 @@
 CC      ?= cc
 CFLAGS  := -std=c11 -O2 -g -Wall -Wextra \
            -Isrc -Isrc/llm2 -Isrc/vendor/dhall-c -Isrc/vendor/yyjson \
-           -Isrc/vendor/datalog-dafsa/src -Isrc/vendor/datalog-dafsa/vendor \
+           -Ibuild/include \
            -Isrc/vendor/tomlc99 \
            -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE
 LDFLAGS :=
+
+# ─── the datalog engine: the fx stack's Zig build, sibling checkout ─────────
+# The engine is NO LONGER VENDORED here (the legacy C copy is gone — its
+# 64-byte dafsa_internal.h cache-line assert cannot hold on 32-bit x86-musl
+# and the stack's real engine is the Zig port anyway).  Like fx-init and
+# fxstore, we link the Zig-built libdatalog from the SIBLING checkout:
+#
+#   native (gnu):   the prebuilt zig-out/lib/libdatalog.so (x86-64), with a
+#                   baked rpath so the binary runs without LD_LIBRARY_PATH;
+#   musl (i386):    a STATIC libdatalog.a built from the sibling's Zig
+#                   sources for x86-linux-musl (a glibc-built .so is
+#                   incompatible with elf_i386, and a dynamic link would
+#                   defeat the static goal — same pattern as fxstore).
+#
+# The tree therefore cannot build standalone; see README (Build deps).
+DATALOG_DIR ?= ../datalog-dafsa
+DATALOG_SHIM     := build/include/vendor/datalog-dafsa/src
+DATALOG_MUSL_LIB := build/datalog-musl/lib
+DATALOG_MUSL_A   := $(DATALOG_MUSL_LIB)/libdatalog.a
+
+ifeq ($(wildcard $(DATALOG_DIR)/zig-out/lib/libdatalog.so),)
+$(error DATALOG_DIR=$(DATALOG_DIR) has no zig-out/lib/libdatalog.so — \
+        clone/checkout the sibling and build it: \
+        cd $(DATALOG_DIR) && zig build -p zig-out --build-file zig/build.zig)
+endif
 
 # The guest target: static i386-musl, the toolchain that already builds every
 # other fx guest binary (fx-init, fx-core's stages, dhall-c, datalog-dafsa).
@@ -47,36 +72,6 @@ DHALL_SRC := src/vendor/dhall-c/arena.c \
 YYJSON_SRC  := src/vendor/yyjson/yyjson.c
 TOMLC99_SRC := src/vendor/tomlc99/toml.c
 
-# ─── vendored: datalog-dafsa (the runstore + checkpoint backend) ───────────
-DL_SRC := src/vendor/datalog-dafsa/src/analyze.c \
-          src/vendor/datalog-dafsa/src/compiler.c \
-          src/vendor/datalog-dafsa/src/dl.c \
-          src/vendor/datalog-dafsa/src/intern.c \
-          src/vendor/datalog-dafsa/src/iter.c \
-          src/vendor/datalog-dafsa/src/magic.c \
-          src/vendor/datalog-dafsa/src/parser.c \
-          src/vendor/datalog-dafsa/src/permindex.c \
-          src/vendor/datalog-dafsa/src/regexwalk.c \
-          src/vendor/datalog-dafsa/src/relation.c \
-          src/vendor/datalog-dafsa/src/snapshot.c \
-          src/vendor/datalog-dafsa/src/termstore.c \
-          src/vendor/datalog-dafsa/src/topdown.c \
-          src/vendor/datalog-dafsa/src/tupleset.c \
-          src/vendor/datalog-dafsa/src/util.c \
-          src/vendor/datalog-dafsa/src/vm.c \
-          src/vendor/datalog-dafsa/src/vrelation.c
-
-DL_VENDOR_SRC := src/vendor/datalog-dafsa/vendor/dafsa.c \
-                 src/vendor/datalog-dafsa/vendor/dafsa_build.c \
-                 src/vendor/datalog-dafsa/vendor/dafsa_core.c \
-                 src/vendor/datalog-dafsa/vendor/dafsa_crc32.c \
-                 src/vendor/datalog-dafsa/vendor/dafsa_persist.c \
-                 src/vendor/datalog-dafsa/vendor/dafsa_rank.c \
-                 src/vendor/datalog-dafsa/vendor/dafsa_state.c \
-                 src/vendor/datalog-dafsa/vendor/dafsa_view.c \
-                 src/vendor/datalog-dafsa/vendor/dafsa_view_rank.c \
-                 src/vendor/datalog-dafsa/vendor/dafsa_wal.c
-
 # ─── LAYER 2: the agent loop ───────────────────────────────────────────────
 L2_SRC := src/llm2/agent_main.c \
           src/llm2/agent_loop.c \
@@ -94,25 +89,49 @@ L2_SRC := src/llm2/agent_main.c \
 # ─── LAYER 1 sources the loop reuses ──────────────────────────────────────
 L1_SRC := src/runner.c src/runstore.c src/secrets.c
 
-ALL_SRC := $(L2_SRC) $(L1_SRC) $(DHALL_SRC) $(YYJSON_SRC) $(TOMLC99_SRC) \
-           $(DL_SRC) $(DL_VENDOR_SRC)
+ALL_SRC := $(L2_SRC) $(L1_SRC) $(DHALL_SRC) $(YYJSON_SRC) $(TOMLC99_SRC)
 
 BIN      := build/fx-agent
 BIN_MUSL := build/fx-agent.musl
 
 all: $(BIN)
 
-$(BIN): src/llm2/agent_main_main.c $(ALL_SRC)
+# runstore.h includes "vendor/datalog-dafsa/src/dl.h" (the pre-swap path);
+# build/include/vendor/datalog-dafsa/src is a symlink to the sibling's src/
+# so that include resolves against the ENGINE'S OWN headers — no src/ edit.
+# Recreated every build so a changed DATALOG_DIR re-points it.
+$(DATALOG_SHIM): FORCE
+	@mkdir -p $(dir $(DATALOG_SHIM))
+	@ln -sfn "$(abspath $(DATALOG_DIR))/src" $(DATALOG_SHIM)
+
+FORCE:
+.PHONY: FORCE
+
+# The sibling's Zig engine, compiled for x86-linux-musl into build/ by its
+# OWN build.zig (the authority on how the engine builds).  dlp's i386
+# @compileError is a pre-existing, unrelated CLI failure — the lib steps
+# still install — so its exit code is tolerated and the ARTIFACT is the gate.
+$(DATALOG_MUSL_A):
+	cd $(DATALOG_DIR) && zig build -Dtarget=x86-linux-musl -Drelease \
+	    -p "$(CURDIR)/build/datalog-musl" --build-file zig/build.zig || true
+	@test -f $@ || { echo "ERROR: $(DATALOG_MUSL_A) missing — the sibling's zig build for x86-linux-musl did not produce libdatalog.a" >&2; exit 1; }
+
+$(BIN): src/llm2/agent_main_main.c $(ALL_SRC) \
+        $(DATALOG_DIR)/zig-out/lib/libdatalog.so | $(DATALOG_SHIM)
 	@mkdir -p build
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ src/llm2/agent_main_main.c $(ALL_SRC)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ src/llm2/agent_main_main.c $(ALL_SRC) \
+	    -L$(DATALOG_DIR)/zig-out/lib \
+	    -Wl,-rpath,$(abspath $(DATALOG_DIR)/zig-out/lib) -ldatalog
 
 # The guest binary.  Not part of `all`: it is the deployment target, verified
-# separately once the native build is green.
+# separately once the native build is green.  -s strips it (guest artifacts
+# ship stripped).
 musl: $(BIN_MUSL)
 
-$(BIN_MUSL): src/llm2/agent_main_main.c $(ALL_SRC)
+$(BIN_MUSL): src/llm2/agent_main_main.c $(ALL_SRC) $(DATALOG_MUSL_A) | $(DATALOG_SHIM)
 	@mkdir -p build
-	$(MUSL_CC) $(MUSL_CFLAGS) $(LDFLAGS) -o $@ src/llm2/agent_main_main.c $(ALL_SRC)
+	$(MUSL_CC) $(MUSL_CFLAGS) $(LDFLAGS) -o $@ src/llm2/agent_main_main.c $(ALL_SRC) \
+	    -L$(DATALOG_MUSL_LIB) -ldatalog -s
 
 clean:
 	rm -rf build
