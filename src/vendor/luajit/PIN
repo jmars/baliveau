@@ -49,3 +49,43 @@ zig 0.16.0; JIT ON, FFI OFF, static, stripped):
 
 The stripped size is the number that matters for the guest download budget
 (3,926,476 bytes total): this binary is ~21.6% of it as built.
+
+ ---------------------------------------------------------------------------
+ CORRECTION 2026-10-09 -- capability bound applied to lib_init.c (fx-harness)
+
+ The claims above describe the PRISTINE upstream tree and the artifact built
+ from it; the capability bound supersedes the measured-properties section:
+
+   * src/lib_init.c now carries the project's capability-bound patch (the one
+     deliberate local modification to vendored source): lj_lib_load[] drops
+     the debug library outright and opens package through
+     luaopen_package_bounded(), which strips loadlib/searchpath, path/cpath,
+     config/seeall/searchers and the global module(), leaving require() with
+     only the preload loader.  lj_lib_preload[] is unchanged.
+   * Consequently MANIFEST_SHA256 above NO LONGER MATCHES this tree -- it
+     remains the hash of the pristine pinned commit, which is what the pin
+     means.  Manifest over the PATCHED tree:
+     42f11d90d33979ea283dd902966c5d3be8966392cee2ae0b6427fb161583e9f1
+     (diff vs MANIFEST_SHA256 = exactly the lib_init.c patch)
+   * The audit is tests/luajit-audit.sh (arm 1 = shipped surface, runs
+     anywhere; arm 2 = guest-only hatch probes, NOT YET RUN -- no guest
+     image exists yet).
+
+ MEASURED 2026-10-09, this host, after the patch (tools/build-luajit.sh,
+ sha256 identical across three from-clean builds):
+
+     build/luajit.musl             843,544 bytes   sha256 a0ec950381aafedb611bca76a984b6bc73d5e4c51e320fed998e260c53a52c08
+     build/luajit.musl.unstripped  4,099,216 bytes
+     file -b  ELF 32-bit LSB executable, Intel i386, version 1 (SYSV), statically linked, stripped
+     readelf -d  no dynamic section (0 NEEDED entries)
+     nm (unstripped)  no luaopen_debug -- lib_debug.o is not linked at all;
+                      lj_cf_package_loadlib still linked but unreachable from
+                      Lua (the bound is the surface; the audit proves it:
+                      re-adding debug to lj_lib_load[] makes the audit fail
+                      1 of 19, exactly on the debug check)
+     jit.status()  true  -- JIT still compiles traces
+     require('ffi')  rc=1, "module 'ffi' not found" -- FFI still off
+     require('jit.util')  table (the preload path survived the reduction)
+
+ The earlier measured properties (sha 279ab005..., 849,448 bytes) describe the
+ unbounded build and are kept above only as the pristine-tree reference.
