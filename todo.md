@@ -10,12 +10,16 @@ Two repos are in play: **this one** (`fx-harness`) and **`../fx-init`** (PID 1, 
 
 ## 0. Land what is already verified
 
-- [ ] **Commit `fx-harness`.** Its working tree holds verified, reviewed work that is *not yet
-      committed*: the B2 pin fix, the B2 evidence, the **observation loop** and its **fix round**
-      (5 should-fix + 3 nice-to-have). Committing waits only on `REVIEW NEEDED = review` clearing
-      (node `handoff-fx-harness-observe-review`; re-review `review-observe-fix`).
+- [x] **`fx-harness` committed**: `7de7433` (the observation loop + the B2 pin fix + evidence),
+      `648984f` (the write-surface fix — see §4), `e3eb984` (the first oracle — §1).
+- [x] **`fxstore` committed**: `c79af4b` — `fxstore facts <relation> [--as-of N]`, the read-only,
+      version-bound relation dump the oracle needed. `zig build test` exit 0, mutation-checked.
 - [x] **`fx-init`** committed: `2feedf6` — the in-guest control fifo + the boot-recovery guardrail
       + their fix round. Clean-reviewed twice.
+- [ ] **Two reviews in flight** (read-only, dispatched after the commits): `review-osier-share`
+      (the oracle + its fxstore seat; the number will GRADE an agent, so silent wrongness is the
+      risk) and `review-writesurface` (648984f; a bypass of the closed write set is a blocker, not
+      a nit). Result nodes `handoff-osier-share-review`, `handoff-writesurface-review`.
 
 ## 1. The oracle — the one thing that decides whether any of this is worth having
 
@@ -23,20 +27,32 @@ Everything below this line makes the substrate *observable, terminating and self
 measures whether a change is BETTER.** The boot verdict certifies viability; `fxstore verify`
 certifies coherence; neither says "improved".
 
-- [ ] **Decide the sense of "amount" for the first oracle** (`osier-share`): **code share** vs
-      **behaviour share** (§7.1). Code share is buildable now and fails visibly; behaviour share needs
-      held-out machinery this repo does not have.
-- [ ] **Build the `osier-share` measurement** — a host-side query over the *active generation's*
-      provenance, NOT the source tree: `provides(pkg, store_dir)`, `install(target, origin, mode,
-      genhash)`, `svc_bin`/`svc_argv`. Count only binaries the generation **actually runs**, and only
-      as Osier if the **derivation's source tree** is Osier — that kills dead-code inflation and the
-      wrapper loophole.
-- [ ] **Prove the instrument discriminates**: a synthetic Osier-sourced component must move the
-      number. A metric that reads 0 forever proves nothing.
+- [x] **Decide the sense of "amount" for the first oracle** (`osier-share`): **code share** —
+      the fraction of the SOURCE BYTES of the components the generation RUNS that are Osier
+      (`.elm`). Code share is buildable now and fails visibly; behaviour share needs held-out
+      machinery this repo does not have. The oracle PRINTS its extension set on every run.
+- [x] **Built the `osier-share` measurement** — `tools/fx-osier-share.c`, a host-side query over
+      the *active generation's* provenance, NOT the source tree: `svc_bin` picks the components
+      the generation RUNS, `provides` turns each into its store dir, `srcstore` binds it to the
+      source content hash, and the source comes from the store's own content-addressed artifact
+      `<store>/<src_hash>-<name>-src`. A host tree is accepted ONLY if the C port of
+      `fx_content_hash_dir` reproduces `srcstore`'s hash — an unverified tree is REFUSED. The run
+      set is the OBJECTIVE and the closure is printed BESIDE it, never averaged into it, which
+      kills both dead-code inflation and the wrapper loophole.
+- [x] **Proved the instrument discriminates**: `make test-osier-share` exit 0 — A1 the number
+      MOVES 0.000000 → 1.000000 when an Osier-sourced RUN component is added; A2 a built-but-NOT-run
+      component leaves the run share EXACTLY invariant while the closure moves 0.359237 → 0.499734;
+      A3 a RUN component with non-Osier source leaves the numerator invariant and the share strictly
+      lower (1.000000 → 0.582965). Refusals fire instead of returning 0 (empty store, bad `--as-of`,
+      mutated host tree). **Asymmetry**: against the pre-fix fxstore the seat does not exist and the
+      oracle refuses to measure at all.
 - [ ] **Make it a tie-breaker, not an objective**: `boots ok` → `no drift` → *then* maximise.
+      Nothing yet enforces that order — today the number is reported, not gated.
 - [ ] **Every oracle must be able to SEE capability changes.** A code-only oracle is blind to an
       agent quietly widening its own egress — and, per §7.1c, blind to *activity without progress*
-      (the oscillator is the measured instance).
+      (the oscillator is the measured instance). `osier-share` is a static property of the store and
+      does NOT see either: it is the per-task oracle, and the capability/activity seats are separate
+      and still owed.
 
 ## 2. Measurements still owed
 
@@ -48,6 +64,17 @@ certifies coherence; neither says "improved".
 
 ## 3. Known defects, pre-existing, not hidden
 
+- [ ] **The store cannot attribute a src_hash to a generation** (found by the osier-share review,
+      worked around — not fixed — this round). `srcstore` is append-only and its rows are reaped only
+      when the NAME becomes unreachable, while `provides`/`install`/`svc_*` are cleared per
+      activation — so a package whose source changed and was re-activated has **several live srcstore
+      rows for one name in the CURRENT snapshot**, and `fxstore facts` prints them in a
+      **non-contractual** order. Nothing links a derivation hash to the src hash it was folded from,
+      so no reader (the oracle included) can tell which source the running generation was built from.
+      `fx-osier-share` now REFUSES when more than one candidate survives its narrowing checks
+      (`tests/test_osier_share.sh` A4 pins it), but the honest fix is a **fact binding derivation
+      hash → src hash, committed by the activation in fx-init** (`commitClosureMeta`,
+      `activate.zig:890-915`) — fx-init's repo, not this one.
 - [ ] **`fxstore verify` reports 5 drifts on a STOCK system.** fx-init's `install` fact for a `/bin`
       link records the package **DIR** while its buildfile symlinks the **BINARY** (`activate.zig:616-621`,
       `:1372-1382`). The B2 test pins that class so it still discriminates — **and a pinned class can
@@ -64,9 +91,25 @@ certifies coherence; neither says "improved".
       and rejects a mutated non-console copy — but a config shape that passes the pin while shipping a
       NON-console agent re-creates the **roll-forward spiral** (§ below). Review priority #5 on
       `handoff-fx-harness-observe-review`.
+- [ ] **`fx_read`/`fx_ls` still resolve arbitrary paths under `FX_VERB_ROOT`** — including a `..` that
+      climbs *above* a stub root, because `root_join` concatenates strings rather than resolving.
+      Pre-existing, read-only, reported by the 648984f lane and NOT silently fixed there. Adjacent to
+      the closed write set, so it must not be mistaken for closed: the write bound is a *write* bound.
+- [ ] **`tests/qemu-agent-b2.sh:~602` carries the comment-blind substring `console_pin`** that
+      `tests/qemu-agent-observe.sh` had fixed (a `console = Some "console"` inside a COMMENT passes a
+      non-console row). Same one-line `strip_comments` fix; out of the 648984f lane's scope.
 
 ## 4. Design items awaiting a decision
 
+- [x] **The write surface is now a CLOSED, HOST-DECLARED set** (`648984f`). It *was* an unstated
+      assumption: the loop's guardrail rested on the record being beyond the agent's reach, and
+      `fx_write` could truncate ANY path under `FX_VERB_ROOT` — so a model could erase its own
+      attempt record and resurrect the oscillator, and a comment asserted the protection that did not
+      exist. The principle settled here, and it generalises: **outside the guest the tool vocabulary
+      is a policy; inside it is a fact** — one must not be read as the other. `FX_AGENT_WRITABLE`
+      (root-relative, canonicalized, `O_NOFOLLOW`) with an UNSET default of exactly the task config
+      path, so a forgetful deployment cannot re-open the hole. READS stay open deliberately, and the
+      bound is stated as a property of the TOOL TABLE, not of the record's location.
 - [ ] **The runtime-record gap.** A direct exec of `/bin/fx-activate` writes **no `rt_effect("activate")`**,
       no runtime-DB update, no hot-apply. The agent's activation is recorded in the *store* but not in
       the *runtime record*. Accept "a cold activate, effective on next boot" — or record it? (Note the
@@ -130,6 +173,13 @@ certifies coherence; neither says "improved".
 
 ## House rules this session earned (each cost something real)
 
+- **A gate that reads a MOVING REF is not a gate — and a commit is an INPUT to the
+  gate.** Phases 5g/8 of `tests/test_outcome.sh` built their "pre-fix" arm from
+  `git show HEAD:`; the gate passed *before* the commit and went red the instant the
+  commit landed, because `HEAD` was then the fixed source. Two consequences: **re-run
+  a gate AFTER committing**, not only before, and **pin a control to a fixed revision
+  and prove its domain** (a `cmp` against the working file, so a pin that happens to
+  equal the working source fails as vacuous instead of silently proving nothing).
 - **A bound or a comment that describes a protection must be checked for the range over which it
   actually holds, and its violation must be LOUD.** Four or five instances: the B2 drift "pin" that
   pinned a *class* not a *set*; the guardrail's oldest-256 scan that silently stopped protecting on

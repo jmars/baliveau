@@ -264,7 +264,11 @@ int fx_outcome_record_load(const char *data_dir, const char *task, FxOutcome *ou
              * result) still pre-empted it, and the report claimed "a LATER
              * run of this task COMPLETED", which is inverted for that record.
              * Line order is write order (the file is append-only with one
-             * writer), so position is the exact ordering. */
+             * writer), so position is the exact ordering.
+             *
+             * The done is SUSPENDED, not deleted: its provenance is kept so
+             * it can return to force (see the result handler below). */
+            if (out->done) out->done_suspended = 1;
             out->done = 0;
             out->version = version;
             out->epoch = epoch;
@@ -276,9 +280,25 @@ int fx_outcome_record_load(const char *data_dir, const char *task, FxOutcome *ou
                 out->has_result = 1;
                 out->version = version;
                 if (config[0]) copy_str(out->config, sizeof out->config, config);
+                /* A done that PREDATES this attempt is back in force: the
+                 * attempt this result just accounted did not come out of
+                 * nowhere, and there is now no unaccounted activation left
+                 * for that done to fail to settle.  A later attempt clears a
+                 * done ONLY while that attempt is UNACCOUNTED — without the
+                 * reinstatement, done -> attempt -> result(vN) read done=0
+                 * and the C==A branch returned RUN: a FALSE RUN, re-issuing
+                 * an activation for a task the record says COMPLETED (the
+                 * exact failure class this unit exists to stop). */
+                if (out->done_suspended) {
+                    out->done = 1;
+                    out->done_suspended = 0;
+                }
             }
         } else if (strcmp(step, "done") == 0) {
             out->done = 1;
+            out->done_suspended = 0; /* the newest done governs; an ordinary
+                                      * done AFTER the attempt is not a
+                                      * suspended one */
             /* the done line's own provenance: WHO completed the task.  The
              * recorded ATTEMPT's session/run/epoch are the ones a report
              * about that attempt must name, so they only fall back to this
@@ -534,10 +554,10 @@ FxVerdict fx_outcome_verdict(const char *data_dir, const char *task,
                 "  task     : %s (agent %s)\n"
                 "  activated: %s (recorded before the call was dispatched; the verb named no\n"
                 "             generation, so the record cannot account for that activation)\n"
-                "  done     : a `done` marker FOLLOWS that activation on record (session %s,\n"
-                "             run %s, epoch %lu) — a run of the task completed after it, which\n"
-                "             is the strongest evidence the record can hold.  A done that\n"
-                "             PREDATED the activation would NOT settle it (see outcome.h)\n"
+                "  done     : a `done` marker is in force for this task (session %s,\n"
+                "             run %s, epoch %lu) — a run of the task completed, which is\n"
+                "             the strongest evidence the record can hold; a done that\n"
+                "             predates an UNACCOUNTED activation would NOT settle it\n"
                 "  rule     : a completed task is not re-run\n"
                 "  record   : %s/attempts.jsonl (session %s, run %s, epoch %lu)\n"
                 "  action   : this run stops here (exit 0); the record is NOT deleted\n"

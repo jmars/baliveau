@@ -30,8 +30,10 @@
 #     ALREADY_DONE from a corrupt record);
 #   * an unaccounted activation + a later COMPLETED run IS resolvable (phase 4d);
 #   * a done that PREDATES a later attempt does NOT settle it — the loader's
-#     done is position-aware (phase 4f, unit-asymmetried in 5g against the
-#     committed outcome.c);
+#     done is position-aware (phase 4f, unit-asymmetried in 5g against PINNED
+#     pre-fix sources, never a moving HEAD), and a done -> attempt -> RESULT
+#     order is NOT a false RUN: the done returns to force once the attempt is
+#     accounted, and re-suspends behind a further unaccounted one (phase 5g);
 #   * the prompt axis is load-bearing and its DRIFT is LOUD (phase 5b);
 #   * a CR/LF in the model-supplied config cannot forge a record line (phase 5c);
 #   * a --resume must not re-record the seed's own activation (phase 5d);
@@ -41,7 +43,9 @@
 #     O_APPEND used to merge the new record into the torn prefix);
 #   * fx_write's write surface is the HOST-DECLARED writable set: the record
 #     path is refused (loudly, naming path and set) while the task config
-#     still writes, and the committed server shows the hole (phase 8).
+#     still writes, the DOCUMENTED root-relative entry spelling grants it,
+#     a '..' onto an allowed member still writes, and the PINNED pre-fix
+#     servers show both holes (phase 8).
 #
 # WHAT IS REAL HERE, and what is planted:
 #   REAL      the harness binary, the REAL tool server (build/fx-verbs-server) as
@@ -647,9 +651,8 @@ note "$("$TMP/probe" "$TMP/probe-data.2" | sed 's/^/   /')"
 # Two invariants this oracle cannot observe through the binary's outside (the
 # report WORDING is covered by 4f; the loader's ORDER semantics and the
 # O_APPEND tail repair are not observable via any report), probed straight at
-# fx_outcome_* — once against THIS tree and once against the PRE-FIX
-# outcome.c (the committed source, git HEAD), so every assertion below is
-# shown to be able to FAIL:
+# fx_outcome_* — once against THIS tree and once against PINNED pre-fix
+# sources, so every assertion below is shown to be able to FAIL:
 #   done-first    : done line, THEN a later unaccounted attempt.  The loader
 #                   must not let the earlier done settle the later attempt
 #                   (fixed: UNRESOLVED; pre-fix: ALREADY_DONE — the bug).
@@ -661,20 +664,68 @@ note "$("$TMP/probe" "$TMP/probe-data.2" | sed 's/^/   /')"
 #                   record" and RUNS; the writer now closes a torn tail with
 #                   a newline BEFORE appending (fixed: the record survives;
 #                   pre-fix: lost).
-echo "== phase 5g: done ordering + torn-tail repair — unit asymmetry vs the committed outcome.c"
+#   done-first-   : done, then attempt, then that attempt's RESULT (vN), with
+#     result        the store's CURRENT == vN.  648984f's position-aware
+#                   loader cleared the done at the attempt and nothing put it
+#                   back, so the C==A branch returned RUN — a FALSE RUN that
+#                   re-issues an activation for a task the record says
+#                   COMPLETED (reachable via --resume, which bypasses the
+#                   start gate but still writes attempt/result lines).  A
+#                   later attempt now clears the done ONLY while that attempt
+#                   is UNACCOUNTED: the result puts the done back in force
+#                   (fixed: ALREADY_DONE; 648984f: RUN — the bug, this round).
+#
+# THE PRE-FIX ARMS ARE PINNED REVISIONS, NEVER HEAD: this phase once read
+# `git show HEAD:` — a MOVING ref that was the pre-fix source only while the
+# fix was UNCOMMITTED; the moment 648984f landed, HEAD became the FIXED
+# source, every asymmetry here went VACUOUS, and the gate turned red forever
+# (the pre-fix loader no longer showed the bug).  Nothing in this gate may
+# depend on the position of HEAD.  A shallow clone or rewritten history can
+# legitimately lack a pin; that is a SKIP said OUT LOUD, never a silent
+# vacuous pass.  And the control's DOMAIN is asserted: a pinned source that
+# happens to EQUAL the working file would prove exactly as little as a moving
+# one, so each extraction is diffed against the tree and a match FAILS.
+PIN_STICKY="648984f^"   # the sticky-done loader (the bug 648984f fixed)
+PIN_FALSE="648984f"     # the loader whose done->attempt->result returned RUN
+PRE86=""
+MID86=""
+git -C "$ROOT" cat-file -e "$PIN_STICKY^{commit}" 2>/dev/null \
+    || PRE86="pre-fix revision $PIN_STICKY unavailable (shallow clone or rewritten history)"
+git -C "$ROOT" cat-file -e "$PIN_FALSE^{commit}" 2>/dev/null \
+    || MID86="revision $PIN_FALSE unavailable (shallow clone or rewritten history)"
 mkdir -p "$TMP/prefix/llm2" || fail "phase 5g: cannot create the pre-fix source dir"
-git show HEAD:src/llm2/outcome.c > "$TMP/prefix/llm2/outcome.c" 2>/dev/null \
-    || fail "phase 5g: cannot extract the committed src/llm2/outcome.c (git HEAD)"
-git show HEAD:src/llm2/outcome.h > "$TMP/prefix/llm2/outcome.h" 2>/dev/null \
-    || fail "phase 5g: cannot extract the committed src/llm2/outcome.h"
+if [ -z "$PRE86" ]; then
+    git -C "$ROOT" show "$PIN_STICKY:src/llm2/outcome.c" > "$TMP/prefix/llm2/outcome.c" 2>/dev/null \
+        || PRE86="cannot extract src/llm2/outcome.c at $PIN_STICKY"
+    git -C "$ROOT" show "$PIN_STICKY:src/llm2/outcome.h" > "$TMP/prefix/llm2/outcome.h" 2>/dev/null \
+        || PRE86="cannot extract src/llm2/outcome.h at $PIN_STICKY"
+    [ -z "$PRE86" ] && cmp -s "$TMP/prefix/llm2/outcome.c" "$ROOT/src/llm2/outcome.c" \
+        && PRE86="the pinned pre-fix outcome.c is IDENTICAL to the working tree — the asymmetry arm would compare the code to itself (was the fix reverted?)"
+fi
+mkdir -p "$TMP/midfix/llm2" || fail "phase 5g: cannot create the mid-fix source dir"
+if [ -z "$MID86" ]; then
+    git -C "$ROOT" show "$PIN_FALSE:src/llm2/outcome.c" > "$TMP/midfix/llm2/outcome.c" 2>/dev/null \
+        || MID86="cannot extract src/llm2/outcome.c at $PIN_FALSE"
+    git -C "$ROOT" show "$PIN_FALSE:src/llm2/outcome.h" > "$TMP/midfix/llm2/outcome.h" 2>/dev/null \
+        || MID86="cannot extract src/llm2/outcome.h at $PIN_FALSE"
+    [ -z "$MID86" ] && cmp -s "$TMP/midfix/llm2/outcome.c" "$ROOT/src/llm2/outcome.c" \
+        && MID86="the $PIN_FALSE outcome.c is IDENTICAL to the working tree — the false-run arm would compare the code to itself"
+fi
+echo "== phase 5g: done ordering + torn-tail repair — unit asymmetry vs pinned pre-fix sources"
 cat > "$TMP/ordprobe.c" <<'CEOF'
 /* The record's ORDER and TAIL invariants, straight at the API.  argv:
  *   ordprobe done-first DIR    record(done) then record(attempt) -> verdict name
  *   ordprobe attempt-first DIR record(attempt) then record(done) -> verdict name
+ *   ordprobe done-first-result DIR STORE V
+ *                              record(done), record(attempt),
+ *                              record(result v=V), verdict with a store whose
+ *                              CURRENT is V (the C==A branch) -> verdict name
  *   ordprobe tailrepair DIR    good record + torn tail + good record -> visible|lost
  * Exit 0 always (2 on a setup error); the CALLER asserts the printed word. */
 #define _POSIX_C_SOURCE 200809L
+#include <errno.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include "outcome.h"
@@ -714,6 +765,35 @@ int main(int argc, char **argv) {
         printf("%s\n", vname(v));
         return 0;
     }
+    if (strcmp(argv[1], "done-first-result") == 0) {
+        /* done, then a LATER attempt, then that attempt's own result at
+         * version V; the store's CURRENT is V, so the verdict reaches the
+         * C==A branch.  The planted store has NO bootlog (the generation is
+         * never judged), exactly the state a --resume leaves behind. */
+        if (argc < 5) return 2;
+        unsigned long v = strtoul(argv[4], NULL, 10);
+        char snap[4096], cur[4096];
+        if (mkdir(argv[3], 0755) != 0 && errno != EEXIST) return 2;
+        snprintf(snap, sizeof snap, "%s/.db", argv[3]);
+        if (mkdir(snap, 0755) != 0 && errno != EEXIST) return 2;
+        snprintf(snap, sizeof snap, "%s/.db/snapshots", argv[3]);
+        if (mkdir(snap, 0755) != 0 && errno != EEXIST) return 2;
+        snprintf(cur, sizeof cur, "%s/CURRENT", snap);
+        FILE *cf = fopen(cur, "w");
+        if (!cf) return 2;
+        fprintf(cf, "%lu\n", v);
+        fclose(cf);
+        if (fx_outcome_record(argv[2], task, "done", "s1", "r1", 0, NULL) != 0) return 2;
+        if (fx_outcome_record(argv[2], task, "attempt", "s2", "r2", 0,
+                              "/fx/disk/agent-config.dhall") != 0) return 2;
+        if (fx_outcome_record(argv[2], task, "result", "s2", "r2", v,
+                              "/fx/disk/agent-config.dhall") != 0) return 2;
+        FxOutcome o; char rep[512];
+        FxVerdict vd = fx_outcome_verdict(argv[2], task, argv[3], NULL, &o,
+                                          rep, sizeof rep, NULL, 0);
+        printf("%s\n", vname(vd));
+        return 0;
+    }
     if (strcmp(argv[1], "tailrepair") == 0) {
         const char *t2 = "9999999999999999";
         if (fx_outcome_record(dir, task, "attempt", "s1", "r1", 0, "a") != 0) return 2;
@@ -734,33 +814,104 @@ int main(int argc, char **argv) {
     return 2;
 }
 CEOF
-PFXV="$TMP/ordprobe-prefix"; FIXV="$TMP/ordprobe-fixed"
+PFXV="$TMP/ordprobe-prefix"; FIXV="$TMP/ordprobe-fixed"; MIDV="$TMP/ordprobe-midfix"
 cc -std=c11 -O2 -Wall -Wextra -I"$ROOT/src" -I"$ROOT/src/llm2" \
    -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
    -o "$FIXV" "$TMP/ordprobe.c" "$ROOT/src/llm2/outcome.c" \
    || fail "phase 5g: cannot build the order probe against this tree"
-cc -std=c11 -O2 -Wall -Wextra -I"$TMP/prefix/llm2" \
-   -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
-   -o "$PFXV" "$TMP/ordprobe.c" "$TMP/prefix/llm2/outcome.c" \
-   || fail "phase 5g: cannot build the order probe against the committed outcome.c"
+if [ -z "$PRE86" ]; then
+    cc -std=c11 -O2 -Wall -Wextra -I"$TMP/prefix/llm2" \
+       -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
+       -o "$PFXV" "$TMP/ordprobe.c" "$TMP/prefix/llm2/outcome.c" \
+       || fail "phase 5g: cannot build the order probe against $PIN_STICKY's outcome.c"
+else
+    echo "SKIP outcome: phase 5g (pre-fix arm): $PRE86"
+fi
+if [ -z "$MID86" ]; then
+    cc -std=c11 -O2 -Wall -Wextra -I"$TMP/midfix/llm2" \
+       -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
+       -o "$MIDV" "$TMP/ordprobe.c" "$TMP/midfix/llm2/outcome.c" \
+       || fail "phase 5g: cannot build the order probe against $PIN_FALSE's outcome.c"
+else
+    echo "SKIP outcome: phase 5g (false-run arm): $MID86"
+fi
+if [ -z "$PRE86" ]; then
 W=$("$PFXV" done-first "$TMP/od-pre") || fail "phase 5g: pre-fix done-first probe failed"
 [ "$W" = "ALREADY_DONE" ] \
     || fail "phase 5g: the PRE-FIX loader no longer shows the position-blind done ('$W') — the asymmetry probe proves nothing"
+fi
 W=$("$FIXV" done-first "$TMP/od-fix") || fail "phase 5g: fixed done-first probe failed"
 [ "$W" = "UNRESOLVED" ] \
     || fail "phase 5g: the fixed loader let a done that PREDATES the attempt settle it ('$W')"
+if [ -z "$PRE86" ]; then
 W=$("$PFXV" attempt-first "$TMP/od-ord-pre") || fail "phase 5g: pre-fix attempt-first probe failed"
 [ "$W" = "ALREADY_DONE" ] || fail "phase 5g: the ordinary attempt-then-done order broke ('$W')"
+fi
 W=$("$FIXV" attempt-first "$TMP/od-ord-fix") || fail "phase 5g: fixed attempt-first probe failed"
 [ "$W" = "ALREADY_DONE" ] \
     || fail "phase 5g: the fix changed the ORDINARY attempt-then-done case ('$W') — a genuine completion became a re-run"
+# done -> attempt -> result(v5) at C==v5: 648984f returned RUN (the FALSE
+# RUN); the working loader reinstates the done -> ALREADY_DONE.  Both
+# directions asserted; each fails if the reinstatement (or its absence)
+# regresses.
+if [ -z "$MID86" ]; then
+W=$("$MIDV" done-first-result "$TMP/od-dfr-mid" "$TMP/od-dfr-store-mid" 5) \
+    || fail "phase 5g: $PIN_FALSE done-first-result probe failed"
+[ "$W" = "RUN" ] \
+    || fail "phase 5g: $PIN_FALSE no longer returns the FALSE RUN at C==A for done->attempt->result ('$W') — the asymmetry probe proves nothing"
+fi
+W=$("$FIXV" done-first-result "$TMP/od-dfr-fix" "$TMP/od-dfr-store-fix" 5) \
+    || fail "phase 5g: fixed done-first-result probe failed"
+[ "$W" = "ALREADY_DONE" ] \
+    || fail "phase 5g: done->attempt->result at C==A returned RUN ('$W') — a FALSE RUN re-issues an activation for a task the record says COMPLETED"
+# and the attempt the result ACCOUNTS for is the only one a done can be
+# reinstated behind: a SECOND, unaccounted attempt after the result must
+# still read UNRESOLVED (the done is suspended again, not sticky).
+rm -rf "$TMP/od-susp2" "$TMP/od-susp2-store"
+"$FIXV" done-first-result "$TMP/od-susp2" "$TMP/od-susp2-store" 5 >/dev/null \
+    || fail "phase 5g: suspension setup failed"
+printf '1700000001 %s attempt s3 r3 0 /fx/disk/agent-config.dhall\n' "0123456789abcdef" >> "$TMP/od-susp2/attempts.jsonl"
+cat > "$TMP/suspprobe.c" <<'CEOF'
+#define _POSIX_C_SOURCE 200809L
+#include <stdio.h>
+#include <string.h>
+#include "outcome.h"
+static const char *vname(FxVerdict v) {
+    switch (v) {
+    case FX_VERDICT_RUN: return "RUN";
+    case FX_VERDICT_ACTIVATION_FAILED: return "ACTIVATION_FAILED";
+    case FX_VERDICT_ALREADY_DONE: return "ALREADY_DONE";
+    case FX_VERDICT_SUPERSEDED: return "SUPERSEDED";
+    case FX_VERDICT_UNRESOLVED: return "UNRESOLVED";
+    default: return "ERROR";
+    }
+}
+int main(int argc, char **argv) {
+    if (argc < 3) return 2;
+    FxOutcome o; char rep[512];
+    FxVerdict v = fx_outcome_verdict(argv[1], "0123456789abcdef", argv[2], NULL,
+                                     &o, rep, sizeof rep, NULL, 0);
+    printf("%s\n", vname(v));
+    return 0;
+}
+CEOF
+cc -std=c11 -O2 -Wall -Wextra -I"$ROOT/src" -I"$ROOT/src/llm2" \
+   -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
+   -o "$TMP/suspprobe" "$TMP/suspprobe.c" "$ROOT/src/llm2/outcome.c" \
+   || fail "phase 5g: cannot build the suspension probe"
+W=$("$TMP/suspprobe" "$TMP/od-susp2" "$TMP/od-susp2-store") \
+    || fail "phase 5g: suspension probe failed"
+[ "$W" = "UNRESOLVED" ] \
+    || fail "phase 5g: a done did not re-suspend behind a SECOND unaccounted attempt ('$W') — sticky done is back"
+if [ -z "$PRE86" ]; then
 W=$("$PFXV" tailrepair "$TMP/tr-pre") || fail "phase 5g: pre-fix tailrepair probe failed"
 [ "$W" = "lost" ] \
     || fail "phase 5g: the PRE-FIX writer did not merge the next record into the torn tail ('$W') — the asymmetry probe proves nothing"
+fi
 W=$("$FIXV" tailrepair "$TMP/tr-fix") || fail "phase 5g: fixed tailrepair probe failed"
 [ "$W" = "visible" ] \
     || fail "phase 5g: a record appended after a torn tail was LOST ('$W') — the next boot would read nothing and RUN"
-note "unit asymmetry: done-before-attempt ALREADY_DONE(pre-fix) -> UNRESOLVED(fixed); attempt-then-done unchanged; a torn tail no longer eats the next record"
+note "unit asymmetry: done-before-attempt ALREADY_DONE(pre-fix) -> UNRESOLVED(fixed); done->attempt->RESULT RUN(648984f) -> ALREADY_DONE(fixed) and re-suspended behind a second unaccounted attempt; attempt-then-done unchanged; a torn tail no longer eats the next record"
 
 # ── phase 6: the store is NEVER guessed ────────────────────────────────────
 echo "== phase 6: a verdict that needs the store FAILS LOUDLY when it is absent"
@@ -808,14 +959,45 @@ note "and re-activated the task (2 attempts on record); the real build refused i
 # after it, while the task-config write STILL SUCCEEDS after — a fix that
 # refuses everything is not a fix.
 echo "== phase 8: fx_write writes ONLY the host-declared set (record refused, config allowed)"
-mkdir -p "$TMP/prefix/tools" || fail "phase 8: cannot create the pre-fix source dir"
-git show HEAD:tools/fx-verbs-server.c > "$TMP/prefix/tools/fx-verbs-server.c" 2>/dev/null \
-    || fail "phase 8: cannot extract the committed tools/fx-verbs-server.c (git HEAD)"
+# The pre-fix server is PINNED (never HEAD — see phase 5g's pinning note) and
+# its DOMAIN asserted: the pinned source must actually DIFFER from the
+# working one, or the arm would compare the code to itself.
+if [ -z "$PRE86" ]; then
+    mkdir -p "$TMP/prefix/tools" || fail "phase 8: cannot create the pre-fix source dir"
+    git -C "$ROOT" show "$PIN_STICKY:tools/fx-verbs-server.c" > "$TMP/prefix/tools/fx-verbs-server.c" 2>/dev/null \
+        || PRE86="cannot extract tools/fx-verbs-server.c at $PIN_STICKY"
+    [ -z "$PRE86" ] && cmp -s "$TMP/prefix/tools/fx-verbs-server.c" "$ROOT/tools/fx-verbs-server.c" \
+        && PRE86="the pinned pre-fix fx-verbs-server.c is IDENTICAL to the working tree"
+fi
+if [ -n "$PRE86" ]; then
+    echo "SKIP outcome: phase 8 (pre-fix arms): $PRE86"
+else
 cc -std=c11 -O2 -Wall -Wextra -I"$TMP/prefix" -I"$ROOT/src/vendor/yyjson" \
    -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
    -o "$TMP/vs-prefix" "$TMP/prefix/tools/fx-verbs-server.c" \
    "$TMP/prefix/llm2/outcome.c" "$ROOT/src/vendor/yyjson/yyjson.c" \
    || fail "phase 8: cannot build the pre-fix fx-verbs-server"
+fi
+# the 648984f server for the DOCUMENTED-SPELLING asymmetry: that commit's
+# docs (and its model-facing tool description) said entries are root-relative
+# while only absolute entries ever matched — a deployment following its own
+# documentation got a fail-closed agent that could not write its own config.
+if [ -z "$MID86" ]; then
+    mkdir -p "$TMP/midfix/tools" || fail "phase 8: cannot create the mid-fix source dir"
+    git -C "$ROOT" show "$PIN_FALSE:tools/fx-verbs-server.c" > "$TMP/midfix/tools/fx-verbs-server.c" 2>/dev/null \
+        || MID86="cannot extract tools/fx-verbs-server.c at $PIN_FALSE"
+    [ -z "$MID86" ] && cmp -s "$TMP/midfix/tools/fx-verbs-server.c" "$ROOT/tools/fx-verbs-server.c" \
+        && MID86="the $PIN_FALSE fx-verbs-server.c is IDENTICAL to the working tree"
+fi
+if [ -n "$MID86" ]; then
+    echo "SKIP outcome: phase 8 (documented-spelling arm): $MID86"
+else
+cc -std=c11 -O2 -Wall -Wextra -I"$TMP/midfix" -I"$ROOT/src/vendor/yyjson" \
+   -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
+   -o "$TMP/vs-midfix" "$TMP/midfix/tools/fx-verbs-server.c" \
+   "$TMP/midfix/llm2/outcome.c" "$ROOT/src/vendor/yyjson/yyjson.c" \
+   || fail "phase 8: cannot build the $PIN_FALSE fx-verbs-server"
+fi
 WR="$TMP/wroot"                       # the model's view: FX_VERB_ROOT
 WRP="$TMP/wroot-prefix"               # the PRE-FIX server's own root
 mkdir -p "$WR/fx/disk/agent-data" "$WRP/fx/disk/agent-data" \
@@ -845,13 +1027,15 @@ text = d["result"]["content"][0]["text"]
 sys.stdout.write(text)
 PYEOF
 }
-# BEFORE (the hole, re-measured): the committed server writes the RECORD path.
+# BEFORE (the hole, re-measured): the pinned pre-fix server writes the RECORD path.
+if [ -z "$PRE86" ]; then
 TXT=$(drive "$TMP/vs-prefix" "$WRP" "$WS_ENV" /fx/disk/agent-data/attempts.jsonl 'FORGED-RECORD-LINE')
 case "$TXT" in exit=0*) ;; *) printf '%s\n' "$TXT" >&2
     fail "phase 8: the PRE-FIX server did NOT write the record path — the asymmetry probe proves nothing";; esac
 grep -q 'FORGED-RECORD-LINE' "$WRP/fx/disk/agent-data/attempts.jsonl" \
     || fail "phase 8: the PRE-FIX write of the record did not land (probe is vacuous)"
 note "pre-fix: the record path was WRITABLE (the hole, measured): $(printf '%s\n' "$TXT" | head -1)"
+fi
 # AFTER: the fixed server REFUSES the record path, LOUDLY.
 TXT=$(drive "$VS" "$WR" "$WS_ENV" /fx/disk/agent-data/attempts.jsonl 'FORGED-RECORD-LINE')
 case "$TXT" in exit=1*) ;; *) printf '%s\n' "$TXT" >&2
@@ -875,6 +1059,33 @@ case "$TXT" in exit=0*) ;; *) printf '%s\n' "$TXT" >&2
 [ "$(cat "$WR/fx/disk/agent-config.dhall")" = 'let x = 1 in x' ] \
     || fail "phase 8: the allowed write did not land"
 note "fixed: the task-config write still succeeds (exit 0, content round-trips)"
+# AFTER, THE DOCUMENTED SPELLING: FX_AGENT_WRITABLE entered ROOT-RELATIVELY
+# (the spelling 648984f's comments and model-facing description document)
+# must grant the config write — and 648984f itself refused it (the entry was
+# silently dropped, the set behaved as empty), which is the fail-closed
+# deployment bug this round fixes.  Both directions pinned.
+if [ -z "$MID86" ]; then
+TXT=$(drive "$TMP/vs-midfix" "$WR" "FX_AGENT_WRITABLE=fx/disk/agent-config.dhall" /fx/disk/agent-config.dhall 'let m = 3 in m')
+case "$TXT" in exit=1*) ;; *) printf '%s\n' "$TXT" >&2
+    fail "phase 8: $PIN_FALSE ACCEPTED the documented root-relative entry — the spelling asymmetry probe proves nothing";; esac
+note "648984f: the documented root-relative entry was REFUSED (the doc bug, measured): $(printf '%s\n' "$TXT" | head -1)"
+fi
+TXT=$(drive "$VS" "$WR" "FX_AGENT_WRITABLE=fx/disk/agent-config.dhall" /fx/disk/agent-config.dhall 'let m = 3 in m')
+case "$TXT" in exit=0*) ;; *) printf '%s\n' "$TXT" >&2
+    fail "phase 8: the DOCUMENTED root-relative entry no longer grants the config write — the docs and the code disagree again";; esac
+[ "$(cat "$WR/fx/disk/agent-config.dhall")" = 'let m = 3 in m' ] \
+    || fail "phase 8: the documented-spelling write did not land"
+note "fixed: the documented root-relative entry grants exactly the config path (exit 0, content round-trips)"
+# AFTER, THE ALLOWED '..' DIRECTION: a '..' spelling that canonicalizes ONTO
+# an allowed member must still WRITE (an over-refusing regression — refusing
+# any path that merely CONTAINS '..' — would pass every refused-direction
+# probe above).
+TXT=$(drive "$VS" "$WR" "$WS_ENV" /fx/disk/agent-config.dhall/../agent-config.dhall 'let d = 4 in d')
+case "$TXT" in exit=0*) ;; *) printf '%s\n' "$TXT" >&2
+    fail "phase 8: a '..' spelling ONTO an allowed member was refused — the fix broke a legitimate case";; esac
+[ "$(cat "$WR/fx/disk/agent-config.dhall")" = 'let d = 4 in d' ] \
+    || fail "phase 8: the allowed-'..' write did not land"
+note "fixed: a '..' spelling onto an allowed member still writes (over-refusal caught)"
 # AFTER: a '..' spelling cannot reach around the set (the membership check
 # runs on the CANONICALIZED path, so this spelling names exactly the record).
 TXT=$(drive "$VS" "$WR" "$WS_ENV" /fx/disk/agent-config.dhall/../agent-data/attempts.jsonl 'FORGED-RECORD-LINE')

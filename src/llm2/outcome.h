@@ -43,10 +43,15 @@
  *        through one_line(), so CR/LF cannot forge a second record line.
  *        ORDER IS MEANING: the file is append-only and fx_outcome_record is
  *        its ONLY writer, so line order IS write order, and `done` is only
- *        ever read as settling the attempts that PRECEDE it — the loader
- *        clears `done` when it sees a LATER attempt line for the task (a
- *        done that predates a later unaccounted attempt does not settle it;
- *        see fx_outcome_record_load).
+ *        ever read as settling the attempts that PRECEDE it.  A later
+ *        attempt line SUSPENDS the done — a done that predates an
+ *        UNACCOUNTED attempt (a --resume/--reconsider run that died before
+ *        its tool result) does not settle it — and the suspension ends the
+ *        moment that attempt is itself ACCOUNTED: a result line after it
+ *        puts the done back in force.  A later attempt therefore clears the
+ *        done ONLY while it is unaccounted; done -> attempt -> result is a
+ *        COMPLETED task someone re-attempted (whose activation took), not a
+ *        licence to issue a third activation (see fx_outcome_record_load).
  *   3. THE RULE, applied at the START of every run (the boot path):
  *
  *        "if the generation I am running in is not the one I activated,
@@ -59,26 +64,43 @@
  *        A = the generation the last recorded activation for this task produced
  *        C = <store>/.db/snapshots/CURRENT (the generation this boot runs)
  *
+ *        "done in force" = a done line FOLLOWS the last attempt, OR a done
+ *        line PREDATES it and that attempt is itself ACCOUNTED (a result
+ *        line follows it).  A done line never settles an attempt that is
+ *        still unaccounted — but a completed task stays completed once no
+ *        unaccounted activation is left to settle.
+ *
  *        no activation recorded, not done        -> RUN
- *        no activation recorded, done            -> ALREADY_DONE (do not re-run)
+ *        no activation recorded, done in force   -> ALREADY_DONE (do not re-run)
  *        A failed in the bootlog                 -> ACTIVATION_FAILED
- *        A ok in the bootlog, done               -> ALREADY_DONE (it took; a
+ *        A ok in the bootlog, done in force      -> ALREADY_DONE (it took; a
  *                                                   later activation superseded it)
  *        A ok in the bootlog, NOT done           -> SUPERSEDED (it booted, but
  *                                                   nothing on record says the
  *                                                   TASK finished: stop, and say
  *                                                   so honestly — "it took" is not
  *                                                   "it is complete")
- *        C == A                                  -> RUN (it took; RUN unless the
- *                                                   task already completed)
- *        not judged, done AFTER the attempt      -> ALREADY_DONE (an activation
- *                                                   whose fate was never recorded
- *                                                   followed by a COMPLETED run
- *                                                   of this task: complete wins)
- *        not judged, done BEFORE the attempt     -> UNRESOLVED (a done line may
+ *        C == A, done in force                   -> ALREADY_DONE (the activation
+ *                                                   took AND the task completed —
+ *                                                   including the done ->
+ *                                                   attempt -> result order: a
+ *                                                   completed task someone
+ *                                                   re-attempted is not a licence
+ *                                                   to issue a THIRD activation)
+ *        C == A, no done                         -> RUN (the ordinary re-run)
+ *        A unaccounted (no result line, or the result named no generation),
+ *          done in force                         -> ALREADY_DONE (complete wins:
+ *                                                   the done follows the attempt,
+ *                                                   or the attempt is accounted)
+ *        A unaccounted, done BEFORE the attempt  -> UNRESOLVED (a done line may
  *                                                   only settle attempts that
  *                                                   PRECEDE it)
- *        otherwise (A never judged)              -> UNRESOLVED
+ *        A recorded with a version that was never
+ *          judged, C != A                        -> UNRESOLVED (the store cannot
+ *                                                   account for the activation —
+ *                                                   a conservative stop even when
+ *                                                   a done is in force)
+ *        otherwise                               -> UNRESOLVED
  *
  *      ACTIVATION_FAILED, SUPERSEDED and UNRESOLVED all STOP: the task is NOT
  *      re-run and no further activation is issued.  The refusal exits 0, and
@@ -172,12 +194,21 @@ typedef struct {
     char          run[64];       /* the run that made the attempt (run_id) */
     char          config[FX_OUTCOME_PATH_CAP];
     unsigned long epoch;
-    int           done;          /* a run of the task completed AFTER the last
-                                  * recorded attempt (a done line that
-                                  * PRECEDES a later attempt does not count) */
+    int           done;          /* a `done` is IN FORCE: one follows the last
+                                  * recorded attempt, or one PREDATES an
+                                  * attempt that is itself accounted (see the
+                                  * rule table).  A done that predates an
+                                  * UNACCOUNTED attempt does not count. */
+    int           done_suspended;/* a done PREDATES the last attempt and that
+                                  * attempt is still unaccounted: the done is
+                                  * held in reserve and returns to force the
+                                  * moment a result line accounts for it */
     unsigned long done_epoch;    /* the done line's own provenance — the report
                                   * names WHO completed the task, and these are
-                                  * it (0/"" when no done is in force) */
+                                  * it.  Meaningful only when done==1; while a
+                                  * done is suspended they keep the suspended
+                                  * done's provenance so a reinstated done can
+                                  * still name its run */
     char          done_session[264];
     char          done_run[64];
     unsigned long current;       /* C — read only when the rule needs it */
@@ -207,9 +238,11 @@ int fx_outcome_record(const char *data_dir, const char *task, const char *step,
  * version) — adopting that would decide a verdict from a corrupt record, the
  * one thing fail-open must never do.  `done` is POSITION-AWARE: it settles
  * only the attempts that PRECEDE it, so a LATER attempt line for the task
- * clears it (the file is append-only with one writer, so line order is write
- * order — a `done` that predates a later unaccounted attempt must not
- * pre-empt it).  Returns 0 (even when nothing matched), -1 on OOM. */
+ * suspends it (the file is append-only with one writer, so line order is
+ * write order — a `done` that predates a later unaccounted attempt must not
+ * pre-empt it), and the suspension ends when a result line accounts for
+ * that attempt: a later attempt clears the done ONLY while it is
+ * unaccounted.  Returns 0 (even when nothing matched), -1 on OOM. */
 int fx_outcome_record_load(const char *data_dir, const char *task, FxOutcome *out);
 
 /* What the record says about WHO a task id belongs to (`agent` step lines). */

@@ -155,9 +155,13 @@ extern char **environ; /* the server's own environment (pass-through source) */
  * HOST fixes, not a policy the model negotiates.  Outside the guest a tool
  * vocabulary is a policy; inside it is a FACT, so the fact is enforced in
  * the table: fx_write may only create-or-truncate a path in FX_AGENT_WRITABLE
- * (env, read at call time like FX_VERB_ROOT: a colon-separated list of
- * ROOT-RELATIVE, EXACT file paths — no directories, no globs), and a write
- * outside the set is REFUSED loudly (exit 1, naming the path AND the set).
+ * (env, read at call time like FX_VERB_ROOT: a colon-separated list of EXACT
+ * file paths, each spelled either ABSOLUTELY (/fx/disk/agent-config.dhall) or
+ * ROOT-RELATIVELY (fx/disk/agent-config.dhall) — no directories, no globs;
+ * both spellings are canonicalized to the SAME root-relative form before
+ * comparison, so a relative entry grants exactly the file the absolute
+ * spelling names and nothing wider), and a write outside the set is REFUSED
+ * loudly (exit 1, naming the path AND the set).
  * See FX_DEFAULT_WRITABLE below for the unset case.  WHY THE SET EXISTS: the
  * harness's observation loop rests on <VIBE_RUNTIME_DIR>/attempts.jsonl being
  * beyond the model's WRITE reach — a model that could rewrite the record
@@ -207,7 +211,19 @@ static char *root_join(const char *rel) {
  * CURRENT are in NO default set, so a deployment that never sets the
  * variable cannot have its observation loop defeated by an fx_write.  A
  * SET-BUT-EMPTY FX_AGENT_WRITABLE means the host declares nothing writable
- * (fx_write refuses everything) — distinct from unset by construction. */
+ * (fx_write refuses everything) — distinct from unset by construction.
+ *
+ * THE BOUND OF THE SET, stated exactly: it is a PATH gate, not an INODE
+ * gate.  fx_write opens the canonical path O_NOFOLLOW, so a symlink at the
+ * FINAL path cannot redirect it — but (a) a hardlink planted at an allowed
+ * path IS that path (the write truncates the shared inode, whatever else
+ * links to it), and (b) a symlinked INTERMEDIATE directory redirects an
+ * allowed path to a different file than the host named.  Both are HOST-side
+ * plantings: the verb table gives the model no link/rename/chmod shape to
+ * create either (native_write's open/write is the only write syscall in the
+ * server), so they are outside the model's reach and inside the host's
+ * contract: do not plant a hardlink or a directory symlink on a
+ * writable-set path. */
 #define FX_DEFAULT_WRITABLE "/fx/disk/agent-config.dhall"
 
 /* The set in force, read at call time.  Never NULL; may be "" (refuse all). */
@@ -258,7 +274,14 @@ static char *canon_root_rel(const char *abs) {
 /* Is `canon` (a canonicalized root-relative path) an EXACT member of the
  * writable set?  Every entry is canonicalized the SAME way before the
  * comparison, so "/a//b/./c" in the set matches a request for "/a/b/c", and
- * no ".." spelling can reach around the set. */
+ * no ".." spelling can reach around the set.  An entry may be spelled
+ * root-RELATIVELY (the spelling the comments and the tool description have
+ * always documented): a missing leading '/' is supplied before
+ * canonicalization — prefixing '/' can only NAME a path inside the root
+ * (root_join concatenates under FX_VERB_ROOT), and a relative entry with a
+ * ".." that would climb above it is still refused by canon_root_rel, so the
+ * normalization widens nothing.  An entry that fails to canonicalize is
+ * dropped: the set stays CLOSED. */
 static int in_writable_set(const char *canon, const char *set) {
     const char *e = set;
     while (e && *e) {
@@ -271,7 +294,16 @@ static int in_writable_set(const char *canon, const char *set) {
         if (el > 0 && el < sizeof ent) {
             memcpy(ent, e, el);
             ent[el] = '\0';
-            char *cent = canon_root_rel(ent);
+            char *cent;
+            if (ent[0] == '/') {
+                cent = canon_root_rel(ent);
+            } else {
+                /* the documented root-relative spelling: absolute-ize, then
+                 * canonicalize EXACTLY as the request is */
+                char abs[PATH_MAX];
+                int n = snprintf(abs, sizeof abs, "/%s", ent);
+                cent = (n > 0 && n < (int)sizeof abs) ? canon_root_rel(abs) : NULL;
+            }
             if (cent) {
                 int hit = (strcmp(cent, canon) == 0);
                 free(cent);
@@ -918,10 +950,11 @@ static const Verb VERBS[] = {
       "Capped at 1 MiB. Argument: path." },
     { "fx_write", NULL, { NULL, NULL },
       "Write a file (create-or-truncate). The write surface is a CLOSED, HOST-DECLARED "
-      "SET: only the exact paths listed in FX_AGENT_WRITABLE (colon-separated, "
-      "root-relative) may be written — a write to anything else is REFUSED "
-      "(exit=1) naming the path and the set, and the model cannot widen the set. "
-      "Does not follow a symlink at the final path. Arguments: path, content." },
+      "SET: only the exact paths listed in FX_AGENT_WRITABLE (colon-separated; each "
+      "path may be spelled absolute or root-relative — both name the same file) may "
+      "be written — a write to anything else is REFUSED (exit=1) naming the path and "
+      "the set, and the model cannot widen the set. Does not follow a symlink at the "
+      "final path. Arguments: path, content." },
     { "fx_ls", NULL, { NULL, NULL },
       "List a directory: one entry per line, directories suffixed '/'. Paths resolve "
       "under FX_VERB_ROOT. Argument: path (default: the root itself)." },

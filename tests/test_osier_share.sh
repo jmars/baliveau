@@ -170,6 +170,7 @@ EOF
     ps_pkg osier-svc    "$SRC/osier-svc"
     ps_pkg c-svc        "$SRC/c-svc"
     ps_pkg deadwood     "$SRC/deadwood"
+    ps_pkg ambig        "$SRC/ambig"
     echo "  ] }"
 } > "$WORK/package-set.dhall" || fail "cannot write the package set"
 PKGSET="$WORK/package-set.dhall"
@@ -234,6 +235,9 @@ activate() { # activate CFG -> version N on stdout
 run_oracle() { # run_oracle [extra args...] -> oracle stdout
     FXSTORE_BIN="$FXSTORE" "$OSIER" --store "$STORE" --package-set "$PKGSET" "$@"
 }
+nattr() { # nattr FILE -> the nonstore_run_unattributed count (mid-line)
+    grep -o 'nonstore_run_unattributed [0-9][0-9]*' "$1" | head -1 | awk '{print $2}'
+}
 field() { # field FILE KEY -> the value after the key (first match)
     sed -n "s/^$2 //p" "$1" | head -1
 }
@@ -246,8 +250,10 @@ E_TOT=$(field "$WORK/out.E" run_set_total_bytes)
 E_OS=$(field "$WORK/out.E" run_set_osier_bytes)
 [ "$E_TOT" = "0" ] && [ "$E_OS" = "0" ] && [ "$E_FRAC" = "0.000000" ] \
     || fail "E baseline wrong: total=$E_TOT osier=$E_OS frac=$E_FRAC (want 0/0 -> 0.000000)"
-grep -qx "service shsvc /bin/sh NONSTORE" "$WORK/out.E" \
-    || fail "E does not report the verbatim /bin/sh service as NONSTORE"
+grep -qx "service shsvc /bin/sh NONSTORE-UNATTRIBUTED" "$WORK/out.E" \
+    || fail "E does not report the verbatim /bin/sh service as NONSTORE-UNATTRIBUTED (an absolute argv[0] nothing attributes must be VISIBLE, flagged)"
+[ "$(nattr "$WORK/out.E")" = 1 ] \
+    || fail "E: nonstore_run_unattributed is not 1"
 grep -q '^osier_extensions \.elm$' "$WORK/out.E" \
     || fail "the oracle does not print its frozen extension set"
 
@@ -315,6 +321,158 @@ run_oracle --as-of "$V_A" > "$WORK/out.A2" || fail "oracle failed on --as-of $V_
 cmp -s "$WORK/out.A" "$WORK/out.A2" \
     || fail "--as-of $V_A does not reproduce v_A's report (snapshot binding is broken)"
 
+# ── the PRE-FIX ORACLE (pinned revision, never HEAD) ────────────────────
+# The asymmetry arms below (A4/A5/A6 and the corrupted-artifact seat) each
+# assert that the COMMITTED oracle — the one this round fixes — produces the
+# wrong thing on the very same store.  The pin is a FIXED revision
+# (e3eb984, the oracle commit), guarded by cat-file: a shallow clone says
+# SKIP out loud rather than silently dropping the fail-before arms.  And the
+# control's domain is asserted: if the pinned source EQUALS the working one
+# the arm would compare the code to itself and prove nothing.
+OSIER_PRE=""
+PRE_ORACLE_REV="e3eb984"
+if git -C "$REPO" cat-file -e "$PRE_ORACLE_REV^{commit}" 2>/dev/null; then
+    OSIER_PRE="$WORK/fx-osier-share-prefix"
+    git -C "$REPO" show "$PRE_ORACLE_REV:tools/fx-osier-share.c" > "$WORK/osier-prefix.c" 2>/dev/null \
+        || { echo "test_osier_share: SKIP (cannot extract $PRE_ORACLE_REV:tools/fx-osier-share.c)"; OSIER_PRE=""; }
+    if [ -n "$OSIER_PRE" ] && cmp -s "$WORK/osier-prefix.c" "$REPO/tools/fx-osier-share.c"; then
+        echo "test_osier_share: SKIP ($PRE_ORACLE_REV's oracle source is IDENTICAL to the working tree — the asymmetry arms would compare the code to itself)"
+        OSIER_PRE=""
+    fi
+    if [ -n "$OSIER_PRE" ]; then
+        cc -std=c11 -O2 -Wall -Wextra \
+           -I"$REPO/src" -I"$REPO/src/vendor/dhall-c" -I"$REPO/src/vendor/yyjson" \
+           -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
+           -o "$OSIER_PRE" "$WORK/osier-prefix.c" \
+           "$REPO"/src/vendor/dhall-c/*.c "$REPO/src/vendor/yyjson/yyjson.c" \
+           || fail "cannot build the $PRE_ORACLE_REV oracle"
+    fi
+else
+    echo "test_osier_share: SKIP (pre-fix revision $PRE_ORACLE_REV unavailable — the A4/A5/A6 fail-before arms cannot run)"
+fi
+run_pre() { # the PRE-FIX oracle on the same store
+    FXSTORE_BIN="$FXSTORE" "$OSIER_PRE" --store "$STORE" --package-set "$PKGSET" "$@"
+}
+
+# ── A5: an ABSOLUTE argv[0] on an INSTALL TARGET is a RUN component ─────
+# The denominator-shrink hole: a config installs /bin/<tool> from a package
+# (the four fixed /bin links — init, fxctl, dhake, fx-activate — are written
+# on EVERY activation, no service needed) and runs it with pkg=None.  The
+# svc_bin row is the absolute path; the oracle that treats every absolute
+# argv[0] as non-store DROPPED the package's bytes from numerator AND
+# denominator — the run share was inflatable to 1.0 by config alone.  The
+# fixed oracle resolves the absolute path through the activation's own
+# install facts.
+svc_dhake() { # a pkg=None service running an INSTALL TARGET absolutely
+    echo '{ name = "dhakesvc", argv = [ "/bin/dhake", "--probe" ], pkg = None Text, on = "all", restart = Some "always", backoffMs = Some 500, probe = None Probe, env = None (List { key : Text, value : Text }), console = None Text }'
+}
+cfg_write "$WORK/DH.dhall" "$TOOLS, \"osier-svc\"" "$(svc_sh), $(svc_osier), $(svc_dhake)"
+V_DH=$(activate "$WORK/DH.dhall"); [ -n "$V_DH" ] || fail "no version from DH activation"
+run_oracle > "$WORK/out.DH" || fail "oracle failed on DH: $(head -2 "$WORK/out.DH" 2>/dev/null)"
+DH_FRAC=$(field "$WORK/out.DH" run_set_share_fraction)
+DH_OS=$(field "$WORK/out.DH" run_set_osier_bytes)
+DH_TOT=$(field "$WORK/out.DH" run_set_total_bytes)
+grep -qx "service dhakesvc /bin/dhake dhake" "$WORK/out.DH" \
+    || fail "A5: the absolute /bin/dhake service is not attributed to the dhake package: $(grep '^service ' "$WORK/out.DH")"
+grep -qx "service shsvc /bin/sh NONSTORE-UNATTRIBUTED" "$WORK/out.DH" \
+    || fail "A5: the truly-unattributable /bin/sh row is not flagged NONSTORE-UNATTRIBUTED"
+[ "$(nattr "$WORK/out.DH")" = 1 ] \
+    || fail "A5: nonstore_run_unattributed is not 1 (the unattributable row must be counted, not just printed)"
+[ "$DH_OS" = "$A_OS" ] || fail "A5: osier numerator moved $A_OS -> $DH_OS (dhake is not .elm)"
+[ "$DH_TOT" = "$((A_TOT + TOOL_BYTES))" ] \
+    || fail "A5: denominator $DH_TOT, expected A_TOT+TOOL_BYTES=$((A_TOT + TOOL_BYTES)) — the installed tool's bytes left the run set"
+awk -v a="$A_FRAC" -v d="$DH_FRAC" 'BEGIN { exit !(d < a) }' \
+    || fail "A5: the pkg=None install-target run RAISED the share ($A_FRAC -> $DH_FRAC)"
+# ASYMMETRY: the PRE-FIX oracle dropped exactly these bytes.
+if [ -n "$OSIER_PRE" ]; then
+run_pre > "$WORK/out.DHpre" || fail "pre-fix oracle failed on DH"
+PRE_TOT=$(field "$WORK/out.DHpre" run_set_total_bytes)
+grep -qx "service dhakesvc /bin/dhake NONSTORE" "$WORK/out.DHpre" \
+    || fail "A5 pre-fix asymmetry: the committed oracle did not mark /bin/dhake NONSTORE — the arm is vacuous"
+[ "$PRE_TOT" = "$A_TOT" ] \
+    || fail "A5 pre-fix asymmetry: the committed oracle's denominator is $PRE_TOT, expected the SHRUNK $A_TOT (the hole)"
+echo "test_osier_share: A5 INSTALL-TARGET RUN: denominator $A_TOT(pre-fix, bytes silently dropped) -> $DH_TOT(fixed); share $A_FRAC -> $DH_FRAC"
+else
+echo "test_osier_share: A5: pre-fix arm skipped"
+fi
+
+# ── A6: the CLOSURE is the ACTIVE closure, not store history ────────────
+# provides is cleared per activation; srcstore rows persist until the NAME
+# is unreachable.  v_DH's provides is exactly TOOLS+osier-svc (deadwood and
+# c-svc are history), while its srcstore still holds their rows — the
+# committed (srcstore-driven) oracle kept counting them.
+run_oracle --as-of "$V_DH" > "$WORK/out.A6" || fail "oracle failed on --as-of $V_DH"
+A6_CLOS_O=$(field "$WORK/out.A6" closure_osier_bytes)
+[ "$A6_CLOS_O" = "$A_CLOS_O" ] \
+    || fail "ASSERTION A6 FAILED: closure osier bytes as-of the deadwood-free generation is $A6_CLOS_O, expected $A_CLOS_O (a dropped package is still being counted — the closure is store history, not the generation)"
+grep -q "^component deadwood " "$WORK/out.A6" \
+    && fail "ASSERTION A6 FAILED: deadwood is a closure component of a generation whose config does not include it"
+grep -q "^closure_components_resolved 5 of 5$" "$WORK/out.A6" \
+    || fail "A6: closure is not exactly the 5 provided packages: $(grep '^closure_components_resolved' "$WORK/out.A6")"
+if [ -n "$OSIER_PRE" ]; then
+run_pre --as-of "$V_DH" > "$WORK/out.A6pre" || fail "pre-fix oracle failed on --as-of $V_DH"
+PRE_CLOS_O=$(field "$WORK/out.A6pre" closure_osier_bytes)
+[ "$PRE_CLOS_O" = "$((A_CLOS_O + DEAD_BYTES))" ] \
+    || fail "A6 pre-fix asymmetry: the committed oracle's closure osier bytes is $PRE_CLOS_O, expected A+DEAD=$((A_CLOS_O + DEAD_BYTES)) (deadwood still counted — the arm is vacuous)"
+echo "test_osier_share: A6 ACTIVE CLOSURE: closure osier bytes $A_CLOS_O(fixed) vs $PRE_CLOS_O(pre-fix: deadwood history counted)"
+else
+echo "test_osier_share: A6: pre-fix arm skipped"
+fi
+
+# ── A4: srcstore ambiguity on rebuild REFUSES, naming the candidates ────
+# A package whose source changed and was re-activated has TWO live srcstore
+# rows for one name in the CURRENT snapshot (srcstore is append-only; rows
+# are reaped only when the NAME becomes unreachable).  With both -src
+# artifacts materialized and verifying, NO independent check can attribute
+# the generation's source to one of them — the oracle must REFUSE rather
+# than print a number read through an arbitrary first-wins pick.
+mkdir -p "$SRC/ambig"
+{ echo "-- the ambiguity fixture's osier module, revision 1"; } > "$SRC/ambig/A.elm"
+cfg_write "$WORK/AMB.dhall" "$TOOLS, \"ambig\"" "$(svc_sh), { name = \"ambigd\", argv = [ \"ambig\" ], pkg = Some \"ambig\", on = \"all\", restart = Some \"always\", backoffMs = Some 500, probe = None Probe, env = None (List { key : Text, value : Text }), console = None Text }"
+provision_ambig() { # pre-create ambig's closure dir for the CURRENT source
+    _p=$(LD_LIBRARY_PATH="$DL" "$ZB/activate_paths" --store "$STORE" \
+        --package-set "$PKGSET" ambig) || fail "activate_paths (ambig) failed: $_p"
+    for _pd in $_p; do mkdir -p "$STORE/$_pd" || fail "cannot create $_pd"; done
+}
+provision_ambig
+V_AMB1=$(activate "$WORK/AMB.dhall"); [ -n "$V_AMB1" ] || fail "no version from AMB activation 1"
+AMB_H1=$(FXSTORE_BIN="$FXSTORE" "$FXSTORE" facts srcstore --as-of "$V_AMB1" --store "$STORE" \
+    | awk -F'\t' '$2 == "ambig" { print $1; exit }')
+[ -n "$AMB_H1" ] || fail "no srcstore row for ambig as-of $V_AMB1"
+cp -r "$SRC/ambig" "$WORK/ambig-v1" || fail "cannot save the v1 tree"
+echo "-- mutation: revision 2 (a different source, same package name)" >> "$SRC/ambig/A.elm"
+provision_ambig
+V_AMB2=$(activate "$WORK/AMB.dhall"); [ -n "$V_AMB2" ] || fail "no version from AMB activation 2"
+AMB_H2=$(FXSTORE_BIN="$FXSTORE" "$FXSTORE" facts srcstore --as-of "$V_AMB2" --store "$STORE" \
+    | awk -F'\t' '$2 == "ambig" && $1 != "'"$AMB_H1"'" { print $1; exit }')
+NAMB_ROWS=$(FXSTORE_BIN="$FXSTORE" "$FXSTORE" facts srcstore --as-of "$V_AMB2" --store "$STORE" \
+    | awk -F'\t' '$2 == "ambig"' | wc -l | tr -d ' ')
+[ "$NAMB_ROWS" = 2 ] && [ -n "$AMB_H2" ] \
+    || fail "A4 precondition: expected 2 live srcstore rows for ambig as-of $V_AMB2, saw $NAMB_ROWS (the ambiguity mechanism did not reproduce — check the review's Blocker 1 trace)"
+cp -r "$WORK/ambig-v1" "$STORE/$AMB_H1-ambig-src" || fail "cannot materialize the v1 artifact"
+cp -r "$SRC/ambig" "$STORE/$AMB_H2-ambig-src" || fail "cannot materialize the v2 artifact"
+# FIXED: refuse loudly, naming the package and BOTH candidate hashes
+if run_oracle > "$WORK/out.AMB" 2>"$WORK/err.AMB"; then
+    fail "ASSERTION A4 FAILED: the ambiguous store produced a NUMBER (exit 0) instead of refusing"
+fi
+grep -q 'FAIL' "$WORK/err.AMB" || fail "A4: no FAIL on stderr"
+grep -q "ambig" "$WORK/err.AMB" || fail "A4: the refusal does not NAME the package"
+grep -q "$AMB_H1" "$WORK/err.AMB" || fail "A4: the refusal does not name candidate $AMB_H1"
+grep -q "$AMB_H2" "$WORK/err.AMB" || fail "A4: the refusal does not name candidate $AMB_H2"
+grep -q "cannot attribute" "$WORK/err.AMB" || fail "A4: the refusal does not say the store cannot attribute one: $(cat "$WORK/err.AMB")"
+# ASYMMETRY: the committed oracle printed a number through an arbitrary pick
+if [ -n "$OSIER_PRE" ]; then
+run_pre > "$WORK/out.AMBpre" 2>"$WORK/err.AMBpre" \
+    || fail "A4 pre-fix asymmetry: the committed oracle REFUSED the ambiguous store — expected a silent number (did it already die on ambiguity?)"
+grep -q "^component ambig " "$WORK/out.AMBpre" \
+    || fail "A4 pre-fix asymmetry: no ambig component row in the committed oracle's output"
+grep -q "^run_set_share_fraction " "$WORK/out.AMBpre" \
+    || fail "A4 pre-fix asymmetry: the committed oracle printed no share"
+echo "test_osier_share: A4 AMBIGUITY: fixed REFUSES naming both hashes; $PRE_ORACLE_REV printed a number (first-wins pick)"
+else
+echo "test_osier_share: A4: pre-fix arm skipped"
+fi
+
 # ── the refusal seat ────────────────────────────────────────────────────
 # an unreadable store: a loud error, NEVER a 0%
 mkdir -p "$WORK/empty-store"
@@ -338,7 +496,28 @@ grep -q 'unverified tree refused' "$WORK/err.mut" \
     || fail "mutation refusal has the wrong reason: $(cat "$WORK/err.mut")"
 grep -q 'run_set_share_fraction' "$WORK/out.mut" 2>/dev/null \
     && fail "the mutated-tree run printed a share instead of refusing"
+# a CORRUPTED STORE ARTIFACT is refused too (the artifact origin was accepted
+# UNVERIFIED: it existed -> walked with hash_out NULL -> tallied).  The tree
+# is still mutated, so materializing the -src artifact from it yields a dir
+# that does NOT hash back to the srcstore row — the fixed oracle refuses,
+# the committed one tallied it silently.
+cp -r "$SRC/osier-svc" "$STORE/$OSIER_SRC_HASH-osier-svc-src" || fail "cannot plant the corrupted artifact"
+if run_oracle --as-of "$V_D" > "$WORK/out.art" 2>"$WORK/err.art"; then
+    fail "ASSERTION (corrupted artifact) FAILED: a -src artifact that does not hash back to its srcstore row was ACCEPTED (exit 0)"
+fi
+grep -q 'FAIL' "$WORK/err.art" || fail "corrupted-artifact refusal: no FAIL on stderr"
+grep -q 'unverified tree refused' "$WORK/err.art" \
+    || fail "corrupted-artifact refusal has the wrong reason: $(cat "$WORK/err.art")"
+if [ -n "$OSIER_PRE" ]; then
+run_pre --as-of "$V_D" > "$WORK/out.artpre" 2>"$WORK/err.artpre" \
+    || fail "corrupted-artifact pre-fix asymmetry: the committed oracle refused — expected the silent tally"
+grep -q "^component osier-svc $OSIER_SRC_HASH store " "$WORK/out.artpre" \
+    || fail "corrupted-artifact pre-fix asymmetry: the committed oracle did not tally the corrupted artifact as origin store: $(grep '^component osier-svc' "$WORK/out.artpre")"
+echo "test_osier_share: corrupted artifact: fixed REFUSES; $PRE_ORACLE_REV tallied it silently (origin store, no hash check)"
+fi
 
 echo "test_osier_share: PASS — the oracle discriminates (moves on Osier-run," \
-     "invariant on dead code, non-raising on non-Osier-run) and refuses loudly"
+     "invariant on dead code, non-raising on non-Osier-run, attributes install" \
+     "targets run absolutely, refuses srcstore ambiguity and unverified/corrupted" \
+     "artifacts, and counts the ACTIVE closure, not store history)"
 exit 0

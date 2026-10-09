@@ -1,6 +1,6 @@
 c[?7l[2J[0mSeaBIOS (version rel-1.17.0-2-g4f253b9b-prebuilt.qemu.org)
 Booting from ROM..c[?7l[2JLinux version 6.12.19 (root@cf88c41ef967) (gcc (Debian 14.2.0-19) 14.2.0, GNU ld (GNU Binutils for Debian) 2.44) #1 SMP Wed Sep 30 21:19:35 UTC 2026
-Command line: console=ttyS0,115200 rdinit=/fx/store/ebdb776301c7481b1afbce3c17e95bb1db87adb174c821f4cc75f1125205db78-fx-init/fx-init fx.store=/fx/store panic=-1 oops=panic
+Command line: console=ttyS0,115200 rdinit=/fx/store/c484af3a863f4a77f597f033cb3f2d7a563932f36f6aaaef3585aea39a0985b5-fx-init/fx-init fx.store=/fx/store panic=-1 oops=panic
 BIOS-provided physical RAM map:
 BIOS-e820: [mem 0x0000000000000000-0x000000000009fbff] usable
 BIOS-e820: [mem 0x000000000009fc00-0x000000000009ffff] reserved
@@ -72,7 +72,7 @@ CPU topo: Allowing 1 present CPUs plus 0 hotplug CPUs
 clocksource: refined-jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 7645519600211568 ns
 setup_percpu: NR_CPUS:2 nr_cpumask_bits:1 nr_cpu_ids:1 nr_node_ids:1
 percpu: Embedded 41 pages/cpu s137880 r0 d30056 u2097152
-Kernel command line: console=ttyS0,115200 rdinit=/fx/store/ebdb776301c7481b1afbce3c17e95bb1db87adb174c821f4cc75f1125205db78-fx-init/fx-init fx.store=/fx/store panic=-1 oops=panic
+Kernel command line: console=ttyS0,115200 rdinit=/fx/store/c484af3a863f4a77f597f033cb3f2d7a563932f36f6aaaef3585aea39a0985b5-fx-init/fx-init fx.store=/fx/store panic=-1 oops=panic
 random: crng init done
 Dentry cache hash table entries: 262144 (order: 9, 2097152 bytes, linear)
 Inode-cache hash table entries: 131072 (order: 8, 1048576 bytes, linear)
@@ -244,17 +244,17 @@ serio: i8042 KBD port at 0x60,0x64 irq 1
 serio: i8042 AUX port at 0x60,0x64 irq 12
 amd_pstate: the _CPC object is not present in SBIOS or ACPI disabled
 IPI shorthand broadcast: enabled
-sched_clock: Marking stable (420831325, 128668211)->(576926468, -27426932)
+sched_clock: Marking stable (381000964, 111652856)->(517490495, -24836675)
 input: AT Translated Set 2 keyboard as /devices/platform/i8042/serio0/input/input1
 Freeing initrd memory: 11700K
 Freeing unused kernel image (initmem) memory: 784K
 Write protecting the kernel read-only data: 8192k
 Freeing unused kernel image (rodata/data gap) memory: 1396K
-Run /fx/store/ebdb776301c7481b1afbce3c17e95bb1db87adb174c821f4cc75f1125205db78-fx-init/fx-init as init process
+Run /fx/store/c484af3a863f4a77f597f033cb3f2d7a563932f36f6aaaef3585aea39a0985b5-fx-init/fx-init as init process
 fx-init: store from kernel command line fx.store=/fx/store
 fx-init: boot start store /fx/store
 EXT4-fs (vda): recovery complete
-EXT4-fs (vda): mounted filesystem 246910fb-a87e-45d1-a978-8679743b0596 r/w with ordered data mode. Quota mode: disabled.
+EXT4-fs (vda): mounted filesystem b51d7bc9-dad6-4a2a-ab08-97c66ef8b194 r/w with ordered data mode. Quota mode: disabled.
 fx-init: disk store mounted (current v7)
 fx-init: pivot_root EINVAL (initramfs root is the namespace root) — switch_root fallback (MS_MOVE + chroot) applied
 fx-init: pivoted to tmpfs root (magic 0x1021994)
@@ -270,7 +270,7 @@ fx-harness: OBSERVED OUTCOME — THE ACTIVATION THIS HARNESS RECORDED FAILED.
   running  : generation v7 (/fx/disk/store/.db/snapshots/CURRENT)
   rule     : "if the generation I am running in is not the one I activated,
               my activation failed — do not repeat it"
-  record   : /fx/disk/agent-data/attempts.jsonl (session be2126ae1c88, run be2126ae1c88, epoch 1791568252)
+  record   : /fx/disk/agent-data/attempts.jsonl (session c700ad812b84, run c700ad812b84, epoch 1791571243)
   action   : this run stops here (exit 0): the task is NOT re-run and no
              further activation is issued.  Inspect the config above and the
              store's .bootlog before changing anything.
@@ -278,7 +278,7 @@ fx-harness: OBSERVED OUTCOME — THE ACTIVATION THIS HARNESS RECORDED FAILED.
              that COMPLETES records `done` and settles this task), or remove this
              task's lines from /fx/disk/agent-data/attempts.jsonl
 input: ImExPS/2 Generic Explorer Mouse as /devices/platform/i8042/serio1/input/input3
-tsc: Refined TSC clocksource calibration: 3500.053 MHz
-clocksource: tsc: mask: 0xffffffffffffffff max_cycles: 0x327383308fe, max_idle_ns: 440795384572 ns
+tsc: Refined TSC clocksource calibration: 3500.048 MHz
+clocksource: tsc: mask: 0xffffffffffffffff max_cycles: 0x32737e37e6b, max_idle_ns: 440795341753 ns
 clocksource: Switched to clocksource tsc
 fx-init: boot-ok v7

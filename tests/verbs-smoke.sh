@@ -147,8 +147,10 @@ env = {
     "FX_VERB_ROOT": root,
     # the host-declared writable set for THIS smoke run: /note.txt, plus
     # /note-link (a symlink fixture) so the O_NOFOLLOW check below reaches
-    # open() instead of being refused by the set gate first
-    "FX_AGENT_WRITABLE": "/note.txt:/note-link",
+    # open() instead of being refused by the set gate first, plus the
+    # ROOT-RELATIVE entry fx/rel-note.txt (the spelling the docs document —
+    # 13c proves it grants, and grants only, the one file it names)
+    "FX_AGENT_WRITABLE": "/note.txt:/note-link:fx/rel-note.txt",
     # planted keys the verb child's scrubbed env must NOT contain:
     "RATTAN_ENABLE": "1",
     "LD_PRELOAD": "/tmp/evil.so",
@@ -377,6 +379,37 @@ os.unlink(os.path.join(root, "note-link"))
 
 d = call("fx_read", {"path": "/note.txt"}, 21)
 ok("fx_read round-trips", tool_text(d) == "exit=0\nhello fx\n", repr(tool_text(d)))
+
+# 13c — THE DOCUMENTED ENTRY SPELLING grants, and grants ONLY what it names.
+# The comments and the model-facing description say entries are root-relative;
+# a relative entry (fx/rel-note.txt) must match the ABSOLUTE request
+# /fx/rel-note.txt (a deployment following the docs must not get a silently
+# empty set), and the normalization must not widen: a RELATIVE request is
+# still refused, and a relative entry cannot spell anything outside the root.
+d = call("fx_write", {"path": "/fx/rel-note.txt", "content": "rel entry\n"}, 40)
+ok("a ROOT-RELATIVE set entry matches an absolute request (docs spelling)",
+   tool_text(d).startswith("exit=0\n")
+   and open(os.path.join(root, "fx/rel-note.txt")).read() == "rel entry\n",
+   tool_text(d))
+d = call("fx_write", {"path": "fx/rel-note.txt", "content": "nope"}, 41)
+ok("a RELATIVE request is still refused (only the ENTRY is normalized)",
+   tool_text(d).startswith("exit=1\n") and "REFUSED" in tool_text(d),
+   tool_text(d))
+d = call("fx_write", {"path": "/fx/other.txt", "content": "nope"}, 42)
+ok("the relative entry granted nothing beside the one file it names",
+   tool_text(d).startswith("exit=1\n") and "REFUSED" in tool_text(d)
+   and not os.path.exists(os.path.join(root, "fx/other.txt")), tool_text(d))
+
+# 13d — THE ALLOWED '..' DIRECTION: a '..' spelling that canonicalizes ONTO
+# an allowed member must still WRITE (an over-refusing regression — e.g.
+# refusing any path that merely contains '..' — would pass every other
+# committed probe, which all pin the REFUSED direction only).
+d = call("fx_write", {"path": "/fx/../note.txt", "content": "dotdot allowed\n"}, 43)
+ok("a '..' spelling ONTO an allowed member still writes",
+   tool_text(d).startswith("exit=0\n")
+   and open(os.path.join(root, "note.txt")).read() == "dotdot allowed\n",
+   tool_text(d))
+
 d = call("fx_read", {"path": "/nope"}, 22)
 ok("fx_read of a missing file -> exit=1 + message",
    tool_text(d).startswith("exit=1\n") and "cannot open" in tool_text(d),
@@ -559,7 +592,7 @@ ok("default set: NOTHING ELSE is writable (the smoke's own /note.txt refused)",
 ok("default set: the refusal NAMES the default it fell back to",
    "/fx/disk/agent-config.dhall" in txt, txt)
 ok("default set: the refused write did not touch /note.txt",
-   open(os.path.join(root, "note.txt")).read() == "hello fx\n",
+   open(os.path.join(root, "note.txt")).read() == "dotdot allowed\n",
    repr(open(os.path.join(root, "note.txt")).read()))
 s4.stdin.close()
 s4.wait(timeout=5)

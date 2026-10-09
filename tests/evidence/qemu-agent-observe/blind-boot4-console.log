@@ -1,6 +1,6 @@
 c[?7l[2J[0mSeaBIOS (version rel-1.17.0-2-g4f253b9b-prebuilt.qemu.org)
 Booting from ROM..c[?7l[2JLinux version 6.12.19 (root@cf88c41ef967) (gcc (Debian 14.2.0-19) 14.2.0, GNU ld (GNU Binutils for Debian) 2.44) #1 SMP Wed Sep 30 21:19:35 UTC 2026
-Command line: console=ttyS0,115200 rdinit=/fx/store/ebdb776301c7481b1afbce3c17e95bb1db87adb174c821f4cc75f1125205db78-fx-init/fx-init fx.store=/fx/store panic=-1 oops=panic
+Command line: console=ttyS0,115200 rdinit=/fx/store/c484af3a863f4a77f597f033cb3f2d7a563932f36f6aaaef3585aea39a0985b5-fx-init/fx-init fx.store=/fx/store panic=-1 oops=panic
 BIOS-provided physical RAM map:
 BIOS-e820: [mem 0x0000000000000000-0x000000000009fbff] usable
 BIOS-e820: [mem 0x000000000009fc00-0x000000000009ffff] reserved
@@ -15,7 +15,7 @@ BIOS-e820: [mem 0x000000fd00000000-0x000000ffffffffff] reserved
 NX (Execute Disable) protection: active
 APIC: Static calls initialized
 tsc: Fast TSC calibration using PIT
-tsc: Detected 3499.821 MHz processor
+tsc: Detected 3500.119 MHz processor
 last_pfn = 0x7ffdc max_arch_pfn = 0x400000000
 x86/PAT: PAT support disabled because CONFIG_X86_PAT is disabled in the kernel.
 x86/PAT: Configuration [0-7]: WB  WT  UC- UC  WB  WT  UC- UC  
@@ -72,7 +72,7 @@ CPU topo: Allowing 1 present CPUs plus 0 hotplug CPUs
 clocksource: refined-jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 7645519600211568 ns
 setup_percpu: NR_CPUS:2 nr_cpumask_bits:1 nr_cpu_ids:1 nr_node_ids:1
 percpu: Embedded 41 pages/cpu s137880 r0 d30056 u2097152
-Kernel command line: console=ttyS0,115200 rdinit=/fx/store/ebdb776301c7481b1afbce3c17e95bb1db87adb174c821f4cc75f1125205db78-fx-init/fx-init fx.store=/fx/store panic=-1 oops=panic
+Kernel command line: console=ttyS0,115200 rdinit=/fx/store/c484af3a863f4a77f597f033cb3f2d7a563932f36f6aaaef3585aea39a0985b5-fx-init/fx-init fx.store=/fx/store panic=-1 oops=panic
 random: crng init done
 Dentry cache hash table entries: 262144 (order: 9, 2097152 bytes, linear)
 Inode-cache hash table entries: 131072 (order: 8, 1048576 bytes, linear)
@@ -106,8 +106,8 @@ ACPI: Core revision 20240827
 clocksource: hpet: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 19112604467 ns
 APIC: Switch to symmetric I/O mode setup
 ..TIMER: vector=0x30 apic1=0 pin1=2 apic2=-1 pin2=-1
-clocksource: tsc-early: mask: 0xffffffffffffffff max_cycles: 0x3272a8771a2, max_idle_ns: 440795360360 ns
-Calibrating delay loop (skipped), value calculated using timer frequency.. 6999.64 BogoMIPS (lpj=13999284)
+clocksource: tsc-early: mask: 0xffffffffffffffff max_cycles: 0x3273c1f43c3, max_idle_ns: 440795382714 ns
+Calibrating delay loop (skipped), value calculated using timer frequency.. 7000.23 BogoMIPS (lpj=14000476)
 Last level iTLB entries: 4KB 512, 2MB 255, 4MB 127
 Last level dTLB entries: 4KB 512, 2MB 255, 4MB 127, 1GB 0
 Spectre V2 : User space: Vulnerable
@@ -135,7 +135,7 @@ rcu: Hierarchical SRCU implementation.
 rcu: 	Max phase no-delay instances is 1000.
 smp: Bringing up secondary CPUs ...
 smp: Brought up 1 node, 1 CPU
-smpboot: Total of 1 processors activated (6999.64 BogoMIPS)
+smpboot: Total of 1 processors activated (7000.23 BogoMIPS)
 Memory: 2030884K/2096616K available (6144K kernel code, 806K rwdata, 652K rodata, 784K init, 1132K bss, 62740K reserved, 0K cma-reserved)
 devtmpfs: initialized
 clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 7645041785100000 ns
@@ -244,17 +244,17 @@ serio: i8042 KBD port at 0x60,0x64 irq 1
 serio: i8042 AUX port at 0x60,0x64 irq 12
 amd_pstate: the _CPC object is not present in SBIOS or ACPI disabled
 IPI shorthand broadcast: enabled
-sched_clock: Marking stable (448830383, 119686878)->(589403673, -20886412)
+sched_clock: Marking stable (380895155, 110989980)->(505250052, -13364917)
 input: AT Translated Set 2 keyboard as /devices/platform/i8042/serio0/input/input1
 Freeing initrd memory: 11700K
 Freeing unused kernel image (initmem) memory: 784K
 Write protecting the kernel read-only data: 8192k
 Freeing unused kernel image (rodata/data gap) memory: 1396K
-Run /fx/store/ebdb776301c7481b1afbce3c17e95bb1db87adb174c821f4cc75f1125205db78-fx-init/fx-init as init process
+Run /fx/store/c484af3a863f4a77f597f033cb3f2d7a563932f36f6aaaef3585aea39a0985b5-fx-init/fx-init as init process
 fx-init: store from kernel command line fx.store=/fx/store
 fx-init: boot start store /fx/store
 EXT4-fs (vda): recovery complete
-EXT4-fs (vda): mounted filesystem 3d629ccc-b260-42d9-a175-6dcc4dc79ada r/w with ordered data mode. Quota mode: disabled.
+EXT4-fs (vda): mounted filesystem 56cee8c3-f053-4873-85ee-f3573347613a r/w with ordered data mode. Quota mode: disabled.
 fx-init: disk store mounted (current v9)
 fx-init: pivot_root EINVAL (initramfs root is the namespace root) — switch_root fallback (MS_MOVE + chroot) applied
 fx-init: pivoted to tmpfs root (magic 0x1021994)

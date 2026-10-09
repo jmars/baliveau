@@ -9,29 +9,67 @@
  * output — a metric whose definition is invisible cannot be audited.
  *
  * IT READS THE STORE, NOT THE SOURCE TREE.  The run set comes from the
- * ACTIVE GENERATION's own provenance facts (svc_bin / provides / srcstore,
- * read as-of the resolved snapshot through `fxstore facts`), so a component
- * the generation builds but never runs cannot inflate the number, and a
- * wrapper whose source is .elm but which execs /bin/sh cannot either (its
- * victim shows up as a run entry with its own source).
+ * ACTIVE GENERATION's own provenance facts (svc_bin / provides / install /
+ * srcstore, read as-of the resolved snapshot through `fxstore facts`), so a
+ * component the generation builds but never runs cannot inflate the number,
+ * and a wrapper whose source is .elm but which execs /bin/sh cannot either
+ * (its victim shows up as a run entry with its own source).
+ *
+ * WHAT COUNTS AS "RUN" (the rule, stated so it cannot be silently
+ * redefined): a svc_bin row whose argv[0] is store-relative names its
+ * package directly; an ABSOLUTE argv[0] is attributed through the
+ * activation's own install facts (target -> the store dir it came from)
+ * or, failing that, through a store-prefixed spelling — because a config
+ * can install /bin/<tool> from a C-sourced package and run it with
+ * pkg=None, and silently dropping such rows removed those packages' bytes
+ * from BOTH numerator and denominator (the share was inflatable to 1.0 by
+ * config alone).  An absolute argv[0] that NOTHING attributes is
+ * UNATTRIBUTABLE — a base-system binary whose source is not in the store:
+ * it is counted as non-Osier with ZERO MEASURABLE source bytes (its bytes
+ * cannot be measured in the right domain, and a fabricated count would be
+ * worse), printed as its own `service ... NONSTORE-UNATTRIBUTED` row and
+ * counted in `nonstore_run_unattributed`.  Whenever that count is non-zero
+ * the printed fraction is therefore an UPPER BOUND of the Osier share over
+ * ALL run components, not an exact fraction — the count is the caveat.
+ *
+ * THE "CLOSURE" NUMBER IS THE ACTIVE CLOSURE.  closure share is taken over
+ * the packages the ACTIVE generation's provides rows name (cleared per
+ * activation, so exactly the closure this generation builds), NOT over the
+ * srcstore rows (srcstore is append-only and reaps only on name
+ * unreachability, so a srcstore-driven closure counts packages a LATER
+ * config dropped — store history, not the generation).
+ *
+ * SRCSTORE IS AMBIGUOUS ON REBUILD, AND THE ORACLE DOES NOT GUESS.  A
+ * package whose source changed and was re-activated has SEVERAL live
+ * srcstore rows for one name in the CURRENT snapshot; every row is a
+ * candidate, narrowed by every independent check available (the -src
+ * artifact exists AND hashes back to the candidate), and where more than
+ * one candidate survives the tool REFUSES, naming the package and the
+ * hashes: a number it cannot justify is worse than no number.  The real
+ * fix — a fact binding each derivation hash to the src hash it was folded
+ * from, committed by the activation — is recorded in todo.md §3.
  *
  * TWO NUMBERS, never averaged:
  *   (a) run-set share — over the components the generation RUNS.  THE
  *       OBJECTIVE (marked as such in the output).
- *   (b) closure share — over the whole srcstore closure, for comparison
+ *   (b) closure share — over the whole active closure, for comparison
  *       only: (a) alone can be inflated by a thin wrapper; (b) alone is
  *       dead-code inflation.  Print both, let the reader differ.
  *
  * REFUSALS ARE LOAD-BEARING.  Every step before the count is a loud exit 1:
  * a store it cannot read, a version it cannot resolve, a service binary it
- * cannot classify, a RUN component whose source it cannot produce (store
- * artifact absent AND the host tree's clean-hash does not match srcstore's
- * src_hash — an unverified tree is NEVER accepted).  A store it cannot
+ * cannot classify, a run component whose source it cannot produce (no
+ * verifying store artifact AND the host tree's clean-hash matches no
+ * version-bound srcstore src_hash — an unverified tree is NEVER accepted,
+ * including at the store-artifact origin: the artifact's own tree must
+ * hash back to the srcstore row that names it).  A store it cannot
  * measure must produce an error, not a 0%.
  *
  * SOURCE CONTENT, in preference order per component:
  *   1. <store>/<src_hash>-<name>-src  — the clean-source artifact fxstore
- *      materializes in the store (fx_store_ensure_source).  Origin "store".
+ *      materializes in the store (fx_store_ensure_source), ACCEPTED ONLY IF
+ *      this tool's own walk hashes it back to the src_hash that names it.
+ *      Origin "store".
  *   2. the package set's src.path on the host, ACCEPTED ONLY IF this tool's
  *      own recomputation of fxstore's clean-tree hash
  *      (fx_content_hash_dir: sorted name|type|hash entries, u32-BE
@@ -105,16 +143,19 @@ static char *xstrdup(const char *s) {
     return p;
 }
 
-/* ── tiny string-pair table (facts maps) ───────────────────────────────── */
+/* ── tiny string-pair table (facts rows) ────────────────────────────────── */
 
+/* An INSERTION-ORDER row list: duplicates are KEPT.  srcstore is append-only
+ * (fxstore reaps a row only when its NAME becomes unreachable), so ONE name
+ * can carry SEVERAL live src hashes in the CURRENT snapshot — a first-wins
+ * map would silently pick one, which is exactly the arbitrary pick this tool
+ * must not make (see the srcstore refusal below). */
 typedef struct {
     char **k, **v;
     size_t n, cap;
-} map_t;
+} rows_t;
 
-static void map_put(map_t *m, const char *k, const char *v) {
-    for (size_t i = 0; i < m->n; i++)
-        if (!strcmp(m->k[i], k)) return; /* first row wins (version-bound) */
+static void rows_add(rows_t *m, const char *k, const char *v) {
     if (m->n == m->cap) {
         m->cap = m->cap ? m->cap * 2 : 16;
         m->k = realloc(m->k, m->cap * sizeof *m->k);
@@ -126,10 +167,27 @@ static void map_put(map_t *m, const char *k, const char *v) {
     m->n++;
 }
 
-static const char *map_get(const map_t *m, const char *k) {
+/* First row whose key matches (the old first-wins lookup), or NULL. */
+static const char *rows_get(const rows_t *m, const char *k) {
     for (size_t i = 0; i < m->n; i++)
         if (!strcmp(m->k[i], k)) return m->v[i];
     return NULL;
+}
+
+/* Every DISTINCT value bound to k, in row order.  Returns the count; a value
+ * equal to an already-collected one is skipped (fxstore's facts do not print
+ * duplicate rows, but the pair (name, hash) could in principle repeat across
+ * snapshots — same value twice is one candidate, not two). */
+static size_t rows_get_all(const rows_t *m, const char *k, const char **out, size_t max) {
+    size_t n = 0;
+    for (size_t i = 0; i < m->n; i++) {
+        if (strcmp(m->k[i], k) != 0) continue;
+        size_t j;
+        for (j = 0; j < n; j++)
+            if (!strcmp(out[j], m->v[i])) break;
+        if (j == n && n < max) out[n++] = m->v[i];
+    }
+    return n;
 }
 
 /* ── running fxstore (read-only subcommands only) ──────────────────────── */
@@ -150,7 +208,7 @@ static void check_safe_path(const char *p, const char *what) {
  * src_hash; both relations store the lookup key as their SECOND column).
  * fxstore's own stderr passes through to ours.  The binary is $FXSTORE_BIN
  * when set (the gate pins the freshly built one), else PATH's fxstore. */
-static void fxstore_lines(const char *args, map_t *out, int flip, const char *what) {
+static void fxstore_lines(const char *args, rows_t *out, int flip, const char *what) {
     check_safe_path(g_store, "--store");
     static char fxcmd[4096];
     if (!fxcmd[0]) {
@@ -172,8 +230,13 @@ static void fxstore_lines(const char *args, map_t *out, int flip, const char *wh
         char *tab = strchr(line, '\t');
         if (!tab) die("%s: fxstore %s produced a line with no tab: %s", what, args, line);
         *tab = 0;
-        if (flip) map_put(out, tab + 1, line);
-        else map_put(out, line, tab + 1);
+        /* the value is the SECOND column ONLY: install rows are 4-col
+         * (target, origin, mode, genhash) and the mode/genhash tail must
+         * not ride along in the lookup value */
+        char *tab2 = strchr(tab + 1, '\t');
+        if (tab2) *tab2 = 0;
+        if (flip) rows_add(out, tab + 1, line);
+        else rows_add(out, line, tab + 1);
     }
     int rc = pclose(p);
     if (rc != 0)
@@ -546,6 +609,13 @@ typedef struct {
     int run;
 } comp_t;
 
+/* A store dir ("<hash>-<pkg>") -> its package name via provides, or NULL. */
+static const char *pkg_of_dir(const rows_t *provides, const char *dir) {
+    for (size_t i = 0; i < provides->n; i++)
+        if (!strcmp(provides->k[i], dir)) return provides->v[i];
+    return NULL;
+}
+
 int main(int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--store") && i + 1 < argc) g_store = argv[++i];
@@ -571,21 +641,27 @@ int main(int argc, char **argv) {
     /* step 2-3: the facts of the ACTIVE GENERATION (version-bound).
      * provides rows are (pkg, store_dir) and srcstore rows are (src_hash,
      * name) — both flipped here so the lookups key on what the oracle
-     * actually has in hand (a store_dir prefix from svc_bin; a pkg name). */
-    map_t provides = { 0 }, svcbin = { 0 }, srcstore = { 0 };
+     * actually has in hand (a store_dir prefix from svc_bin; a pkg name).
+     * install rows are (target, origin, mode, genhash): the first two name
+     * every rootfs path the activation materialized and the store dir it
+     * came FROM — the classification an absolute argv[0] needs. */
+    rows_t provides = { 0 }, svcbin = { 0 }, srcstore = { 0 }, install = { 0 };
     fxstore_lines("facts provides", &provides, 1, "run set");
     fxstore_lines("facts svc_bin", &svcbin, 0, "run set");
     fxstore_lines("facts srcstore", &srcstore, 1, "closure set");
+    fxstore_lines("facts install", &install, 0, "run set");
 
+    /* Resolve a store dir ("<hash>-<pkg>") to its package name via
+     * provides, or NULL when no provides row carries it. */
     /* every service row is PRINTED; classification refuses to guess */
     typedef struct { const char *svc, *bin, *pkg; int nonstore; } runs_t;
     runs_t *runs = xmalloc(sizeof(runs_t) * (svcbin.n ? svcbin.n : 1));
-    size_t nruns = 0, nnonstore = 0;
-    /* sized for the WORST case (every srcstore row + every distinct run
+    size_t nruns = 0, nnonstore = 0, nunattr = 0;
+    /* sized for the WORST case (every provides row + every distinct run
      * pkg, including run pkgs with no srcstore row — those must reach the
      * per-component stage so the missing-srcstore refusal can fire, never
      * be silently dropped) */
-    comp_t *comps = xmalloc(sizeof(comp_t) * (srcstore.n + svcbin.n + 1));
+    comp_t *comps = xmalloc(sizeof(comp_t) * (provides.n + svcbin.n + 1));
     size_t ncomps = 0;
 
     for (size_t i = 0; i < svcbin.n; i++) {
@@ -593,7 +669,7 @@ int main(int argc, char **argv) {
         const char *slash = strchr(bin, '/');
         const char *pkg = NULL;
         int nonstore = 0;
-        if (slash && slash != bin) {
+        if (slash && slash != bin && bin[0] != '/') {
             size_t pl = (size_t)(slash - bin);
             char *pref = xmalloc(pl + 1);
             memcpy(pref, bin, pl);
@@ -607,10 +683,61 @@ int main(int argc, char **argv) {
                     svc, bin, pref, ver);
             free(pref);
         } else if (bin[0] == '/') {
-            /* a non-pkg'd service records argv[0] verbatim (e.g. /bin/sh):
-             * NOT a store component — say so, never silently drop */
-            nonstore = 1;
-            nnonstore++;
+            /* An ABSOLUTE argv[0] is NOT automatically outside the store.
+             * A non-pkg'd service records argv[0] verbatim — and that path
+             * can be (a) an INSTALL TARGET: the activation's own install
+             * facts name every /bin link and the store dir it came from,
+             * and a config can install /bin/<tool> from a C-sourced package
+             * and run it with pkg=None, so dropping absolute paths silently
+             * removed those packages' bytes from the run set and the share
+             * was inflatable to 1.0 by config alone; or (b) a STORE path
+             * spelled absolutely (<store>/<hash>-<pkg>/...).  Both are
+             * resolved to their package FIRST.  Only what NOTHING
+             * attributes is non-store — a base-system binary whose source
+             * is not in the store at all — and it must be VISIBLE, never
+             * silently dropped. */
+            const char *org = rows_get(&install, bin);
+            if (org) {
+                /* refuse to guess between two origins for one target: the
+                 * config built two packages with the same /bin basename and
+                 * the rootfs link is ill-defined — a number read through
+                 * either pick would be a guess */
+                const char *alt = NULL;
+                for (size_t j = 0; j < install.n; j++)
+                    if (!strcmp(install.k[j], bin) &&
+                        strcmp(install.v[j], org) != 0) { alt = install.v[j]; break; }
+                if (alt)
+                    die("service '%s' runs '%s' but the install facts bind that target to TWO store dirs ('%s' and '%s') — cannot attribute it to one package (as-of %u)",
+                        svc, bin, org, alt, ver);
+                pkg = pkg_of_dir(&provides, org);
+                if (!pkg)
+                    die("service '%s' runs '%s', install names origin '%s', but no provides row carries that store dir — cannot classify (as-of %u)",
+                        svc, bin, org, ver);
+            } else {
+                size_t sl = strlen(g_store);
+                if (strncmp(bin, g_store, sl) == 0 && bin[sl] == '/') {
+                    const char *rest = bin + sl + 1;
+                    const char *s2 = strchr(rest, '/');
+                    if (s2 && s2 != rest) {
+                        size_t pl = (size_t)(s2 - rest);
+                        char *pref = xmalloc(pl + 1);
+                        memcpy(pref, rest, pl);
+                        pref[pl] = 0;
+                        pkg = pkg_of_dir(&provides, pref);
+                        free(pref);
+                    }
+                }
+            }
+            if (!pkg) {
+                /* UNATTRIBUTABLE: counted as non-Osier with ZERO measurable
+                 * source bytes (its source is not in the store; stat-ing a
+                 * host binary would measure the wrong domain).  The row is
+                 * PRINTED and counted, so the fraction is auditable as an
+                 * UPPER BOUND whenever such entries exist — see the header. */
+                nonstore = 2;
+                nnonstore++;
+                nunattr++;
+            }
         } else {
             die("service '%s' records binary '%s' in neither store-relative nor absolute form — cannot classify", svc, bin);
         }
@@ -627,65 +754,117 @@ int main(int argc, char **argv) {
             }
         }
     }
-    /* closure-only components: srcstore rows no service runs */
-    for (size_t i = 0; i < srcstore.n; i++) {
+    /* closure-only components: every package the ACTIVE closure provides
+     * that no service runs.  provides is cleared per activation, so it IS
+     * the active generation's closure; srcstore is NOT (it is append-only,
+     * reaped only when a NAME becomes unreachable), so a srcstore-driven
+     * "closure" would keep counting packages a LATER config dropped — store
+     * history, not the generation. */
+    for (size_t i = 0; i < provides.n; i++) {
         size_t j;
         for (j = 0; j < ncomps; j++)
-            if (!strcmp(comps[j].pkg, srcstore.k[i])) break;
+            if (!strcmp(comps[j].pkg, provides.v[i])) break;
         if (j == ncomps) {
             memset(&comps[ncomps], 0, sizeof comps[ncomps]);
-            comps[ncomps].pkg = srcstore.k[i];
+            comps[ncomps].pkg = provides.v[i];
             comps[ncomps].run = 0;
             ncomps++;
         }
     }
 
-    /* step 4: source content per component, store artifact first */
+    /* step 4: source content per component — every live srcstore row for
+     * the name is a CANDIDATE, narrowed by every independent check this
+     * tool has, and a survivor set larger than one is a LOUD refusal: the
+     * store cannot attribute one src hash to this generation, and a number
+     * read through an arbitrary pick would not be the quantity the label
+     * names.  (srcstore is append-only and its rows are reaped only when
+     * the NAME becomes unreachable, so a package whose source changed and
+     * was re-activated genuinely has two live rows.  The real fix is a
+     * fact binding each derivation hash to the src hash it was folded
+     * from, committed by the activation — recorded in todo.md §3; it is
+     * another repo's change.) */
     /* >= PATH_MAX + message + strerror so snprintf never truncates */
     char err[8192];
     for (size_t i = 0; i < ncomps; i++) {
         comp_t *c = &comps[i];
-        const char *sh = map_get(&srcstore, c->pkg);
-        if (!sh) {
+        const char *cand[64];
+        size_t ncand = rows_get_all(&srcstore, c->pkg, cand, 64);
+        if (ncand == 0) {
             if (c->run)
                 die("RUN component '%s' has no srcstore row as-of version %u — cannot classify its source", c->pkg, ver);
             c->resolved = 0; /* closure-only: reported unresolved, not fatal */
             continue;
         }
-        c->src_hash = sh;
-        char art[4096];
-        if (snprintf(art, sizeof art, "%s/%s-%s-src", g_store, sh, c->pkg) >= (int)sizeof art)
-            die("store artifact path too long for %s", c->pkg);
-        struct stat st;
-        if (stat(art, &st) == 0 && S_ISDIR(st.st_mode)) {
-            /* origin 1: the store's own clean-source artifact — excludes
-             * were applied when it was materialized */
-            memset(&c->t, 0, sizeof c->t);
-            if (walk(art, "", NULL, 0, &c->t, NULL, err, sizeof err) != 0)
-                die("component '%s': walking store artifact %s: %s", c->pkg, art, err);
-            c->origin = "store";
-            c->resolved = 1;
-        } else {
-            /* origin 2: the host tree, accepted ONLY on hash equality */
-            const pkg_t *P = pkgset_find(c->pkg);
-            if (!P || !P->src_path)
-                die("component '%s': no store artifact %s and no package-set src.path to verify", c->pkg, art);
+        if (ncand == 64)
+            die("component '%s' has 64+ live srcstore rows as-of version %u — refusing to enumerate", c->pkg, ver);
+        /* origin 1: the store's own clean-source artifact.  A candidate
+         * SURVIVES only if the artifact exists AND this tool's own walk
+         * hashes it back to the candidate hash — an unverified tree is
+         * never accepted, here at the PRIMARY origin too (the artifact is
+         * not guest-writable, but a corrupted or misnamed -src dir must
+         * die loudly, not tally silently). */
+        const char *surv[64];
+        tally_t survt[64];
+        size_t nsurv = 0;
+        for (size_t j = 0; j < ncand; j++) {
+            char art[4096];
+            if (snprintf(art, sizeof art, "%s/%s-%s-src", g_store, cand[j], c->pkg) >= (int)sizeof art)
+                die("store artifact path too long for %s", c->pkg);
+            struct stat st;
+            if (stat(art, &st) != 0 || !S_ISDIR(st.st_mode)) continue;
             tally_t t;
             memset(&t, 0, sizeof t);
             char h[65];
-            if (walk(P->src_path, "", P->excludes, P->nex, &t, h, err, sizeof err) != 0)
-                die("component '%s': walking host tree %s: %s", c->pkg, P->src_path, err);
-            if (strcmp(h, sh) != 0) {
-                if (c->run)
-                    die("component '%s': host tree %s clean-hashes to %s but version %u built from %s — unverified tree refused",
-                        c->pkg, P->src_path, h, ver, sh);
-                c->resolved = 0;
-                continue;
-            }
-            c->t = t;
-            c->origin = "host-verified";
-            c->resolved = 1;
+            if (walk(art, "", NULL, 0, &t, h, err, sizeof err) != 0)
+                die("component '%s': walking store artifact %s: %s", c->pkg, art, err);
+            if (strcmp(h, cand[j]) != 0) continue; /* exists but does not verify */
+            surv[nsurv] = cand[j];
+            survt[nsurv] = t;
+            nsurv++;
         }
+        if (nsurv > 1) {
+            /* name every surviving candidate: the operator must see exactly
+             * what the store failed to decide */
+            char names[64 * 71];
+            size_t nl = 0;
+            for (size_t j = 0; j < nsurv; j++)
+                nl += (size_t)snprintf(names + nl, sizeof names - nl, "%s%s",
+                                       j ? ", " : "", surv[j]);
+            die("component '%s': srcstore binds %zu live src hashes as-of version %u and %zu of them VERIFY against their store artifacts (%s) — the store cannot attribute this generation's source to one of them; refusing rather than guessing (the fix is a derivation->src fact committed at activation; todo.md §3)",
+                c->pkg, ncand, ver, nsurv, names);
+        }
+        if (nsurv == 1) {
+            c->src_hash = surv[0];
+            c->t = survt[0];
+            c->origin = "store";
+            c->resolved = 1;
+            continue;
+        }
+        /* origin 2: the host tree, accepted ONLY on hash equality with a
+         * candidate — the recompute can only cause false REFUSALS, never
+         * false acceptances. */
+        const pkg_t *P = pkgset_find(c->pkg);
+        if (!P || !P->src_path)
+            die("component '%s': no verifying store artifact and no package-set src.path to verify against (as-of %u)", c->pkg, ver);
+        tally_t t;
+        memset(&t, 0, sizeof t);
+        char h[65];
+        if (walk(P->src_path, "", P->excludes, P->nex, &t, h, err, sizeof err) != 0)
+            die("component '%s': walking host tree %s: %s", c->pkg, P->src_path, err);
+        size_t match = 0;
+        for (size_t j = 0; j < ncand; j++)
+            if (strcmp(h, cand[j]) == 0) { match = j + 1; break; }
+        if (!match) {
+            if (c->run)
+                die("component '%s': host tree %s clean-hashes to %s but version %u's srcstore candidates do not include it — unverified tree refused",
+                    c->pkg, P->src_path, h, ver);
+            c->resolved = 0;
+            continue;
+        }
+        c->src_hash = cand[match - 1];
+        c->t = t;
+        c->origin = "host-verified";
+        c->resolved = 1;
     }
 
     /* step 5: the numbers — both, printed separately, never averaged */
@@ -719,10 +898,11 @@ int main(int argc, char **argv) {
     putchar('\n');
     printf("counted regular source files only (clean-tree exclusion rules apply)\n");
     printf("objective run_set_share_fraction\n");
-    printf("services %zu store_components_run %zu nonstore_run %zu\n", nruns, run_n, nnonstore);
+    printf("services %zu store_components_run %zu nonstore_run %zu nonstore_run_unattributed %zu\n",
+           nruns, run_n, nnonstore, nunattr);
     for (size_t i = 0; i < nruns; i++)
         printf("service %s %s %s\n", runs[i].svc, runs[i].bin,
-               runs[i].nonstore ? "NONSTORE" : runs[i].pkg);
+               runs[i].nonstore ? "NONSTORE-UNATTRIBUTED" : runs[i].pkg);
     for (size_t i = 0; i < ncomps; i++) {
         comp_t *c = &comps[i];
         if (!c->resolved) {
