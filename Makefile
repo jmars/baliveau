@@ -153,6 +153,28 @@ $(BIN_BLIND): src/llm2/agent_main_main.c $(ALL_SRC) $(DATALOG_DIR)/zig-out/lib/l
 	    -L$(DATALOG_DIR)/zig-out/lib \
 	    -Wl,-rpath,$(abspath $(DATALOG_DIR)/zig-out/lib) -ldatalog
 
+# The first oracle: Osier CODE SHARE of the ACTIVE GENERATION (host tool —
+# native only, no musl variant; it shells fxstore's read-only `facts` and
+# needs the sibling fxstore checkout built with it).
+#   tools/fx-osier-share.c measures the fraction of the source bytes of the
+#   components the active generation RUNS that are .elm (Osier), from the
+#   store's own version-bound facts — never from a source tree.  The gate,
+#   tests/test_osier_share.sh, is the DISCRIMINATION PROOF: a synthetic
+#   Osier-sourced component must MOVE the number 0 -> non-zero; a built-
+#   but-not-run component must NOT; a run component with non-Osier source
+#   must not raise it.  It provisions its fixture store toolchain-free via
+#   fx-init's activate_paths + fx-activate (host-side, nothing boots).
+BIN_OSIER := build/fx-osier-share
+
+test-osier-share: $(BIN_OSIER)
+	bash tests/test_osier_share.sh
+
+$(BIN_OSIER): tools/fx-osier-share.c $(DHALL_SRC) $(YYJSON_SRC)
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ tools/fx-osier-share.c $(DHALL_SRC) $(YYJSON_SRC)
+
+.PHONY: test-osier-share
+
 clean:
 	rm -rf build
 
