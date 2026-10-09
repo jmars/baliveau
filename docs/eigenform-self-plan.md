@@ -195,9 +195,77 @@ Without a **frozen, host-side evaluator that the agent cannot write**, the loop 
 reconfigure, activate, reboot, roll back on failure — and **change things while improving nothing**.
 The evaluator must live outside the guest precisely *because* the guest is where the agent lives.
 
-**PROJECTION:** the shape is a held-out suite with typed verdicts and the visible/held-out split
-instrumented, so a change that games the measurable surface lands as a distinguishable class rather
-than a pass. That is the shape the previous line had; it is not this design and should be re-derived.
+**THERE IS NO SINGLE ORACLE (user, 2026-10-13): "I'll want different oracles for different agent
+tasks."** So the oracle is a **named, pluggable, frozen seat** selected per task, and the loop takes
+it as a parameter. Every oracle must satisfy three properties, and they are the definition:
+
+1. **Host-side** — computed outside the guest, because the guest is where the agent lives.
+2. **Unwritable by the agent** — the agent may not author, patch, or pin it.
+3. **A function of OBSERVABLE SYSTEM STATE**, not of the agent's own artifacts — see the gaming
+   analysis below. This is the property that is easy to get wrong and the one that decides whether
+   the oracle measures the system or the agent's intentions.
+
+#### The first instance: `osier-share`
+
+**Task: "maximise the amount of the system written in Osier."**
+
+What Osier is (**MEASURED**): `withe/` is the Osier repo — an Elm→ZINC compiler, the ZINC VM, a Lean 4
+mechanization, and an evidence chain, for the λρG paper. **Feasibility is green**, which is why this
+task is usable rather than notional: (a) `withe/build.zig` threads `standardTargetOptions` into every
+exe and into the zinc_vm dependency, so an i386 static cross-build is supported; (b) there is a real
+**AOT path** (`tools/aot/`: `aotdump <csexp> <entry> → gen.zig`, then `zig build gen.zig` +
+`tools/aot/run.zig` produces **a native binary whose entry is the compiled program**), so an
+Osier-written component can be a *guest binary*, not merely a VM program. And the baseline is
+unambiguous: `rg osier` over `fx-init`, `fx-core` and `fxstore` returns **nothing — the running system
+is currently 0% Osier**.
+
+**A ready-made freeze harness already exists.** `withe/tools/osier-numbers.sh` is described as "the
+paper's single reproducible measurement chain" — self-contained, **idempotent**, printing every number
+the paper cites, with a committed corpus baseline (`tools/osier-corpus-baseline.sha256`, byte-identity
+per compiled artifact), a PASS/FAIL fixture gate, and a Lean theorem/axiom list. `tools/selfhost-gate.sh`
+goes further: the compiler compiles itself and **every fixture's output is `cmp`-byte-identical** to
+the stock compiler's. These are already frozen and committed, so the evaluator side of this oracle is
+mostly *reuse*, not construction.
+
+**THE GAMING ANALYSIS — and the specific counter-measure.** "Maximise the amount of the system written
+in Osier" is a *measure*, not a predicate, and a measure is where a self-modifying agent games hardest.
+The naive metric — lines or bytes of Osier in the source tree — is trivially defeated:
+
+| game | why the naive metric pays for it |
+|---|---|
+| **duplication, not replacement** | adding an Osier copy raises the Osier share while the C original still runs |
+| **dead Osier** | code that is never executed still counts as "written" |
+| **padding** | one enormous Osier file beats ten small correct ones |
+| **the wrapper loophole** | a 3-line Osier program that execs the existing stage moves *behaviour* nowhere while raising the share |
+
+**THE COUNTER-MEASURE: measure the ACTIVE GENERATION, not the source tree.** The store's own provenance
+relations are written by the system and read host-side, so they cannot be inflated:
+
+- `provides(pkg, store_dir)` — package → store directory,
+- `install(target, origin, mode, genhash)` — what is installed where, from which origin, in which generation,
+- the generation's `svc_bin` / `svc_argv` — **which binaries the running services actually exec.**
+
+So the metric is: **of the binaries the active generation actually RUNS, what fraction are Osier-built?**
+An artifact counts only when it is executed, which kills dead-Osier and padding outright. And a
+component counts as Osier-built only if its **derivation's source tree is Osier** (`.elm`/`.csexp`
+with an AOT recipe) — which kills the wrapper loophole, because a wrapper's derivation is C.
+
+**IT IS A TIE-BREAKER, NOT AN OBJECTIVE.** Order of operations: **boots ok** (viability) → **no drift**
+(`fxstore verify`) → *then* maximise the Osier share. Alone, the metric is satisfiable by shipping
+Osier that breaks the system; as the last term of a lexicographic order over viable, coherent
+candidates, it is a real gradient.
+
+**ONE DECISION LEFT TO THE USER, because it changes the metric:** does "amount" mean **code share**
+(binaries/files, gameable as above and needing the derivation test) or **behaviour share** (weighted by
+what the components actually do — services, or syscalls — which needs a different and harder
+instrument)? The design above assumes code share with the derivation gate; behaviour share would
+require the held-out-suite machinery this repo does not yet have.
+
+**PROJECTION, now with a precedent:** the older design line's shape (a held-out suite with typed
+verdicts and the visible/held-out split instrumented, so a change that games the measurable surface
+lands as a distinguishable class rather than a pass) is still not this design — but `osier-share` shows
+what the *first* one looks like, and it needed no held-out suite at all: it needed the system's own
+provenance relations.
 
 ### 7.2 Trial vs accepted GC roots
 `gc --retain N` exists. A self-reboot loop accumulates generations. Decide which generations are
