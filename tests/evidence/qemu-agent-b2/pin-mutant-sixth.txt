@@ -1,0 +1,8 @@
+exit=1
+fxstore: verify / against store /fx/disk/store: 6 drift(s)
+/bin/fx-activate: link_target: symlink points at '/fx/disk/store/259aa0ad96444ff837b05f02b69212d28d5370661e8d70363654176a5cd9a5e9-fx-activate/fx-activate' != store path '/fx/disk/store/259aa0ad96444ff837b05f02b69212d28d5370661e8d70363654176a5cd9a5e9-fx-activate'
+/bin/dhake: link_target: symlink points at '/fx/disk/store/8ec74aebab6dbe9e02cf90da0e6a6e6d4a0074a32c9587f73733e353a7466e6d-dhake/dhake.com' != store path '/fx/disk/store/8ec74aebab6dbe9e02cf90da0e6a6e6d4a0074a32c9587f73733e353a7466e6d-dhake'
+/bin/fakesvc: link_target: symlink points at '/fx/disk/store/fb35deed99c9fb091d3f1adb32b4861b2945cc8322320411ad165e03cc025e2b-fake-service/fakesvc' != store path '/fx/disk/store/fb35deed99c9fb091d3f1adb32b4861b2945cc8322320411ad165e03cc025e2b-fake-service'
+/bin/fxctl: link_target: symlink points at '/fx/disk/store/f19f68e601b5ffbe7d93b643f9c1b8be86e059586b8756fe69429f35f0b64db7-fxctl/fxctl' != store path '/fx/disk/store/f19f68e601b5ffbe7d93b643f9c1b8be86e059586b8756fe69429f35f0b64db7-fxctl'
+/bin/init: link_target: symlink points at '/fx/disk/store/708f61e1d7efcb7db5d62e6d6d6172592d0f9c4b99067b3e70b68a3879f453ab-fx-init/fx-init' != store path '/fx/disk/store/708f61e1d7efcb7db5d62e6d6d6172592d0f9c4b99067b3e70b68a3879f453ab-fx-init'
+/bin/fxstore: link_target: symlink points at '/fx/disk/store/259aa0ad96444ff837b05f02b69212d28d5370661e8d70363654176a5cd9a5e9-fxstore/fxstore' != store path '/fx/disk/store/259aa0ad96444ff837b05f02b69212d28d5370661e8d70363654176a5cd9a5e9-fxstore'

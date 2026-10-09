@@ -187,6 +187,27 @@ int agent_loop_run_delta(const Backend *b, const char *model,
                          TurnResult *out_final, agent_loop_msg_cb cb, void *cb_user,
                          agent_loop_delta_cb dcb, void *dc_user);
 
+/* agent_loop_run_delta_ex: agent_loop_run_delta plus the loop's OWN END-STATE in
+ * *out_exhausted (may be NULL):
+ *
+ *   1  the loop stopped because it ran out of TURNS while the model still wanted
+ *      tool calls: the last allowed turn's tool calls are surfaced in out_final
+ *      and NOT dispatched, so the TASK DID NOT FINISH.  This is the ONLY way a
+ *      run can end with rc==0 without having produced a final answer, and a
+ *      caller that records success must not treat it as one.
+ *   0  every other stop (a final text turn with no tool calls, no tool server to
+ *      dispatch into, or a backend error with rc != 0).
+ *
+ * It exists because "rc == 0" is not "the task is complete": the end-of-run
+ * `done` marker (src/llm2/outcome.c) must not be written for a turn-limited run,
+ * or an unfinished task is permanently recorded complete. */
+int agent_loop_run_delta_ex(const Backend *b, const char *model,
+                            const McpToolServer *tool_srv, const ToolPolicy *policy,
+                            const LlmMsg *msgs, size_t n_msgs, int max_turns,
+                            TurnResult *out_final, agent_loop_msg_cb cb, void *cb_user,
+                            agent_loop_delta_cb dcb, void *dc_user,
+                            int *out_exhausted);
+
 #ifdef __cplusplus
 }
 #endif

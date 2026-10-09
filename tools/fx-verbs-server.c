@@ -25,18 +25,51 @@
  *                                             installed path
  *   fx_why           fxstore why <package>    closure + provided targets +
  *                                             pulling roots
- *   fx_store_verify  fxstore verify           reconcile the rootfs against the
+ *   fx_store_verify  fxstore verify --store /fx/disk/store
+ *                                             reconcile the running rootfs
+ *                                             against the LIVE generation's
  *                                             install facts; EXIT 1 ON DRIFT
+ *   fx_outcome       <store>/.bootlog + <store>/.db/snapshots/CURRENT
+ *                                             (native) THE OUTCOME OF PREVIOUS
+ *                                             BOOTS: the boot history, the last
+ *                                             verdict, and the generation this
+ *                                             boot is running
+ *   fx_generation    <store>/.db/snapshots/CURRENT
+ *                                             (native) the CURRENT generation,
+ *                                             one number
  *   fx_read          read a file              (native: open/read under the root)
  *   fx_write         write a file             (native: open/write under the root)
  *   fx_ls            list a directory         (native: opendir under the root)
  *
+ * THE OUTCOME INSTRUMENT.  fx_outcome / fx_generation are HOW AN AGENT SEES THE
+ * RESULT OF ITS OWN LAST ACTIVATION — the roll-forward signal.  They read the
+ * store's TWO PLAIN FILES (never the runtime DB, which PID1 holds under a
+ * process-lifetime lock, so no channel is needed): <store>/.bootlog, one
+ * "<version> <status> <epoch>" line per boot with status in
+ * ok | failed | in-progress | shutdown, and <store>/.db/snapshots/CURRENT, the
+ * generation the running system came up in (fx-init's store_current_of parses
+ * the same file).  They are the READ side; the MECHANISED side is the harness's
+ * own boot-time consume of its durable activation record (src/llm2/outcome.h) —
+ * a model can be given judgement later, the machinery must not re-act blindly.
+ * BOTH verbs are STORE-SCOPED with NO store argument: they read FX_STORE_PATH
+ * (or none at all), never a store a caller names, so a model cannot be talked
+ * into reading the initramfs snapshot's stale bootlog.
+ *
  * ROOT RESOLUTION — never a hardcoded absolute path: every command is looked
  * up under FX_VERB_ROOT (env, read at call time so tests can set it; default
- * "/"): first <ROOT>/usr/fx-core/bin (where the fx-init payload stages fxsh +
- * the fx-* set), then <ROOT>/fx/store/bin (the store bin dir).  The file verbs
- * prefix paths with the same root, so the identical binary runs against a stub
- * root on the host (FX_VERB_ROOT=/tmp/stub) and against the real guest rootfs
+ * "/"): first <ROOT>/bin, then <ROOT>/usr/fx-core/bin (where the fx-init
+ * payload stages fxsh + the fx-* set), then <ROOT>/fx/store/bin (the store bin
+ * dir).  THE RULE: <ROOT>/bin is the RUNNING generation's own bin dir — the
+ * activation materializes one symlink per tool/service package there, into the
+ * store dir its install fact names — so it MUST win over any staged copy.
+ * mkinitramfs -b copies the whole fx-* bindir into <ROOT>/usr/fx-core/bin, so
+ * with the reverse order any lane shipping fx-activate via -b made this verb
+ * exec the INITRAMFS copy instead of the generation's /bin/fx-activate (the
+ * binary fx-init's own activate handler execs).  A <ROOT>/bin link that
+ * dangles (a diskless guest whose store is not mounted) simply fails the X_OK
+ * test and the lookup falls through to the staged copy.  The file verbs prefix
+ * paths with the same root, so the identical binary runs against a stub root
+ * on the host (FX_VERB_ROOT=/tmp/stub) and against the real guest rootfs
  * (unset).
  *
  * EXEC RULES — fork + execvpe with an EXPLICIT whitelist env (the
@@ -81,6 +114,8 @@
 #include <unistd.h>
 
 #include "yyjson.h"
+#include "llm2/outcome.h"   /* the store's outcome files — ONE reader, shared
+                             * with the harness's own boot-time consume */
 
 extern char **environ; /* the server's own environment (pass-through source) */
 
@@ -93,6 +128,20 @@ extern char **environ; /* the server's own environment (pass-through source) */
 /* Line/output cap — SAME value the client enforces (MCP_MAX_LINE,
  * src/llm2/mcp_client.h). */
 #define FXV_MAX_LINE (1024u * 1024u)
+
+/* ── the store path the STORE-SCOPED verbs carry ───────────────────────────── */
+
+/* FX_STORE_PATH is the guests' PERSISTENT store: fx-init's g_store, which is
+ * this path ONLY while the virtio DISK store is mounted.  On a diskless guest
+ * PID1 falls back to the initramfs ramfs (/fx/store, a snapshot this verb does
+ * not own), so the path is ABSENT there — and a verb row that carries it
+ * (fx_activate, fx_store_verify) is STORE-SCOPED: call_exec_verb refuses it
+ * with a message NAMING the path rather than letting the child fail downstream
+ * with something unrelated, and it never silently guesses another store (the
+ * ramfs snapshot would reconcile the running rootfs against STALE facts).
+ * A guest that mounts the disk store, and every stub root a test builds for
+ * these rows, carries <FX_VERB_ROOT>/fx/disk/store. */
+#define FX_STORE_PATH "/fx/disk/store"
 
 #ifndef PATH_MAX
 #define PATH_MAX 4096
@@ -125,20 +174,23 @@ static char *root_join(const char *rel) {
     return out;
 }
 
-/* Look a verb command up under the root: first <ROOT>/usr/fx-core/bin (where
- * fx-init stages fxsh + the fx-* set), then <ROOT>/fx/store/bin (the store
- * bin dir), then <ROOT>/bin — the RUNNING root's bin dir, where the
- * activation materializes one symlink per tool + service package into the
- * store (`activate.zig` collect /bin symlinks: init, fxctl, dhake,
- * fx-activate, fxstore for a pkg that declares it).  Without "bin" the verbs
- * that only exist there (notably /bin/fx-activate, which is the binary
- * fx-init's OWN activate handler execs) resolve to nothing in the guest.
+/* Look a verb command up under the root: first <ROOT>/bin — the RUNNING
+ * generation's own bin dir, where the activation materializes one symlink per
+ * tool + service package into the store (`activate.zig` collect /bin symlinks:
+ * init, fxctl, dhake, fx-activate, fxstore for a pkg that declares it), i.e.
+ * the very binaries the machine itself runs — then <ROOT>/usr/fx-core/bin
+ * (where the fx-init payload stages fxsh + the fx-* set; an initramfs COPY of
+ * the same programs that must not shadow the running root's), then
+ * <ROOT>/fx/store/bin (the store bin dir).  Without the leading "bin" a verb
+ * like fx_activate resolves to the initramfs COPY — for a lane that stages
+ * fx-activate via `mkinitramfs -b` a different binary from the one fx-init's
+ * own activate handler execs.
  * Returns a malloc'd absolute path, or NULL when nothing executable matches. */
 static char *resolve_command(const char *cmd) {
     static const char *const DIRS[] = {
+        "bin",
         "usr/fx-core/bin",
         "fx/store/bin",
-        "bin",
     };
     for (size_t i = 0; i < sizeof(DIRS) / sizeof(DIRS[0]); i++) {
         char *dir = root_join(DIRS[i]);
@@ -165,12 +217,17 @@ static char *resolve_command(const char *cmd) {
  * Returns a malloc'd NULL-terminated array of malloc'd "K=V" strings. */
 static char **build_verb_envp(void) {
     const char *root = fx_root();
+    /* the SAME precedence as resolve_command: the running root's own bin dir
+     * first, the initramfs staging dir after it (a verb that spawns a helper
+     * by name must not pick up the initramfs copy either). */
+    char *bin0 = root_join("bin");
     char *bin1 = root_join("usr/fx-core/bin");
     char *bin2 = root_join("fx/store/bin");
-    if (!bin1 || !bin2) { free(bin1); free(bin2); return NULL; }
+    if (!bin0 || !bin1 || !bin2) { free(bin0); free(bin1); free(bin2); return NULL; }
 
     char path[4 * PATH_MAX];
-    snprintf(path, sizeof(path), "%s:%s:/bin:/usr/bin", bin1, bin2);
+    snprintf(path, sizeof(path), "%s:%s:%s:/bin:/usr/bin", bin0, bin1, bin2);
+    free(bin0);
     free(bin1);
     free(bin2);
 
@@ -344,6 +401,36 @@ static int run_verb(char **argv, Capture *out, int *exitcode) {
 
 /* ── native file verbs (no external command; the guest has no shell) ────── */
 
+/* The STORE-SCOPE refusal, in ONE place: a store-scoped verb refuses to run when
+ * <root>/fx/disk/store is absent, NAMING the path rather than letting the child
+ * fail downstream with something unrelated — and it never silently guesses
+ * another store (the initramfs ramfs snapshot would answer with STALE facts).
+ * Shared by the exec rows that carry FX_STORE_PATH and by the native outcome
+ * verbs, so the phrase a reader greps is the same for both. */
+static void store_scope_refuse(Capture *out, const char *verb) {
+    cap_append_str(out, "fx-verbs: ");
+    cap_append_str(out, verb);
+    cap_append_str(out, " is store-scoped: the store ");
+    cap_append_str(out, FX_STORE_PATH);
+    cap_append_str(out, " does not exist under FX_VERB_ROOT (");
+    cap_append_str(out, fx_root());
+    cap_append_str(out, ") — it is fx-init's g_store, present only while the "
+                        "disk store is mounted; this verb will not guess "
+                        "another store\n");
+}
+
+/* The store this server reads, resolved under the root.  Returns a malloc'd
+ * path (caller frees) or NULL when it is not there. */
+static char *store_if_present(void) {
+    char *sp = root_join(FX_STORE_PATH);
+    if (!sp) return NULL;
+    if (access(sp, F_OK) != 0) {
+        free(sp);
+        return NULL;
+    }
+    return sp;
+}
+
 static int native_read(const char *path, Capture *out, int *exitcode) {
     char *full = root_join(path);
     if (!full) { cap_append_str(out, "fx-verbs: path too long\n"); *exitcode = 1; return 0; }
@@ -481,16 +568,107 @@ static int native_ls(const char *path, Capture *out, int *exitcode) {
     return 0;
 }
 
+/* ── the native OUTCOME verbs (fx_outcome / fx_generation) ──────────────── */
+
+/* Print one bootlog line.  The bootlog is APPEND-ONLY and ordered: this is the
+ * history as it would be read with `cat`, one "boot <v> <status> <epoch>" line
+ * per recorded boot (fx_init's bootlog_append writes "<v> <status> <epoch>"). */
+static int outcome_line_cb(void *u, unsigned long version, const char *status,
+                           unsigned long epoch) {
+    Capture *out = (Capture *)u;
+    char line[160];
+    int n = snprintf(line, sizeof line, "boot %lu %s %lu\n", version, status, epoch);
+    if (n > 0) cap_append(out, line, (size_t)n);
+    return 0;
+}
+
+/* fx_outcome: the WHOLE outcome picture a reader needs to answer "did what I did
+ * last boot actually work?".  Reads, in this order: the store path (as the guest
+ * names it, not as resolved), CURRENT (fail-closed: an unreadable CURRENT is
+ * reported as UNREADABLE and the verb exits 1 rather than printing a guess), the
+ * LAST VERDICT in the bootlog (ok|failed — i.e. what the previous boot did, the
+ * roll-forward signal), how many boots are recorded, and then every line.  Exit
+ * 1 only when CURRENT could not be read: a missing bootlog is reported as
+ * "bootlog ... cannot be opened" but is not itself fatal. */
+static int native_outcome(Capture *out, int *exitcode) {
+    char *store = store_if_present();
+    if (!store) { store_scope_refuse(out, "fx_outcome"); *exitcode = 1; return 0; }
+
+    char line[PATH_MAX + 128];
+    int n = snprintf(line, sizeof line, "store %s\n", FX_STORE_PATH);
+    if (n > 0) cap_append(out, line, (size_t)n);
+
+    unsigned long cur = 0;
+    char err[512] = {0};
+    int have_cur = (fx_outcome_current(store, &cur, err, sizeof err) == 0);
+    if (have_cur) snprintf(line, sizeof line, "current %lu\n", cur);
+    else          snprintf(line, sizeof line, "current UNREADABLE: %s\n", err);
+    cap_append_str(out, line);
+
+    unsigned long lv = 0;
+    char ls[FX_OUTCOME_STATUS_CAP] = {0};
+    if (fx_outcome_bootlog_last(store, &lv, ls, sizeof ls))
+        snprintf(line, sizeof line, "last %lu %s\n", lv, ls);
+    else
+        snprintf(line, sizeof line, "last none\n");
+    cap_append_str(out, line);
+
+    int seen = fx_outcome_bootlog_each(store, outcome_line_cb, out);
+    if (seen < 0) {
+        n = snprintf(line, sizeof line, "bootlog %s: cannot be opened\n",
+                     FX_OUTCOME_BOOTLOG_FILE);
+        if (n > 0) cap_append(out, line, (size_t)n);
+        *exitcode = have_cur ? 0 : 1;
+        free(store);
+        return 0;
+    }
+    n = snprintf(line, sizeof line, "boots %d\n", seen);
+    if (n > 0) cap_append(out, line, (size_t)n);
+    *exitcode = have_cur ? 0 : 1;
+    free(store);
+    return 0;
+}
+
+/* fx_generation: the CURRENT generation alone — the machine's own answer to
+ * "which generation am I running?".  One line, "current <N>"; exit 1 (naming the
+ * file) when it cannot be read, NEVER a guessed version. */
+static int native_generation(Capture *out, int *exitcode) {
+    char *store = store_if_present();
+    if (!store) { store_scope_refuse(out, "fx_generation"); *exitcode = 1; return 0; }
+    unsigned long cur = 0;
+    char err[512] = {0};
+    char line[PATH_MAX + 128];
+    if (fx_outcome_current(store, &cur, err, sizeof err) == 0) {
+        snprintf(line, sizeof line, "current %lu\n", cur);
+        *exitcode = 0;
+    } else {
+        snprintf(line, sizeof line, "fx-verbs: fx_generation: %s\n", err);
+        *exitcode = 1;
+    }
+    cap_append_str(out, line);
+    free(store);
+    return 0;
+}
+
 /* ── the verb table ─────────────────────────────────────────────────────── */
+
+/* fixed[] slots per row: at most VERB_FIXED_MAX-1 arguments + the NULL
+ * terminator.  ONE definition shared by the array declaration and the bounded
+ * walk in call_exec_verb, so the walk cannot drift from the array. */
+#define VERB_FIXED_MAX 6
 
 typedef struct {
     const char *name;
     const char *cmd;      /* resolved under the root; NULL -> native verb */
-    const char *fixed[6]; /* fixed argv between cmd and the argument: MAX 5
-                           * args, NULL-TERMINATED (call_exec_verb walks it
-                           * to the NULL — a row that fills every slot MUST
-                           * carry the terminator explicitly; the shorter
-                           * rows zero-fill it) */
+    const char *fixed[VERB_FIXED_MAX];
+                          /* fixed argv between cmd and the argument: at most
+                           * VERB_FIXED_MAX-1 args + the NULL TERMINATOR, which
+                           * every row MUST carry (the shorter rows zero-fill
+                           * it).  call_exec_verb walks it BOUNDED and refuses
+                           * a row that fills all VERB_FIXED_MAX slots, so a
+                           * future over-long row fails loudly instead of
+                           * reading past the array into `desc` — the first-cut
+                           * bug this table shipped. */
     const char *desc;
 } Verb;
 
@@ -520,17 +698,22 @@ static const Verb VERBS[] = {
      * child owns the port, handle_virtio must not read it").  A second reader
      * on that port races PID1 for the request bytes, so an in-guest fxctl
      * cannot be the loop's activation path.  The store/package-set are the
-     * guest's own: /fx/disk/store is the persistent store (g_store — a ramfs
+     * guest's own: FX_STORE_PATH is the persistent store (g_store — a ramfs
      * /fx/store activate would be lost on the restart) and
      * /usr/fx/package-set.dhall is the frozen package set mkinitramfs ships.
-     * Argument: config (the path of the config to activate). */
-    { "fx_activate", "fx-activate", { "--store", "/fx/disk/store",
+     * STORE-SCOPED: this row carries FX_STORE_PATH, so call_exec_verb refuses
+     * to run it when that path is absent (a diskless guest) instead of letting
+     * the child fail downstream.  Argument: config (the path of the config to
+     * activate). */
+    { "fx_activate", "fx-activate", { "--store", FX_STORE_PATH,
                                       "--package-set", "/usr/fx/package-set.dhall",
                                       "--config", NULL },
-      "ACTIVATE service configuration <config> on the running system (reconfigures "
-      "it; the new generation becomes CURRENT on the persistent store). Runs the "
-      "root's /bin/fx-activate with the image's frozen package set. Argument: "
-      "config (a path, e.g. /fx/disk/agent-config.dhall)." },
+      "ACTIVATE service configuration <config> on the running system. DURABLE-ONLY: "
+      "the new generation becomes CURRENT on the persistent store and takes effect at "
+      "the NEXT boot — the running system is not re-materialized (no hot-apply, no "
+      "PID1 boot-decision re-arm), so an fx_status read right after this still shows "
+      "the OLD generation. Runs the root's /bin/fx-activate with the image's frozen "
+      "package set. Argument: config (a path, e.g. /fx/disk/agent-config.dhall)." },
     { "fx_rollback", "fxctl", { "rollback", NULL },
       "Run `fxctl rollback <version>`: roll the system back to generation <version>. "
       "Argument: version." },
@@ -540,11 +723,37 @@ static const Verb VERBS[] = {
     { "fx_why", "fxstore", { "why", NULL },
       "Run `fxstore why <package>`: why <package> is in the store — its closure, the "
       "targets it provides, and the roots pulling it in. Argument: package." },
-    { "fx_store_verify", "fxstore", { "verify", NULL },
+    /* The store root is the guest's LIVE store (FX_STORE_PATH = fx-init's
+     * g_store on the disk), not the initramfs's /fx/store snapshot: the
+     * install facts a verdict must be judged against are the ones that
+     * generation published.  Without it the verb would reconcile the running
+     * rootfs against a STALE snapshot and report phantom drift.  STORE-SCOPED:
+     * the row carries FX_STORE_PATH, so call_exec_verb refuses it when the path
+     * is absent rather than guessing a store. */
+    { "fx_store_verify", "fxstore", { "verify", "--store", FX_STORE_PATH },
       "Run `fxstore verify`: reconcile the rootfs against the recorded install "
-      "facts and report every drift. The first line of the reply text is `exit=1` "
-      "exactly when drift was found — that exit line is the drift gate. Optional "
-      "argument: rootfs (default /)." },
+      "facts of the LIVE (" FX_STORE_PATH ") generation and report every drift. The "
+      "first line of the reply text is `exit=1` exactly when drift was found — "
+      "that exit line is the drift gate. Optional argument: rootfs (default /)." },
+    /* THE OUTCOME INSTRUMENT — how an agent sees the result of its OWN last
+     * activation (the roll-forward signal).  Both are NATIVE (no exec) and
+     * STORE-SCOPED with NO store argument: they read <store>/.bootlog and
+     * <store>/.db/snapshots/CURRENT (fx-init's own two plain files), and a store
+     * a caller names is never consulted. */
+    { "fx_outcome", NULL, { NULL, NULL },
+      "Report the OUTCOME OF PREVIOUS BOOTS, read from the store's own plain files "
+      "(no channel needed): current <N> (the generation the running system came up "
+      "in, from <store>/.db/snapshots/CURRENT), last <v> ok|failed (the previous "
+      "boot's verdict), boots <n>, then one 'boot <version> <status> <epoch>' line "
+      "per recorded boot from <store>/.bootlog (status ok|failed|in-progress|"
+      "shutdown). Read it after a restart to see whether the generation you "
+      "activated booted ok, or FAILED and was rolled forward to older content "
+      "under a HIGHER version number. Takes no arguments; store-scoped." },
+    { "fx_generation", NULL, { NULL, NULL },
+      "Print the CURRENT generation of the store — the generation the running "
+      "system came up in, from <store>/.db/snapshots/CURRENT: one line, "
+      "'current <N>'. Exit 1 and names the file when it cannot be read (a version "
+      "is never guessed). Takes no arguments; store-scoped." },
     { "fx_read", NULL, { NULL, NULL },
       "Read a file and return its content. Paths resolve under FX_VERB_ROOT. "
       "Capped at 1 MiB. Argument: path." },
@@ -677,6 +886,31 @@ static int send_capture_reply(yyjson_val *idv, Capture *out, int exitcode) {
 static int call_exec_verb(yyjson_val *idv, const Verb *v, char **argv_tail) {
     Capture out;
     if (!cap_init(&out)) return send_error(idv, -32603, "out of memory");
+    /* the fixed[] walk is BOUNDED BY THE ARRAY, not by a terminator it hopes to
+     * find: a row that fills all VERB_FIXED_MAX slots with no NULL would walk
+     * past fixed[] into `desc` (and on through the next rows) and hand the
+     * child a garbage argv — the exact overrun the first cut of this table
+     * shipped.  VERB_FIXED_MAX slots can hold at most VERB_FIXED_MAX-1 args
+     * plus the terminator, so reaching the bound means the row is malformed:
+     * FAIL LOUDLY rather than truncate the argv silently. */
+    size_t nfix = 0;
+    while (nfix < VERB_FIXED_MAX && v->fixed[nfix]) nfix++;
+    if (nfix == VERB_FIXED_MAX) {
+        cap_free(&out);
+        return send_error(idv, -32603,
+                          "internal: verb table row has no NULL terminator in fixed[]");
+    }
+    /* store-scoped rows (those carrying FX_STORE_PATH) refuse to run when the
+     * store is not there, naming the path: see FX_STORE_PATH. */
+    for (size_t i = 0; i < nfix; i++) {
+        if (strcmp(v->fixed[i], FX_STORE_PATH) != 0) continue;
+        char *sp = store_if_present();
+        if (sp) { free(sp); break; }
+        store_scope_refuse(&out, v->name);
+        int sret = send_capture_reply(idv, &out, 1);
+        cap_free(&out);
+        return sret;
+    }
     char *cmd = resolve_command(v->cmd);
     if (!cmd) {
         /* report like the child would have: visible text, exit 127 */
@@ -690,8 +924,6 @@ static int call_exec_verb(yyjson_val *idv, const Verb *v, char **argv_tail) {
         return sret;
     }
     /* argv = [resolved, fixed..., tail..., NULL] */
-    size_t nfix = 0;
-    while (v->fixed[nfix]) nfix++;
     size_t ntail = 0;
     while (argv_tail[ntail]) ntail++;
     char **argv = malloc((1 + nfix + ntail + 1) * sizeof(char *));
@@ -768,6 +1000,23 @@ static int handle_tools_call(yyjson_val *root, yyjson_val *idv) {
         if (!cap_init(&out)) return send_error(idv, -32603, "out of memory");
         int exitcode = 1;
         native_ls(path, &out, &exitcode);
+        int sret = send_capture_reply(idv, &out, exitcode);
+        cap_free(&out);
+        return sret;
+    }
+
+    /* fx_outcome / fx_generation: the native OUTCOME verbs.  Handled HERE,
+     * before the "every remaining exec verb takes exactly one string argument"
+     * fallback below — whose no-argument branch would otherwise hand a NULL cmd
+     * (these rows carry no command) to call_exec_verb. */
+    if (strcmp(name, "fx_outcome") == 0 || strcmp(name, "fx_generation") == 0) {
+        Capture out;
+        if (!cap_init(&out)) return send_error(idv, -32603, "out of memory");
+        int exitcode = 1;
+        if (strcmp(name, "fx_outcome") == 0)
+            native_outcome(&out, &exitcode);
+        else
+            native_generation(&out, &exitcode);
         int sret = send_capture_reply(idv, &out, exitcode);
         cap_free(&out);
         return sret;

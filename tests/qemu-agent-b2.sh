@@ -34,30 +34,78 @@
 # outlive the machine.  (The missing reboot(2) is reported as a finding, not
 # patched here.)
 #
+# THE VERDICT TOOL.  "fxstore verify on the post-restart guest, exit code
+# included" is the restarted machine's OWN agent running fx_store_verify through
+# the same tool server (the fixture b2-verify.sse): its reply text is
+# "exit=<n>\n<the drift report>", read back off the virtio disk.  MEASURED AND
+# PINNED: on this root the report is exit=1 with 5 drifts, ALL of the class
+# `/bin/X: link_target: symlink points at <store>/<dir>/<binary> != store path
+# <store>/<dir>` — an fx-init bug (its `install` fact records the package DIR
+# for a /bin link while its own buildfile makes the symlink point at the
+# BINARY), present in every generation, NOT something the agent's change caused.
+# The test asserts the drift set is EXACTLY those 5 lines (count == 5, exactly
+# those five /bin names, and every line the same <64hex>-<pkg> dir on both sides
+# of the != — a repointed link, a 6th same-class drift, a renamed link, or the
+# same drift on a non-/bin path each FAIL the run;
+# the pin's fireability is demonstrated in-gate against four mutants of the real
+# report) rather than printing a green wash — and the boot verdict stays
+# fx-init's own (boot-ok), because the verifier is an agent whose tool call
+# cannot fail the boot.  See the lane's report: the fix belongs in fx-init, and
+# it was NOT made (no other repo is touched).
+#
 # THE THREE ARMS
 #   ARM 1 (disk1) — THE CHANGE SURVIVES
 #     image 1's ramfs CURRENT is the AGENT BRACKET generation (heartbeat + the
 #     fx-agent service carrying the arm-1 fixture).  boot A1: the agent runs its
-#     four recorded tool calls; fx_activate commits a generation the HOST NEVER
-#     CREATED (v_N > the image's CURRENT, parsed out of the agent's own tool
-#     result) and its services start: "heartbeat from b2proof-<marker>" and
-#     "fxstore: verify OK" land on the console.  boot A2 (SAME image, SAME disk,
-#     no session): "disk store mounted (current v_N)" + "boot-ok v_N" +
-#     the agent-authored service's heartbeat + fxstore verify OK => the machine
-#     came back up in the new generation, and the verdict corroborates it.
+#     four recorded tool calls and fx_activate commits a generation the HOST
+#     NEVER CREATED (v_N > the image's CURRENT, parsed out of the agent's own
+#     tool result) — and NOTHING of it shows on A1's own console, because the
+#     activation is DURABLE, not hot-applied.  boot A2 (SAME image, SAME disk,
+#     no session) is where the machine comes back up in it: "disk store mounted
+#     (current v_N)" + "boot-ok v_N" + the agent-authored service's heartbeat.
+#     MEASURED — an earlier version of this comment claimed the heartbeat and a
+#     "fxstore: verify OK" land on A1's console; BOTH are wrong: 'heartbeat from
+#     b2proof-<marker>' is ABSENT from boot-a1-console.log (0 matches) and
+#     present in boot-a2-console.log (30), and 'fxstore: verify OK' is a
+#     HOST-PRE-CHECK STUB line (see the pre-check below), NOT a guest string at
+#     all: `grep fxstore` matches NOTHING in either console, because the verdict
+#     is the post-restart agent's OWN fx_store_verify TOOL CALL — its output
+#     goes to the agent transcript and is read back off the disk
+#     (boot-a2-verify-exit.txt), not printed by a service.
 #     Asserted too: the generation HASH before (host's activate output) and
 #     after (the agent's tool result, read off the disk) differ; the config
 #     read back off the disk is BYTE-IDENTICAL to the one the fixture carried.
 #   ARM 2 (disk2) — THE CHANGE FAILS AND ROLLS BACK (the control for the
 #     rollback machinery; without it the test cannot tell "the loop works" from
 #     "nothing ever changed")
-#     boot B0 (image P: an AGENT-FREE healthy generation) boots v_P ok — the
-#     known-good generation the roll-forward needs.  boot B1 (image 2, the arm-2
-#     fixture = a config whose only service exits 7): the agent activates the
-#     crasher (v_BAD), the crasher fails in grace => "boot-FAILED v_BAD" and a
-#     "<v_BAD> failed" line in the disk .bootlog.  boot B2: "stale failed for
-#     v_BAD; rolling forward to v_P" + boot-ok v_ROLL (v_ROLL > v_BAD), and the
-#     crasher's marker is ABSENT.
+#     boot B0 (image P: an AGENT-FREE healthy generation) boots v_P ok — an
+#     ok generation the roll-forward can land on.  boot B1 (image 2, the arm-2
+#     fixture = a config whose only service exits 7): the ADOPT boots v_A2, the
+#     agent activates the crasher (v_BAD) — and, because an agent-driven
+#     activation is NOT hot-applied, v_A2's own verdict still fires ok.  boot B2
+#     (the restart): the disk's CURRENT is v_BAD, the crasher fails in grace =>
+#     "boot-FAILED v_BAD" + a "<v_BAD> failed" line in the disk .bootlog.
+#     boot B3 (the restart after that): "stale failed for v_BAD; rolling forward
+#     to v_A2" (the newest OK generation below the failure — the PRE-CHANGE
+#     state) + boot-ok v_ROLL (v_ROLL > v_BAD), the crasher's generation NOT
+#     booted (the runtime plane has no b2crasher row).
+#     NOTE, MEASURED AND REPORTED: the roll-forward target is the bracket, which
+#     is where the agent service lives — so the agent re-runs in B3 and creates a
+#     FURTHER crasher generation that only the NEXT boot would judge.  A
+#     roll-forward onto an agent-bearing generation re-creates the failure; the
+#     test says so on the console instead of hiding it.
+#     CORRECTION (appended by the observation-loop unit, 2026-10): that
+#     re-creation NO LONGER HAPPENS.  In B3 the agent SERVICE still runs, but the
+#     harness now reads its own durable activation record BEFORE entering the
+#     loop, sees "v7 failed" in the store's .bootlog, prints
+#     "fx-harness: OBSERVED OUTCOME — THE ACTIVATION THIS HARNESS RECORDED FAILED.
+#      NOT REPEATING IT." and issues NO activation: the fixture is never
+#     dispatched (B2-AGENT-RAN is absent from boot-b3-console.log, and the report
+#     is at line 269 of it; no generation above the roll-forward's v9 is created).
+#     Every assertion below is unchanged and still passes (this run: PASS).
+#     THE TWO-ARMED PROOF of that behaviour — the ratchet vs the settle, on the
+#     SAME fixture — is tests/qemu-agent-observe.sh; this file's own runtime NOTE
+#     about the re-creation is now dormant.
 #   NEGATIVE CONTROL (disk3) — THE PAYLOAD WITHHELD
 #     the SAME store as image 1, an EMPTY ROOTDIR: the agent service cannot
 #     exec, NOTHING is activated, and the old generation persists across both
@@ -262,16 +310,28 @@ done
 # stripped here).
 FXSTORE_DIR=$(ls -d "$STORE"/*-fxstore 2>/dev/null | head -1)
 [ -n "$FXSTORE_DIR" ] || fail "the closure has no *-fxstore dir"
-cp "$SIBS/fxstore/zig-out/bin/fxstore" "$FXSTORE_DIR/fxstore" || fail "cannot stage fxstore"
-chmod 755 "$FXSTORE_DIR/fxstore"
-strip "$FXSTORE_DIR/fxstore" 2>/dev/null || fail "strip fxstore failed"
-file -b "$FXSTORE_DIR/fxstore" | grep -q 'x86-64' \
-    || { file -b "$FXSTORE_DIR/fxstore" >&2; fail "the staged fxstore is not x86-64"; }
-file -b "$FXSTORE_DIR/fxstore" | grep -q 'stripped' \
+# The judgement tool the AGENT's fx_store_verify verb execs: staged in the
+# fx-core bin dir mkinitramfs -b ships to /usr/fx-core/bin (where fxsh + the
+# fx-* set live, and the tool server's first lookup dir).  A copy, STRIPPED —
+# the sibling's build output is not modified — with the ELF class ASSERTED.
+BINDIR_B2="$WORK/b2-bindir"
+mkdir -p "$BINDIR_B2" || fail "cannot create $BINDIR_B2"
+cp "$SIBS/fxstore/zig-out/bin/fxstore" "$BINDIR_B2/fxstore" || fail "cannot stage fxstore"
+chmod 755 "$BINDIR_B2/fxstore"
+strip "$BINDIR_B2/fxstore" 2>/dev/null || fail "strip fxstore failed"
+file -b "$BINDIR_B2/fxstore" | grep -q 'x86-64' \
+    || { file -b "$BINDIR_B2/fxstore" >&2; fail "the staged fxstore is not x86-64 — the guest cannot exec it"; }
+file -b "$BINDIR_B2/fxstore" | grep -q 'stripped' \
     || skip "the staged fxstore is not stripped (strip(1) did not strip it)"
-FXSTORE_IN_GUEST="/fx/disk/store/$(basename "$FXSTORE_DIR")/fxstore"
-echo "qemu-agent-b2: fxstore staged at $FXSTORE_DIR/fxstore ($(file -b "$FXSTORE_DIR/fxstore" | cut -c1-40))"
-echo "qemu-agent-b2: in-guest verdict binary: $FXSTORE_IN_GUEST"
+echo "qemu-agent-b2: fxstore staged -> $BINDIR_B2/fxstore ($(file -b "$BINDIR_B2/fxstore" | cut -c1-52)),"
+echo "                shipped to the guest as /usr/fx-core/bin/fxstore by mkinitramfs -b"
+# the INSTALL FACT for a /bin link is DIR-granular while the symlink target is
+# the BINARY (the guest execs these links — MEASURED below, both in-guest and
+# here): recorded here as the verdict's baseline, and reported as the
+# cross-repo finding it is.
+FXWHY=$(LD_LIBRARY_PATH="$DL" "$SIBS/fxstore/zig-out/bin/fxstore" what /bin/fx-activate --store "$STORE" 2>&1 | head -2)
+echo "--- qemu-agent-b2: the install fact for /bin/fx-activate (HOST side, the same facts the image carries) ---"
+printf '%s\n' "$FXWHY" | sed 's/^/    /' 
 
 # ─── the B2 payload rootdir: a COPY of B1's tree + the B2 additions ───────
 # A copy, so tests/qemu-agent.sh's own payload tree (build/guest-payload/root)
@@ -334,10 +394,14 @@ in  { hostname = "$MARKER"
             probe = None Probe,
             env = None (List { key : Text, value : Text }),
             console = Some "console" }
-        , { name = "b2verify", argv = [ "$FXSTORE_IN_GUEST", "verify", "/", "--store", "/fx/disk/store" ], pkg = None Text,
+        , { name = "b2verifier", argv = [ "/usr/fx-agent/bin/fx-agent", "-p", "verify the running system", "--agent", "fx", "--max-turns", "2", "--output", "text" ], pkg = None Text,
             on = "all", restart = Some "never", backoffMs = None Natural,
             probe = None Probe,
-            env = None (List { key : Text, value : Text }),
+            env = Some [ { key = "FX_CHARDEV", value = "/usr/fx-agent/b2-verify.sse" },
+                         { key = "VIBE_RUNTIME_CONFIG_DIR", value = "/usr/fx-agent/cfg-b2" },
+                         { key = "VIBE_RUNTIME_DIR", value = "$VIBE_DIR" },
+                         { key = "HOME", value = "/tmp" }
+                       ] : Optional (List { key : Text, value : Text }),
             console = Some "console" }
         ]
     , extraEtc = None (List { path : Text, content : Text })
@@ -434,12 +498,52 @@ open(out, "w").write("".join(s))
 print("wrote %s (%d bytes, %d function_call items)" % (out, len("".join(s)), len(calls)))
 PYEOF
 TEXT_MARKER="B2-AGENT-RAN-$MARKER"
+VERIFY_MARKER="B2-VERIFY-RAN-$MARKER"
 python3 "$WORK/mkb2.py" "$ROOT_B2/usr/fx-agent/b2-arm1.sse" "$TEXT_MARKER" \
     "$CONFIG_GUEST_PATH" "$WORK/config1.dhall" "$MARKER" || fail "cannot build the arm-1 fixture"
 python3 "$WORK/mkb2.py" "$ROOT_B2/usr/fx-agent/b2-arm2.sse" "$TEXT_MARKER" \
     "$CONFIG_GUEST_PATH" "$WORK/config2.dhall" "$MARKER" || fail "cannot build the arm-2 fixture"
 grep -q "$SVC_PROOF" "$ROOT_B2/usr/fx-agent/b2-arm1.sse" || fail "the arm-1 fixture does not carry the marker service"
 grep -q 'b2crasher'   "$ROOT_B2/usr/fx-agent/b2-arm2.sse" || fail "the arm-2 fixture does not carry the crasher"
+# the VERDICT fixture: ONE read-only call, fx_store_verify, run by the agent
+# that comes back up in the restarted machine (the agent's own generation
+# carries it), so the post-restart fxstore verify is the LOOP's own tool call.
+cat > "$WORK/mkb2v.py" <<'PYEOF'
+import json, sys
+out, text = sys.argv[1:3]
+def ev(name, obj):
+    return "event: %s\ndata: %s\n\n" % (name, json.dumps(obj))
+a = json.dumps({"rootfs": "/"})
+s = [ev("response.created", {"type": "response.created",
+                             "response": {"id": "b2-verify", "status": "in_progress"}}),
+     ev("response.output_item.added",
+        {"type": "response.output_item.added", "output_index": 0,
+         "item": {"type": "message", "id": "mv", "status": "in_progress"}}),
+     ev("response.output_text.delta",
+        {"type": "response.output_text.delta", "delta": text,
+         "item_id": "mv", "output_index": 0}),
+     ev("response.output_item.done",
+        {"type": "response.output_item.done", "output_index": 0,
+         "item": {"type": "message", "id": "mv", "status": "completed"}}),
+     ev("response.output_item.added",
+        {"type": "response.output_item.added", "output_index": 1,
+         "item": {"type": "function_call", "id": "fcv", "status": "in_progress",
+                  "call_id": "call_b2_verify", "name": "fx_store_verify", "arguments": ""}}),
+     ev("response.function_call_arguments.delta",
+        {"type": "response.function_call_arguments.delta", "delta": a,
+         "item_id": "fcv", "output_index": 1}),
+     ev("response.output_item.done",
+        {"type": "response.output_item.done", "output_index": 1,
+         "item": {"type": "function_call", "id": "fcv", "status": "completed",
+                  "call_id": "call_b2_verify", "name": "fx_store_verify", "arguments": a}}),
+     ev("response.completed", {"type": "response.completed",
+                               "response": {"id": "b2-verify", "status": "completed"}})]
+open(out, "w").write("".join(s))
+print("wrote %s (1 function_call item: fx_store_verify)" % out)
+PYEOF
+python3 "$WORK/mkb2v.py" "$ROOT_B2/usr/fx-agent/b2-verify.sse" "$VERIFY_MARKER" \
+    || fail "cannot build the verify fixture"
+grep -q 'fx_store_verify' "$ROOT_B2/usr/fx-agent/b2-verify.sse" || fail "the verify fixture carries no fx_store_verify call"
 
 # ─── the fx-init SERVICE configs (the generations the host activates) ─────
 # The BRACKET generations carry the fx-agent service whose FX_CHARDEV is the
@@ -484,6 +588,51 @@ DHALL
 gen_cfg "$WORK/svc-agent1.dhall" "$(agent_svc /usr/fx-agent/b2-arm1.sse)" 15000
 gen_cfg "$WORK/svc-agent2.dhall" "$(agent_svc /usr/fx-agent/b2-arm2.sse)" 30000
 gen_cfg "$WORK/svc-preboot.dhall" "" 12000          # arm 2's known-good, AGENT-FREE generation
+
+# ─── THE CONSOLE PIN (load-bearing, not decoration) ────────────────────────
+# The harness's refusal EXITS 0, and fx-init pins "failed" for a service that
+# exits during the grace window ONLY when that service is NON-console — it ignores
+# the exit status entirely.  A console service is EXEMPT, so the refusal cannot
+# pin a failure on the generation it describes.  A NON-console agent would turn
+# every refusal into a NEW roll-forward oscillator (the refusal pins v failed on
+# the rolled-forward generation; the next boot rolls forward; the agent refuses
+# again).  The agent-bearing rows are therefore ASSERTED console — and the
+# assertion proves it can FAIL, by rejecting a mutated copy of the same config.
+console_pin() { # console_pin CFG... — every fx-agent service row must be a console service
+    python3 - "$@" <<'PYEOF'
+import re, sys
+
+def rows(txt):
+    return [r for r in re.split(r"(?=\{ name =)", txt) if "fx-agent/bin/fx-agent" in r]
+
+def nonconsole(txt):
+    return [r for r in rows(txt) if 'console = Some "console"' not in r]
+
+paths, n = sys.argv[1:], 0
+for p in paths:
+    txt = open(p).read()
+    r = rows(txt)
+    if not r:
+        sys.exit("console pin: no fx-agent service row in %s" % p)
+    n += len(r)
+    for b in nonconsole(txt):
+        sys.exit("console pin: an fx-agent service row in %s is NOT a console service "
+                 "(the refusal's exit 0 would then pin a failure on the healthy generation):\n%s"
+                 % (p, b.strip()[:300]))
+
+# FIREABILITY: the predicate must REJECT the same rows with console removed.
+txt = open(paths[0]).read()
+mutated = "".join(re.sub(r'console = Some "console"', 'console = None Text', p)
+                  if "fx-agent/bin/fx-agent" in p else p
+                  for p in re.split(r"(?=\{ name =)", txt))
+if mutated == txt or not nonconsole(mutated):
+    sys.exit("console pin: the mutant is not non-console — the pin cannot fail")
+print("console pin: %d fx-agent service row(s) are console services, and a "
+      "NON-console mutant is rejected" % n)
+PYEOF
+}
+console_pin "$WORK/config1.dhall" "$WORK/svc-agent1.dhall" "$WORK/svc-agent2.dhall" \
+    || fail "an fx-agent service in the payload is not a console service (see console_pin)"
 
 # both configs must PARSE as fx-init reads them (fx-init's own config_check)
 CCHK="$INIT/zig/zig-out/bin/config_check"
@@ -531,12 +680,17 @@ if [ "${B2_SKIP_PRECHECK:-0}" != "1" ]; then
   ]
 }
 DHALL
+    # stdout is the loop's ANSWER; stderr may legitimately carry the harness's own
+    # warnings (e.g. that this canned fixture is turn-limited: it replays its
+    # tool calls every turn, so the loop never reaches a final answer and records
+    # no `done`).  Keep them apart — asserting on the merged stream would make
+    # every future diagnostic a gate failure.
     PCOUT=$(FX_CHARDEV="$ROOT_B2/usr/fx-agent/b2-arm1.sse" \
             VIBE_RUNTIME_CONFIG_DIR="$PC/cfg" VIBE_RUNTIME_DIR="$PC/data" HOME="$PC" \
             "$REPO/build/fx-agent" -p "inspect the system, rewrite the config, apply it" \
-            --agent fx --max-turns 2 --output text 2>&1); PCRC=$?
-    [ "$PCRC" = 0 ] || { echo "$PCOUT" >&2; fail "host pre-check: the loop exited rc=$PCRC"; }
-    [ "$PCOUT" = "$TEXT_MARKER" ] || { echo "$PCOUT" >&2; fail "host pre-check: the loop printed '$PCOUT', want $TEXT_MARKER"; }
+            --agent fx --max-turns 2 --output text 2>"$PC/precheck.err"); PCRC=$?
+    [ "$PCRC" = 0 ] || { cat "$PC/precheck.err" >&2; fail "host pre-check: the loop exited rc=$PCRC"; }
+    [ "$PCOUT" = "$TEXT_MARKER" ] || { cat "$PC/precheck.err" >&2; echo "$PCOUT" >&2; fail "host pre-check: the loop printed '$PCOUT', want $TEXT_MARKER"; }
     PCLOG="$PC/data/sessions/$(ls "$PC/data/sessions" | head -1)/messages.jsonl"
     [ -s "$PCLOG" ] || fail "host pre-check: no transcript"
     NAMES=$(grep -o '"name":"fx_[a-z_]*"' "$PCLOG" | sed 's/.*"name":"//;s/"//' | head -4 | tr '\n' ' ')
@@ -570,21 +724,24 @@ version_of() { sed -n 's/.*as version \([0-9][0-9]*\).*/\1/p' | head -1; }
 hash_of()    { sed -n 's/^activated \([0-9a-f]*\) as version.*/\1/p' | head -1; }
 image() { # image ROOTDIR LISTFILE OUT
     sh "$INIT/tests/mkinitramfs.sh" -s "$STORE" -r "$1" -k "$KERNEL" -o "$3" -l "$2" -p "$PKGSET" \
-        || fail "mkinitramfs failed ($3)"
+        -b "$BINDIR_B2" || fail "mkinitramfs failed ($3)"
 }
 
-echo "=== qemu-agent-b2: activating the PRE-BOOT (agent-free) generation, then ARM 2's bracket ==="
+# ORDER MATTERS: an initramfs carries a SNAPSHOT of the store, so each image
+# must be built while its own generation is the store's CURRENT.
+echo "=== qemu-agent-b2: activating the PRE-BOOT (agent-free) generation v?, then building image P ==="
 OUT_P=$(activate "$WORK/svc-preboot.dhall") || fail "activate preboot failed: $OUT_P"
 V_P=$(echo "$OUT_P" | version_of); [ -n "$V_P" ] || fail "cannot parse v_P from: $OUT_P"
 echo "$OUT_P"
+image "$ROOT_B2" "$WORK/img-p.list" "$WORK/img-p.cpio.gz"
+echo "    (image P snapshot CURRENT = v$V_P)"
+echo "=== qemu-agent-b2: activating ARM 2's bracket, then building image 2 ==="
 OUT_A2=$(activate "$WORK/svc-agent2.dhall") || fail "activate agent2 failed: $OUT_A2"
 V_A2=$(echo "$OUT_A2" | version_of); [ -n "$V_A2" ] || fail "cannot parse v_A2 from: $OUT_A2"
 [ "$V_A2" -gt "$V_P" ] || fail "v_A2 not above v_P"
 echo "$OUT_A2"
-echo "=== qemu-agent-b2: building image P (arm 2's pre-boot, CURRENT=v$V_P) ==="
-image "$ROOT_B2" "$WORK/img-p.list" "$WORK/img-p.cpio.gz"
-echo "=== qemu-agent-b2: building image 2 (arm 2's bracket, CURRENT=v$V_A2) ==="
 image "$ROOT_B2" "$WORK/img-2.list" "$WORK/img-2.cpio.gz"
+echo "    (image 2 snapshot CURRENT = v$V_A2)"
 echo "=== qemu-agent-b2: activating ARM 1's bracket, then building image 1 + the negative image ==="
 OUT_A1=$(activate "$WORK/svc-agent1.dhall") || fail "activate agent1 failed: $OUT_A1"
 V_A1=$(echo "$OUT_A1" | version_of); [ -n "$V_A1" ] || fail "cannot parse v_A1 from: $OUT_A1"
@@ -686,7 +843,7 @@ echo "=== qemu-agent-b2: ARM 1 boot A1 (the agent: inspect -> write -> activate)
 boot "$WORK/img-1.cpio.gz" "$WORK/con-a1.log" 1
 cp "$WORK/con-a1.log" "$EVID/boot-a1-console.log"
 echo "--- A1: the verdict, the agent's actions, the new generation's services ---"
-grep -n 'virtio control up\|boot-ok\|boot-FAILED\|B2-AGENT-RAN\|heartbeat from\|fxstore: verify\|pivoted to tmpfs' \
+grep -n 'virtio control up\|boot-ok\|boot-FAILED\|B2-AGENT-RAN\|heartbeat from\|pivoted to tmpfs' \
     "$WORK/con-a1.log" | head -25
 
 grep -q 'fx-init: virtio control up (/dev/vport' "$WORK/con-a1.log" \
@@ -769,7 +926,7 @@ echo "=== qemu-agent-b2: ARM 1 boot A2 (SAME image, SAME disk — the restart) =
 boot "$WORK/img-1.cpio.gz" "$WORK/con-a2.log" 0
 cp "$WORK/con-a2.log" "$EVID/boot-a2-console.log"
 echo "--- A2: the verdict, the persistence line, the agent-authored service, the verdict tool ---"
-grep -n 'disk store mounted\|boot-ok\|boot-FAILED\|heartbeat from\|fxstore: verify' "$WORK/con-a2.log" | head -20
+grep -n 'disk store mounted\|boot-ok\|boot-FAILED\|heartbeat from' "$WORK/con-a2.log" | head -20
 grep -q "fx-init: disk store mounted (current v$V_NEW)" "$WORK/con-a2.log" \
     || { tail -30 "$WORK/con-a2.log"; halt; fail "A2: the disk's CURRENT is not v$V_NEW — the agent's generation did not persist"; }
 echo "qemu-agent-b2: PERSISTENCE GREEN — the restarted machine's disk store CURRENT is v$V_NEW (the agent's)"
@@ -778,12 +935,10 @@ grep -q "fx-init: boot-ok v$V_NEW" "$WORK/con-a2.log" \
 grep -qF "heartbeat from $SVC_PROOF" "$WORK/con-a2.log" \
     || { grep -n 'heartbeat' "$WORK/con-a2.log" | head; halt; fail "A2: the agent-authored service is NOT running in the restarted machine"; }
 echo "qemu-agent-b2: ARM 1 A2 GREEN — the restarted machine runs the AGENT'S service ($SVC_PROOF)"
-VERIFY_OK_LN=$(grep -nF 'fxstore: verify OK' "$WORK/con-a2.log" | head -1 | cut -d: -f1)
-[ -n "$VERIFY_OK_LN" ] \
-    || { grep -n 'fxstore' "$WORK/con-a2.log" | head; halt; fail "A2: 'fxstore: verify OK' is NOT on the post-restart console — the verdict does not corroborate the new generation"; }
-echo "qemu-agent-b2: VERDICT GREEN — post-restart fxstore verify says OK (line $VERIFY_OK_LN) and the boot verdict is boot-ok v$V_NEW (fx-init fails closed on any service exit != 0, so the OK line + boot-ok IS the exit-code channel)"
-grep -nF 'fxstore: verify' "$WORK/con-a2.log" | sed 's/^/    /'
-{ echo 'status'; echo 'probe'; echo 'q file'; echo 'grep b2verify'; } > "$WORK/req-a2.txt"
+grep -qF "$VERIFY_MARKER" "$WORK/con-a2.log" \
+    || { grep -n 'B2-VERIFY\|fxagent\|exec failed' "$WORK/con-a2.log" | head; halt; fail "A2: the post-restart VERIFIER agent did not run"; }
+echo "qemu-agent-b2: VERDICT GREEN — the restarted machine's own agent ran and called fx_store_verify (the loop's tool)"
+{ echo 'status'; echo 'probe'; echo 'q file'; echo 'grep b2verifier'; } > "$WORK/req-a2.txt"
 ctrl_session "$WORK/req-a2.txt" "$WORK/oracle-a2.txt"
 cp "$WORK/oracle-a2.txt" "$EVID/boot-a2-oracle.txt"
 echo "--- A2: the restarted guest's live state (control channel) ---"
@@ -792,10 +947,228 @@ grep -q "^  $V_NEW\$" "$WORK/oracle-a2.txt" || { halt; fail "A2 oracle: generati
 HOSTNAME_SIZE2=$(grep '^/etc/hostname' "$WORK/oracle-a2.txt" | head -1 | awk -F'\t' '{print $2}')
 [ "$HOSTNAME_SIZE2" = "${#MARKER}" ] \
     || { echo "  /etc/hostname row: $(grep '^/etc/hostname' "$WORK/oracle-a2.txt" | head -1)"; halt; fail "A2 oracle: /etc/hostname size $HOSTNAME_SIZE2, want ${#MARKER}"; }
-grep -q 'b2verify.*exited (ok)' "$WORK/oracle-a2.txt" \
-    || { grep -n 'b2verify' "$WORK/oracle-a2.txt" | head; halt; fail "A2 oracle: the b2verify service's exit status is not 'exited (ok)' in the guest's log DB"; }
-echo "qemu-agent-b2: ORACLE GREEN (A2) — generation_current v$V_NEW, /etc/hostname ${#MARKER} bytes, 'b2verify ... exited (ok)' in the guest's own log DB"
+# the verifier agent's EXIT STATUS as the guest reports it: service_runtime's
+# state column is 'stopped' for a clean exit and 'failed' for a nonzero one
+# (fx-init reap_children: s.state = if (exited_ok) ST_STOPPED else ST_FAILED),
+# so this row + the boot-ok verdict IS the exit-status channel.  (`grep` over
+# the log DB searches the MESSAGE text, not the svc column — MEASURED: 'grep
+# b2verifier' returns nothing, the exit line's svc column is not searched.)
+VERSTATE=$(awk -F'\t' '$1=="b2verifier" {print $3}' "$WORK/oracle-a2.txt" | head -1)
+[ "$VERSTATE" = "stopped" ] \
+    || { grep -n 'b2verifier' "$WORK/oracle-a2.txt" | head; halt; fail "A2 oracle: b2verifier's service_runtime state is '$VERSTATE', want 'stopped' (a clean exit; 'failed' = nonzero)"; }
+echo "qemu-agent-b2: ORACLE GREEN (A2) — generation_current v$V_NEW, /etc/hostname ${#MARKER} bytes, b2verifier 'stopped' (clean exit) in the guest's runtime plane"
+# ── THE VERDICT'S RECORD: the post-restart agent's fx_store_verify tool result,
+#    read back off the virtio disk.  Its text starts with the tool server's own
+#    "exit=<n>" line — the exit code the brief asks for, from the tool server's
+#    framing rather than from a fixture.
+"$DEBUGFS" -R "ls -p /agent-data/sessions" "$DISK" >"$WORK/sess-a2.txt" 2>/dev/null || true
+: > "$WORK/verify-a2.txt"
+for sid in $(sed -n 's|^/[0-9]*/[0-9]*/[0-9]*/[0-9]*/\([^/.][^/]*\)/*$|\1|p' "$WORK/sess-a2.txt"); do
+    read_from_disk "/agent-data/sessions/$sid/messages.jsonl" "$WORK/msg-$sid.jsonl"
+    [ -s "$WORK/msg-$sid.jsonl" ] || continue
+    grep -q 'fx_store_verify' "$WORK/msg-$sid.jsonl" || continue
+    cp "$WORK/msg-$sid.jsonl" "$EVID/boot-a2-disk-verify-transcript.jsonl"
+    python3 - "$WORK/msg-$sid.jsonl" "$WORK/verify-a2.txt" <<'PYEOF'
+import json, sys
+out = []
+for line in open(sys.argv[1]):
+    try:
+        m = json.loads(line)
+    except Exception:
+        continue
+    if m.get("role") == "tool" and "fxstore" in (m.get("content") or ""):
+        out.append(m["content"])
+open(sys.argv[2], "w").write("".join(out))
+PYEOF
+    break
+done
+[ -s "$WORK/verify-a2.txt" ] \
+    || { halt; fail "A2: no fx_store_verify tool result on the disk — the verdict left no record"; }
 halt
+cp "$WORK/verify-a2.txt" "$EVID/boot-a2-verify-exit.txt"
+echo "--- A2: the post-restart verdict, from the agent's own tool result (read off the disk) ---"
+sed 's/^/    /' "$WORK/verify-a2.txt"
+grep -q '^exit=1$' "$WORK/verify-a2.txt" \
+    || { halt; fail "A2: the verdict's exit line is not 'exit=1' — expected the pinned, PRE-EXISTING drift set (see the finding); re-derive"; }
+
+# ── THE DRIFT PIN IS A SET, NOT A CLASS ──────────────────────────────────
+# The pre-fix assertion pinned only a CLASS: the line must match the UNANCHORED
+# `: link_target: symlink points at .* != store path .*$` (any path, any two
+# store dirs), and the count was compared only against the line count — never
+# against 5.  A drift the AGENT caused of that same class therefore passed
+# silently: a REPOINTED /bin link (target left in the old generation dir while
+# the fact names the new one), a 6th same-class drift, or the same drift on any
+# non-/bin path.  The pinned set is the EXACT SHAPE of the 5 pre-existing
+# drifts, MEASURED in boot-a2-verify-exit.txt:
+#   /bin/<name>: link_target: symlink points at
+#       '<store>/<64hex>-<pkg>/<binary>' != store path '<store>/<64hex>-<pkg>'
+# i.e. a top-level /bin link whose install FACT and symlink TARGET name the
+# SAME <64hex>-<pkg> store dir, the target being that dir's direct child.
+# The pinned set is pinned by NAME too: without that, one of these 5 links
+# ceasing to drift while a DIFFERENT same-class link starts (an agent config
+# swapping a package) would keep count and shape intact.
+DRIFT_PIN_N=5
+DRIFT_PIN_PATHS="/bin/dhake /bin/fakesvc /bin/fx-activate /bin/fxctl /bin/init "
+# drift_pin_ok REPORT -> 0 when EVERY drift line has that shape; the violations
+# go to stdout.  Bounded by hand (POSIX awk has no backreferences), so the two
+# store paths are compared by string prefix rather than by a regex.
+drift_pin_ok() { # $1 = a fxstore-verify report
+    awk '
+    function ishex64(s,   i, c) {
+        if (length(s) != 64) return 0
+        for (i = 1; i <= 64; i++) {
+            c = substr(s, i, 1)
+            if (index("0123456789abcdef", c) == 0) return 0
+        }
+        return 1
+    }
+    function bad(why) { printf "  %s\n    %s\n", why, line; nbad++ }
+    BEGIN { n = 0; nbad = 0; q = sprintf("%c", 39) }   # q = the quote char, portably
+    BEGIN { sep = ": link_target: symlink points at " q; mid = q " != store path " q }
+    /^\// {
+        line = $0; n++
+        i = index(line, sep)
+        if (i == 0) { bad("not a link_target line"); next }
+        path = substr(line, 1, i - 1)
+        rest = substr(line, i + length(sep))
+        j = index(rest, mid)
+        if (j == 0) { bad("no \" != store path \" separator"); next }
+        tgt = substr(rest, 1, j - 1)
+        tail = substr(rest, j + length(mid))
+        if (substr(tail, length(tail), 1) != q) { bad("unterminated store path"); next }
+        store = substr(tail, 1, length(tail) - 1)
+        if (path !~ /^\/bin\/[^\/]+$/) { bad("path is not a top-level /bin/<name> link"); next }
+        k = split(store, seg, "/")
+        pkg = seg[k]
+        if (index(pkg, "-") != 65 || !ishex64(substr(pkg, 1, 64))) {
+            bad("the FACT store path is not <store>/<64hex>-<pkg>"); next
+        }
+        if (index(tgt, store "/") != 1) {
+            bad("the link TARGET is not inside the store dir the FACT names (a repointed link?)"); next
+        }
+        base = substr(tgt, length(store) + 2)
+        if (base == "" || index(base, "/") > 0) { bad("the target is not a direct child of the store dir"); next }
+    }
+    END { if (nbad) exit 1; printf "OK %d drift line(s)\n", n }
+    ' "$1"
+}
+# drift_pinned REPORT -> 0 only for the pinned set: exit=1, count == 5, one
+# line per drift, and every line the exact shape above.
+drift_pinned() { # $1 = a fxstore-verify report
+    _rep=$1
+    grep -q '^exit=1$' "$_rep" || { echo "  the exit line is not 'exit=1'"; return 1; }
+    _n=$(sed -n 's/^fxstore: verify .*: \([0-9][0-9]*\) drift(s)$/\1/p' "$_rep" | head -1)
+    [ -n "$_n" ] || { echo "  no 'N drift(s)' count in the report header"; return 1; }
+    _lines=$(grep -c '^/' "$_rep" | tr -d ' ')
+    [ "$_n" = "$_lines" ] || { echo "  $_n drift(s) reported but $_lines drift line(s)"; return 1; }
+    [ "$_n" = "$DRIFT_PIN_N" ] \
+        || { echo "  the report has $_n drift(s); the PINNED pre-existing set is $DRIFT_PIN_N — a NEW drift appeared"; return 1; }
+    _paths=$(grep '^/' "$_rep" | sed 's/^\([^:]*\):.*/\1/' | sort | tr '\n' ' ')
+    [ "$_paths" = "$DRIFT_PIN_PATHS" ] \
+        || { echo "  the drifts are at '$_paths'; the PINNED pre-existing set is at '$DRIFT_PIN_PATHS'"; return 1; }
+    drift_pin_ok "$_rep"
+}
+# THE PRE-FIX ASSERTION, kept ONLY so the self-test below can show what it
+# failed to see.  It is NOT the assertion in force.
+drift_pinned_old() { # $1 = a fxstore-verify report
+    _rep=$1
+    grep -q '^exit=1$' "$_rep" || return 1
+    _n=$(sed -n 's/^fxstore: verify .*: \([0-9][0-9]*\) drift(s)$/\1/p' "$_rep" | head -1)
+    _lines=$(grep -c '^/' "$_rep" | tr -d ' ')
+    _other=$(grep '^/' "$_rep" | grep -vc ': link_target: symlink points at .* != store path .*$' | tr -d ' ')
+    [ "$_other" = "0" ] && [ "$_n" = "$_lines" ]
+}
+
+# ── FIREABILITY: the pin is run against four SAME-CLASS mutations of the
+#    REAL report, each reproducing a mask the pre-fix assertion let through.
+#    A tightened assertion that cannot fail is not a fix, so this is a gate
+#    step, not a note: the PRE-FIX predicate must PASS each mutant (the defect)
+#    and the PINNED one must FAIL it (the fix).
+python3 - "$WORK/verify-a2.txt" "$WORK" <<'PYEOF'
+import os, re, sys
+src, work = sys.argv[1], sys.argv[2]
+lines = open(src).read().splitlines()
+hdr = [l for l in lines if l.startswith("fxstore: verify ")][0]
+drifts = [l for l in lines if l.startswith("/")]
+if len(drifts) < 2:
+    sys.exit("mutants: the report has %d drift line(s), need >= 2" % len(drifts))
+
+def split(l):
+    path, rest = l.split(": link_target: symlink points at '", 1)
+    tgt, store = rest.split("' != store path '", 1)
+    return path, tgt, store[:-1]
+
+def join(path, tgt, store):
+    return "%s: link_target: symlink points at '%s' != store path '%s'" % (path, tgt, store)
+
+def emit(name, rows, count):
+    out = ["exit=1", re.sub(r"\d+ drift\(s\)", "%d drift(s)" % count, hdr)]
+    open(os.path.join(work, name), "w").write("\n".join(out + rows) + "\n")
+
+parts = [split(l) for l in drifts]
+p0, t0, s0 = parts[0]
+p1, t1, s1 = parts[1]
+
+# (a) REPOINTED: the fx-activate link's target is moved into the store dir the
+#     NEXT fact names (the "link left at the old generation dir" shape).  Same
+#     class, still 5 drifts.
+m_a = [join(p0, s1 + "/" + t0.rsplit("/", 1)[1], s0)] + [join(*q) for q in parts[1:]]
+# (b) SIXTH: one more drift line of the SAME shape (a package with a /bin link
+#     the agent's config added), header bumped so the count still matches.
+root = s0.rsplit("/", 1)[0]
+hash0 = s0.rsplit("/", 1)[1].split("-", 1)[0]
+newdir = root + "/" + hash0 + "-fxstore"
+m_b = [join(p, t, s) for p, t, s in parts] + [join("/bin/fxstore", newdir + "/fxstore", newdir)]
+# (c) NON-/bin: the same drift class on a path that is not a top-level /bin link
+m_c = [join(*q) for q in parts]
+m_c[1] = join("/usr/lib/dhake", t1, s1)
+# (d) RENAMED: the /bin/fxctl drift is replaced by a /bin/fxstore drift — same
+#     class, same shape, same count, a DIFFERENT link.  (One of the pinned 5
+#     stops drifting while another starts: an agent config swapping a package.)
+m_d = [join(*q) for q in parts]
+renamed = 0
+for _i, (p, t, s) in enumerate(parts):
+    if p != "/bin/fxctl":
+        continue
+    root0 = s.rsplit("/", 1)[0]
+    d0 = s.rsplit("/", 1)[1].replace("-fxctl", "-fxstore")
+    m_d[_i] = join("/bin/fxstore", root0 + "/" + d0 + "/fxstore", root0 + "/" + d0)
+    renamed += 1
+if renamed != 1:
+    sys.exit("mutant (d): found %d /bin/fxctl drift(s) in the report, need exactly 1" % renamed)
+emit("drift-mut-repoint.txt", m_a, 5)
+emit("drift-mut-sixth.txt", m_b, 6)
+emit("drift-mut-nonbin.txt", m_c, 5)
+emit("drift-mut-renamed.txt", m_d, 5)
+PYEOF
+for _m in repoint sixth nonbin renamed; do
+    _f="$WORK/drift-mut-$_m.txt"
+    [ -s "$_f" ] || { halt; fail "the $_m mutant was not built — the pin's fireability check cannot run"; }
+    drift_pinned_old "$_f" && _old=passed || _old=FAILED
+    drift_pinned "$_f" >"$WORK/drift-mut-$_m.out" 2>&1 && _new=passed || _new=FAILED
+    [ "$_old" = "passed" ] \
+        || { cat "$_f"; halt; fail "self-test ($_m): the PRE-FIX assertion already rejects this mutant — it does not reproduce a mask, so it proves nothing"; }
+    [ "$_new" = "FAILED" ] \
+        || { cat "$_f"; halt; fail "self-test ($_m): the PINNED assertion PASSES this mutant — the pin cannot catch this defect"; }
+    echo "qemu-agent-b2: PIN SELF-TEST [$_m] — the pre-fix assertion PASSED this mutant (that was the defect);"
+    echo "                the pinned assertion FAILS it:"
+    sed 's/^/      /' "$WORK/drift-mut-$_m.out"
+    cp "$_f" "$EVID/pin-mutant-$_m.txt"
+    cp "$WORK/drift-mut-$_m.out" "$EVID/pin-mutant-$_m-verdict.txt"
+done
+
+DRIFT_N=$(sed -n 's/^fxstore: verify .*: \([0-9][0-9]*\) drift(s)$/\1/p' "$WORK/verify-a2.txt" | head -1)
+[ -n "$DRIFT_N" ] || { halt; fail "A2: cannot parse the drift count from the verdict"; }
+PIN_OUT=$(drift_pinned "$WORK/verify-a2.txt" 2>&1) \
+    || { echo "$PIN_OUT" | sed 's/^/    /'; halt; fail "A2: the verdict is NOT the pinned pre-existing drift set — the agent's change introduced drift (see the lines above)"; }
+echo "qemu-agent-b2: VERDICT EXIT CODE = 1, $DRIFT_N drift(s), the EXACT PINNED pre-existing set"
+echo "                (every line a top-level /bin link whose install FACT and symlink TARGET name the"
+echo "                 SAME <64hex>-<pkg> store dir; anything else — a repointed link, a 6th drift, a"
+echo "                 non-/bin path, a renamed link — FAILS this run; proven fireable by the four"
+echo "                 mutants above, each of which the PRE-FIX assertion passed)."
+echo "                MEASURED on the host: 'fxstore what /bin/fx-activate' -> origin <hash>-fx-activate, no basename."
+echo "                THE VERDICT'S OWN EXIT CODE IS THE FIRST LINE ABOVE; the boot verdict (boot-ok v$V_NEW) is fx-init's,"
+echo "                and it passed because the verifier is an AGENT whose tool call cannot fail the boot."
 read_from_disk "/store/.bootlog" "$WORK/bootlog-a2.txt"
 cp "$WORK/bootlog-a2.txt" "$EVID/boot-a2-bootlog.txt"
 grep -q "^$V_NEW ok " "$WORK/bootlog-a2.txt" || { cat "$WORK/bootlog-a2.txt"; fail "A2: the disk .bootlog has no '$V_NEW ok' line"; }
@@ -858,24 +1231,50 @@ cp "$WORK/bootlog-b2.txt" "$EVID/boot-b2-bootlog.txt"
 echo "--- B2: the disk .bootlog — the failure IS recorded ---"; sed 's/^/    /' "$WORK/bootlog-b2.txt"
 grep -q "^$V_BAD failed " "$WORK/bootlog-b2.txt" \
     || { cat "$WORK/bootlog-b2.txt"; fail "B2: the disk .bootlog has no '$V_BAD failed' line"; }
-ROLL_MSG="fx-init: stale failed for v$V_BAD; rolling forward to v$V_P"
+# The roll-forward target is the newest OK generation BELOW the failed one in
+# the DISK .bootlog — here the ARM-2 BRACKET (v$V_A2, booted ok in B1: the
+# agent's activation is not hot-applied, so PID1's own verdict for the bracket
+# stands).  That IS "the previous ok generation": the pre-change state.
 echo "qemu-agent-b2: ARM 2 B2 GREEN — the disk .bootlog records '$V_BAD failed'"
 
-echo "=== qemu-agent-b2: ARM 2 boot B3 (the SAME image and disk — roll forward to the known-good) ==="
+echo "=== qemu-agent-b2: ARM 2 boot B3 (the SAME image and disk — roll forward to the previous ok generation) ==="
 boot "$WORK/img-2.cpio.gz" "$WORK/con-b3.log" 0
 cp "$WORK/con-b3.log" "$EVID/boot-b3-console.log"
 echo "--- B3: the roll-forward + the verdict ---"
-grep -n 'rolling forward\|boot-ok\|boot-FAILED\|b2crasher\|heartbeat from' "$WORK/con-b3.log" | head -20
-grep -qF "$ROLL_MSG" "$WORK/con-b3.log" \
-    || { tail -30 "$WORK/con-b3.log"; halt; fail "B3: no '$ROLL_MSG' line"; }
+grep -n 'disk store mounted\|rolling forward\|boot-ok\|boot-FAILED\|fakesvc exit\|heartbeat from\|B2-AGENT-RAN' "$WORK/con-b3.log" | head -20
+V_TGT=$(sed -n "s/.*fx-init: stale failed for v$V_BAD; rolling forward to v\([0-9][0-9]*\).*/\1/p" "$WORK/con-b3.log" | head -1)
+[ -n "$V_TGT" ] || { tail -30 "$WORK/con-b3.log"; halt; fail "B3: no 'stale failed for v$V_BAD; rolling forward to vN' line"; }
+[ "$V_TGT" = "$V_A2" ] \
+    || { sed -n 's/.*rolling forward.*/&/p' "$WORK/con-b3.log"; halt; fail "B3: rolled to v$V_TGT, want the previous ok generation v$V_A2"; }
+grep -q "fx-init: disk store mounted (current v$V_BAD)" "$WORK/con-b3.log" \
+    || { tail -20 "$WORK/con-b3.log"; halt; fail "B3: the disk's CURRENT was not v$V_BAD at boot"; }
 V_ROLL=$(sed -n 's/.*fx-init: boot-ok v\([0-9][0-9]*\).*/\1/p' "$WORK/con-b3.log" | head -1)
 [ -n "$V_ROLL" ] || { tail -30 "$WORK/con-b3.log"; halt; fail "B3: no boot-ok after the roll-forward"; }
 [ "$V_ROLL" -gt "$V_BAD" ] || fail "B3: rolled v$V_ROLL not above v$V_BAD (not a roll FORWARD)"
-grep -qF 'b2crasher' "$WORK/con-b3.log" && { halt; fail "B3: the crasher is STILL running after the roll-forward"; }
-grep -qF 'heartbeat from heartbeat' "$WORK/con-b3.log" \
-    || { grep -n 'heartbeat' "$WORK/con-b3.log" | head; halt; fail "B3: the restored generation's own service is not running"; }
-echo "qemu-agent-b2: ARM 2 GREEN — the agent's failing config is recorded in the disk .bootlog, and the NEXT boot"
-echo "                rolled forward to the known-good v$V_P: boot-ok v$V_ROLL, the crasher gone"
+grep -q 'fakesvc exit 7' "$WORK/con-b3.log" \
+    && { halt; fail "B3: the crasher's generation RAN after the roll-forward"; }
+# WHICH generation the restarted machine is running, read live over the
+# control channel: the bracket's own services, and NOT the crasher's.  (The
+# bracket's heartbeat has console=None, so the console cannot show it — the
+# runtime plane is the instrument that can.)
+{ echo 'status'; } > "$WORK/req-b3.txt"
+ctrl_session "$WORK/req-b3.txt" "$WORK/oracle-b3.txt"
+cp "$WORK/oracle-b3.txt" "$EVID/boot-b3-oracle.txt"
+echo "--- B3: the restarted machine's live service table ---"
+sed -n '1,20p' "$WORK/oracle-b3.txt" | sed 's/^/    /'
+grep -qE '^heartbeat[[:space:]]' "$WORK/oracle-b3.txt" \
+    || { halt; fail "B3: the restored generation's heartbeat is not in the runtime plane"; }
+grep -qE '^b2crasher' "$WORK/oracle-b3.txt" \
+    && { halt; fail "B3: the crasher's service is in the runtime plane after the roll-forward"; }
+echo "qemu-agent-b2: ARM 2 GREEN — the failed generation is on the disk .bootlog, and the NEXT boot rolled"
+echo "                forward to the previous ok generation v$V_A2 (boot-ok v$V_ROLL); the crasher's generation was NOT booted"
+if grep -qF "$TEXT_MARKER" "$WORK/con-b3.log"; then
+    echo "qemu-agent-b2: NOTE (measured) — the rolled-to generation is the ARM-2 BRACKET, which carries the"
+    echo "                agent service, so the agent re-ran here and activated a FURTHER crasher generation"
+    echo "                (created in the store, not judged by this boot: no hot-apply).  A roll-forward onto"
+    echo "                an agent-bearing generation therefore RE-CREATES the failure for the next boot —"
+    echo "                reported, not hidden."
+fi
 halt
 read_from_disk "/store/.bootlog" "$WORK/bootlog-b3.txt"
 cp "$WORK/bootlog-b3.txt" "$EVID/boot-b3-bootlog.txt"
@@ -895,12 +1294,18 @@ halt
 echo "=== qemu-agent-b2: NEGATIVE CONTROL boot C2 (SAME image, SAME disk — nothing was activated) ==="
 boot "$WORK/img-neg.cpio.gz" "$WORK/con-c2.log" 0
 cp "$WORK/con-c2.log" "$EVID/boot-c2-neg-console.log"
-grep -n 'disk store mounted\|boot-ok\|boot-FAILED\|B2-AGENT-RAN\|heartbeat from\|fxstore: verify' "$WORK/con-c2.log" | head -12
+grep -n 'disk store mounted\|boot-ok\|boot-FAILED\|B2-AGENT-RAN\|heartbeat from' "$WORK/con-c2.log" | head -12
 grep -q "fx-init: disk store mounted (current v$V_A1)" "$WORK/con-c2.log" \
     || { tail -30 "$WORK/con-c2.log"; halt; fail "C2: the generation changed without a payload — want the unchanged v$V_A1"; }
 halt
 NEG_BROKEN=0
-for s in "$TEXT_MARKER" "heartbeat from $SVC_PROOF" 'fxstore: verify OK' 'agent-config.dhall'; do
+# The four strings a run WITH the payload produces, and that the withheld
+# payload must not: the fixture's final text, the agent-authored service's
+# heartbeat, the boot verdict of the generation only the agent can create, and
+# the config path the agent wrote.  (A "fxstore: verify OK" string sat in this
+# list until 2026-10: MEASURED, it is the host pre-check STUB's line and appears
+# in no guest console at all, so as an absence check it could never fire.)
+for s in "$TEXT_MARKER" "heartbeat from $SVC_PROOF" "fx-init: boot-ok v$V_NEW" 'agent-config.dhall'; do
     for f in "$WORK/con-c1.log" "$WORK/con-c2.log"; do
         if grep -qF "$s" "$f"; then
             echo "qemu-agent-b2: NEGATIVE CONTROL BROKEN — '$s' appears in $(basename "$f") with the payload withheld" >&2
@@ -921,10 +1326,19 @@ echo "                the generation did not change, and all four asserted strin
 
 echo
 echo "qemu-agent-b2: PASS"
-echo "  ARM 1: the agent inspected, wrote $CONFIG_GUEST_PATH and ACTIVATED it in-guest through its own tool"
-echo "         server -> v$V_NEW (hash ${H_NEW%????????*}, the host built v$V_A1 = ${H_A1%????????*});"
-echo "         post-restart: current v$V_NEW, boot-ok v$V_NEW, 'heartbeat from $SVC_PROOF', fxstore verify OK."
-echo "  ARM 2: the agent activated a crasher -> boot-FAILED v$V_BAD, '$V_BAD failed' in the disk .bootlog,"
-echo "         the next boot rolled forward to the known-good v$V_P -> boot-ok v$V_ROLL, crasher gone."
+echo "  ARM 1: the agent inspected (/fx/disk/store, /etc/hostname='fixbox'), wrote"
+echo "         $CONFIG_GUEST_PATH and ACTIVATED it in-guest through its own tool server:"
+echo "         v$V_NEW hash ${H_NEW%????????*} (the host built v$V_A1 = ${H_A1%????????*});"
+echo "         the RESTART came up in it: current v$V_NEW, boot-ok v$V_NEW, 'heartbeat from $SVC_PROOF',"
+echo "         and the restarted machine's own fx_store_verify call returned exit=1 with EXACTLY $DRIFT_N PINNED"
+echo "         pre-existing /bin-link drifts — set-pinned, not class-pinned: every line must be a top-level /bin"
+echo "         link whose fact and target name the SAME <64hex>-<pkg> store dir, and the FOUR mutants of the"
+echo "         real report (repointed link / 6th drift / non-/bin path / renamed link) were each shown"
+echo "         failing the pin while the pre-fix assertion passed them (see the lane report: an fx-init bug,"
+echo "         not drift the agent caused)."
+echo "  ARM 2: the agent activated a crasher -> boot-FAILED v$V_BAD and '$V_BAD failed' in the disk .bootlog;"
+echo "         the NEXT boot rolled forward to the previous ok generation v$V_TGT -> boot-ok v$V_ROLL with the"
+echo "         crasher's generation NOT booted (the runtime plane confirms its services are gone)."
 echo "  CONTROL: no payload -> nothing above v$V_A1, all asserted strings absent."
+echo "  EVIDENCE: tests/evidence/qemu-agent-b2/ (consoles, oracles, disk read-backs, bootlogs)."
 exit 0

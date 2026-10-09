@@ -200,11 +200,15 @@ assert_guest_elf "$BINDIR/fx-agent.i386" "i386"
 # ─── fx-verbs-server, x86_64-linux-musl (the tool server) ─────────────────
 # tools/build.sh owns the repo's build/ output paths; this compiles the same
 # source into the payload directory instead (the shared source is read-only).
-VS_SRC="tools/fx-verbs-server.c src/vendor/yyjson/yyjson.c"
+# src/llm2/outcome.c is linked in too: it is the ONE reader of the store's
+# outcome files (<store>/.bootlog, <store>/.db/snapshots/CURRENT), shared with
+# the harness's own boot-time consume of its activation record.
+VS_SRC="tools/fx-verbs-server.c src/llm2/outcome.c src/vendor/yyjson/yyjson.c"
 [ -f tools/fx-verbs-server.c ] || fail "tools/fx-verbs-server.c missing"
+[ -f src/llm2/outcome.c ] || fail "src/llm2/outcome.c missing (the outcome reader)"
 echo "stage-guest: compiling fx-verbs-server for x86_64-linux-musl"
 zig cc -target x86_64-linux-musl -static -s -std=c11 -O2 -Wall -Wextra \
-    -Isrc/vendor/yyjson -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
+    -Isrc -Isrc/vendor/yyjson -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
     -o "$BINDIR/fx-verbs-server" $VS_SRC \
     || fail "x86_64-linux-musl fx-verbs-server build failed"
 assert_guest_elf "$BINDIR/fx-verbs-server" "x86-64"

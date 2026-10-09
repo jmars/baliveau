@@ -722,13 +722,18 @@ static void loop_notify(agent_loop_msg_cb cb, void *user, const LlmMsg *m) {
 /* The real multi-turn tool loop body.  `cb`/`cb_user` is the S11 transcript
  * hook (fired per appended message); `dcb`/`dc_user` is the S12 per-delta hook
  * (fired per delta).  Either may be NULL (disabled).  `policy` is the tool
- * allowlist enforced BEFORE every mcp_tools_call dispatch (NULL -> allow-all). */
+ * allowlist enforced BEFORE every mcp_tools_call dispatch (NULL -> allow-all).
+ * `out_exhausted` (may be NULL) reports the loop's OWN end-state: 1 iff the
+ * loop stopped because it ran out of TURNS with tool calls still pending (the
+ * last allowed turn's calls are surfaced in out_final and NOT dispatched), 0
+ * for every other stop (final text turn, no tool server, backend error). */
 static int run_loop(const Backend *b, const char *model,
                     const McpToolServer *tool_srv, const ToolPolicy *policy,
                     const LlmMsg *msgs, size_t n_msgs, int max_turns,
                     TurnResult *out_final, agent_loop_msg_cb cb, void *cb_user,
-                    agent_loop_delta_cb dcb, void *dc_user) {
+                    agent_loop_delta_cb dcb, void *dc_user, int *out_exhausted) {
     if (!out_final) return -1;
+    if (out_exhausted) *out_exhausted = 0;
     memset(out_final, 0, sizeof *out_final);
     if (!b || !b->chat_stream) return -1;
     if (max_turns <= 0) max_turns = runner_max_turns();
@@ -750,9 +755,13 @@ static int run_loop(const Backend *b, const char *model,
 
         if (turn.n_tool_calls == 0) break; /* final text turn: done */
         if (!tool_srv) break;              /* tool_calls but nothing to dispatch */
-        if (t == max_turns - 1) break;     /* last allowed turn: surface tool_calls
+        if (t == max_turns - 1) {          /* last allowed turn: surface tool_calls
                                             * in out_final, don't dispatch (results
-                                            * would be discarded) */
+                                            * would be discarded) — and SAY SO: the
+                                            * task did not finish. */
+            if (out_exhausted) *out_exhausted = 1;
+            break;
+        }
 
         /* Append an assistant message carrying this turn's text + its tool_calls
          * (so the model sees what it called), then dispatch each tool call and
@@ -834,7 +843,19 @@ int agent_loop_run_ex(const Backend *b, const char *model,
                       TurnResult *out_final, agent_loop_msg_cb cb, void *cb_user) {
     /* Thin wrapper: multi-turn loop with no delta hook. */
     return run_loop(b, model, tool_srv, policy, msgs, n_msgs, max_turns, out_final,
-                    cb, cb_user, NULL, NULL);
+                    cb, cb_user, NULL, NULL, NULL);
+}
+
+int agent_loop_run_delta_ex(const Backend *b, const char *model,
+                            const McpToolServer *tool_srv, const ToolPolicy *policy,
+                            const LlmMsg *msgs, size_t n_msgs, int max_turns,
+                            TurnResult *out_final, agent_loop_msg_cb cb, void *cb_user,
+                            agent_loop_delta_cb dcb, void *dc_user,
+                            int *out_exhausted) {
+    /* The full loop, plus the end-state the caller needs to tell "the task
+     * finished" from "the TURN LIMIT stopped it" (see agent_loop.h). */
+    return run_loop(b, model, tool_srv, policy, msgs, n_msgs, max_turns, out_final,
+                    cb, cb_user, dcb, dc_user, out_exhausted);
 }
 
 int agent_loop_run_delta(const Backend *b, const char *model,
@@ -843,8 +864,8 @@ int agent_loop_run_delta(const Backend *b, const char *model,
                          TurnResult *out_final, agent_loop_msg_cb cb, void *cb_user,
                          agent_loop_delta_cb dcb, void *dc_user) {
     /* Multi-turn loop with BOTH the transcript hook and the live per-delta hook. */
-    return run_loop(b, model, tool_srv, policy, msgs, n_msgs, max_turns, out_final,
-                    cb, cb_user, dcb, dc_user);
+    return agent_loop_run_delta_ex(b, model, tool_srv, policy, msgs, n_msgs, max_turns,
+                                   out_final, cb, cb_user, dcb, dc_user, NULL);
 }
 
 int agent_loop_run(const Backend *b, const char *model,

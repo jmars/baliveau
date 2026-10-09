@@ -19,10 +19,14 @@ in  { hostname = "b2-agent-9f3c"
             probe = None Probe,
             env = None (List { key : Text, value : Text }),
             console = Some "console" }
-        , { name = "b2verify", argv = [ "/fx/disk/store/664eeda3dd1c08b15136573110bf149f04ec0e5400c5fcf1148bbd9ba9c3086a-fxstore/fxstore", "verify", "/", "--store", "/fx/disk/store" ], pkg = None Text,
+        , { name = "b2verifier", argv = [ "/usr/fx-agent/bin/fx-agent", "-p", "verify the running system", "--agent", "fx", "--max-turns", "2", "--output", "text" ], pkg = None Text,
             on = "all", restart = Some "never", backoffMs = None Natural,
             probe = None Probe,
-            env = None (List { key : Text, value : Text }),
+            env = Some [ { key = "FX_CHARDEV", value = "/usr/fx-agent/b2-verify.sse" },
+                         { key = "VIBE_RUNTIME_CONFIG_DIR", value = "/usr/fx-agent/cfg-b2" },
+                         { key = "VIBE_RUNTIME_DIR", value = "/fx/disk/agent-data" },
+                         { key = "HOME", value = "/tmp" }
+                       ] : Optional (List { key : Text, value : Text }),
             console = Some "console" }
         ]
     , extraEtc = None (List { path : Text, content : Text })

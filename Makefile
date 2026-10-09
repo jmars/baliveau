@@ -80,6 +80,7 @@ L2_SRC := src/llm2/agent_main.c \
           src/llm2/config.c \
           src/llm2/dhall_eval_lock.c \
           src/llm2/mcp_client.c \
+          src/llm2/outcome.c \
           src/llm2/tool_policy.c \
           src/llm2/tui.c \
           src/llm2/sse.c \
@@ -134,16 +135,44 @@ $(BIN_MUSL): src/llm2/agent_main_main.c $(ALL_SRC) $(DATALOG_MUSL_A) | $(DATALOG
 	$(MUSL_CC) $(MUSL_CFLAGS) $(LDFLAGS) -o $@ src/llm2/agent_main_main.c $(ALL_SRC) \
 	    -L$(DATALOG_MUSL_LIB) -ldatalog -s
 
+# THE PRE-FIX ARTIFACT of the observation loop (src/llm2/outcome.h): the SAME
+# sources, with the boot-time consume of the harness's own durable activation
+# record compiled out (-DFX_HARNESS_NO_OBSERVE).  It is not a feature and not a
+# runtime switch — it exists so the observation loop's central assertion ("a
+# failed activation is reported and the task is NOT re-run") can be shown to be
+# able to FAIL: tests/test_outcome.sh and tests/qemu-agent-observe.sh run the
+# same fixture and the same state against both binaries and require the blind
+# one to re-run/ratchet where the real one refuses.  Nothing in a deployment can
+# reach this behaviour.
+BIN_BLIND := build/fx-agent-blind
+blind: $(BIN_BLIND)
+
+$(BIN_BLIND): src/llm2/agent_main_main.c $(ALL_SRC) $(DATALOG_DIR)/zig-out/lib/libdatalog.so | $(DATALOG_SHIM)
+	@mkdir -p build
+	$(CC) $(CFLAGS) -DFX_HARNESS_NO_OBSERVE $(LDFLAGS) -o $@ src/llm2/agent_main_main.c $(ALL_SRC) \
+	    -L$(DATALOG_DIR)/zig-out/lib \
+	    -Wl,-rpath,$(abspath $(DATALOG_DIR)/zig-out/lib) -ldatalog
+
 clean:
 	rm -rf build
 
-# The resume oracle (tests/test_resume.sh): kills the harness mid-dispatch with
-# a tool that SIGKILLs its parent, then asserts the transcript survived and that
-# --resume seeds the loop from it.  It FAILS on a tree without the per-message
-# flush + the resume seed (measured against this tree before the fix), so it is
-# a real gate, not a smoke test.  Needs upstream's recorded SSE fixtures:
-# override their directory with VIBE_FIXTURE_DIR=<dir>.
-test: all
+# The two oracles of the agent loop.
+#   test_resume.sh  — kills the harness mid-dispatch with a tool that SIGKILLs
+#                     its parent, then asserts the transcript survived and that
+#                     --resume seeds the loop from it.  It FAILS on a tree
+#                     without the per-message flush + the resume seed (measured
+#                     against this tree before the fix), so it is a real gate.
+#   test_outcome.sh — the observation-loop oracle: a recorded activation whose
+#                     boot FAILED is reported and NOT repeated (with the way out
+#                     NAMED); one that took, a completed task, an unjudged
+#                     activation, a torn record line, a prompt-drift, a forged
+#                     record line, a resume seed and an unreadable store each get
+#                     their own verdict; and the pre-fix artifact (make blind)
+#                     re-runs the very task the real build refuses.  Both need
+#                     upstream's recorded SSE fixtures: override their directory
+#                     with VIBE_FIXTURE_DIR.
+test: all blind
 	bash tests/test_resume.sh
+	bash tests/test_outcome.sh
 
-.PHONY: all musl clean test
+.PHONY: all musl blind clean test
