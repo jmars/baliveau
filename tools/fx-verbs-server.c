@@ -29,11 +29,14 @@
  *                                             reconcile the running rootfs
  *                                             against the LIVE generation's
  *                                             install facts; EXIT 1 ON DRIFT
- *   fx_outcome       <store>/.bootlog + <store>/.db/snapshots/CURRENT
+ *   fx_outcome       <store>/.bootlog + <store>/.db/snapshots/CURRENT +
+ *                    <store>/.recovery
  *                                             (native) THE OUTCOME OF PREVIOUS
  *                                             BOOTS: the boot history, the last
- *                                             verdict, and the generation this
- *                                             boot is running
+ *                                             verdict, the generation this
+ *                                             boot is running, and the
+ *                                             recovery journal (has this
+ *                                             happened before?)
  *   fx_generation    <store>/.db/snapshots/CURRENT
  *                                             (native) the CURRENT generation,
  *                                             one number
@@ -45,16 +48,20 @@
  *
  * THE OUTCOME INSTRUMENT.  fx_outcome / fx_generation are HOW AN AGENT SEES THE
  * RESULT OF ITS OWN LAST ACTIVATION — the roll-forward signal.  They read the
- * store's TWO PLAIN FILES (never the runtime DB, which PID1 holds under a
+ * store's PLAIN FILES (never the runtime DB, which PID1 holds under a
  * process-lifetime lock, so no channel is needed): <store>/.bootlog, one
  * "<version> <status> <epoch>" line per boot with status in
- * ok | failed | in-progress | shutdown, and <store>/.db/snapshots/CURRENT, the
+ * ok | failed | in-progress | shutdown; <store>/.db/snapshots/CURRENT, the
  * generation the running system came up in (fx-init's store_current_of parses
- * the same file).  They are the READ side; the MECHANISED side is the harness's
- * own boot-time consume of its durable activation record (src/llm2/outcome.h) —
- * a model can be given judgement later, the machinery must not re-act blindly.
- * BOTH verbs are STORE-SCOPED with NO store argument: they read FX_STORE_PATH
- * (or none at all), never a store a caller names, so a model cannot be talked
+ * the same file); and <store>/.recovery, the RECOVERY JOURNAL (fx-init
+ * 4d6a8c2): one data line per AUTOMATIC roll-forward — the store's only
+ * answer to "has this happened BEFORE?", without which every recovery looks
+ * like a first offence.  They are the READ side; the MECHANISED side is the
+ * harness's own boot-time consume of its durable activation record
+ * (src/llm2/outcome.h) — a model can be given judgement later, the machinery
+ * must not re-act blindly.  BOTH verbs are STORE-SCOPED with NO store
+ * argument: they read FX_STORE_PATH (or none at all), never a store a caller
+ * names, so a model cannot be talked
  * into reading the initramfs snapshot's stale bootlog.
  *
  * ROOT RESOLUTION — never a hardcoded absolute path: every command is looked
@@ -778,9 +785,15 @@ static int outcome_line_cb(void *u, unsigned long version, const char *status,
  * names it, not as resolved), CURRENT (fail-closed: an unreadable CURRENT is
  * reported as UNREADABLE and the verb exits 1 rather than printing a guess), the
  * LAST VERDICT in the bootlog (ok|failed — i.e. what the previous boot did, the
- * roll-forward signal), how many boots are recorded, and then every line.  Exit
- * 1 only when CURRENT could not be read: a missing bootlog is reported as
- * "bootlog ... cannot be opened" but is not itself fatal. */
+ * roll-forward signal), THE RECOVERY JOURNAL (has this happened BEFORE? —
+ * <store>/.recovery, one data line per AUTOMATIC roll-forward, the only line in
+ * the store that can say "this machine has recovered before"; absent and
+ * never-recovered are reported as the DISTINCT states they are, and a recurring
+ * genhash is reported as the same fault RETURNING, never as a live oscillation —
+ * the journal's own header limits it that far and this verb does not exceed it),
+ * how many boots are recorded, and then every line.  Exit 1 only when CURRENT
+ * could not be read: a missing bootlog or journal is reported in place
+ * ("cannot be opened" / "recovery absent") but is not itself fatal. */
 static int native_outcome(Capture *out, int *exitcode) {
     char *store = store_if_present();
     if (!store) { store_scope_refuse(out, "fx_outcome"); *exitcode = 1; return 0; }
@@ -803,6 +816,54 @@ static int native_outcome(Capture *out, int *exitcode) {
     else
         snprintf(line, sizeof line, "last none\n");
     cap_append_str(out, line);
+
+    /* THE RECOVERY JOURNAL — the "has this happened before?" half that neither
+     * the bootlog nor CURRENT can answer.  Distinct states, distinct words:
+     * an ABSENT journal (a store that predates it) is not a ZERO (a machine
+     * that has never recovered), and the recurrence line carries the journal's
+     * own honesty limit rather than implying a live oscillation. */
+    {
+        FxRecovery rj;
+        char rerr[256] = {0};
+        if (fx_outcome_recovery(store, &rj, rerr, sizeof rerr) != 0) {
+            n = snprintf(line, sizeof line, "recovery UNREADABLE: %s\n", rerr);
+            if (n > 0) cap_append(out, line, (size_t)n);
+        } else if (rj.journal_absent) {
+            n = snprintf(line, sizeof line,
+                         "recovery absent (no %s — the store predates the journal;\n"
+                         "             unknown, not zero)\n",
+                         FX_OUTCOME_RECOVERY_FILE);
+            if (n > 0) cap_append(out, line, (size_t)n);
+        } else {
+            n = snprintf(line, sizeof line, "recoveries %lu%s\n", rj.count,
+                         rj.count == 0
+                             ? " (journal present; no automatic roll-forward recorded)"
+                             : "");
+            if (n > 0) cap_append(out, line, (size_t)n);
+            if (rj.have_last) {
+                n = snprintf(line, sizeof line,
+                             "recovery_last %lu published v%lu from v%lu genhash %s\n",
+                             rj.last_epoch, rj.last_published, rj.last_from_failed,
+                             rj.last_genhash[0] ? rj.last_genhash : "-");
+                if (n > 0) cap_append(out, line, (size_t)n);
+            }
+            if (rj.have_recur) {
+                n = snprintf(line, sizeof line,
+                             "recovery_recur %s x%lu — the SAME fault returning "
+                             "(not a live-oscillation claim; read the epochs and "
+                             ".bootlog)\n",
+                             rj.recur_genhash, rj.recur_count);
+                if (n > 0) cap_append(out, line, (size_t)n);
+            }
+            if (rj.damaged_lines > 0) {
+                n = snprintf(line, sizeof line,
+                             "recovery_torn %d line(s) skipped (torn/unparsable) — "
+                             "the count is a FLOOR\n",
+                             rj.damaged_lines);
+                if (n > 0) cap_append(out, line, (size_t)n);
+            }
+        }
+    }
 
     int seen = fx_outcome_bootlog_each(store, outcome_line_cb, out);
     if (seen < 0) {
@@ -935,11 +996,15 @@ static const Verb VERBS[] = {
       "Report the OUTCOME OF PREVIOUS BOOTS, read from the store's own plain files "
       "(no channel needed): current <N> (the generation the running system came up "
       "in, from <store>/.db/snapshots/CURRENT), last <v> ok|failed (the previous "
-      "boot's verdict), boots <n>, then one 'boot <version> <status> <epoch>' line "
-      "per recorded boot from <store>/.bootlog (status ok|failed|in-progress|"
-      "shutdown). Read it after a restart to see whether the generation you "
-      "activated booted ok, or FAILED and was rolled forward to older content "
-      "under a HIGHER version number. Takes no arguments; store-scoped." },
+      "boot's verdict), recoveries <n> + recovery_last/recovery_recur (from "
+      "<store>/.recovery: how many AUTOMATIC roll-forwards fx-init has performed — "
+      "the machine answering 'has this happened before?'; a recurring genhash is "
+      "the SAME fault returning), boots <n>, then one 'boot <version> <status> "
+      "<epoch>' line per recorded boot from <store>/.bootlog (status ok|failed|"
+      "in-progress|shutdown). Read it after a restart to see whether the generation "
+      "you activated booted ok, or FAILED and was rolled forward to older content "
+      "under a HIGHER version number — and whether that has happened BEFORE. "
+      "Takes no arguments; store-scoped." },
     { "fx_generation", NULL, { NULL, NULL },
       "Print the CURRENT generation of the store — the generation the running "
       "system came up in, from <store>/.db/snapshots/CURRENT: one line, "

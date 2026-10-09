@@ -63,10 +63,24 @@ certifies coherence; neither says "improved".
       (exit 0) against a pinned `9b20161` control that fails all ten journal assertions, and it counts
       a REAL oscillation: exactly 1 then 2 roll-forwards with an IDENTICAL genhash — the recurrence
       visible. A refused recovery and a deliberate operator rollback append NOTHING.
-- [ ] **BUT NOTHING READS IT YET** — the seat is written and called by nobody, which is
-      indistinguishable from an absent seat. `fx_outcome` must surface it so the AGENT sees that its
-      activation has now failed three times, not merely that it failed. In flight as
-      `handoff-outcome-recovery`.
+- [x] **BUT NOTHING READS IT YET — closed: the read side landed** (`src/llm2/outcome.c`
+      `fx_outcome_recovery()`, one reader shared by both consumers, like the bootlog's).
+      TWO surfaces, because the observe gate's boot 3 never dispatches the fixture (the harness
+      refuses before the loop): the **ACTIVATION_FAILED report** carries a `recovery :` line
+      (count, newest recovery, same-genhash recurrence bounded by the journal's own honesty
+      limit — "THE SAME FAULT RETURNING, not a live-oscillation claim"), and the **`fx_outcome`
+      verb** prints `recoveries <n>` / `recovery_last <epoch> published v<p> from v<f> genhash
+      <h|->` / `recovery_recur <h> x<n>` / `recovery_torn <k> ... the count is a FLOOR` between
+      `last` and the boot history. Absent journal ≠ zero: absent reads "UNKNOWN, not zero", a
+      present empty journal reads "0 ... the FIRST time" — distinct claims, distinct words. A
+      torn (unterminated) data line is skipped and SAID (the count is then a floor); two `-`
+      genhashes are two absences, never a recurrence. Pinned pre-read asymmetry:
+      `tests/test_outcome.sh` phase 9f builds `d94ea77`'s server AND outcome.c and shows the
+      journal invisible on both surfaces (same store, same refusal verdict, no journal line);
+      `tests/qemu-agent-observe.sh` asserts the guest's real journal (boot 1 `recoveries 0` in
+      the fx_outcome transcript; boot 3 exactly one line `published v_C from v_A` + the report
+      line on the console; boot 4 unchanged; the BLIND arm's disk counts its own roll-forward
+      too — the substrate half is arm-independent).
 - [ ] **`.bootlog` growth**: unbounded, fully rescanned by `bootlog_last`/`bootlog_newest_ok_below` on
       every boot, and `fsync`'d per append. The guardrail bounds growth to real boots, so this is
       lower priority — but state the policy (rotate, cap, or index) rather than leaving it implicit.

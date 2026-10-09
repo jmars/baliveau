@@ -181,6 +181,16 @@ plant_store() { # plant_store CURRENT "bootlog line"...
     : > "$STORE/.bootlog"
     for _l in "$@"; do printf '%s\n' "$_l" >> "$STORE/.bootlog"; done
 }
+# plant_journal plants <store>/.recovery, fx-init 4d6a8c2's journal (one data
+# line "<epoch> <published> <from> <genhash>" per AUTOMATIC roll-forward, with
+# the definition in the file's own '#' header — reproduced from the writer,
+# init.zig recovery_line, NOT from a description of it).
+plant_journal() { # plant_journal "data line"...  (no lines -> header only)
+    : > "$STORE/.recovery"
+    printf '# fx-init recovery journal. One DATA line per AUTOMATIC roll-forward:\n' >> "$STORE/.recovery"
+    printf '# line: <epoch-s> <published-version> <from-failed-version> <content-genhash|->\n' >> "$STORE/.recovery"
+    for _l in "$@"; do printf '%s\n' "$_l" >> "$STORE/.recovery"; done
+}
 newdata() { rm -rf "$TMP/data"; mkdir -p "$TMP/data" || fail "cannot create the data dir"; }
 record()  { printf '%s\n' "$*" >> "$TMP/data/attempts.jsonl"; }
 # THE probe: run the harness with a specific chardev + prompt, report rc + stdout.
@@ -1370,11 +1380,261 @@ printf '%s\n' "$TXT" | grep -q 'PRE-EXISTING RECORD LINE' \
     || { printf '%s\n' "$TXT" >&2; fail "phase 8: fx_read did not return the record's content"; }
 note "fx_read of the record still works (reads are open by design — the bound is on WRITE)"
 
+# ── phase 9: THE RECOVERY JOURNAL — the agent sees that it has happened ═══
+# BEFORE, not merely that it happened.  fx-init 4d6a8c2 writes <store>/.recovery
+# (one data line per AUTOMATIC roll-forward); until this phase nothing read it,
+# and a seat that is never called is indistinguishable from an absent seat.
+# Two surfaces, both asserted here: the ACTIVATION_FAILED report (what a refused
+# agent sees at boot — the qemu observe gate's boot 3 never dispatches the
+# fixture, so the report is the only place that agent can see the count) and
+# the fx_outcome verb (what the model can call).  Each sub-phase names what
+# makes it FAIL.
+echo "== phase 9: the recovery journal — counted, distinct from absent, floor on torn, surfaced twice"
+# 9a — a journal with a RECURRENCE: the report must carry the count, the
+# newest recovery, and the same-genhash signal with the journal's own honesty
+# limit.  FAILS if the reader ignores .recovery (no recovery line at all), if
+# it counts the header (wrong number), or if it prints a recurrence without
+# the not-a-live-oscillation bound.
+newdata
+plant_store 9 "8 in-progress 1700000000" "8 failed 1700000020" "9 in-progress 1700000030"
+plant_journal "1791556214 9 7 feedface0123456789abcdef" "1791556300 11 9 feedface0123456789abcdef"
+record "1700000000 $TASK attempt - - 0 /fx/disk/agent-config.dhall"
+record "1700000000 $TASK result - - 8 /fx/disk/agent-config.dhall"
+out=$(run "$BIN" --store "$STORE"); rc=$?
+[ "$rc" = 0 ] || fail "phase 9a: rc=$rc (want 0 — the journal must not change the refusal's exit)"
+echo "$out" | grep -q "THE ACTIVATION THIS HARNESS RECORDED FAILED" \
+    || { echo "$out" >&2; fail "phase 9a: the journal changed the VERDICT — it must be information, never a rule input"; }
+echo "$out" | grep -q "2 automatic roll-forward(s) on record" \
+    || { echo "$out" >&2; fail "phase 9a: the report does not carry the journal COUNT (a store with a journal must read as COUNTED)"; }
+echo "$out" | grep -q "feedface0123456789abcdef has failed 2 time(s)" \
+    || { echo "$out" >&2; fail "phase 9a: the report does not say the SAME GENHASH recurs (the signal the journal exists for)"; }
+echo "$out" | grep -q "THE SAME FAULT RETURNING, not a live-oscillation" \
+    || { echo "$out" >&2; fail "phase 9a: the recurrence is stated without the journal's own honesty limit (a number implying oscillation)"; }
+echo "$out" | grep -q "newest: v11 republished from v9" \
+    || { echo "$out" >&2; fail "phase 9a: the report does not name the LAST recovery (published/from pair)"; }
+# 9b — ABSENT journal is a DIFFERENT claim than zero, and it is NOT an error:
+# FAILS if absence becomes a failure (no report at all), or if the wording
+# collapses absent into zero (the weaker claim standing in for "unknown").
+newdata
+plant_store 9 "8 in-progress 1700000000" "8 failed 1700000020" "9 in-progress 1700000030"
+rm -f "$STORE/.recovery"
+record "1700000000 $TASK attempt - - 0 /fx/disk/agent-config.dhall"
+record "1700000000 $TASK result - - 8 /fx/disk/agent-config.dhall"
+out=$(run "$BIN" --store "$STORE"); rc=$?
+[ "$rc" = 0 ] || fail "phase 9b: rc=$rc (an absent journal must not be an error)"
+echo "$out" | grep -q "THE ACTIVATION THIS HARNESS RECORDED FAILED" \
+    || { echo "$out" >&2; fail "phase 9b: the verdict changed on an absent journal"; }
+echo "$out" | grep -q "no .recovery on this store" \
+    || { echo "$out" >&2; fail "phase 9b: the report does not say the journal is ABSENT"; }
+echo "$out" | grep -q "UNKNOWN, not zero" \
+    || { echo "$out" >&2; fail "phase 9b: absent is not worded as the DISTINCT claim it is (unknown vs zero)"; }
+echo "$out" | grep -q "0 automatic roll-forwards" \
+    && { echo "$out" >&2; fail "phase 9b: an ABSENT journal read as ZERO — two different claims collapsed"; }
+# 9c — a TORN last line: skipped (the rest still counted) and SAID (the count
+# is a floor).  FAILS if the torn prefix is counted (a truncated genhash is
+# not a recovery) or silently dropped (a floor presented as exact).
+newdata
+plant_store 9 "8 in-progress 1700000000" "8 failed 1700000020" "9 in-progress 1700000030"
+plant_journal "1791556214 9 7 feedface0123456789abcdef" "1791556300 11 9 feedface0123456789abcdef"
+printf '%s' "1791556500 15 13 feedfa" >> "$STORE/.recovery"   # torn: no newline
+record "1700000000 $TASK attempt - - 0 /fx/disk/agent-config.dhall"
+record "1700000000 $TASK result - - 8 /fx/disk/agent-config.dhall"
+out=$(run "$BIN" --store "$STORE"); rc=$?
+[ "$rc" = 0 ] || fail "phase 9c: rc=$rc"
+echo "$out" | grep -q "2 automatic roll-forward(s) on record" \
+    || { echo "$out" >&2; fail "phase 9c: the torn line was counted, or the complete lines were lost"; }
+echo "$out" | grep -q "the count is a FLOOR" \
+    || { echo "$out" >&2; fail "phase 9c: a torn line was skipped WITHOUT saying the count is a floor"; }
+# 9d — a journal that has NEVER recorded a recovery: ZERO is a measurement,
+# and it must not read as an absence.  FAILS if the zero wording disappears
+# (or is replaced by the absent wording).
+newdata
+plant_store 9 "8 in-progress 1700000000" "8 failed 1700000020" "9 in-progress 1700000030"
+plant_journal
+record "1700000000 $TASK attempt - - 0 /fx/disk/agent-config.dhall"
+record "1700000000 $TASK result - - 8 /fx/disk/agent-config.dhall"
+out=$(run "$BIN" --store "$STORE"); rc=$?
+[ "$rc" = 0 ] || fail "phase 9d: rc=$rc"
+echo "$out" | grep -q "0 automatic roll-forwards on record" \
+    || { echo "$out" >&2; fail "phase 9d: a present-but-empty journal does not read as ZERO"; }
+echo "$out" | grep -q "the FIRST time this machine has had to recover" \
+    || { echo "$out" >&2; fail "phase 9d: the zero case lost its distinct wording"; }
+note "harness side: counted(2)+recurrence+x2+honesty-limit / absent(UNKNOWN-not-zero) / torn(floor) / zero(FIRST) — verdict unchanged in all four"
+
+# 9e — the VERB surface: the same four states through the model's own tool.
+# FAILS if fx_outcome does not surface the journal at all (the seat written
+# and called by nobody), or if any state's wording collides with another's.
+VV="$TMP/vroot"
+mkdir -p "$VV/fx/disk/store/.db/snapshots" || fail "phase 9e: cannot lay out the verb root"
+printf '9\n' > "$VV/fx/disk/store/.db/snapshots/CURRENT"
+printf '8 in-progress 1700000000\n8 failed 1700000020\n' > "$VV/fx/disk/store/.bootlog"
+outverb() { # outverb BIN ROOT -> the fx_outcome reply text on stdout
+    FX_VERB_ROOT="$2" python3 - "$1" <<'PYEOF' || fail "phase 9e: outverb driver failed"
+import json, subprocess, sys
+srv = subprocess.Popen([sys.argv[1]], stdin=subprocess.PIPE,
+                       stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+def req(obj):
+    srv.stdin.write((json.dumps(obj) + "\n").encode()); srv.stdin.flush()
+    return srv.stdout.readline().decode()
+req({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+srv.stdin.write((json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}) + "\n").encode()); srv.stdin.flush()
+d = json.loads(req({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                    "params": {"name": "fx_outcome", "arguments": {}}}))
+srv.stdin.close(); srv.wait(timeout=5)
+sys.stdout.write(d["result"]["content"][0]["text"])
+PYEOF
+}
+# 9e-1: the full journal (count, last, recurrence) — the model's own read
+cat > "$VV/fx/disk/store/.recovery" <<'J1'
+# fx-init recovery journal. One DATA line per AUTOMATIC roll-forward:
+# line: <epoch-s> <published-version> <from-failed-version> <content-genhash|->
+1791556214 9 7 feedface0123456789abcdef
+1791556300 11 9 feedface0123456789abcdef
+1791556400 13 11 0123456789abcdef012345
+J1
+TXT=$(outverb "$VS" "$VV")
+printf '%s\n' "$TXT" | grep -q "^exit=0$" || { printf '%s\n' "$TXT" >&2; fail "phase 9e-1: fx_outcome failed on a store with a journal"; }
+printf '%s\n' "$TXT" | grep -q "^recoveries 3\$" \
+    || { printf '%s\n' "$TXT" >&2; fail "phase 9e-1: the verb does not report the journal COUNT"; }
+printf '%s\n' "$TXT" | grep -q "^recovery_last 1791556400 published v13 from v11 genhash 0123456789abcdef012345\$" \
+    || { printf '%s\n' "$TXT" >&2; fail "phase 9e-1: the verb does not report the LAST recovery verbatim"; }
+printf '%s\n' "$TXT" | grep -q "^recovery_recur feedface0123456789abcdef x2 — the SAME fault returning" \
+    || { printf '%s\n' "$TXT" >&2; fail "phase 9e-1: the verb does not report the recurring genhash"; }
+printf '%s\n' "$TXT" | grep -q "boot 8 failed" \
+    || { printf '%s\n' "$TXT" >&2; fail "phase 9e-1: the bootlog history was displaced by the journal section"; }
+# 9e-2: ABSENT — the distinct wording, not a zero
+rm -f "$VV/fx/disk/store/.recovery"
+TXT=$(outverb "$VS" "$VV")
+printf '%s\n' "$TXT" | grep -q "^exit=0\$" || { printf '%s\n' "$TXT" >&2; fail "phase 9e-2: an absent journal made the verb fail"; }
+printf '%s\n' "$TXT" | grep -q "^recovery absent (no .recovery" \
+    || { printf '%s\n' "$TXT" >&2; fail "phase 9e-2: the verb does not report the journal as ABSENT"; }
+printf '%s\n' "$TXT" | grep -q "unknown, not zero" \
+    || { printf '%s\n' "$TXT" >&2; fail "phase 9e-2: absent is not worded as distinct from zero"; }
+printf '%s\n' "$TXT" | grep -qE "^recoveries " \
+    && { printf '%s\n' "$TXT" >&2; fail "phase 9e-2: an absent journal produced a COUNT line"; }
+# 9e-3: present, never recovered — the zero with its own words
+printf '# fx-init recovery journal. One DATA line per AUTOMATIC roll-forward:\n' > "$VV/fx/disk/store/.recovery"
+TXT=$(outverb "$VS" "$VV")
+printf '%s\n' "$TXT" | grep -q "^recoveries 0 (journal present; no automatic roll-forward recorded)\$" \
+    || { printf '%s\n' "$TXT" >&2; fail "phase 9e-3: a never-recovered journal does not read as the distinct ZERO state"; }
+# 9e-4: two '-' genhashes are two ABSENCES, not a recurrence — the honest
+# reading of the writer's own '-' (unresolvable) marker.  FAILS if the reader
+# matches absent hashes and claims "the same fault returning" from no evidence.
+printf '1791556214 9 7 -\n1791556300 11 9 -\n' > "$VV/fx/disk/store/.recovery"
+TXT=$(outverb "$VS" "$VV")
+printf '%s\n' "$TXT" | grep -q "^recoveries 2\$" \
+    || { printf '%s\n' "$TXT" >&2; fail "phase 9e-4: the '-' lines are not counted"; }
+printf '%s\n' "$TXT" | grep -q "recovery_recur" \
+    && { printf '%s\n' "$TXT" >&2; fail "phase 9e-4: two '-' genhashes read as a RECURRENCE — an inference beyond the evidence"; }
+# 9e-5: the torn tail through the verb — the floor, said
+{ printf '1791556214 9 7 feedface0123456789abcdef\n'; printf '%s' "1791556300 11 9 feedfa"; } > "$VV/fx/disk/store/.recovery"
+TXT=$(outverb "$VS" "$VV")
+printf '%s\n' "$TXT" | grep -q "^recoveries 1\$" \
+    || { printf '%s\n' "$TXT" >&2; fail "phase 9e-5: the torn line changed the count (want exactly the 1 complete line)"; }
+printf '%s\n' "$TXT" | grep -q "^recovery_torn 1 line(s) skipped" \
+    || { printf '%s\n' "$TXT" >&2; fail "phase 9e-5: the torn line is not reported as skipped"; }
+note "verb side: recoveries N / recovery_last / recovery_recur / absent / zero / '-'-is-not-recurrence / torn-floor"
+
+# 9f — ASYMMETRY against the PINNED pre-read server (d94ea77: the last tree
+# before this change — its fx_outcome ignores .recovery entirely, which is
+# exactly the seat-written-and-never-called state this phase closes).  The pin
+# is a FIXED revision, cat-file guarded, and cmp-proven to DIFFER from the
+# working tree, so the arm can never compare the code to itself.
+PIN_NOREC="d94ea77"
+NOREC86=""
+git -C "$ROOT" cat-file -e "$PIN_NOREC^{commit}" 2>/dev/null \
+    || NOREC86="revision $PIN_NOREC unavailable (shallow clone or rewritten history)"
+mkdir -p "$TMP/norec/tools" "$TMP/norec/llm2" || fail "phase 9f: cannot create the pinned source dir"
+if [ -z "$NOREC86" ]; then
+    # the include is "llm2/outcome.h", so src/llm2/* lands at $TMP/norec/llm2/*
+    git -C "$ROOT" show "$PIN_NOREC:tools/fx-verbs-server.c" > "$TMP/norec/tools/fx-verbs-server.c" 2>/dev/null \
+        || NOREC86="cannot extract tools/fx-verbs-server.c at $PIN_NOREC"
+    git -C "$ROOT" show "$PIN_NOREC:src/llm2/outcome.c" > "$TMP/norec/llm2/outcome.c" 2>/dev/null \
+        || NOREC86="cannot extract src/llm2/outcome.c at $PIN_NOREC"
+    git -C "$ROOT" show "$PIN_NOREC:src/llm2/outcome.h" > "$TMP/norec/llm2/outcome.h" 2>/dev/null \
+        || NOREC86="cannot extract src/llm2/outcome.h at $PIN_NOREC"
+    # DOMAIN PROOF: the pin must differ from the working tree in the file that
+    # carries the read (identical outcome.c would mean the arm compiles the
+    # fix against the old server, or the fix was reverted).
+    [ -z "$NOREC86" ] && cmp -s "$TMP/norec/llm2/outcome.c" "$ROOT/src/llm2/outcome.c" \
+        && NOREC86="the pinned $PIN_NOREC outcome.c is IDENTICAL to the working tree — the pre-read arm would compare the code to itself"
+    [ -z "$NOREC86" ] && cmp -s "$TMP/norec/tools/fx-verbs-server.c" "$ROOT/tools/fx-verbs-server.c" \
+        && NOREC86="the pinned $PIN_NOREC fx-verbs-server.c is IDENTICAL to the working tree"
+fi
+if [ -n "$NOREC86" ]; then
+    echo "SKIP outcome: phase 9f (pre-read arm): $NOREC86"
+else
+cc -std=c11 -O2 -Wall -Wextra -I"$TMP/norec" -I"$ROOT/src/vendor/yyjson" \
+   -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
+   -o "$TMP/vs-norec" "$TMP/norec/tools/fx-verbs-server.c" \
+   "$TMP/norec/llm2/outcome.c" "$ROOT/src/vendor/yyjson/yyjson.c" \
+   || fail "phase 9f: cannot build the pinned $PIN_NOREC fx-verbs-server"
+cat > "$VV/fx/disk/store/.recovery" <<'J2'
+# fx-init recovery journal. One DATA line per AUTOMATIC roll-forward:
+1791556214 9 7 feedface0123456789abcdef
+1791556300 11 9 feedface0123456789abcdef
+J2
+TXT=$(outverb "$TMP/vs-norec" "$VV")
+printf '%s\n' "$TXT" | grep -q "^exit=0\$" \
+    || { printf '%s\n' "$TXT" >&2; fail "phase 9f: the pinned server failed on a store WITH a journal (arm is vacuous)"; }
+printf '%s\n' "$TXT" | grep -qE "^recover(y|ies)" \
+    && { printf '%s\n' "$TXT" >&2; fail "phase 9f: the pinned $PIN_NOREC server SURFACED the journal — the pre-read arm proves nothing (was the read reverted?)"; }
+printf '%s\n' "$TXT" | grep -q "boot 8 failed" \
+    || { printf '%s\n' "$TXT" >&2; fail "phase 9f: the pinned server's fx_outcome is otherwise broken (arm is vacuous)"; }
+# the REPORT side of the same asymmetry, behaviorally: the pinned outcome.c is
+# what the pre-change harness binary was built from, so its ACTIVATION_FAILED
+# report must refuse exactly like this tree's — same verdict — while carrying
+# NO journal line.  (FAILS "prove nothing" if the pinned verdict differs: the
+# arm would compare a refusal to a run.)
+cat > "$TMP/recprobe9.c" <<'CEOF'
+#define _POSIX_C_SOURCE 200809L
+#include <stdio.h>
+#include <string.h>
+#include "llm2/outcome.h"
+int main(int argc, char **argv) {
+    if (argc < 3) return 2;
+    FxOutcome o;
+    char rep[FX_OUTCOME_MSG_CAP * 2];   /* generous: we MEASURE the length */
+    FxVerdict v = fx_outcome_verdict(argv[1], argv[2], argv[3], NULL,
+                                     &o, rep, sizeof rep, NULL, 0);
+    printf("verdict=%d len=%zu hasjournal=%d\n", (int)v, strlen(rep),
+           strstr(rep, "automatic roll-forward") != NULL);
+    return 0;
+}
+CEOF
+cc -std=c11 -O2 -Wall -Wextra -I"$TMP/norec" \
+   -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
+   -o "$TMP/recprobe9-pin" "$TMP/recprobe9.c" "$TMP/norec/llm2/outcome.c" \
+   || fail "phase 9f: cannot build the report probe against the pinned $PIN_NOREC outcome.c"
+cc -std=c11 -O2 -Wall -Wextra -I"$ROOT/src" -I"$ROOT/src/llm2" \
+   -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
+   -o "$TMP/recprobe9-fix" "$TMP/recprobe9.c" "$ROOT/src/llm2/outcome.c" \
+   || fail "phase 9f: cannot build the report probe against this tree"
+mkdir -p "$TMP/pin-data" || fail "phase 9f: cannot create the probe data dir"
+printf '1700000000 %s attempt - - 0 /fx/disk/agent-config.dhall\n' "$TASK" > "$TMP/pin-data/attempts.jsonl"
+printf '1700000000 %s result - - 8 /fx/disk/agent-config.dhall\n' "$TASK" >> "$TMP/pin-data/attempts.jsonl"
+PINOUT=$("$TMP/recprobe9-pin" "$TMP/pin-data" "$TASK" "$VV/fx/disk/store") \
+    || fail "phase 9f: the pinned report probe failed"
+case "$PINOUT" in verdict=1\ *\ hasjournal=0) ;;
+    *) fail "phase 9f: the pinned $PIN_NOREC report is not the plain ACTIVATION_FAILED refusal ('$PINOUT') — the before-direction is not the pre-read behaviour";;
+esac
+FIXOUT=$("$TMP/recprobe9-fix" "$TMP/pin-data" "$TASK" "$VV/fx/disk/store") \
+    || fail "phase 9f: the fixed report probe failed"
+case "$FIXOUT" in verdict=1\ *\ hasjournal=1) ;;
+    *) fail "phase 9f: the fixed report probe did not carry the journal ('$FIXOUT')";;
+esac
+note "ASYMMETRY PROVEN: identical store WITH a journal — the pinned $PIN_NOREC fx_outcome prints no recovery line at all (the seat nobody called); this tree counts it"
+fi
+
 echo "PASS outcome: nothing-on-record RUNS and records the attempt; a run the TURN LIMIT"
 echo "              stopped records NO done (and a run that FINISHED does); an activation that"
 echo "              TOOK is not re-run, and a completion the record does not hold is never"
 echo "              claimed; a FAILED one is reported and NOT repeated (exit 0, no dispatch,"
-echo "              record untouched) with its way out NAMED; a torn last line cannot decide a"
+echo "              record untouched) with its way out NAMED — and with the RECOVERY JOURNAL"
+echo "              read beside the bootlog: counted, absent-worded-as-unknown (never zero),"
+echo "              floor on a torn tail, same-genhash recurrence bounded by the journal's"
+echo "              own honesty limit, on the report AND the verb, and the pinned pre-read"
+echo "              server prints none of it; a torn last line cannot decide a"
 echo "              verdict; an unaccounted activation is settled by a completing run and is"
 echo "              escapable with --reconsider; a drifted task identity is said OUT LOUD; a"
 echo "              newline in the config cannot forge a record line; a --resume does not"

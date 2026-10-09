@@ -1,0 +1,17 @@
+# fx-init recovery journal. One DATA line per AUTOMATIC roll-forward:
+# fx-init republished an older ok generation because the current
+# version's last .bootlog verdict was failed/in-progress. The count
+# of recoveries is the number of lines starting with a digit.
+# NOT counted: operator rollbacks (fxctl/fxstore `rollback`),
+# activations, ordinary boots, and boots where recovery was REFUSED
+# by the guardrail (the hold appends nothing).
+# Same fault coming back: multiple lines whose trailing genhash is
+# IDENTICAL are the same CONTENT re-failing — the recurrence a bare
+# count cannot show. This file still cannot say the machine is
+# oscillating RIGHT NOW: read the epochs below and .bootlog for the
+# interleaving.
+# Written only by fx-init at the roll-forward decision. Root in-guest
+# can forge or truncate it exactly as it can .bootlog; the counts are
+# reconstructible from .bootlog x the store's version/genhash history.
+# line: <epoch-s> <published-version> <from-failed-version> <content-genhash|->
+1791583025 7 5 e78772cb24ebfe8050a24e6e2e9da668ec2ef49ae6ba5e567107317a054cf497

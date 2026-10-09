@@ -509,6 +509,120 @@ int fx_outcome_bootlog_last(const char *store, unsigned long *version_out,
     return 1;
 }
 
+/* ── the recovery journal ───────────────────────────────────────────────── */
+
+/* Distinct genhashes seen so far, with per-hash counts — the recurrence scan.
+ * A journal holds one line per roll-forward (real boots), so the distinct-fault
+ * count is small; growth is per DISTINCT CONTENT, not per line. */
+typedef struct {
+    char          hash[FX_OUTCOME_GENHASH_CAP];
+    unsigned long n;
+} RecurEntry;
+
+int fx_outcome_recovery(const char *store, FxRecovery *out, char *err,
+                        size_t errcap) {
+    if (!out) return -1;
+    memset(out, 0, sizeof *out);
+    if (!store || !*store) {
+        if (err && errcap)
+            snprintf(err, errcap, "no store path given (the store is never guessed)");
+        return -1;
+    }
+    char path[PATH_MAX];
+    if (path_join(path, sizeof path, store, FX_OUTCOME_RECOVERY_FILE) < 0) {
+        if (err && errcap) snprintf(err, errcap, "store path too long");
+        return -1;
+    }
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        if (errno == ENOENT) {
+            /* ABSENT IS NOT AN ERROR: a store that predates the journal (or an
+             * fx-init older than 4d6a8c2) simply has no journal, and that is a
+             * DIFFERENT claim than "never recovered" — the caller reports it
+             * as its own state (journal_absent), never as a zero count. */
+            out->journal_absent = 1;
+            return 0;
+        }
+        if (err && errcap)
+            snprintf(err, errcap, "%s: cannot be opened: %s", path, strerror(errno));
+        return -1;
+    }
+
+    RecurEntry *seen = NULL;
+    size_t nseen = 0, capseen = 0;
+    int track = 1; /* recurrence tracking stops on OOM (it is a bonus signal,
+                    * not a verdict input); counting continues */
+    /* 512 covers the writer's own 128-byte line buffer with margin; a line
+     * that fills the buffer WITHOUT a newline is over-long (not the writer's)
+     * and is drained and skipped whole — counting a split fragment of a
+     * forged line would be counting noise as a recovery. */
+    char line[512];
+    while (fgets(line, (int)sizeof line, f) != NULL) {
+        if (!strchr(line, '\n')) {
+            int ch;
+            while ((ch = fgetc(f)) != EOF && ch != '\n') {} /* drain */
+            /* an unterminated line that ran past the buffer: not the writer's
+             * shape; treated as damaged, same as a torn line below */
+            if (line[0] >= '0' && line[0] <= '9') out->damaged_lines++;
+            continue;
+        }
+        if (line[0] < '0' || line[0] > '9')
+            continue; /* the '#' header (the definition lives in the file), or
+                       * a blank line: not a data line by the file's own rule */
+        out->count++;
+        unsigned long epoch = 0, pub = 0, from = 0;
+        char gh[FX_OUTCOME_GENHASH_CAP] = {0};
+        if (sscanf(line, "%lu %lu %lu %71s", &epoch, &pub, &from, gh) != 4) {
+            /* Counted (the file's own definition is digit-initial lines) but
+             * unreadable: it can contribute nothing to `last` or recurrence.
+             * This cannot happen from the writer; a torn MERGE (the journal
+             * has no tail repair, so an append after a torn line joins it)
+             * or a forged line lands here. */
+            out->damaged_lines++;
+            continue;
+        }
+        out->have_last = 1;
+        out->last_epoch = epoch;
+        out->last_published = pub;
+        out->last_from_failed = from;
+        if (strcmp(gh, "-") == 0) gh[0] = '\0'; /* honest absence, not a hash */
+        copy_str(out->last_genhash, sizeof out->last_genhash, gh);
+        if (!gh[0] || !track) continue; /* '-' never matches for recurrence:
+                               * two unresolvable hashes are two ABSENCES, and
+                               * "the same content re-failing" is a claim the
+                               * evidence does not hold */
+        size_t i = 0;
+        for (; i < nseen; i++)
+            if (strcmp(seen[i].hash, gh) == 0) break;
+        if (i < nseen) {
+            if (++seen[i].n > out->recur_count) {
+                out->recur_count = seen[i].n;
+                copy_str(out->recur_genhash, sizeof out->recur_genhash, gh);
+                out->have_recur = 1;
+            }
+        } else {
+            if (nseen == capseen) {
+                size_t nc = capseen ? capseen * 2 : 16;
+                RecurEntry *ns = realloc(seen, nc * sizeof *seen);
+                if (!ns) {
+                    free(seen);
+                    seen = NULL;
+                    track = 0;
+                    continue;
+                }
+                seen = ns;
+                capseen = nc;
+            }
+            copy_str(seen[nseen].hash, sizeof seen[nseen].hash, gh);
+            seen[nseen].n = 1;
+            nseen++;
+        }
+    }
+    free(seen);
+    fclose(f);
+    return 0;
+}
+
 /* ── the rule ───────────────────────────────────────────────────────────── */
 
 /* fmt a report and return the verdict — one exit path for each verdict, so the
@@ -697,6 +811,64 @@ FxVerdict fx_outcome_verdict(const char *data_dir, const char *task,
         else
             snprintf(running, sizeof running,
                      "(the store's CURRENT could not be read: %s)", cerr);
+        /* THE RECOVERY JOURNAL: has this happened BEFORE?  A single failed
+         * boot is one mistake; the same machine rolling forward again and
+         * again is the oscillator, and only <store>/.recovery can say so —
+         * no single boot, and no bootlog line, carries "this has happened
+         * before".  The wording is bounded by the journal's own honesty
+         * limit (its header): a recurring genhash is the SAME FAULT
+         * RETURNING, not proof of a live oscillation.  An absent or
+         * unreadable journal degrades to its own honest sentence; it never
+         * fabricates a count, and it cannot change the verdict — the verdict
+         * was already ACTIVATION_FAILED before this line existed. */
+        char recovery[560];
+        {
+            FxRecovery rj;
+            char rerr[256] = {0};
+            if (fx_outcome_recovery(store, &rj, rerr, sizeof rerr) != 0) {
+                snprintf(recovery, sizeof recovery,
+                         "no roll-forward count: %s", rerr);
+            } else if (rj.journal_absent) {
+                snprintf(recovery, sizeof recovery,
+                         "no %s on this store (fx-init predates the journal, or\n"
+                         "             the store does) — whether this has happened before is\n"
+                         "             UNKNOWN, not zero",
+                         FX_OUTCOME_RECOVERY_FILE);
+            } else if (rj.count == 0) {
+                snprintf(recovery, sizeof recovery,
+                         "0 automatic roll-forwards on record (%s)\n"
+                         "             — this is the FIRST time this machine has had to recover",
+                         FX_OUTCOME_RECOVERY_FILE);
+            } else {
+                char head[96];
+                snprintf(head, sizeof head,
+                         "%lu automatic roll-forward(s) on record (%s",
+                         rj.count, FX_OUTCOME_RECOVERY_FILE);
+                /* the RECURRENCE leads — it is the journal's reason to exist,
+                 * so a truncating tail must eat it LAST */
+                char recur[256] = "";
+                if (rj.have_recur)
+                    snprintf(recur, sizeof recur,
+                             "; the content genhash %s has failed %lu time(s) —\n"
+                             "             THE SAME FAULT RETURNING, not a live-oscillation\n"
+                             "             claim (read the journal's epochs and .bootlog)",
+                             rj.recur_genhash, rj.recur_count);
+                char last[192] = "";
+                if (rj.have_last)
+                    snprintf(last, sizeof last,
+                             "; newest: v%lu republished from v%lu at epoch %lu,\n"
+                             "             content %s",
+                             rj.last_published, rj.last_from_failed, rj.last_epoch,
+                             rj.last_genhash[0] ? rj.last_genhash : "- (unresolvable)");
+                char floor[96] = "";
+                if (rj.damaged_lines > 0)
+                    snprintf(floor, sizeof floor,
+                             " (+%d torn/unparsable line(s) — the count is a FLOOR)",
+                             rj.damaged_lines);
+                snprintf(recovery, sizeof recovery, "%s%s%s%s)",
+                         head, recur, last, floor);
+            }
+        }
         return report(FX_VERDICT_ACTIVATION_FAILED, text, textcap,
             "fx-harness: OBSERVED OUTCOME — THE ACTIVATION THIS HARNESS RECORDED FAILED.\n"
             "            NOT REPEATING IT.\n"
@@ -706,6 +878,7 @@ FxVerdict fx_outcome_verdict(const char *data_dir, const char *task,
             "  bootlog  : \"v%lu failed\" in %s/%s — the boot of my generation failed and\n"
             "             fx-init rolled the store forward to older good content under a\n"
             "             NEW, HIGHER version number\n"
+            "  recovery : %s\n"
             "  running  : %s\n"
             "  rule     : \"if the generation I am running in is not the one I activated,\n"
             "              my activation failed — do not repeat it\"\n"
@@ -717,6 +890,7 @@ FxVerdict fx_outcome_verdict(const char *data_dir, const char *task,
             out->task, agent ? agent : "",
             out->config[0] ? out->config : "-", out->version,
             out->version, store, FX_OUTCOME_BOOTLOG_FILE,
+            recovery,
             running,
             data_dir ? data_dir : "(unset)",
             out->session[0] ? out->session : "-", out->run[0] ? out->run : "-",

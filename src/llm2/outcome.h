@@ -191,7 +191,12 @@ extern "C" {
 #define FX_OUTCOME_TASK_CAP 17
 #define FX_OUTCOME_PATH_CAP 512
 #define FX_OUTCOME_STATUS_CAP 32
-#define FX_OUTCOME_MSG_CAP 2048
+/* MEASURED: the ACTIVATION_FAILED report at the field caps (a 511-char config
+ * plus a 255-char session) plus the recovery-journal line runs to ~2600 bytes
+ * — the former 2048 cap already truncated the escape clause in that corner
+ * (the tail that names the task's only way out), and the journal line widened
+ * it.  3072 covers the worst case with margin. */
+#define FX_OUTCOME_MSG_CAP 3072
 
 /* The longest record line the WRITER can produce — every field at the cap the
  * reader parses it back with, plus separators.  The reader's buffer MUST be at
@@ -201,9 +206,21 @@ extern "C" {
  * 511-char config overflows it), so a pathological pair lost the record. */
 #define FX_OUTCOME_LINE_CAP (2 * FX_OUTCOME_PATH_CAP + 384)
 
-/* The store's two outcome files, relative to the store dir. */
-#define FX_OUTCOME_CURRENT_FILE ".db/snapshots/CURRENT"
-#define FX_OUTCOME_BOOTLOG_FILE ".bootlog"
+/* The store's outcome files, relative to the store dir.  .recovery is the
+ * RECOVERY JOURNAL (fx-init >= 4d6a8c2 writes it beside .bootlog): one DATA
+ * line per AUTOMATIC roll-forward, "<epoch> <published> <from> <genhash>",
+ * with the definition of what is counted — and its honesty limit — written in
+ * the file's own '#' header.  It is the substrate's half of the oscillator
+ * instrument: this unit (the agent's half) tells the agent "the activation
+ * failed, do not repeat it"; the journal says whether THAT HAS HAPPENED
+ * BEFORE, which no single boot can show. */
+#define FX_OUTCOME_CURRENT_FILE  ".db/snapshots/CURRENT"
+#define FX_OUTCOME_BOOTLOG_FILE  ".bootlog"
+#define FX_OUTCOME_RECOVERY_FILE ".recovery"
+
+/* The genhash field's width: the WRITER's own buffer (init.zig recovery_append
+ * formats into [72]u8), so a legitimate line always round-trips whole. */
+#define FX_OUTCOME_GENHASH_CAP 72
 
 typedef enum {
     FX_VERDICT_RUN = 0,        /* nothing to observe; run the task normally */
@@ -338,6 +355,55 @@ int fx_outcome_bootlog_verdict(const char *store, unsigned long version,
  * boot did.  Returns 1 and sets version_out/status_out, 0 when there is none. */
 int fx_outcome_bootlog_last(const char *store, unsigned long *version_out,
                             char *status_out, size_t scap);
+
+/* ── the recovery journal ────────────────────────────────────────────────── */
+
+/* What <store>/.recovery says.  THREE presence states, deliberately distinct:
+ * journal_absent (the file does not exist — a store that predates the journal,
+ * or an fx-init older than 4d6a8c2), count==0 with the journal present (this
+ * machine HAS never rolled forward — a measurement, not an absence), and
+ * count>0.  A reader that cannot tell them apart reports an absence where
+ * there is a zero, which is the weaker claim. */
+typedef struct {
+    int           journal_absent; /* no .recovery at all */
+    unsigned long count;          /* DATA lines: newline-terminated and
+                                   * digit-INITIAL, per the file's own header
+                                   * ("the count of recoveries is the number
+                                   * of lines starting with a digit") */
+    int           damaged_lines;  /* data-shaped lines SKIPPED: torn (no
+                                   * newline — a crash mid-append leaves a
+                                   * prefix) or unparsable.  NOT counted, so
+                                   * while >0 `count` is a FLOOR, not an
+                                   * exact figure — report it as such.  Unlike
+                                   * a torn ATTEMPT in the record (the DAMAGE
+                                   * RULE above), nothing here DECIDES a
+                                   * verdict; the journal is informational, so
+                                   * a skipped line degrades precision, it
+                                   * does not poison anything. */
+    int           have_last;      /* the newest line whose four fields parsed */
+    unsigned long last_epoch;
+    unsigned long last_published; /* the version the roll-forward REPUBLISHED */
+    unsigned long last_from_failed; /* the version that had failed */
+    char          last_genhash[FX_OUTCOME_GENHASH_CAP]; /* "" when the line
+                                   * carried '-' (the writer's honest
+                                   * "unresolvable", never a guess) */
+    int           have_recur;     /* one real genhash recurs across >= 2 data
+                                   * lines: THE SAME FAULT RETURNING — the
+                                   * recurrence a bare count cannot show, and
+                                   * the journal's own stated reason to exist */
+    char          recur_genhash[FX_OUTCOME_GENHASH_CAP];
+    unsigned long recur_count;    /* how many lines carry that genhash */
+} FxRecovery;
+
+/* Read <store>/.recovery — a PLAIN FILE read (never the runtime DB, which
+ * PID 1 holds under a process-lifetime lock).  Returns 0 with out filled for
+ * a readable journal AND for an absent one (journal_absent=1: a store that
+ * predates the journal is a state, not an error).  Returns -1 (err names the
+ * path) when no store was given — the store is NEVER guessed — or the file
+ * exists but cannot be read.  '-' genhashes never match for recurrence: two
+ * unresolvable hashes are two absences, not evidence of the same content. */
+int fx_outcome_recovery(const char *store, FxRecovery *out, char *err,
+                        size_t errcap);
 
 /* ── the rule ────────────────────────────────────────────────────────────── */
 

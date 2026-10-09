@@ -70,6 +70,14 @@
 # a disco read-back off the virtio disk (debugfs).  Nothing reads the runtime DB
 # — which is the point: the bootlog and CURRENT are plain files.
 #
+# THE RECOVERY JOURNAL is asserted on BOTH halves here: the SUBSTRATE half
+# (fx-init 4d6a8c2 writes <store>/.recovery — one data line per AUTOMATIC
+# roll-forward; boot 3's roll-forward MUST be on the disk, published=<the new
+# version> from=<the failed one>) and the AGENT half (the harness's
+# ACTIVATION_FAILED report carries the count, and the boot-1 fx_outcome reply
+# reads the journal through the model's own tool).  An agent that has just been
+# refused must SEE that this has happened before, not merely that it happened.
+#
 # Env: QEMU_BOOT_TIMEOUT (default 120)  QEMU_KEEP=1  FX_INIT_REPO
 #      FX_KERNEL_CACHE  OBS_MARKER  OBS_SKIP_BOOT=1 (stage + images only)
 set -u
@@ -260,6 +268,15 @@ for b in fx-init fx-activate fxctl activate_paths; do
     [ -x "$ZB/$b" ] || skip "$ZB/$b absent"
     assert_guest_elf "$ZB/$b" "x86-64"
 done
+# THE CACHE IS A MOVING REF — close it: the build above is SKIPPED when the
+# binaries are already there, so a cache from BEFORE fx-init 4d6a8c2 boots a
+# guest with NO recovery journal, and the journal assertions below would fail
+# with a misleading message.  The binary must CARRY the journal writer (its
+# header string) or the gate refuses to run — a stale cache is a loud failure,
+# not a silent wrong guest.  (MEASURED: a pre-4d6a8c2 cache made boot 1 read
+# "recovery absent" and the failure looked like a reader bug.)
+strings "$ZB/fx-init" 2>/dev/null | grep -q 'fx-init recovery journal' \
+    || fail "$ZB/fx-init predates the recovery journal (fx-init 4d6a8c2) — rebuild it: QEMU_AGENT_REBUILD_INIT=1 sh tests/qemu-agent-observe.sh"
 KCONFIG="$KCACHE/kernel/config"
 if [ -r "$KCONFIG" ] && grep -q '^CONFIG_IA32_EMULATION=y' "$KCONFIG"; then
     fail "the pinned kernel HAS IA32 emulation — the guest-ABI premise is void, re-read this lane"
@@ -705,6 +722,15 @@ cp "$WORK/obs-1-transcript.jsonl" "$EVID/obs-boot1-transcript.jsonl"
 grep -q 'fx_outcome' "$WORK/obs-1-transcript.jsonl" || fail "[obs] boot 1: the fixture's fx_outcome call is not in the transcript"
 grep -q "current $V_B" "$WORK/obs-1-transcript.jsonl" \
     || { grep -o 'exit=0.current [0-9]*' "$WORK/obs-1-transcript.jsonl" | head -3; fail "[obs] boot 1: the fx_outcome tool result does not report the guest's real CURRENT (v$V_B)"; }
+# THE RECOVERY JOURNAL THROUGH THE MODEL'S OWN TOOL: fx-init creates it (with
+# its definition header, zero data lines) on EVERY boot from the first, so the
+# boot-1 reply must read "recoveries 0" — the machine saying "never recovered",
+# which is a DIFFERENT state than "no journal".  FAILS if the guest's fx-init
+# predates the journal (the reply would say "recovery absent" — a stale cached
+# guest build) or the verb does not read the file at all (no recoveries line).
+grep -q 'recoveries 0' "$WORK/obs-1-transcript.jsonl" \
+    || { grep -o 'recover.\{0,60\}' "$WORK/obs-1-transcript.jsonl" | head -3; \
+         fail "[obs] boot 1: the fx_outcome reply does not read the recovery journal as ZERO — a store that has never recovered is a measurement, not an absence (stale fx-init guest build?)"; }
 # THE RECORD IS NOT MODEL-WRITABLE, IN THE GUEST (SF1): the fixture's 4th call
 # fx_writes the record path itself.  The refusal must be IN THE TRANSCRIPT
 # (naming the host-declared set), the forged content must be NOWHERE in the
@@ -775,6 +801,31 @@ halt
 read_from_disk "/store/.bootlog" "$WORK/obs-3-bootlog.txt"
 cp "$WORK/obs-3-bootlog.txt" "$EVID/obs-boot3-bootlog.txt"
 echo "--- [obs] boot 3: the disk .bootlog ---"; sed 's/^/    /' "$WORK/obs-3-bootlog.txt"
+# THE RECOVERY JOURNAL, SUBSTRATE HALF: boot 3's roll-forward is the machine's
+# FIRST automatic recovery, so the journal holds EXACTLY ONE data line, and it
+# must name THIS roll-forward: published=<the NEW version v$V_C> from=<the
+# FAILED v$V_A> (the writer's argument order — recovery_append(g_current_version
+# AFTER the republish, v_failed captured BEFORE it)).  FAILS if the guest's
+# fx-init predates the journal (file absent), if the guardrail refused the
+# roll-forward (nothing appended — but then the boot could not be running v_C),
+# or if the reader misparses the line.
+read_from_disk "/store/.recovery" "$WORK/obs-3-recovery.txt"
+cp "$WORK/obs-3-recovery.txt" "$EVID/obs-boot3-recovery.txt"
+echo "--- [obs] boot 3: the disk .recovery ---"; sed 's/^/    /' "$WORK/obs-3-recovery.txt"
+[ -s "$WORK/obs-3-recovery.txt" ] \
+    || fail "[obs] boot 3: no recovery journal on the disk — the guest fx-init predates 4d6a8c2 (rebuild with QEMU_AGENT_REBUILD_INIT=1)"
+REC3_N=$(grep -c '^[0-9]' "$WORK/obs-3-recovery.txt" || true)
+[ "$REC3_N" = 1 ] \
+    || { cat "$WORK/obs-3-recovery.txt"; fail "[obs] boot 3: the journal counts $REC3_N roll-forward(s) (want exactly 1 — this machine's first recovery)"; }
+grep -Eq "^[0-9]+ $V_C $V_A ([0-9a-f]+|-)\$" "$WORK/obs-3-recovery.txt" \
+    || { cat "$WORK/obs-3-recovery.txt"; fail "[obs] boot 3: the journal line does not name THIS roll-forward (published v$V_C from the failed v$V_A)"; }
+# THE RECOVERY JOURNAL, AGENT HALF: the refused agent's OWN REPORT carries the
+# count — the fixture is never dispatched on this boot, so the report is the
+# only surface where this agent can see that the machine has recovered.  This
+# is the whole point of the journal: "this has happened before", not merely
+# "it happened".
+grep -qF "1 automatic roll-forward(s) on record" "$WORK/obs-3.log" \
+    || { grep -n 'recovery' "$WORK/obs-3.log" | head -4; halt; fail "[obs] boot 3: the refusal report does not carry the recovery count — the refused agent cannot see that this has happened before"; }
 S3=$(session_count)
 [ "$S3" = "$S1" ] || fail "[obs] boot 3: the session count grew ($S1 -> $S3) — the refused task was STARTED"
 MAX3=$(bootlog_max_version "$WORK/obs-3-bootlog.txt")
@@ -800,6 +851,16 @@ halt
 read_from_disk "/store/.bootlog" "$WORK/obs-4-bootlog.txt"
 cp "$WORK/obs-4-bootlog.txt" "$EVID/obs-boot4-bootlog.txt"
 echo "--- [obs] boot 4: the disk .bootlog ---"; sed 's/^/    /' "$WORK/obs-4-bootlog.txt"
+# the journal is UNCHANGED by the settled boot: still exactly the one
+# roll-forward, and the report still names it (a second data line here would
+# mean the "settled" machine recovered AGAIN — the loop leaking).
+read_from_disk "/store/.recovery" "$WORK/obs-4-recovery.txt"
+cp "$WORK/obs-4-recovery.txt" "$EVID/obs-boot4-recovery.txt"
+REC4_N=$(grep -c '^[0-9]' "$WORK/obs-4-recovery.txt" || true)
+[ "$REC4_N" = "$REC3_N" ] \
+    || { cat "$WORK/obs-4-recovery.txt"; fail "[obs] boot 4: the journal grew ($REC3_N -> $REC4_N) — the settled machine recovered again"; }
+grep -qF "1 automatic roll-forward(s) on record" "$WORK/obs-4.log" \
+    || { tail -40 "$WORK/obs-4.log"; halt; fail "[obs] boot 4: the re-reported failure does not carry the recovery count"; }
 OBS_MAX=$(bootlog_max_version "$WORK/obs-4-bootlog.txt")
 OBS_FAILED=$(bootlog_failed_count "$WORK/obs-4-bootlog.txt")
 [ "$OBS_MAX" = "$V_C" ] \
@@ -874,6 +935,16 @@ halt
 read_from_disk "/store/.bootlog" "$WORK/blind-4-bootlog.txt"
 cp "$WORK/blind-4-bootlog.txt" "$EVID/blind-boot4-bootlog.txt"
 echo "--- [blind] boot 4: the disk .bootlog (the RATCHET) ---"; sed 's/^/    /' "$WORK/blind-4-bootlog.txt"
+# THE SUBSTRATE HALF IS ARM-INDEPENDENT: the blind arm's fx-init also rolled
+# forward (boot 3, before its agent blindly re-activated), so its journal holds
+# exactly the one line TOO — the counter counts whether or not anyone reads it.
+# The DIFFERENCE between the arms is what the AGENT does with it, and only
+# that (asserted above: this arm's harness prints no report at all).
+read_from_disk "/store/.recovery" "$WORK/blind-4-recovery.txt"
+cp "$WORK/blind-4-recovery.txt" "$EVID/blind-boot4-recovery.txt"
+BLIND_REC=$(grep -c '^[0-9]' "$WORK/blind-4-recovery.txt" || true)
+[ "$BLIND_REC" -ge 1 ] \
+    || { cat "$WORK/blind-4-recovery.txt"; fail "[blind] boot 4: the blind disk's journal is empty — the SUBSTRATE half did not count the blind arm's own roll-forward (fx-init predates 4d6a8c2?)"; }
 BLIND_MAX=$(bootlog_max_version "$WORK/blind-4-bootlog.txt")
 BLIND_FAILED=$(bootlog_failed_count "$WORK/blind-4-bootlog.txt")
 [ "$BLIND_MAX" -gt "$V_E" ] \
@@ -910,9 +981,11 @@ echo "                      blind    : $BLIND_FAILED failed lines, $BLIND_VERSIO
 echo
 echo "qemu-agent-observe: PASS"
 echo "  ARM OBSERVING: bracket v$V_B -> the agent activated v$V_A (recorded durably on the disk, outcome read"
-echo "                 back through fx_outcome) -> v$V_A FAILED ('$V_A failed' in the disk .bootlog) -> the"
-echo "                 next boot rolled forward to v$V_C -> the restored bracket re-ran the agent, which READ"
-echo "                 ITS OWN RECORD, reported 'THE ACTIVATION THIS HARNESS RECORDED FAILED' and issued no"
+echo "                 back through fx_outcome, which also read the recovery journal as ZERO) -> v$V_A FAILED"
+echo "                 ('$V_A failed' in the disk .bootlog) -> the next boot rolled forward to v$V_C (ONE journal"
+echo "                 line: published v$V_C from v$V_A) -> the restored bracket re-ran the agent, which READ"
+echo "                 ITS OWN RECORD, reported 'THE ACTIVATION THIS HARNESS RECORDED FAILED' WITH the recovery"
+echo "                 count (the refused agent SEES this has happened) and issued no"
 echo "                 further activation (session count unchanged) -> boot 4: same report, still nothing"
 echo "                 created -> SETTLED: max version v$OBS_MAX, $OBS_FAILED failed line."
 echo "  ARM BLIND: the SAME sequence on its own disk, with the SAME binary built -DFX_HARNESS_NO_OBSERVE"

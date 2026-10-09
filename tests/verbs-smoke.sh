@@ -134,6 +134,22 @@ cat > "$ROOT/fx/disk/store/.bootlog" <<'BOOTLOG'
 7 in-progress 1791556292
 7 failed 1791556292
 BOOTLOG
+# The RECOVERY JOURNAL beside it (fx-init 4d6a8c2's format, from the writer):
+# '#' header lines, then one "<epoch> <published> <from> <genhash>" data line
+# per AUTOMATIC roll-forward.  This fixture is the OSCILLATOR the journal
+# exists to make visible: the same content (deadbeef...) recovered to TWICE,
+# plus a torn last line (a crash mid-append) — count 3, recurrence x2, floor.
+# The torn line is written WITHOUT its newline, exactly as a torn append is.
+cat > "$ROOT/fx/disk/store/.recovery" <<'RECOVERY'
+# fx-init recovery journal. One DATA line per AUTOMATIC roll-forward:
+# fx-init republished an older ok generation because the current
+# version's last .bootlog verdict was failed/in-progress.
+# line: <epoch-s> <published-version> <from-failed-version> <content-genhash|->
+1791556230 4 3 deadbeef0123456789abcdefdeadbeef0123456789abcdef
+1791556258 6 5 deadbeef0123456789abcdefdeadbeef0123456789abcdef
+1791556288 8 7 cafef00d0123456789abcdef
+RECOVERY
+printf '%s' "1791556310 10 9 dead" >> "$ROOT/fx/disk/store/.recovery"
 
 # ── the driver ───────────────────────────────────────────────────────────────
 python3 - "$ROOT" "$BIN" <<'DRIVER'
@@ -279,7 +295,8 @@ os.unlink(os.path.join(root, "drift-flag"))
 # 11b/11c — THE OUTCOME INSTRUMENT: fx_outcome reports the boot history and the
 # generation this boot is running; fx_generation reports just the number.  Both
 # read the store's OWN plain files (the state planted above is fx-init's real
-# disk .bootlog for a FAILED generation).
+# disk .bootlog for a FAILED generation, and its .recovery journal for a machine
+# that has rolled forward THREE times — the same fault twice).
 d = call("fx_outcome", {}, 19)
 txt = tool_text(d)
 ok("fx_outcome: current generation + the previous boot's verdict + the history",
@@ -293,6 +310,22 @@ ok("fx_outcome: current generation + the previous boot's verdict + the history",
 ok("fx_outcome: the history is in bootlog ORDER, one line per boot",
    txt.index("boot 3 in-progress") < txt.index("boot 3 ok")
    < txt.index("boot 7 in-progress") < txt.index("boot 7 failed"), txt)
+# 11b-J — THE RECOVERY JOURNAL, the has-this-happened-before half.  FAILS if
+# the verb ignores <store>/.recovery (no recoveries line), counts the '#' header
+# or the torn tail (wrong number), loses the last/newest line, claims a
+# recurrence without the honesty limit, or hides the torn floor.
+ok("fx_outcome: the recovery journal — count, last, recurrence, torn floor",
+   "recoveries 3\n" in txt
+   and "recovery_last 1791556288 published v8 from v7 genhash "
+       "cafef00d0123456789abcdef\n" in txt
+   and "recovery_recur deadbeef0123456789abcdefdeadbeef0123456789abcdef"
+       " x2 — the SAME fault returning" in txt
+   and "not a live-oscillation claim" in txt
+   and "recovery_torn 1 line(s) skipped" in txt
+   and "the count is a FLOOR" in txt, txt)
+ok("fx_outcome: the journal section sits between `last` and the boot history",
+   txt.index("last 7 failed\n") < txt.index("recoveries 3\n")
+   < txt.index("boot 3 in-progress"), txt)
 d = call("fx_generation", {}, 20)
 ok("fx_generation: one line, the store's CURRENT",
    tool_text(d) == "exit=0\ncurrent 7\n", repr(tool_text(d)))
