@@ -17,6 +17,7 @@
 
 CC      ?= cc
 CFLAGS  := -std=c11 -O2 -g -Wall -Wextra \
+           -ffile-prefix-map=$(CURDIR)=. -fdebug-prefix-map=$(CURDIR)=. \
            -Isrc -Isrc/llm2 -Isrc/vendor/dhall-c -Isrc/vendor/yyjson \
            -Ibuild/include \
            -Isrc/vendor/tomlc99 \
