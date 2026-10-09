@@ -298,6 +298,63 @@ checkable task:
 > non-zero.** Services are already supervised by fx-init (restart/backoff/probe), and the harness
 > already spawns stdio MCP servers, so the machinery exists end to end.
 
+### 7.1a Egress: Dhall-typed MCP, not raw sockets
+
+**USER (2026-10-13): "not raw sockets, something around dhall-typed MCP only (so it never sees the ACTUAL
+network)."** The guest keeps `CONFIG_NET` unset, so every property built on that survives — the single
+declared egress, no exfiltration channel, and no TCP clock in the guest.
+
+**TYPING BEATS FIREWALLING HERE:** the bound becomes a **type**, not a policy filter. The agent cannot
+express "reach evil.com" because no such value exists in its vocabulary — the same move as the missing
+`/bin/sh` and the closed `fx-*` set, one level up.
+
+**THE LOAD-BEARING ELEMENT a Dhall *schema* does not provide.** A tool schema is a **signature**;
+something must **implement** it, and that something is the only place the real network exists. So the
+design requires a **closed, host-owned catalog of network PRIMITIVES** — `http.get`, `http.post`, … with
+constrained parameters (allowed hosts, methods, size caps, read-only vs publish) — which Dhall
+declarations may only **instantiate, never invent**. Without it, a "Dhall tool schema" is either a
+signature with no implementation or a generic escape hatch that undoes the design. The model to copy is
+`fxstore`'s `Action` union: a closed, enumerable vocabulary of operations the system will actually
+execute, applied to the network.
+
+**READ AND PUBLISH MUST BE DIFFERENT TYPES.** Exfiltration *is* a publish, and "the agent can POST
+anything to anywhere it can reach" is the regret case. With them typed, *"this generation can only READ
+from these three hosts"* is enforced by the type rather than hoped for by a rule.
+
+**AGENT-AUTHORED MCP SERVERS ARE NOT NETWORK ACCESS**, which is what keeps the graph clean: a
+guest-authored server is the agent's own logic under LuaJIT, and it reaches the world only through the
+harness's tool table, populated from the **host**.
+
+```
+guest MCP server (agent logic) -> harness tool table -> the chardev  <- THE ONLY EGRESS
+                                                        host proxy: policy from the ACTIVE
+                                                        GENERATION's Dhall, credentials, one log
+```
+
+The chardev already carries the model stream and now carries network-tool requests too: **one device,
+all egress** — so the property holds for everything, and the guest never sees a socket, an IP or a token.
+
+**THE PAYOFF, PRECISELY.** Two independent records: **declared reach** (the generation's Dhall —
+content-addressed, rollback-able, answerable as a *query*: "what could this generation reach?") and
+**observed reach** (the host's one log). **The interesting audit is the difference** — traffic not
+licensed by a declaration is a finding; a declaration never exercised is a stale grant. Rollback rolls
+back the *grant* alongside the code.
+
+**THE SEAT ALREADY EXISTS, so this is an extension, not a new mechanism:** the runtime config *is* Dhall
+and is evaluated in-process by dhall-c (`config.c:10` documents `{ agents = [ {name, agent_type, model,
+default_max_turns, mcp_servers} ] }`), and it already carries a tool policy (`enabled_tools`/
+`disabled_tools` → `ToolPolicy`) plus `mcp_servers` with `api_key_env_var`. The system config's
+`Service` record is Dhall too. Egress declarations extend both existing schemas.
+
+**RESIDUALS, stated so the design does not overclaim:**
+- **Prompt injection is not fixed by typing.** Fetched content entering the agent's context cannot be
+  distinguished from instructions by the model. Not a containment failure — but "the agent fetched a page
+  and then did what the page said" is a live failure mode; the mitigation is that its actions stay typed
+  and logged, so the consequence is visible rather than silent.
+- **Every oracle in the family must be able to SEE capability changes**, because **an egress grant is a
+  capability increase and a code-only oracle (like `osier-share`) is blind to it.** Otherwise the agent
+  satisfies the oracle while quietly widening what it can reach. A general requirement on every oracle.
+
 ### 7.2 Trial vs accepted GC roots
 `gc --retain N` exists. A self-reboot loop accumulates generations. Decide which generations are
 collectable trials and which are pinned accepted history — or the store grows without bound, or the
