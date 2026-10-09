@@ -234,8 +234,14 @@ int fx_outcome_record_load(const char *data_dir, const char *task, FxOutcome *ou
          * still yield a full field set — a truncated version token parses as a
          * version, and a truncated version that matches a real bootlog line
          * would decide ACTIVATION_FAILED or ALREADY_DONE from a CORRUPT record.
-         * Skipping it means the record has no result for this task, i.e. the
-         * conservative UNRESOLVED branch — never a silent "done". */
+         * THE BOUND OF THIS SKIP, stated because the short version of it is
+         * FALSE: it is conservative for a torn RESULT line (the task then has no
+         * result, i.e. the UNRESOLVED branch — never a silent "done"), but it is
+         * NOT conservative for a torn ATTEMPT line whose result line DID land —
+         * the attempt vanishes, the result survives, and the verdict is RUN, the
+         * re-issuing direction.  Reachable only through a partial write followed
+         * by a successful one (ENOSPC); ungated and pre-existing, recorded in
+         * todo.md section 3 rather than papered over here. */
         if (!strchr(line, '\n')) continue;
         unsigned long epoch = 0, version = 0;
         char rtask[FX_OUTCOME_TASK_CAP] = {0};

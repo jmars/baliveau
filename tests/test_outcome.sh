@@ -684,7 +684,10 @@ note "$("$TMP/probe" "$TMP/probe-data.2" | sed 's/^/   /')"
 # legitimately lack a pin; that is a SKIP said OUT LOUD, never a silent
 # vacuous pass.  And the control's DOMAIN is asserted: a pinned source that
 # happens to EQUAL the working file would prove exactly as little as a moving
-# one, so each extraction is diffed against the tree and a match FAILS.
+# one, so each extraction is diffed against the tree and a match SKIPS this arm
+# LOUDLY (it does not fail the gate: the other arm pins the fixed behaviour
+# unconditionally, so a reverted fix still turns the gate red rather than
+# passing vacuously).
 PIN_STICKY="648984f^"   # the sticky-done loader (the bug 648984f fixed)
 PIN_FALSE="648984f"     # the loader whose done->attempt->result returned RUN
 PRE86=""

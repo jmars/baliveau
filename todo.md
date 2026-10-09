@@ -98,6 +98,18 @@ certifies coherence; neither says "improved".
 - [ ] **`tests/qemu-agent-b2.sh:~602` carries the comment-blind substring `console_pin`** that
       `tests/qemu-agent-observe.sh` had fixed (a `console = Some "console"` inside a COMMENT passes a
       non-console row). Same one-line `strip_comments` fix; out of the 648984f lane's scope.
+- [ ] **A torn ATTEMPT line can yield RUN — the re-issuing direction.** The loader skips an
+      unterminated record line, which is conservative for a torn *result* line (no result → the
+      UNRESOLVED branch, never a silent `done`) but NOT for a torn *attempt* line whose result line
+      did land: the attempt vanishes, the result survives, and the verdict is RUN. MEASURED at the
+      API by `handoff-order-review`; reachable only through a partial write followed by a successful
+      one (ENOSPC). Pre-existing and ungated — now stated in the `outcome.c` skip comment, which
+      previously claimed the skip was conservative without qualification. A fix must decide whether a
+      torn line POISONS the record for that task or is merely skipped; do not paper it over.
+- [ ] **The outcome verdict table's overlapping cell is ungated.** `A ok ∧ C == A ∧ no done` is
+      decided by row ORDER (MEASURED → SUPERSEDED), and the table now says so, but no assertion pins
+      the precedence — reordering the branches would change a verdict silently. Also ungated: the
+      `done→attempt→result` order at `C ≠ A`, and the v0-result reinstatement.
 
 ## 4. Design items awaiting a decision
 

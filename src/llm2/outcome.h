@@ -65,10 +65,20 @@
  *        C = <store>/.db/snapshots/CURRENT (the generation this boot runs)
  *
  *        "done in force" = a done line FOLLOWS the last attempt, OR a done
- *        line PREDATES it and that attempt is itself ACCOUNTED (a result
- *        line follows it).  A done line never settles an attempt that is
- *        still unaccounted — but a completed task stays completed once no
- *        unaccounted activation is left to settle.
+ *        line PREDATES it and that attempt is itself ACCOUNTED.  ACCOUNTED
+ *        means a result line follows the attempt — INCLUDING one that named no
+ *        generation (a v0 result): the run reached a verdict about its own
+ *        activation, so the attempt is settled even though the activation is
+ *        not.  A done line never settles an attempt that is still unaccounted —
+ *        but a completed task stays completed once no unaccounted activation is
+ *        left to settle.
+ *
+ *        THE ROWS BELOW OVERLAP ON ONE CELL and are evaluated IN THE ORDER
+ *        WRITTEN, which decides it: the bootlog verdict on A is reached BEFORE
+ *        the C == A comparison.  So for A ok AND C == A with no done, the
+ *        SUPERSEDED row decides, not the RUN row (MEASURED — re-derived and
+ *        driven by hand in the ordering review).  The list is a precedence
+ *        order, not a set of disjoint patterns.
  *
  *        no activation recorded, not done        -> RUN
  *        no activation recorded, done in force   -> ALREADY_DONE (do not re-run)
