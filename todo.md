@@ -56,11 +56,21 @@ certifies coherence; neither says "improved".
 
 ## 2. Measurements still owed
 
-- [ ] **A recovery counter** (§7.2). The oscillator was invisible because nothing counts recoveries:
-      every individual boot looks locally correct. Instrument it.
+- [x] **A recovery counter** — `fx-init 4d6a8c2`: `<store>/.recovery`, an append-only journal beside
+      `.bootlog`, one data line per AUTOMATIC roll-forward (`<epoch> <published> <from> <genhash>`),
+      with the definition and the honesty limit written in the FILE'S OWN HEADER. It is written by
+      PID 1 and read by a plain file read, never the runtime DB. Gated by `tests/qemu_recovery_count.sh`
+      (exit 0) against a pinned `9b20161` control that fails all ten journal assertions, and it counts
+      a REAL oscillation: exactly 1 then 2 roll-forwards with an IDENTICAL genhash — the recurrence
+      visible. A refused recovery and a deliberate operator rollback append NOTHING.
+- [ ] **BUT NOTHING READS IT YET** — the seat is written and called by nobody, which is
+      indistinguishable from an absent seat. `fx_outcome` must surface it so the AGENT sees that its
+      activation has now failed three times, not merely that it failed. In flight as
+      `handoff-outcome-recovery`.
 - [ ] **`.bootlog` growth**: unbounded, fully rescanned by `bootlog_last`/`bootlog_newest_ok_below` on
       every boot, and `fsync`'d per append. The guardrail bounds growth to real boots, so this is
       lower priority — but state the policy (rotate, cap, or index) rather than leaving it implicit.
+      `.recovery` has the same shape and now the same question; `src_of` inherits it (never reaped).
 
 ## 3. Known defects, pre-existing, not hidden
 
@@ -128,9 +138,29 @@ certifies coherence; neither says "improved".
       planted `CURRENT == A` only); (3) the v0-result reinstatement → ALREADY_DONE (a result naming no
       generation still accounts the attempt; a version check on the reinstatement fails it); (4) the
       torn-attempt DAMAGE RULE arm (see the entry above).
+- [ ] **The system carries TWO implementations of the store, and the `facts` seat is in ONE.** fx-init
+      LINKS the vendored C core (`Dhakefile.dhall:21` — "links fxstore_c (vendored C fxstore +
+      dhall-c core)"), and `zig/src/fxstore.zig` is the facade over it; the user-facing `fxstore` CLI
+      is the Zig port, built from the SIBLING checkout (`m3/package-set.dhall:128`,
+      `src = < Path = "../../fxstore" >`), which is also what the harness freezes and stages.
+      **CORRECTION, append-only:** the note added in `fx-init 9b20161` — "a deployment that builds its
+      fxstore from this tree's vendor/ will NOT have `facts` at all" — is a PROJECTION PAST THE
+      EVIDENCE. Nothing builds the user-facing fxstore from `vendor/`; the vendor copy is an include
+      root, not a product. What survives: two implementations of one store coexist, `facts` exists in
+      the Zig port only, and a deployment missing it fails LOUDLY at the oracle's capability probe
+      (measured — the probe was added precisely because a stale neighbouring binary was found).
 
 ## 4. Design items awaiting a decision
 
+- [x] **`src_of` closes the store's attribution gap** (`fx-init 9b20161`, read by the oracle
+      since `d94ea77`): the store could say *that* a package was built but not *which source*,
+      because `srcstore` is append-only while `provides`/`install`/`svc_*` are cleared per
+      activation — so a rebuilt package left two live rows for one name and the oracle refused
+      loudly on any store with a rebuild. `src_of(deriv_hash, src_hash, name)` is committed in the
+      activation txn, keyed by the same `<hash>` `provides` uses, so a generation resolves its
+      own source exactly. Open sub-item: `src_of` rows are **never gc-reaped** (gc keys `srcstore`
+      by name-unreachability; a deriv-hash-keyed row has no reap path) — growth is bounded by the
+      rebuild count, not by time.
 - [x] **The write surface is now a CLOSED, HOST-DECLARED set** (`648984f`). It *was* an unstated
       assumption: the loop's guardrail rested on the record being beyond the agent's reach, and
       `fx_write` could truncate ANY path under `FX_VERB_ROOT` — so a model could erase its own
@@ -140,6 +170,11 @@ certifies coherence; neither says "improved".
       (root-relative, canonicalized, `O_NOFOLLOW`) with an UNSET default of exactly the task config
       path, so a forgetful deployment cannot re-open the hole. READS stay open deliberately, and the
       bound is stated as a property of the TOOL TABLE, not of the record's location.
+      **CONSEQUENCE FOR THE FIRST SELF-MODIFICATION TASK, not yet decided:** the default set is
+      ONE path, so an agent cannot introduce a new COMPONENT — a component must be a package, and
+      the package set is a different file. The host declares the set per task, so the first task's
+      deployment must name whatever the task legitimately writes (the config AND how a component
+      enters the closure). That is a design decision for the task, not a patch to the bound.
 - [ ] **The runtime-record gap.** A direct exec of `/bin/fx-activate` writes **no `rt_effect("activate")`**,
       no runtime-DB update, no hot-apply. The agent's activation is recorded in the *store* but not in
       the *runtime record*. Accept "a cold activate, effective on next boot" — or record it? (Note the
@@ -167,7 +202,41 @@ certifies coherence; neither says "improved".
 - [ ] **THE FIRST SELF-MODIFICATION TASK**: the agent writes an **MCP server in Osier**, activates it
       as a **service**, and the `osier-share` numerator moves **0% → non-zero**. Every piece exists
       except the backend. This is the smallest change that demonstrates self-modification *with
-      provenance*.
+      provenance*. **THE GROUND IT NEEDS — work through this list the moment the backend lands, so the
+      task is a step and not a discovery:**
+        - **WHO PUTS THE COMPONENT IN THE CLOSURE — decide this first.** `osier-share` counts
+          components of the ACTIVE GENERATION, and a component reaches the closure as a **package**
+          (`provides(pkg, store_dir)` -> `src_of` -> its `.elm` source artifact). So an agent-authored
+          MCP server is not counted unless the generation's closure contains the package it lives in.
+          Two shapes: (a) the agent writes a **package-set entry** as well as its source — the agent
+          then owns part of the BUILD GRAPH, which is exactly what `FX_AGENT_WRITABLE` (default: one
+          path) was closed against; (b) the deployment pre-declares **a slot** — one placeholder
+          package whose `src.path` is a directory the agent may write — leaving the package set
+          host-frozen and the agent supplying SOURCE ONLY. **(b) is the recommended default**: it keeps
+          the closed write set closed, keeps the build graph out of the agent's reach, and still moves
+          the number. Either way the writable set for that task is a DELIBERATE, NAMED host decision —
+          not a widening of the default.
+        - **THE RECIPE IS HOST-FROZEN, AND IT IS THE GRADER.** The package's build action runs the
+          Osier->Lua compiler over the agent's source and installs the produced Lua. The agent supplies
+          source; the HOST supplies the compiler and the recipe. This is the same line the lane already
+          states: *the agent may have a compiler; it may not have the one that GRADES it* — and the
+          oracle is host-side precisely so the grading cannot be written by the thing being graded.
+        - **WHAT THE SERVICE LOOKS LIKE.** `svc_bin` must resolve to the artifact, run under in-guest
+          LuaJIT (already shipped, JIT gated two-sidedly), speaking newline-framed JSON-RPC on stdio —
+          the same shape `tools/fx-verbs-server.c` and `mcp_client.c` already use, so the plumbing
+          exists and the language is what changes. A NEW, non-console service is the right shape: it
+          may legitimately FAIL, and a boot failure is what the recovery journal and the observation
+          loop now handle. Do NOT copy the console pin onto it.
+        - **THE ACCEPTANCE, stated as an asymmetry:** on the same machine, `osier-share` over the RUN
+          SET reads **0%** before the agent's component is activated and **non-zero** after, the new
+          component appears in the per-component table attributed **by the store** (not by a host
+          tree), and the closure number moves with it. A number that moves without the component being
+          attributed is not the same claim.
+        - **STILL MISSING BEYOND THE BACKEND:** nothing in the guest can yet BUILD a package (the
+          provisioned store is toolchain-free by design, `activate_paths`), so the first task needs
+          either a host-side build step or an in-guest one — decide which, and note that an in-guest
+          build is what makes the agent's source reach the store *inside* the machine rather than
+          being copied into it.
 - [ ] **LuaJIT JIT on/off in the guest**: shipped ON and gated two-sidedly; the *compiler* and
       agent-authored MCP servers are the long-running workloads that justify it. Measure per lane.
 
