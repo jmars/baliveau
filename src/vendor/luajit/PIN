@@ -1,0 +1,51 @@
+Vendored LuaJIT -- pin record
+=============================
+
+upstream     https://github.com/LuaJIT/LuaJIT.git
+branch       v2.1   (LuaJIT uses rolling releases and ships no release tarballs;
+                     luajit.org/status.html names v2.1 the maintained production
+                     branch -- the git repository is the authoritative origin)
+commit       c6ffc141a8762b41703f9287d63d93622a13dd8f
+commit_date  2026-09-08T08:43:01Z   (unix ctime 1788856981)
+             commit subject: "PPC: Fix string.* fast functions with P64 set (testing only)."
+
+fetched with:
+    git clone --depth 1 --branch v2.1 https://github.com/LuaJIT/LuaJIT.git
+    tar --exclude=.git -cf - . | tar -xf -      # into this directory
+
+The `.git` directory is deliberately NOT vendored: an embedded repository is
+recorded by the outer git as a gitlink (no content), which would leave the pin
+unverifiable from the tree.  The pin is instead the tree itself -- see below.
+LuaJIT's own `.relver` (a `$Format:%ct$` placeholder, expanded only at archive
+export time) is therefore unexpanded here, and tools/build-luajit.sh passes
+GIT_RELVER to pin the rolling version string to this commit's ctime.
+
+rolling version  2.1.1788856981
+version string   LuaJIT 2.1.1788856981 -- Copyright (C) 2005-2026 Mike Pall.
+
+tree identity -- 232 upstream files:
+    MANIFEST_SHA256 = 506b92ea57b2e6051ae0ef936010d1df7310600d8fc248120af11da70a928aba
+    computed as:  find . -type f ! -name PIN | sort | xargs sha256sum | sha256sum
+    (this PIN file is a local addition and is excluded from the manifest)
+    MEASURED: identical to the manifest computed over the fresh clone at the
+    commit above, both before the build and after `make clean`.  The vendored
+    tree carries no local modifications to LuaJIT sources or Makefiles -- so the
+    pin is the tree hash, not just a hash written into a file.
+
+Build: tools/build-luajit.sh (see that file for the toolchain reasoning).
+
+Measured properties of the artifact from that pin (MEASURED 2026-10-09, this host,
+zig 0.16.0; JIT ON, FFI OFF, static, stripped):
+
+    build/luajit.musl             849,448 bytes   sha256 279ab005b34984fc47c7fea2813621d08c95bd32b5ea2bd183130e7b5c7f1137
+    build/luajit.musl.unstripped  4,122,400 bytes
+    file -b  ELF 32-bit LSB executable, Intel i386, version 1 (SYSV), statically linked, stripped
+    readelf -d  no dynamic section (0 NEEDED entries)
+    jit.status()  true  -- x86 Linux, JIT compiles traces
+
+    same source with -DLUAJIT_DISABLE_JIT added (NOT shipped; measured only, to
+    price the JIT): 650,008 bytes stripped / 3,070,064 unstripped -- i.e. the JIT
+    costs 199,440 bytes (~23%) of the stripped artifact.
+
+The stripped size is the number that matters for the guest download budget
+(3,926,476 bytes total): this binary is ~21.6% of it as built.
