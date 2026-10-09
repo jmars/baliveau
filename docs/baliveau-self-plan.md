@@ -1,10 +1,35 @@
-# Eigenform — self-plan
+# Baliveau — self-plan
 
 **A system that reconfigures itself, and is selected by whether it comes back up.**
 
-`eigenform`: von Foerster's term for *the fixed point of a recursive operation — the object that is
-its own description*. That is what `fixpoint-linux` becomes once an agent closes the loop: the
-system's own specification is produced by the system.
+The name is **silvicultural, and it is the design**. In a coppice, the underwood is cut on a rotation
+and regrows from the stool every cycle — but the **baliveaux** are the young trees the woodsman
+*deliberately leaves standing* through every cutting, so they grow into full standards while the wood
+around them is taken and comes back. **The baliveau is the reserved generation: the thing you keep
+while everything around it is cut and regrows.** It names the *persistence* rather than the process —
+which is the thesis: provenance and rollback are properties of the substrate, not features granted to
+the agent. (The user is in France and the audience is francophone, so the word costs nothing to
+recall.)
+
+**NAME CHANGED 2026-10-13, from `eigenform`.** Not for the usual reason: `eigenform` was *less*
+crowded than `fixpoint` (18 GitHub repositories against 445, and free on PyPI where `fixpoint` is
+taken) — a word being taken is normal here and already accepted. It was dropped because **one project
+in the same field is actively developed**: `rdmontgomery/eigenform`, *"a local control surface over
+Claude Code: context surgery on sessions (fork/rewind/edit/inject)…"*, Rust, pushed the day of the
+decision, with a Homebrew tap. That is a *derivation* collision, not a namespace one, and it is the
+only kind that matters here. The lesson, since it governs every future naming: **the bar is not "an
+unused word" (unreachable — every ordinary word is on PyPI) but "no active project in the same
+field."**
+
+Availability of `baliveau` (CHECKED, 2026-10-13): **zero GitHub repositories**, and free on PyPI, npm
+**and** crates.io; `fixpoint-linux/baliveau` free in the org. (French silvicultural vocabulary turns
+out to dissolve the apt-but-taken vs free-but-opaque trade entirely, because that vocabulary is French
+and English-language software does not use it. Rejected on collision: `heartwood` — also a
+code-provenance project, `radicle-dev/heartwood`; `cambium` — 547★ occupant. Rejected on accents, since
+a binary cannot carry them: `cépée`, the clump of shoots from one stool, which was semantically the
+closest word of all. `éclaircie`, "thinning" — the operation that removes the weaker so the better
+grow — survives unaccented and is a good name for the *selection* step, i.e. the oracle, rather than
+for the project.)
 
 **This is a NEW design.** The name `setpoint` is reused, and the VLHA-era design record
 (`~/setpoint/design/architecture.md`: the substrate-heterogeneous triple network, the currency,

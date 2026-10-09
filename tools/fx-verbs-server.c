@@ -12,7 +12,14 @@
  *                                         svc, svc_argv, install, provides,
  *                                         user, log)
  *   fx_status        fxctl status
- *   fx_activate      fxctl activate <config>
+ *   fx_activate      fx-activate <config>  the RUNNING ROOT's own activator
+ *                                         (/bin/fx-activate, the binary PID1's
+ *                                         activate handler execs) with the
+ *                                         guest's persistent store + frozen
+ *                                         package set.  NOT `fxctl activate`:
+ *                                         fxctl has no transport in the guest
+ *                                         (no socket layer; the virtio port's
+ *                                         single input queue belongs to PID1).
  *   fx_rollback      fxctl rollback <version>
  *   fx_what          fxstore what <target>    provenance proof tree for an
  *                                             installed path
@@ -120,12 +127,18 @@ static char *root_join(const char *rel) {
 
 /* Look a verb command up under the root: first <ROOT>/usr/fx-core/bin (where
  * fx-init stages fxsh + the fx-* set), then <ROOT>/fx/store/bin (the store
- * bin dir).  Returns a malloc'd absolute path, or NULL when nothing
- * executable matches. */
+ * bin dir), then <ROOT>/bin — the RUNNING root's bin dir, where the
+ * activation materializes one symlink per tool + service package into the
+ * store (`activate.zig` collect /bin symlinks: init, fxctl, dhake,
+ * fx-activate, fxstore for a pkg that declares it).  Without "bin" the verbs
+ * that only exist there (notably /bin/fx-activate, which is the binary
+ * fx-init's OWN activate handler execs) resolve to nothing in the guest.
+ * Returns a malloc'd absolute path, or NULL when nothing executable matches. */
 static char *resolve_command(const char *cmd) {
     static const char *const DIRS[] = {
         "usr/fx-core/bin",
         "fx/store/bin",
+        "bin",
     };
     for (size_t i = 0; i < sizeof(DIRS) / sizeof(DIRS[0]); i++) {
         char *dir = root_join(DIRS[i]);
@@ -473,7 +486,11 @@ static int native_ls(const char *path, Capture *out, int *exitcode) {
 typedef struct {
     const char *name;
     const char *cmd;      /* resolved under the root; NULL -> native verb */
-    const char *fixed[2]; /* fixed argv between cmd and the argument */
+    const char *fixed[6]; /* fixed argv between cmd and the argument: MAX 5
+                           * args, NULL-TERMINATED (call_exec_verb walks it
+                           * to the NULL — a row that fills every slot MUST
+                           * carry the terminator explicitly; the shorter
+                           * rows zero-fill it) */
     const char *desc;
 } Verb;
 
@@ -488,9 +505,32 @@ static const Verb VERBS[] = {
     { "fx_status", "fxctl", { "status", NULL },
       "Run `fxctl status`: the live system status (current generation, services, "
       "store state). Takes no arguments." },
-    { "fx_activate", "fxctl", { "activate", NULL },
-      "Run `fxctl activate <config>`: activate service configuration <config>. This "
-      "RECONFIGURES the live system. Argument: config." },
+    /* fx_activate execs the RUNNING ROOT's /bin/fx-activate DIRECTLY — the
+     * same binary, with the same arguments, that fx-init's own activate
+     * handler uses (init.zig handle_request "activate": exec
+     * <store>/<hash>-fx-activate/fx-activate --store <g_store> --package-set
+     * /usr/fx/package-set.dhall --config <path>).
+     *
+     * WHY NOT `fxctl activate` (the pre-2026-10 row): fxctl's ONLY transports
+     * are $FX_RUN/control.sock and an explicit --chardev/FX_CHARDEV path.  In
+     * the guest CONFIG_NET is unset, so socket(2) is ENOSYS and there is no
+     * control.sock at all; and the only chardev is the virtio control port,
+     * which PID1 ITSELF reads (init.zig handle_virtio; the port has ONE input
+     * queue — the same property that forces the g_shell_pid latch, "while the
+     * child owns the port, handle_virtio must not read it").  A second reader
+     * on that port races PID1 for the request bytes, so an in-guest fxctl
+     * cannot be the loop's activation path.  The store/package-set are the
+     * guest's own: /fx/disk/store is the persistent store (g_store — a ramfs
+     * /fx/store activate would be lost on the restart) and
+     * /usr/fx/package-set.dhall is the frozen package set mkinitramfs ships.
+     * Argument: config (the path of the config to activate). */
+    { "fx_activate", "fx-activate", { "--store", "/fx/disk/store",
+                                      "--package-set", "/usr/fx/package-set.dhall",
+                                      "--config", NULL },
+      "ACTIVATE service configuration <config> on the running system (reconfigures "
+      "it; the new generation becomes CURRENT on the persistent store). Runs the "
+      "root's /bin/fx-activate with the image's frozen package set. Argument: "
+      "config (a path, e.g. /fx/disk/agent-config.dhall)." },
     { "fx_rollback", "fxctl", { "rollback", NULL },
       "Run `fxctl rollback <version>`: roll the system back to generation <version>. "
       "Argument: version." },

@@ -46,6 +46,17 @@ env | sort > "$ROOT/envdump"
 exit 0
 STUB
 
+# fx-activate: the fx_activate VERB's target (the running root's /bin/fx-activate;
+# resolved here via usr/fx-core/bin, the same lookup precedence).  It must see
+# the guest's persistent store + the image's frozen package set as FIXED args,
+# with the config path appended.
+cat > "$ROOT/usr/fx-core/bin/fx-activate" <<STUB
+#!/bin/sh
+echo "fx-activate args: \$*"
+env | sort > "$ROOT/envdump"
+exit 0
+STUB
+
 cat > "$ROOT/usr/fx-core/bin/fxstore" <<STUB
 #!/bin/sh
 cmd="\$1"; shift
@@ -65,7 +76,7 @@ STUB
 
 printf '#!/bin/sh\necho DECOY-must-not-run\n' > "$ROOT/fx/store/bin/fxctl"
 chmod +x "$ROOT/usr/fx-core/bin/fxctl" "$ROOT/usr/fx-core/bin/fxstore" \
-         "$ROOT/fx/store/bin/fxctl"
+         "$ROOT/usr/fx-core/bin/fx-activate" "$ROOT/fx/store/bin/fxctl"
 
 # ── the driver ───────────────────────────────────────────────────────────────
 python3 - "$ROOT" <<'DRIVER'
@@ -167,8 +178,12 @@ ok("command lookup prefers usr/fx-core/bin over fx/store/bin",
 # 6-9 — the other exec verbs
 d = call("fx_status", {}, 11)
 ok("fx_status", "gen 42 current" in tool_text(d), tool_text(d))
-d = call("fx_activate", {"config": "console"}, 12)
-ok("fx_activate", "activated:console" in tool_text(d), tool_text(d))
+d = call("fx_activate", {"config": "/fx/disk/agent-config.dhall"}, 12)
+txt = tool_text(d)
+ok("fx_activate execs /bin/fx-activate with the guest store + frozen pkgset",
+   txt.startswith("exit=0\n") and
+   "fx-activate args: --store /fx/disk/store --package-set "
+   "/usr/fx/package-set.dhall --config /fx/disk/agent-config.dhall" in txt, txt)
 d = call("fx_rollback", {"version": "7"}, 13)
 ok("fx_rollback (string version)", "rolled:7" in tool_text(d), tool_text(d))
 d = call("fx_rollback", {"version": 9}, 14)   # the model may send a number
