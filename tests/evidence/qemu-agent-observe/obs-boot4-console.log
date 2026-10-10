@@ -1,6 +1,6 @@
 c[?7l[2J[0mSeaBIOS (version rel-1.17.0-2-g4f253b9b-prebuilt.qemu.org)
-Booting from ROM..c[?7l[2J[0m.Linux version 6.12.19 (root@cf88c41ef967) (gcc (Debian 14.2.0-19) 14.2.0, GNU ld (GNU Binutils for Debian) 2.44) #1 SMP Wed Sep 30 21:19:35 UTC 2026
-Command line: console=ttyS0,115200 rdinit=/fx/store/afef061c8b2714a9a94fb1413d9ca9fe1de1ef36f0c129a2cc55889a35bf744a-fx-init/fx-init fx.store=/fx/store panic=-1 oops=panic
+Booting from ROM..c[?7l[2JLinux version 6.12.19 (root@cf88c41ef967) (gcc (Debian 14.2.0-19) 14.2.0, GNU ld (GNU Binutils for Debian) 2.44) #1 SMP Wed Sep 30 21:19:35 UTC 2026
+Command line: console=ttyS0,115200 rdinit=/fx/store/8b03a4b7d01e5521daa2b4b78b005f5a1f4d29bf6bbe83543fc9d4448af657d9-fx-init/fx-init fx.store=/fx/store panic=-1 oops=panic
 BIOS-provided physical RAM map:
 BIOS-e820: [mem 0x0000000000000000-0x000000000009fbff] usable
 BIOS-e820: [mem 0x000000000009fc00-0x000000000009ffff] reserved
@@ -15,13 +15,13 @@ BIOS-e820: [mem 0x000000fd00000000-0x000000ffffffffff] reserved
 NX (Execute Disable) protection: active
 APIC: Static calls initialized
 tsc: Fast TSC calibration using PIT
-tsc: Detected 3499.959 MHz processor
+tsc: Detected 3500.056 MHz processor
 last_pfn = 0x7ffdc max_arch_pfn = 0x400000000
 x86/PAT: PAT support disabled because CONFIG_X86_PAT is disabled in the kernel.
 x86/PAT: Configuration [0-7]: WB  WT  UC- UC  WB  WT  UC- UC  
 found SMP MP-table at [mem 0x000f5470-0x000f547f]
 Using GB pages for direct mapping
-RAMDISK: [mem 0x7f393000-0x7ffcffff]
+RAMDISK: [mem 0x7f2ca000-0x7ffcffff]
 ACPI: Early table checksum verification disabled
 ACPI: RSDP 0x00000000000F52A0 000014 (v00 BOCHS )
 ACPI: RSDT 0x000000007FFE2356 000038 (v01 BOCHS  BXPC     00000001 BXPC 00000001)
@@ -72,7 +72,7 @@ CPU topo: Allowing 1 present CPUs plus 0 hotplug CPUs
 clocksource: refined-jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 7645519600211568 ns
 setup_percpu: NR_CPUS:2 nr_cpumask_bits:1 nr_cpu_ids:1 nr_node_ids:1
 percpu: Embedded 41 pages/cpu s137880 r0 d30056 u2097152
-Kernel command line: console=ttyS0,115200 rdinit=/fx/store/afef061c8b2714a9a94fb1413d9ca9fe1de1ef36f0c129a2cc55889a35bf744a-fx-init/fx-init fx.store=/fx/store panic=-1 oops=panic
+Kernel command line: console=ttyS0,115200 rdinit=/fx/store/8b03a4b7d01e5521daa2b4b78b005f5a1f4d29bf6bbe83543fc9d4448af657d9-fx-init/fx-init fx.store=/fx/store panic=-1 oops=panic
 random: crng init done
 Dentry cache hash table entries: 262144 (order: 9, 2097152 bytes, linear)
 Inode-cache hash table entries: 131072 (order: 8, 1048576 bytes, linear)
@@ -106,8 +106,8 @@ ACPI: Core revision 20240827
 clocksource: hpet: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 19112604467 ns
 APIC: Switch to symmetric I/O mode setup
 ..TIMER: vector=0x30 apic1=0 pin1=2 apic2=-1 pin2=-1
-clocksource: tsc-early: mask: 0xffffffffffffffff max_cycles: 0x32732a54535, max_idle_ns: 440795213296 ns
-Calibrating delay loop (skipped), value calculated using timer frequency.. 6999.91 BogoMIPS (lpj=13999836)
+clocksource: tsc-early: mask: 0xffffffffffffffff max_cycles: 0x327385ace4d, max_idle_ns: 440795302657 ns
+Calibrating delay loop (skipped), value calculated using timer frequency.. 7000.11 BogoMIPS (lpj=14000224)
 Last level iTLB entries: 4KB 512, 2MB 255, 4MB 127
 Last level dTLB entries: 4KB 512, 2MB 255, 4MB 127, 1GB 0
 Spectre V2 : User space: Vulnerable
@@ -135,8 +135,8 @@ rcu: Hierarchical SRCU implementation.
 rcu: 	Max phase no-delay instances is 1000.
 smp: Bringing up secondary CPUs ...
 smp: Brought up 1 node, 1 CPU
-smpboot: Total of 1 processors activated (6999.91 BogoMIPS)
-Memory: 2030052K/2096616K available (6144K kernel code, 806K rwdata, 652K rodata, 784K init, 1132K bss, 63572K reserved, 0K cma-reserved)
+smpboot: Total of 1 processors activated (7000.11 BogoMIPS)
+Memory: 2029248K/2096616K available (6144K kernel code, 806K rwdata, 652K rodata, 784K init, 1132K bss, 64376K reserved, 0K cma-reserved)
 devtmpfs: initialized
 clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 7645041785100000 ns
 futex hash table entries: 256 (order: 2, 16384 bytes, linear)
@@ -244,17 +244,17 @@ serio: i8042 KBD port at 0x60,0x64 irq 1
 serio: i8042 AUX port at 0x60,0x64 irq 12
 amd_pstate: the _CPC object is not present in SBIOS or ACPI disabled
 IPI shorthand broadcast: enabled
-sched_clock: Marking stable (441216618, 120684295)->(595051250, -33150337)
+sched_clock: Marking stable (384598862, 116501662)->(517775095, -16674571)
 input: AT Translated Set 2 keyboard as /devices/platform/i8042/serio0/input/input1
-Freeing initrd memory: 12532K
+Freeing initrd memory: 13336K
 Freeing unused kernel image (initmem) memory: 784K
 Write protecting the kernel read-only data: 8192k
 Freeing unused kernel image (rodata/data gap) memory: 1396K
-Run /fx/store/afef061c8b2714a9a94fb1413d9ca9fe1de1ef36f0c129a2cc55889a35bf744a-fx-init/fx-init as init process
+Run /fx/store/8b03a4b7d01e5521daa2b4b78b005f5a1f4d29bf6bbe83543fc9d4448af657d9-fx-init/fx-init as init process
 fx-init: store from kernel command line fx.store=/fx/store
 fx-init: boot start store /fx/store
 EXT4-fs (vda): recovery complete
-EXT4-fs (vda): mounted filesystem be562cc9-daed-46db-ad07-f01d8e5e1db1 r/w with ordered data mode. Quota mode: disabled.
+EXT4-fs (vda): mounted filesystem 1e33906f-bc33-4167-a2cd-780a2ed80596 r/w with ordered data mode. Quota mode: disabled.
 fx-init: disk store mounted (current v7)
 fx-init: pivot_root EINVAL (initramfs root is the namespace root) — switch_root fallback (MS_MOVE + chroot) applied
 fx-init: pivoted to tmpfs root (magic 0x1021994)
@@ -268,12 +268,12 @@ fx-harness: OBSERVED OUTCOME — THE ACTIVATION THIS HARNESS RECORDED FAILED.
   bootlog  : "v5 failed" in /fx/disk/store/.bootlog — the boot of my generation failed and
              fx-init rolled the store forward to older good content under a
              NEW, HIGHER version number
-  recovery : 1 automatic roll-forward(s) on record (.recovery; newest: v7 republished from v5 at epoch 1791600361,
-             content c54ebf47536459edb886ca27981822d2c836a525431664fa5d6d27033ebefabd)
+  recovery : 1 automatic roll-forward(s) on record (.recovery; newest: v7 republished from v5 at epoch 1791621910,
+             content d00183f67a128b35e6837ef966e1084a82e35c6bffb99f75a7ed3d9567412e1b)
   running  : generation v7 (/fx/disk/store/.db/snapshots/CURRENT)
   rule     : "if the generation I am running in is not the one I activated,
               my activation failed — do not repeat it"
-  record   : /fx/disk/agent-data/attempts.jsonl (session a470c5b1ae07, run a470c5b1ae07, epoch 1791600296)
+  record   : /fx/disk/agent-data/attempts.jsonl (session fa93c99f7a4d, run fa93c99f7a4d, epoch 1791621845)
   action   : this run stops here (exit 0): the task is NOT re-run and no
              further activation is issued.  Inspect the config above and the
              store's .bootlog before changing anything.
@@ -281,7 +281,7 @@ fx-harness: OBSERVED OUTCOME — THE ACTIVATION THIS HARNESS RECORDED FAILED.
              that COMPLETES records `done` and settles this task), or remove this
              task's lines from /fx/disk/agent-data/attempts.jsonl
 input: ImExPS/2 Generic Explorer Mouse as /devices/platform/i8042/serio1/input/input3
-tsc: Refined TSC clocksource calibration: 3500.045 MHz
-clocksource: tsc: mask: 0xffffffffffffffff max_cycles: 0x32737b1c7d7, max_idle_ns: 440795237498 ns
+tsc: Refined TSC clocksource calibration: 3500.044 MHz
+clocksource: tsc: mask: 0xffffffffffffffff max_cycles: 0x32737a7d687, max_idle_ns: 440795257977 ns
 clocksource: Switched to clocksource tsc
 fx-init: boot-ok v7

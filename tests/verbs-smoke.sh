@@ -110,9 +110,20 @@ case "\$cmd" in
     fi
     echo "verify OK"
     exit 0 ;;
+  build)
+    echo "build args: \$*"
+    pwd > "$ROOT/builddump"
+    env | sort > "$ROOT/envdump"
+    exit 0 ;;
   *) echo "fxstore-stub: unknown \$cmd" >&2; exit 2 ;;
 esac
 STUB
+
+# the fx_build row's PINNED working directory: fxstore loads package-set.dhall
+# from its cwd, and the image's frozen set lives at /usr/fx.  A stub file (the
+# chdir target; the stub never reads it) so the child's chdir succeeds.
+mkdir -p "$ROOT/usr/fx"
+printf '{ packages = [] : List { name : Text } }\n' > "$ROOT/usr/fx/package-set.dhall"
 
 printf '#!/bin/sh\necho DECOY-must-not-run\n' > "$ROOT/fx/store/bin/fxctl"
 chmod +x "$ROOT/usr/fx-core/bin/fxctl" "$ROOT/usr/fx-core/bin/fxstore" \
@@ -238,10 +249,10 @@ r = req({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
 d = json.loads(r)
 tools = d["result"]["tools"]
 want = ["fx_query", "fx_status", "fx_activate", "fx_rollback", "fx_what",
-        "fx_why", "fx_store_verify", "fx_outcome", "fx_generation",
+        "fx_why", "fx_store_verify", "fx_build", "fx_outcome", "fx_generation",
         "fx_read", "fx_write", "fx_ls"]
 got = [t["name"] for t in tools]
-ok("tools/list advertises the 12 verbs in order", got == want, repr(got))
+ok("tools/list advertises the 13 verbs in order", got == want, repr(got))
 ok("every tool has a non-empty description",
    all(t.get("description") for t in tools))
 
@@ -291,6 +302,70 @@ txt = tool_text(d)
 ok("fx_store_verify drift -> exit=1 IS in the reply text (the drift gate)",
    txt.startswith("exit=1\n") and "etc/motd: missing" in txt, txt)
 os.unlink(os.path.join(root, "drift-flag"))
+
+# 11d — fx_build, THE IN-GUEST BUILD VERB.  The argv is PINNED (fxstore build
+# --store <the guest's own store> <pkg>), the cwd is PINNED (/usr/fx, where
+# the image's frozen package set lives), and the package is BOUNDED by the
+# host-declared closed set FX_AGENT_BUILDABLE — UNSET here, so the DEFAULT set
+# is exactly the one slot package 'oslot' (never "any name").
+d = call("fx_build", {"package": "oslot"}, 80)
+txt = tool_text(d)
+ok("fx_build runs the PINNED argv against the guest's own store",
+   txt.startswith("exit=0\n") and
+   "build args: --store /fx/disk/store oslot" in txt, txt)
+ok("fx_build's cwd is pinned to /usr/fx (the frozen package set's dir)",
+   open(os.path.join(root, "builddump")).read().strip() == os.path.join(root, "usr/fx"),
+   repr(open(os.path.join(root, "builddump")).read()))
+# the bound: a name OUTSIDE the closed set is refused loudly, naming the set;
+# a flag- or path-shaped argument is refused as NOT A BARE NAME.  Neither
+# refusal reaches fxstore (no stub output).
+d = call("fx_build", {"package": "dhake"}, 81)
+txt = tool_text(d)
+ok("fx_build outside the buildable set -> exit=1, REFUSED, naming the set "
+   "(default: the slot package only)",
+   txt.startswith("exit=1\n") and "REFUSED" in txt
+   and "'dhake'" in txt and "FX_AGENT_BUILDABLE" in txt
+   and "build args:" not in txt, txt)
+d = call("fx_build", {"package": "--store"}, 82)
+txt = tool_text(d)
+ok("fx_build with a FLAG-shaped argument -> refused as not a bare package name",
+   txt.startswith("exit=1\n") and "REFUSED" in txt
+   and "not a bare package name" in txt and "build args:" not in txt, txt)
+d = call("fx_build", {"package": "/fx/disk/store"}, 83)
+txt = tool_text(d)
+ok("fx_build with a PATH-shaped argument -> refused as not a bare package name",
+   txt.startswith("exit=1\n") and "REFUSED" in txt
+   and "not a bare package name" in txt and "build args:" not in txt, txt)
+# the FXSTORE_* seats are injected ONLY when staged under the root: this stub
+# root has no usr/fx-agent/bin, so fxstore must see NEITHER key (its own
+# defaults hold — host behaviour unchanged).
+dump = open(os.path.join(root, "envdump")).read().splitlines()
+ok("no FXSTORE_SH/FXSTORE_STAGE3 without staged seats (host default holds)",
+   not any(l.startswith("FXSTORE_SH=") or l.startswith("FXSTORE_STAGE3=")
+           for l in dump), repr(dump))
+# ... and WITH the seats staged, both keys arrive pointing at them (the
+# in-guest contract: the pivoted root has no /bin/sh, so fxstore is pointed
+# at the deployment's staged interpreter + sandbox binary).
+seats = os.path.join(root, "usr/fx-agent/bin")
+os.makedirs(seats, exist_ok=True)
+for seat in ("sh", "stage3"):
+    open(os.path.join(seats, seat), "w").write("#!/bin/sh\nexit 0\n")
+    os.chmod(os.path.join(seats, seat), 0o755)
+d = call("fx_build", {"package": "oslot"}, 84)
+txt = tool_text(d)
+ok("fx_build with staged seats -> FXSTORE_SH/FXSTORE_STAGE3 injected",
+   txt.startswith("exit=0\n"), txt)
+dump = open(os.path.join(root, "envdump")).read().splitlines()
+ok("the seats point under the root, executability-gated",
+   "FXSTORE_SH=%s" % os.path.join(seats, "sh") in dump
+   and "FXSTORE_STAGE3=%s" % os.path.join(seats, "stage3") in dump,
+   repr([l for l in dump if l.startswith("FXSTORE_")]))
+# (fxstore itself still resolves from usr/fx-core/bin: the seats dir holds no
+# fxstore, and the lookup order keeps the generation's own bin first.)
+ok("the verb PATH carries the payload dir last of the root's",
+   "PATH=%s/bin:%s/usr/fx-core/bin:%s/fx/store/bin:%s/usr/fx-agent/bin:/bin:/usr/bin"
+   % (root, root, root, root) in dump,
+   repr([l for l in dump if l.startswith("PATH=")]))
 
 # 11b/11c — THE OUTCOME INSTRUMENT: fx_outcome reports the boot history and the
 # generation this boot is running; fx_generation reports just the number.  Both
@@ -355,8 +430,9 @@ ok("verb env drops RATTAN_* and LD_*",
 pathline = [l for l in dump if l.startswith("PATH=")]
 ok("verb PATH is rooted, running root's bin FIRST",
    bool(pathline) and
-   pathline[0] == "PATH=%s/bin:%s/usr/fx-core/bin:%s/fx/store/bin:/bin:/usr/bin"
-                  % (root, root, root),
+   pathline[0] == "PATH=%s/bin:%s/usr/fx-core/bin:%s/fx/store/bin:"
+                  "%s/usr/fx-agent/bin:/bin:/usr/bin"
+                  % (root, root, root, root),
    repr(pathline))
 ok("verb env carries FX_STORE (rooted store)",
    "FX_STORE=%s/fx/store" % root in dump, repr(dump))
@@ -576,6 +652,14 @@ txt = call3("fx_activate", {"config": "/fx/disk/agent-config.dhall"}, 61)
 ok("store-scoped: fx_activate refused too (not 'not found', the STORE is the fault)",
    txt.startswith("exit=1\n") and "fx_activate is store-scoped" in txt
    and "not found under FX_VERB_ROOT" not in txt, txt)
+# fx_build is store-scoped the same way: it must refuse BEFORE the bound (and
+# before any exec) when the store is not mounted — building into a ramfs
+# snapshot would be lost on the restart.
+txt = call3("fx_build", {"package": "oslot"}, 65)
+ok("store-scoped: fx_build with no /fx/disk/store -> exit=1, NAMING the path",
+   txt.startswith("exit=1\n") and
+   "fx_build is store-scoped: the store /fx/disk/store does not exist "
+   "under FX_VERB_ROOT" in txt and "build args:" not in txt, txt)
 # the native outcome verbs are store-scoped the same way (they must not report a
 # stale bootlog from an initramfs snapshot under some other store)
 for _v, _cid in (("fx_outcome", 63), ("fx_generation", 64)):

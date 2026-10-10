@@ -390,6 +390,44 @@ certifies coherence; neither says "improved".
       machine — nothing ships one yet); the boot-2/3 flow depends on the
       image swap being a HOST decision at the build boundary, which is
       exactly what the first task's deployment must schedule.
+- [x] **THE RESIDUAL IS CLOSED (2026-10-10): THE BUILD IS IN THE GUEST.**
+      `tests/qemu-agent-slot-inguest.sh` (`make test-agent-slot-inguest`)
+      proves the loop with NO host step: the payload now ships the BUILDER
+      (fxstore cross-built x86_64-linux-musl, STATIC — `file`: "statically
+      linked, stripped", NO dynamic section; staged by `tools/stage-guest.sh`
+      at `/usr/fx-agent/bin/fxstore` beside `stage3` and the busybox applet
+      links `sh/chmod/cp/...` the recipe needs — the pivoted root has no
+      `/bin/sh`, so `fxstore` gained a `FXSTORE_SH` knob with the same
+      resolve-ONCE-at-startup discipline as `FXSTORE_STAGE3`, and the verb's
+      child env carries both, pointed at the staged seats).  THE AGENT'S
+      VERB is `fx_build` (`tools/fx-verbs-server.c`): a pinned argv
+      `fxstore build --store /fx/disk/store <pkg>`, a pinned cwd `/usr/fx`
+      (where the image's frozen package-set.dhall lives), STORE-SCOPED like
+      its neighbours — and the package argument is BOUNDED by a closed,
+      host-declared set `FX_AGENT_BUILDABLE` (default: exactly `oslot`; a
+      bare-name shape gate in front: no flags, no paths, no sets).  THE
+      GATE (MEASURED, exit 0): ONE image and ONE disk for the whole loop;
+      boot 1 the agent writes, calls `fx_build oslot` (the disk store
+      carries the guest-written `<hash>-oslot` + `<src_hash>-oslot-src`;
+      the transcript carries fxstore's own output AND the LOUD
+      bwrap-absent NON-HERMETIC warning, visible, not silenced), probes the
+      bound (invented name + flag shape → REFUSED naming the set), and
+      activates v_slot; the oracle reads 0.000000 AS-OF the bracket; boot 2
+      is the SAME image (sha256-compared byte-identical) and the SAME disk
+      (no e2fsck, no debugfs -w between boots — read the script), boots
+      v_slot, the stub service marks the disk; the oracle then reads
+      non-zero with `component oslot <src_hash> store <bytes> ... run
+      src_of` and the store's own `facts store/srcstore/src_of` rows shown
+      off the read-back disk.  EXEC PROOFS in the same gate, in the guest:
+      a console service runs the staged fxstore's `--help` (usage + the
+      `facts` line on boot 1's console), and a DEDICATED one-generation
+      boot runs bare `stage3` (usage on the console, exit 1 → boot FAILED
+      by construction, the `failed` verdict on the disk bootlog — the
+      SERVICE-GATE shape; this kernel has no SECCOMP, so no sandboxed-child
+      shape is claimed).  `tests/qemu-agent-slot.sh` STAYS GREEN beside it:
+      it still proves what the in-guest gate cannot — that a HOST-built
+      hash is adopted by a GUEST activation (the cross-machine portability
+      of the derivation hash) and the e2fsck/debugfs injection path itself.
 - [ ] **The Osier→Lua backend** (§5a). Not ready. When it lands: the compiler (written in Osier,
       self-hosting) compiles to Lua ⇒ the compiler is **a Lua file** ⇒ LuaJIT runs it in-guest, and
       the guest holds the whole toolchain **as text** — no ELF, no zig, no AOT.

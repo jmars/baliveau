@@ -8,6 +8,21 @@
 #     usr/fx-agent/bin/fx-agent          x86_64-linux-musl, static, stripped
 #     usr/fx-agent/bin/fx-agent.i386     x86-linux-musl, static, stripped
 #     usr/fx-agent/bin/fx-verbs-server   x86_64-linux-musl, static, stripped
+#     usr/fx-agent/bin/fxstore           x86_64-linux-musl, static, stripped
+#                                          THE IN-GUEST BUILDER (todo.md §5's
+#                                          residual): the agent's fx_build verb
+#                                          execs this against the LIVE disk
+#                                          store, in the guest
+#     usr/fx-agent/bin/stage3            the palisade sandbox binary fxstore
+#                                          refuses to build without (static;
+#                                          X_OK is demanded even on the
+#                                          bwrap-absent LOUD fallback path)
+#     usr/fx-agent/bin/{sh,chmod,cp,...} busybox applet links — the recipe
+#                                          interpreter (FXSTORE_SH) and the
+#                                          recipe's own words; the pivoted
+#                                          root has no /bin/sh, and /usr
+#                                          (where the image's busybox lives)
+#                                          IS bound through the pivot
 #     usr/fx-agent/cfg/config.dhall      the harness's RUNTIME config (agents)
 #     usr/fx-agent/chardev.sse           the canned SSE stream (offline arm)
 #     usr/fx-agent/MARKER                the string that stream yields
@@ -238,6 +253,62 @@ chmod 755 "$BINDIR/luajit" "$BINDIR/luajit.i386"
 assert_guest_elf "$BINDIR/luajit"      "x86-64"
 assert_guest_elf "$BINDIR/luajit.i386" "i386"
 
+# ─── fxstore + stage3 + the recipe applets (THE IN-GUEST BUILD) ────────────
+# todo.md §5's stated residual — "the agent's source reaches the store only
+# THROUGH the host step (an in-guest builder would keep the bytes inside the
+# machine — nothing ships one yet)" — is closed here: the payload carries the
+# BUILDER, so the agent's fx_build verb runs `fxstore build --store
+# /fx/disk/store <pkg>` IN THE GUEST, against the LIVE store, reading the
+# image's FROZEN package set from /usr/fx (the verb pins fxstore's cwd
+# there).  The build never leaves the machine: no read-back, no debugfs
+# injection, no new image (tests/qemu-agent-slot-inguest.sh is that gate).
+#
+# stage3 rides along because fxstore DEMANDS it (X_OK) before any Shell
+# recipe even on the bwrap-absent LOUD non-hermetic fallback the guest takes
+# (fxstore zig/src/build.zig run_sandboxed: "stage3-absent ... checked BEFORE
+# the bwrap branch — even bwrap-absent + stage3-absent dies with THIS
+# message").  The recipe applets follow for the same world: the pivoted
+# root's /bin holds only the generation's materialized links (no /bin/sh),
+# so the deployment stages the interpreter + the recipe's own words here and
+# fx-verbs-server points fxstore at them via FXSTORE_SH (the applets resolve
+# on the verb PATH, which carries this dir).
+FXSTORE_REPO="${FXSTORE_REPO:-$(cd "$REPO/.." && pwd)/fxstore}"
+[ -f "$FXSTORE_REPO/build.zig" ] \
+    || skip "fxstore checkout not found at $FXSTORE_REPO (set FXSTORE_REPO; the in-guest builder)"
+STAGE3_SRC="$FXSTORE_REPO/vendor/palisade/bin/stage3"
+[ -x "$STAGE3_SRC" ] \
+    || fail "palisade stage3 not executable at $STAGE3_SRC (fxstore refuses every Shell recipe without it)"
+FXS_OUT="$OUT/fxstore-x86_64-musl"
+# NO output reuse: zig's own cache (content-addressed on sources) makes a
+# warm rebuild ~seconds, and a reused PREFIX binary is exactly the stale-
+# artifact class this repo has been bitten by four times — the staged binary
+# must be the one these sources build, every staging run.
+echo "stage-guest: building fxstore for x86_64-linux-musl -> $FXS_OUT"
+( cd "$FXSTORE_REPO" && zig build -Dtarget=x86_64-linux-musl -Doptimize=ReleaseSmall \
+    -p "$FXS_OUT" --cache-dir "$FXS_OUT/.zig-cache" ) > "$OUT/fxstore-x86_64.log" 2>&1
+[ -x "$FXS_OUT/bin/fxstore" ] \
+    || { tail -20 "$OUT/fxstore-x86_64.log" >&2; fail "no fxstore in $FXS_OUT (log $OUT/fxstore-x86_64.log)"; }
+cp "$FXS_OUT/bin/fxstore" "$BINDIR/fxstore" || fail "cannot stage fxstore"
+chmod 755 "$BINDIR/fxstore"
+assert_guest_elf "$BINDIR/fxstore" "x86-64"
+cp "$STAGE3_SRC" "$BINDIR/stage3" || fail "cannot stage stage3"
+chmod 755 "$BINDIR/stage3"
+# stage3 is a vendored artifact with no section headers: assert STATIC +
+# x86-64 (the guest ABI), not the stripped token assert_guest_elf wants.
+_t=$(file -b "$BINDIR/stage3" 2>/dev/null)
+case "$_t" in *"statically linked"*) ;; *) fail "$BINDIR/stage3 is not static: $_t" ;; esac
+case "$_t" in *"x86-64"*) ;; *) fail "$BINDIR/stage3 is not x86-64: $_t" ;; esac
+# the recipe interpreter + the recipe's own words, as busybox applet links.
+# The TARGET is the IMAGE's busybox (mkinitramfs stages /usr/bin/busybox, and
+# /usr is one of fx-init's pivot binds, so it exists where services run —
+# the same fact the stub runner's #!/usr/bin/busybox shebang rests on).  The
+# links dangle in the payload tree and resolve in the assembled image; the
+# applet set mirrors the host build step's PATH (qemu-agent-slot.sh), plus
+# sh itself.
+for _applet in sh chmod cp mv rm cat mkdir ln dirname; do
+    ln -sf /usr/bin/busybox "$BINDIR/$_applet" || fail "cannot link the $_applet applet"
+done
+
 # ─── the harness's RUNTIME config (agents) ────────────────────────────────
 # The `args = [] : List Text` annotations are MANDATORY: dhall-c cannot infer
 # an unannotated empty list and the whole config fail-opens to empty without
@@ -400,6 +471,22 @@ if [ "$PRECHECK" = 1 ]; then
             *) fail "host pre-check: $_lj -v printed '$out'" ;;
         esac
     done
+    # fxstore + stage3 (the in-guest build's pair): each must answer HERE —
+    # a broken payload binary would make a red guest boot unattributable.
+    # The GUEST then proves the exec (the in-guest gate's fxstore-probe
+    # service and stage3-usage boot); this is only the premise.
+    out=$("$BINDIR/fxstore" --help 2>&1); rc=$?
+    [ "$rc" = 0 ] || fail "host pre-check: fxstore --help exited rc=$rc"
+    printf '%s\n' "$out" | head -1 | grep -qF 'content-addressed build store' \
+        || fail "host pre-check: fxstore --help printed '$(printf '%s\n' "$out" | head -1)'"
+    printf '%s\n' "$out" | grep -q 'fxstore facts' \
+        || fail "host pre-check: staged fxstore predates 'facts' (stale tree?)"
+    out=$("$BINDIR/stage3" 2>&1); rc=$?
+    [ "$rc" = 1 ] || fail "host pre-check: stage3 (no args) exited rc=$rc: $out"
+    case "$out" in
+        "stage3: usage: stage3 PROMISES LANDLOCK_SPEC [--verify] -- cmd [args]"*) ;;
+        *) fail "host pre-check: stage3 usage printed '$out'" ;;
+    esac
     echo "stage-guest: host pre-check OK — x86_64 prints the --agent line, i386 prints the -p line, both LuaJIT ABIs print their version"
     PC="$OUT/precheck"
     rm -rf "$PC"; mkdir -p "$PC/cfg" "$PC/data"

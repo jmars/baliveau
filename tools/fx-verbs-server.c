@@ -29,6 +29,35 @@
  *                                             reconcile the running rootfs
  *                                             against the LIVE generation's
  *                                             install facts; EXIT 1 ON DRIFT
+ *   fx_build         fxstore build --store /fx/disk/store <pkg>
+ *                                             BUILD one package of the
+ *                                             image's FROZEN package set
+ *                                             into the LIVE store, IN THE
+ *                                             GUEST (todo.md §5: the agent
+ *                                             iterates without sending
+ *                                             code off the machine).  The
+ *                                             row pins the WHOLE execution
+ *                                             context: the fxstore binary
+ *                                             is resolved under the root,
+ *                                             the store is FX_STORE_PATH
+ *                                             (store-scoped refusal like
+ *                                             its neighbours), the working
+ *                                             directory is /usr/fx — where
+ *                                             mkinitramfs ships the frozen
+ *                                             package-set.dhall fxstore
+ *                                             loads from its cwd — and the
+ *                                             child env carries
+ *                                             FXSTORE_SH/FXSTORE_STAGE3
+ *                                             pointing at the deployment's
+ *                                             staged seats (see
+ *                                             build_verb_envp).  The
+ *                                             package argument is BOUNDED
+ *                                             by the host-declared closed
+ *                                             set FX_AGENT_BUILDABLE: the
+ *                                             agent may NAME a package the
+ *                                             deployment ships, never
+ *                                             invent one, and never a
+ *                                             flag, a path or a store.
  *   fx_outcome       <store>/.bootlog + <store>/.db/snapshots/CURRENT +
  *                    <store>/.recovery
  *                                             (native) THE OUTCOME OF PREVIOUS
@@ -239,6 +268,71 @@ static const char *writable_set(void) {
     return w ? w : FX_DEFAULT_WRITABLE;
 }
 
+/* ── the buildable set (fx_build's closed package surface) ──────────────── */
+
+/* THE BOUND OF fx_build, stated exactly: the package argument is a member of
+ * a CLOSED, NAMED SET the HOST fixes — the exact FX_AGENT_WRITABLE pattern,
+ * one shape over.  WHY A SET AND NOT "any package in the frozen package
+ * set": reading the set would mean evaluating Dhall in this server (no), and
+ * a bare name-shape check would let the model build ANY well-formed name —
+ * including packages the deployment provisions host-side (fx-init, dhake),
+ * whose store facts a guest build would rewrite.  The set names exactly the
+ * packages the deployment has decided are AGENT-BUILDABLE; everything else
+ * is refused loudly, naming the set, and the model cannot widen it.
+ *
+ * The DEFAULT set when FX_AGENT_BUILDABLE is UNSET: exactly the ONE package
+ * the first self-modification contract names — the slot (oslot), the package
+ * whose src.path the deployment pre-declares and the agent fills
+ * (fx-init/m3/package-set-slot.dhall).  Like FX_DEFAULT_WRITABLE it is never
+ * "unrestricted": a deployment that never sets the variable cannot have its
+ * provisioned packages rebuilt in-guest.  A SET-BUT-EMPTY
+ * FX_AGENT_BUILDABLE means the host declares nothing buildable (fx_build
+ * refuses every name) — distinct from unset by construction.  Entries are
+ * colon-separated BARE package names; a malformed entry (leading '-', '/',
+ * embedded whitespace) is UNREACHABLE, not silently honored: the shape gate
+ * below refuses any REQUEST that is not a bare name before membership is
+ * consulted, so no request that could match a malformed entry ever reaches
+ * the exec argv. */
+#define FX_DEFAULT_BUILDABLE "oslot"
+
+/* The set in force, read at call time.  Never NULL; may be "" (refuse all). */
+static const char *buildable_set(void) {
+    const char *b = getenv("FX_AGENT_BUILDABLE");
+    return b ? b : FX_DEFAULT_BUILDABLE;
+}
+
+/* Is `pkg` an EXACT member of the colon-separated name set?  Exact string
+ * comparison per entry — no prefix, no glob, the in_writable_set discipline
+ * over names instead of canonicalized paths. */
+static int in_name_set(const char *pkg, const char *set) {
+    const char *e = set;
+    while (e && *e) {
+        while (*e == ':') e++; /* empty entries are ignored */
+        if (!*e) break;
+        const char *end = e;
+        while (*end && *end != ':') end++;
+        size_t el = (size_t)(end - e);
+        if (el == strlen(pkg) && memcmp(e, pkg, el) == 0) return 1;
+        e = end;
+    }
+    return 0;
+}
+
+/* The shape half of the bound: a buildable name is BARE — non-empty, no
+ * leading '-' (it is a package name, not a flag), no '/' (not a path or a
+ * store), no ':' (not a set), no whitespace.  Membership alone would refuse
+ * all of these for a sane set; the shape gate holds the rule even under a
+ * MISCONFIGURED set, the same belt-and-braces as O_NOFOLLOW on top of the
+ * writable set. */
+static int is_bare_package_name(const char *pkg) {
+    if (!pkg || !*pkg) return 0;
+    if (pkg[0] == '-') return 0;
+    if (strchr(pkg, '/') || strchr(pkg, ':')) return 0;
+    for (const char *p = pkg; *p; p++)
+        if (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') return 0;
+    return 1;
+}
+
 /* Lexically canonicalize an ABSOLUTE path to its ROOT-RELATIVE form: resolve
  * "." and ".." components, drop empty ones.  A ".." that would climb above
  * the ROOT is a refusal (root_join only CONCATENATES strings, so
@@ -329,8 +423,12 @@ static int in_writable_set(const char *canon, const char *set) {
  * the very binaries the machine itself runs — then <ROOT>/usr/fx-core/bin
  * (where the fx-init payload stages fxsh + the fx-* set; an initramfs COPY of
  * the same programs that must not shadow the running root's), then
- * <ROOT>/fx/store/bin (the store bin dir).  Without the leading "bin" a verb
- * like fx_activate resolves to the initramfs COPY — for a lane that stages
+ * <ROOT>/fx/store/bin (the store bin dir), then <ROOT>/usr/fx-agent/bin (the
+ * DEPLOYMENT's agent-payload staging dir — where tools/stage-guest.sh puts
+ * fx-agent, fx-verbs-server, luajit and, for the in-guest build, fxstore +
+ * stage3 + the recipe's busybox applets; /usr is a pivot bind, so it is
+ * present where services run).  Without the leading "bin" a verb like
+ * fx_activate resolves to the initramfs COPY — for a lane that stages
  * fx-activate via `mkinitramfs -b` a different binary from the one fx-init's
  * own activate handler execs.
  * Returns a malloc'd absolute path, or NULL when nothing executable matches. */
@@ -339,6 +437,7 @@ static char *resolve_command(const char *cmd) {
         "bin",
         "usr/fx-core/bin",
         "fx/store/bin",
+        "usr/fx-agent/bin",
     };
     for (size_t i = 0; i < sizeof(DIRS) / sizeof(DIRS[0]); i++) {
         char *dir = root_join(DIRS[i]);
@@ -367,21 +466,27 @@ static char **build_verb_envp(void) {
     const char *root = fx_root();
     /* the SAME precedence as resolve_command: the running root's own bin dir
      * first, the initramfs staging dir after it (a verb that spawns a helper
-     * by name must not pick up the initramfs copy either). */
+     * by name must not pick up the initramfs copy either), the deployment's
+     * agent-payload dir last of the root's. */
     char *bin0 = root_join("bin");
     char *bin1 = root_join("usr/fx-core/bin");
     char *bin2 = root_join("fx/store/bin");
-    if (!bin0 || !bin1 || !bin2) { free(bin0); free(bin1); free(bin2); return NULL; }
+    char *bin3 = root_join("usr/fx-agent/bin");
+    if (!bin0 || !bin1 || !bin2 || !bin3) {
+        free(bin0); free(bin1); free(bin2); free(bin3);
+        return NULL;
+    }
 
-    char path[4 * PATH_MAX];
-    snprintf(path, sizeof(path), "%s:%s:%s:/bin:/usr/bin", bin0, bin1, bin2);
+    char path[8 * PATH_MAX];
+    snprintf(path, sizeof(path), "%s:%s:%s:%s:/bin:/usr/bin", bin0, bin1, bin2, bin3);
     free(bin0);
     free(bin1);
     free(bin2);
+    free(bin3);
 
-    char *entries[10];
+    char *entries[16];
     size_t n = 0;
-    char buf[4 * PATH_MAX];
+    char buf[8 * PATH_MAX];
     bool ok = true;
 
     /* keyed entries first: duplicates resolve first-match-wins via getenv */
@@ -393,6 +498,31 @@ static char **build_verb_envp(void) {
     ok = ok && store && snprintf(buf, sizeof(buf), "FX_STORE=%s", store) > 0
          && (entries[n++] = strdup(buf)) != NULL;
     free(store);
+
+    /* THE IN-GUEST BUILD'S SEATS (fx_build): fxstore resolves its recipe
+     * interpreter and its stage3 sandbox binary ONCE at startup from
+     * FXSTORE_SH / FXSTORE_STAGE3 — absolute paths, never a PATH lookup.  In
+     * the guest the pivoted root has no /bin/sh (fx-init's pivot binds /usr
+     * and /lib64 only), so the deployment stages both under
+     * <root>/usr/fx-agent/bin and this server points fxstore at them.  Only
+     * injected when the seat is actually executable under the root: on a
+     * host stub root (or a deployment without the payload) neither key is
+     * set and fxstore keeps its own defaults — the host behaviour is
+     * unchanged. */
+    {
+        static const char *const SEATS[] = { "FXSTORE_SH", "FXSTORE_STAGE3" };
+        static const char *const PATHS[] = { "usr/fx-agent/bin/sh",
+                                             "usr/fx-agent/bin/stage3" };
+        for (size_t i = 0; ok && i < sizeof(SEATS) / sizeof(SEATS[0]); i++) {
+            char *seat = root_join(PATHS[i]);
+            if (!seat) { ok = false; break; }
+            if (access(seat, X_OK) == 0) {
+                ok = ok && snprintf(buf, sizeof(buf), "%s=%s", SEATS[i], seat) > 0
+                     && (entries[n++] = strdup(buf)) != NULL;
+            }
+            free(seat);
+        }
+    }
 
     /* forwarded when present (same list secrets.c forwards) */
     static const char *const FWD[] = { "HOME", "LANG", "LC_ALL", "TZ", "TERM",
@@ -492,8 +622,12 @@ static void capture_fd(int fd, Capture *c) {
 }
 
 /* fork + execvpe argv[0] with the whitelist env; capture stdout+stderr; reap.
- * Returns 0 with *exitcode set (127 on exec failure, 128+sig on a signal). */
-static int run_verb(char **argv, Capture *out, int *exitcode) {
+ * `cwd` (may be NULL) is a row-pinned working directory the CHILD chdirs to
+ * before exec — fx_build's fxstore loads package-set.dhall from its cwd, and
+ * the frozen set lives at /usr/fx in the image.  A chdir failure is LOUD
+ * (127, naming the dir), never a silent fallback cwd.  Returns 0 with
+ * *exitcode set (127 on exec failure, 128+sig on a signal). */
+static int run_verb(char **argv, const char *cwd, Capture *out, int *exitcode) {
     char **envp = build_verb_envp();
     if (!envp) return -1;
 
@@ -518,6 +652,17 @@ static int run_verb(char **argv, Capture *out, int *exitcode) {
         dup2(pfd[1], 2);
         close(pfd[0]);
         close(pfd[1]);
+        if (cwd && chdir(cwd) != 0) {
+            char msg[PATH_MAX + 128];
+            int n = snprintf(msg, sizeof(msg),
+                             "fx-verbs: cannot chdir to %s: %s\n",
+                             cwd, strerror(errno));
+            if (n > 0) {
+                ssize_t wr = write(2, msg, (size_t)n);
+                (void)wr;
+            }
+            _exit(127);
+        }
         execvpe(argv[0], argv, envp);
         /* exec failed: say why on the capture pipe, then 127 */
         char msg[PATH_MAX + 128];
@@ -955,19 +1100,25 @@ typedef struct {
                            * reading past the array into `desc` — the first-cut
                            * bug this table shipped. */
     const char *desc;
+    const char *cwd;      /* row-pinned working directory (root-relative,
+                           * joined with FX_VERB_ROOT at call time), chdir'd
+                           * by the child before exec; NULL = inherit the
+                           * server's cwd.  Only fx_build pins one: fxstore
+                           * loads package-set.dhall from its cwd, and the
+                           * image's frozen set lives at /usr/fx. */
 } Verb;
 
 /* fx_write (path+content), fx_store_verify (optional rootfs) and fx_ls
- * (optional path) take their arguments by name in handle_tools_call; every
- * other exec verb takes exactly the one string argument named in its
- * description. */
+ * (optional path) take their arguments by name in handle_tools_call; fx_build
+ * (package) does too, behind its closed-set gate; every other exec verb takes
+ * exactly the one string argument named in its description. */
 static const Verb VERBS[] = {
     { "fx_query", "fxctl", { "q", NULL },
       "Run `fxctl q <relation>`: read one live datalog relation. Known relations: "
-      "generation, svc, svc_argv, install, provides, user, log. Argument: relation." },
+      "generation, svc, svc_argv, install, provides, user, log. Argument: relation.", NULL },
     { "fx_status", "fxctl", { "status", NULL },
       "Run `fxctl status`: the live system status (current generation, services, "
-      "store state). Takes no arguments." },
+      "store state). Takes no arguments.", NULL },
     /* fx_activate execs the RUNNING ROOT's /bin/fx-activate DIRECTLY — the
      * same binary, with the same arguments, that fx-init's own activate
      * handler uses (init.zig handle_request "activate": exec
@@ -998,16 +1149,16 @@ static const Verb VERBS[] = {
       "the NEXT boot — the running system is not re-materialized (no hot-apply, no "
       "PID1 boot-decision re-arm), so an fx_status read right after this still shows "
       "the OLD generation. Runs the root's /bin/fx-activate with the image's frozen "
-      "package set. Argument: config (a path, e.g. /fx/disk/agent-config.dhall)." },
+      "package set. Argument: config (a path, e.g. /fx/disk/agent-config.dhall).", NULL },
     { "fx_rollback", "fxctl", { "rollback", NULL },
       "Run `fxctl rollback <version>`: roll the system back to generation <version>. "
-      "Argument: version." },
+      "Argument: version.", NULL },
     { "fx_what", "fxstore", { "what", NULL },
       "Run `fxstore what <target>`: the install fact (provenance proof tree) "
-      "managing installed path <target>. Argument: target." },
+      "managing installed path <target>. Argument: target.", NULL },
     { "fx_why", "fxstore", { "why", NULL },
       "Run `fxstore why <package>`: why <package> is in the store — its closure, the "
-      "targets it provides, and the roots pulling it in. Argument: package." },
+      "targets it provides, and the roots pulling it in. Argument: package.", NULL },
     /* The store root is the guest's LIVE store (FX_STORE_PATH = fx-init's
      * g_store on the disk), not the initramfs's /fx/store snapshot: the
      * install facts a verdict must be judged against are the ones that
@@ -1019,7 +1170,36 @@ static const Verb VERBS[] = {
       "Run `fxstore verify`: reconcile the rootfs against the recorded install "
       "facts of the LIVE (" FX_STORE_PATH ") generation and report every drift. The "
       "first line of the reply text is `exit=1` exactly when drift was found — "
-      "that exit line is the drift gate. Optional argument: rootfs (default /)." },
+      "that exit line is the drift gate. Optional argument: rootfs (default /).", NULL },
+    /* fx_build — THE IN-GUEST BUILD VERB (todo.md §5's residual, closed):
+     * the agent iterates WITHOUT sending code off the machine.  The argv is
+     * PINNED: fxstore build --store <the guest's own persistent store> <pkg>
+     * — the model names a PACKAGE, never a flag, a recipe or a store (the
+     * package argument is bounded in handle_tools_call by the closed set
+     * FX_AGENT_BUILDABLE, default exactly the slot package oslot; see
+     * FX_DEFAULT_BUILDABLE for why a set and not a name-shape check).
+     * STORE-SCOPED: the row carries FX_STORE_PATH, so call_exec_verb refuses
+     * to run it when that path is absent (a diskless guest) instead of
+     * building into a ramfs snapshot the next boot would lose.  The cwd is
+     * PINNED to usr/fx: fxstore loads package-set.dhall from its cwd, and
+     * that is where mkinitramfs ships the image's frozen set — the build
+     * reads THE DEPLOYMENT'S recipe, never a set the model could reach.
+     * The child env additionally carries FXSTORE_SH/FXSTORE_STAGE3 pointed
+     * at the deployment's staged seats when they exist (build_verb_envp), so
+     * the recipe's /bin/sh and the sandbox binary resolve in the pivoted
+     * root, where /bin/sh does not exist. */
+    { "fx_build", "fxstore", { "build", "--store", FX_STORE_PATH, NULL },
+      "BUILD a package of the image's frozen package set into the LIVE store, "
+      "IN THE GUEST: runs `fxstore build --store " FX_STORE_PATH " <package>`, "
+      "reading package-set.dhall from /usr/fx (the frozen deployment set) and "
+      "writing content-addressed store dirs the NEXT activation can use — "
+      "build FIRST, then fx_activate. The package is BOUNDED by the "
+      "host-declared closed set FX_AGENT_BUILDABLE (default: the slot package "
+      "'oslot' only): a name outside it — or anything that is not a bare "
+      "package name — is REFUSED (exit=1) naming the set, and the model "
+      "cannot widen it. Takes no flags, no store, no recipe. "
+      "Argument: package.",
+      "usr/fx" },
     /* THE OUTCOME INSTRUMENT — how an agent sees the result of its OWN last
      * activation (the roll-forward signal).  Both are NATIVE (no exec) and
      * STORE-SCOPED with NO store argument: they read <store>/.bootlog and
@@ -1037,25 +1217,25 @@ static const Verb VERBS[] = {
       "in-progress|shutdown). Read it after a restart to see whether the generation "
       "you activated booted ok, or FAILED and was rolled forward to older content "
       "under a HIGHER version number — and whether that has happened BEFORE. "
-      "Takes no arguments; store-scoped." },
+      "Takes no arguments; store-scoped.", NULL },
     { "fx_generation", NULL, { NULL, NULL },
       "Print the CURRENT generation of the store — the generation the running "
       "system came up in, from <store>/.db/snapshots/CURRENT: one line, "
       "'current <N>'. Exit 1 and names the file when it cannot be read (a version "
-      "is never guessed). Takes no arguments; store-scoped." },
+      "is never guessed). Takes no arguments; store-scoped.", NULL },
     { "fx_read", NULL, { NULL, NULL },
       "Read a file and return its content. Paths resolve under FX_VERB_ROOT. "
-      "Capped at 1 MiB. Argument: path." },
+      "Capped at 1 MiB. Argument: path.", NULL },
     { "fx_write", NULL, { NULL, NULL },
       "Write a file (create-or-truncate). The write surface is a CLOSED, HOST-DECLARED "
       "SET: only the exact paths listed in FX_AGENT_WRITABLE (colon-separated; each "
       "path may be spelled absolute or root-relative — both name the same file) may "
       "be written — a write to anything else is REFUSED (exit=1) naming the path and "
       "the set, and the model cannot widen the set. Does not follow a symlink at the "
-      "final path. Arguments: path, content." },
+      "final path. Arguments: path, content.", NULL },
     { "fx_ls", NULL, { NULL, NULL },
       "List a directory: one entry per line, directories suffixed '/'. Paths resolve "
-      "under FX_VERB_ROOT. Argument: path (default: the root itself)." },
+      "under FX_VERB_ROOT. Argument: path (default: the root itself).", NULL },
 };
 
 #define NVERBS (sizeof(VERBS) / sizeof(VERBS[0]))
@@ -1216,11 +1396,21 @@ static int call_exec_verb(yyjson_val *idv, const Verb *v, char **argv_tail) {
         cap_free(&out);
         return sret;
     }
+    /* the row-pinned working directory (NULL for every row but fx_build) */
+    char *cwd = NULL;
+    if (v->cwd) {
+        cwd = root_join(v->cwd);
+        if (!cwd) {
+            free(cmd);
+            cap_free(&out);
+            return send_error(idv, -32603, "out of memory");
+        }
+    }
     /* argv = [resolved, fixed..., tail..., NULL] */
     size_t ntail = 0;
     while (argv_tail[ntail]) ntail++;
     char **argv = malloc((1 + nfix + ntail + 1) * sizeof(char *));
-    if (!argv) { free(cmd); cap_free(&out); return send_error(idv, -32603, "out of memory"); }
+    if (!argv) { free(cmd); free(cwd); cap_free(&out); return send_error(idv, -32603, "out of memory"); }
     size_t k = 0;
     argv[k++] = cmd;
     for (size_t i = 0; i < nfix; i++) argv[k++] = (char *)v->fixed[i];
@@ -1228,9 +1418,10 @@ static int call_exec_verb(yyjson_val *idv, const Verb *v, char **argv_tail) {
     argv[k] = NULL;
 
     int exitcode = 127;
-    int rc = run_verb(argv, &out, &exitcode);
+    int rc = run_verb(argv, cwd, &out, &exitcode);
     free(argv);
     free(cmd);
+    free(cwd);
     if (rc != 0) { cap_free(&out); return send_error(idv, -32603, "failed to run verb"); }
     int sret = send_capture_reply(idv, &out, exitcode);
     cap_free(&out);
@@ -1293,6 +1484,48 @@ static int handle_tools_call(yyjson_val *root, yyjson_val *idv) {
         if (!cap_init(&out)) return send_error(idv, -32603, "out of memory");
         int exitcode = 1;
         native_ls(path, &out, &exitcode);
+        int sret = send_capture_reply(idv, &out, exitcode);
+        cap_free(&out);
+        return sret;
+    }
+
+    /* fx_build: the package argument is bounded by the CLOSED SET before any
+     * exec happens — the refusal is native, loud, names the set, and never
+     * reaches fxstore.  Two gates, in order: the BARE-NAME shape (a package
+     * is NAMED, never a flag/path/set spelling) and exact membership in the
+     * host-declared FX_AGENT_BUILDABLE set.  Both mirror fx_write's
+     * writable-set refusal. */
+    if (strcmp(name, "fx_build") == 0) {
+        const char *pkg = NULL;
+        if (arg_string(arguments, "package", &pkg) != 0)
+            return send_error(idv, -32602,
+                              "fx_build requires string argument 'package'");
+        Capture out;
+        if (!cap_init(&out)) return send_error(idv, -32603, "out of memory");
+        int exitcode = 1;
+        if (!is_bare_package_name(pkg)) {
+            cap_append_str(&out, "fx-verbs: fx_build REFUSED: '");
+            cap_append_str(&out, pkg);
+            cap_append_str(&out, "' is not a bare package name — fx_build names a "
+                                "PACKAGE the deployment ships, never a flag, a "
+                                "path or a set\n");
+        } else if (!in_name_set(pkg, buildable_set())) {
+            cap_append_str(&out, "fx-verbs: fx_build REFUSED: '");
+            cap_append_str(&out, pkg);
+            cap_append_str(&out, "' is not in the host-declared buildable set "
+                                "FX_AGENT_BUILDABLE='");
+            cap_append_str(&out, buildable_set());
+            cap_append_str(&out, "'. Only the exact package names the HOST lists "
+                                "there may be built (the frozen package set's "
+                                "other packages are provisioned, not "
+                                "agent-buildable); to grant more, the operator "
+                                "must change FX_AGENT_BUILDABLE — the model "
+                                "cannot widen it\n");
+        } else {
+            cap_free(&out);
+            char *tail[2] = { (char *)pkg, NULL };
+            return call_exec_verb(idv, v, tail);
+        }
         int sret = send_capture_reply(idv, &out, exitcode);
         cap_free(&out);
         return sret;

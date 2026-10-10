@@ -188,6 +188,21 @@ test-agent-slot:
 
 .PHONY: test-agent-slot
 
+# THE IN-GUEST BUILD GATE (todo.md §5's residual, closed): the agent writes,
+# BUILDS (the payload's static x86_64-musl fxstore, via the pinned fx_build
+# verb), activates and RUNS the slot — every step inside the guest, ONE
+# image and ONE disk (sha-compared), no host build step, no read-back, no
+# e2fsck/debugfs injection between boots.  Also proves the staged fxstore
+# (a console --help probe) and stage3 (a dedicated usage boot) EXEC under
+# the pinned kernel.  test-agent-slot stays green beside it: it still proves
+# the CROSS-MACHINE claim (a HOST-built hash adopted by a GUEST activation)
+# and the injection path a deployment without an in-guest builder needs.
+# Same deps as test-agent-slot.
+test-agent-slot-inguest:
+	bash tests/qemu-agent-slot-inguest.sh
+
+.PHONY: test-agent-slot-inguest
+
 # The GUEST-ABI gate for the LuaJIT runtime (the Osier->Lua backend's
 # premise): the x86_64 artifact build/luajit-x86_64.musl EXECUTES in the
 # pinned-kernel qemu guest — console line + a durable marker on the virtio
