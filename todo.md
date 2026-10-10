@@ -164,6 +164,20 @@ certifies coherence; neither says "improved".
       the Zig port only, and a deployment missing it fails LOUDLY at the oracle's capability probe
       (measured — the probe was added precisely because a stale neighbouring binary was found).
 
+- [ ] **CORRECTION to the entry below (append-only; my own inference was too wide).** I wrote that
+      `414b26c`'s non-zero exit for an unreadable record made the `console_pin` load-bearing "harder
+      than before". MEASURED against fx-init: **FALSE, and the reason matters.** The non-console
+      branch (`zig/src/init.zig:2722-2733`) pins `failed` on ANY exit during the grace window —
+      `if (g_boot_decided == 0 and !was_explicit_stop and s.console == 0)` — and **never consults the
+      exit status**. Every refusal in this unit exits 0, and a non-console agent service exiting 0
+      during grace fails the boot exactly as surely as exiting 2. So the pin's stake was already
+      TOTAL; this round changed nothing about it, and "make the error exit 0" would fix nothing. The
+      real choice is structural: teach the SUBSTRATE which service is the agent (so the console
+      exemption is granted by identity, not by a test's text match), or validate at ACTIVATION that
+      the config's agent service is console — either way the protection stops living in a test's
+      string search. The pin is a text heuristic (`tests/qemu-agent-observe.sh`, with a still
+      comment-blind copy in `tests/qemu-agent-b2.sh`), so this is worth doing before a deployment
+      ships a non-console agent.
 - [ ] **The `console_pin` now carries more weight than when it was written.** `414b26c` made an
       unreadable bootlog or record `FX_VERDICT_ERROR`, and `agent_main.c:646` returns **2** for that —
       where the same read errors previously produced `RUN` and exit **0**. Exit-non-zero is safe ONLY
