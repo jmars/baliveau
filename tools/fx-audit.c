@@ -85,6 +85,15 @@
  *                              whose source artifact is gone)
  *   record-vanished            a record present at the previous observation
  *                              (.bootlog / .recovery) is now absent
+ *   bootlog-forged-verdict     an ADDED ok/failed verdict with no ADDED
+ *                              in-progress for that version in the same
+ *                              window — no boot the host started is behind
+ *                              it (the appended "<failed v> ok" that would
+ *                              stop fx-init rolling forward)
+ *   bootlog-fabricated-boots   ADDED in-progress / shutdown / recovery
+ *                              lines outnumbering the boots the HOST
+ *                              reports starting since the previous
+ *                              observation (--boots delta)
  *
  * A record that cannot be READ is its own LOUD state (exit 2), never a
  * silent pass — this repo has already paid for "a read error read as
@@ -115,20 +124,80 @@
  *                              bootlog itself is one of the tampered
  *                              records — the operator decides then).
  *
+ * ── the host-boot accounting (the appended-line blind spot, closed) ──────
+ * The comparison above catches REWRITES but cannot treat "the content
+ * changed" as a finding, because LEGITIMATE growth is expected: fx-init
+ * appends to .bootlog on every boot.  So an APPENDED forged line in the
+ * writer's exact shape was invisible — and it defeats the substrate's own
+ * recovery: fx-init's boot decision (bootlog_last, init.zig:737) reads the
+ * LAST non-shutdown status for a version, so an agent that APPENDS
+ * "<its failed version> ok <epoch>" makes the next boot read that version
+ * as ok, fx-init does NOT roll forward, and the broken generation stays
+ * current.  Epoch monotonicity cannot separate it (genEpoch is
+ * wall-clock/env-overridable; skew would false-positive).
+ *
+ * THE ANCHOR: the host is the hypervisor — it knows every boot it started,
+ * and that knowledge is OFF-DISK and unforgeable from inside the guest.
+ * So the audit REQUIRES the host's boot count (--boots N, cumulative boots
+ * the host has EVER started on this store), records it in the observation
+ * beside the records it already hashes, and refuses growth the host cannot
+ * account for.  Without the count the tool REFUSES (exit 2), loudly: an
+ * optional anchor that silently defaults is exactly how a bound becomes
+ * decorative.
+ *
+ * THE ACCOUNTING RULE, DERIVED FROM THE WRITER'S CALL SITES (init.zig, not
+ * guessed) — what ONE boot the host started may append:
+ *   in-progress  at most ONE (init.zig:4387), and only when a generation
+ *                was bootable AND its facts read ok; the no-generation and
+ *                facts-fail paths append NOTHING and pre-decide the verdict
+ *                away (g_boot_decided=1 before any line is written)
+ *   ok / failed  at most ONE verdict, ever, per boot (the g_boot_decided
+ *                latch; sites 2619, 2631, 2726, 4398) — and every verdict
+ *                site runs in a boot that ALREADY appended its in-progress
+ *                for the SAME version (all lines of a boot carry that
+ *                boot's g_current_version, fixed before :4387)
+ *   shutdown     at most ONE (init.zig:3925, the SIGTERM path)
+ *   .recovery    at most ONE data row (recovery_append, once per
+ *                SUCCESSFUL roll-forward inside decide_boot_version)
+ * Hence, for the lines ADDED since the previous observation:
+ *   1. each added ok/failed for version v must be preceded, IN THE ADDED
+ *      WINDOW, by an added in-progress for v not yet consumed by an
+ *      earlier verdict for v — a verdict with no boot behind it is a
+ *      FORGED VERDICT (the motivating exploit, named as that);
+ *   2. added in-progress lines, shutdown lines and recovery rows must each
+ *      number at most the host's boot DELTA — more boots on paper than the
+ *      host started are FABRICATED BOOTS.
+ * The rule is deliberately STRICT about window edges: a verdict gets NO
+ * credit for an in-progress left open at the previous observation.  The
+ * audit is a BETWEEN-BOOTS instrument (run it with the guest stopped —
+ * every harness does); a boot's in-progress and its verdict are written
+ * within one PID1 lifetime, so a verdict in a NEW window with no new
+ * in-progress is not a late verdict but an append.  Where the accounting
+ * is ambiguous the check prefers the finding: a false stop is recoverable
+ * and names itself; a false pass is the whole failure mode here.
+ *
  * ── THE BOUND, in the tool's own output ──────────────────────────────────
  * A COHERENT tamper against a store this seat has never observed before is
  * UNDETECTABLE by it, and an in-guest cross-check is defeated by design.
  * This seat sees REWRITES and TRUNCATIONS of records it previously
- * observed; it CANNOT authenticate APPENDED lines (a forged bootlog line
- * appended in the writer's exact shape is indistinguishable from a real
- * one by content alone).  That is the honest bound of "auditing, not
- * proofing" (§6b), printed on every run so the tool never implies more
- * than it knows.
+ * observed, and — with --boots — APPENDED .bootlog/.recovery growth beyond
+ * what the host's own boot count can account for.  What it still cannot
+ * see: a forged line-pair (in-progress + verdict) appended into the SLACK
+ * of a boot the host started but fx-init never recorded (killed before its
+ * in-progress, or a boot with no bootable generation — both append
+ * nothing); that slack exists whenever the host delta exceeds the lines
+ * written, and closing it would need a host nonce per boot, which changes
+ * the writer's format (stated, out of scope).  The count is only as true
+ * as the host's own bookkeeping: a boot started on the store by something
+ * the counting host does not know (another VM, a manual qemu), or a
+ * miscounted / moved --obs-file reuse, reopens the same hole.  That is the
+ * honest bound of "auditing, not proofing" (§6b), printed on every run so
+ * the tool never implies more than it knows.
  *
  * Host tool (like the oracle: native, no musl variant).  Links only the
  * vendored sha256.  Usage:
- *   fx-audit --store DIR [--rootfs DIR] [--obs-dir DIR] [--obs-file PATH]
- *            [--fxstore BIN] [--re-enroll] [--rollback [V]]
+ *   fx-audit --store DIR --boots N [--rootfs DIR] [--obs-dir DIR]
+ *            [--obs-file PATH] [--fxstore BIN] [--re-enroll] [--rollback [V]]
  * Exit: 0 coherent, 1 incoherent (or a refused rollback), 2 tool error.
  */
 
@@ -136,6 +205,7 @@
 
 #include <errno.h>
 #include <stdarg.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -177,6 +247,11 @@ static int g_reenroll = 0;
 static int g_rollback = 0;
 static unsigned g_rollback_v = 0;
 static int g_rollback_v_given = 0;
+static unsigned long g_boots = 0;        /* --boots (required): cumulative
+                                          * boots the HOST has ever started
+                                          * on this store — the OFF-DISK
+                                          * anchor for .bootlog growth */
+static int g_boots_given = 0;
 
 static char g_store_abs[4096];
 
@@ -186,7 +261,7 @@ static finding_t g_findings[MAX_FINDINGS];
 static size_t g_nfindings = 0;
 
 /* .bootlog */
-typedef struct { unsigned long v; char status[64]; unsigned long epoch; } bl_line_t;
+typedef struct { unsigned long v; char status[64]; unsigned long epoch; size_t off; } bl_line_t;
 static bl_line_t g_bl[4096];
 static size_t g_nbl = 0;
 static size_t g_bl_damaged = 0, g_bl_torn = 0;
@@ -227,6 +302,8 @@ static int g_have_obs = 0;
 static size_t g_obs_bl_bytes = 0;  static char g_obs_bl_sha[65];  static int g_obs_bl_absent = 0;
 static size_t g_obs_rec_bytes = 0; static char g_obs_rec_sha[65]; static int g_obs_rec_absent = 0;
 static unsigned g_obs_current = 0;
+static unsigned long g_obs_boots = 0;   /* the host boot count recorded at the
+                                          * previous observation (format 2) */
 static unsigned g_obs_vers[MAX_VERSIONS]; static char g_obs_genhash[MAX_VERSIONS][65];
 static char g_obs_facts[MAX_VERSIONS][65]; static size_t g_nobs_vers = 0;
 static char (*g_obs_artifacts)[256] = NULL; static size_t g_nobs_artifacts = 0;
@@ -425,6 +502,9 @@ static void read_bootlog(void) {
         if (!nl) { g_bl_torn++; break; } /* torn tail */
         char save = p[llen]; p[llen] = 0;
         bl_line_t b; memset(&b, 0, sizeof b);
+        b.off = (size_t)(p - g_bl_bytes); /* byte offset: the boot-accounting
+                                           * check needs the lines ADDED since
+                                           * the previous observation */
         char junk[8];
         if (sscanf(p, "%lu %63s %lu %7s", &b.v, b.status, &b.epoch, junk) == 3) {
             if (g_nbl < sizeof g_bl / sizeof g_bl[0]) g_bl[g_nbl++] = b;
@@ -599,7 +679,7 @@ static void obs_write(void) {
     FILE *f = fopen(tmp, "w");
     if (!f) die("cannot write observation '%s': %s", tmp, strerror(errno));
     char sha[65];
-    fprintf(f, "fx-audit-observation 1\n");
+    fprintf(f, "fx-audit-observation 2\n");
     fprintf(f, "store %s\n", g_store_abs);
     if (g_bl_absent) fprintf(f, "bootlog_absent 1\n");
     else {
@@ -612,6 +692,7 @@ static void obs_write(void) {
         fprintf(f, "recovery_bytes %zu\nrecovery_sha256 %s\n", g_rec_len, sha);
     }
     fprintf(f, "current %u\n", g_current);
+    fprintf(f, "host_boots %lu\n", g_boots);
     for (size_t i = 0; i < g_nvers; i++)
         fprintf(f, "version %u genhash %s facts %s\n", g_vers[i],
                 g_genhash[i][0] ? g_genhash[i] : "-",
@@ -634,8 +715,16 @@ static void obs_read(void) {
         die("cannot open observation '%s': %s", path, strerror(errno));
     }
     char line[LINE_MAX_];
-    if (!fgets(line, sizeof line, f) || strcmp(line, "fx-audit-observation 1\n") != 0)
-        die("observation '%s' is not format 1", path);
+    line[0] = 0;
+    if (!fgets(line, sizeof line, f) || strcmp(line, "fx-audit-observation 2\n") != 0) {
+        /* a format-1 file is a baseline from BEFORE the host-boot anchor:
+         * it carries no boot count, so the appended-line accounting has no
+         * delta to compare against.  Assuming one is exactly the silent
+         * default this seat refuses — die loudly and name the way out. */
+        if (line[0] && !strncmp(line, "fx-audit-observation 1", 22))
+            die("observation '%s' is FORMAT 1 (predates --boots): it recorded no host boot count, so .bootlog growth cannot be anchored against it — re-establish the baseline with --re-enroll --boots N (the enrollment gap applies until then)", path);
+        die("observation '%s' is not format 2", path);
+    }
     while (fgets(line, sizeof line, f)) {
         char name[64], v1[4096], v2[4096], v3[4096];
         if (sscanf(line, "store %4095s", v1) == 1) continue;
@@ -646,6 +735,7 @@ static void obs_read(void) {
         if (strncmp(line, "recovery_sha256 ", 16) == 0) { if (sscanf(line + 16, "%64s", g_obs_rec_sha) != 1) die("bad obs line: %s", line); continue; }
         if (strncmp(line, "recovery_absent", 15) == 0) { g_obs_rec_absent = 1; continue; }
         if (sscanf(line, "current %u", &g_obs_current) == 1) continue;
+        if (sscanf(line, "host_boots %lu", &g_obs_boots) == 1) continue;
         unsigned vv;
         if (sscanf(line, "version %u", &vv) == 1) {
             if (g_nobs_vers >= MAX_VERSIONS) die("observation has too many versions");
@@ -880,6 +970,149 @@ static void check_records_damaged(void) {
                     g_rec_damaged, g_rec_bad1_lineno, g_rec_bad1);
 }
 
+/* the host-boot accounting — the APPENDED-line blind spot, closed.
+ * observation_compare catches REWRITES; this check binds the GROWTH of the
+ * append-only records to the boots the HOST reports starting (--boots
+ * delta).  The host is the hypervisor: its count is the one input in this
+ * comparison the guest cannot write.  The rule is stated in the header,
+ * derived from the writer's call sites — at most one in-progress, one
+ * verdict, one shutdown and one recovery row per boot the host started,
+ * and every verdict must ride an in-progress for the SAME version in the
+ * SAME window. */
+static void check_boot_accounting(void) {
+    if (!g_have_obs) {
+        info("boot accounting: enrolling — the host boot count %lu is recorded as the baseline; .bootlog growth is accounted from the NEXT audit", g_boots);
+        return;
+    }
+    if (g_boots < g_obs_boots)
+        die("the host boot count went DOWN (%lu at the previous observation -> %lu now) — the --boots input contradicts the host's own recorded memory; refusing to guess an accounting from it", g_obs_boots, g_boots);
+    unsigned long delta = g_boots - g_obs_boots;
+
+    /* ── the .bootlog lines ADDED since the previous observation ── */
+    size_t base = 0;                 /* byte offset where the added lines start */
+    int skip_bl = 0;
+    if (g_obs_bl_absent && g_bl_absent) {
+        /* never booted, still nothing grown */
+    } else if (g_obs_bl_absent && !g_bl_absent) {
+        info("boot accounting: .bootlog was absent at the previous observation — the WHOLE file (%zu line(s)) is this window's growth", g_nbl);
+    } else if (!g_obs_bl_absent && g_bl_absent) {
+        skip_bl = 1; /* record-vanished already fired; nothing to count */
+    } else if (g_bl_len < g_obs_bl_bytes) {
+        skip_bl = 1; /* truncated — disagreement-bootlog-rewritten fired */
+    } else {
+        char sha[65];
+        sha256_hex(g_bl_bytes ? g_bl_bytes : "", g_obs_bl_bytes, sha);
+        if (strcmp(sha, g_obs_bl_sha) != 0) {
+            skip_bl = 1; /* rewritten in place — already a finding */
+        } else {
+            base = g_obs_bl_bytes;
+        }
+    }
+    if (skip_bl)
+        info("boot accounting: .bootlog skipped — the previously observed bytes are not an intact prefix (rewritten/truncated/vanished: already reported); counting lines inside a rewritten file would be arithmetic on a lie");
+
+    size_t n_ip = 0, n_sd = 0, n_verdict = 0;
+    if (!skip_bl) {
+        char *consumed = calloc(g_nbl ? g_nbl : 1, 1);
+        if (!consumed) die("out of memory");
+        for (size_t i = 0; i < g_nbl; i++) {
+            if (g_bl[i].off < base) continue; /* not added this window */
+            const char *st = g_bl[i].status;
+            if (!strcmp(st, "in-progress")) { n_ip++; continue; }
+            if (!strcmp(st, "shutdown"))    { n_sd++; continue; }
+            if (strcmp(st, "ok") && strcmp(st, "failed")) continue; /* foreign status: records-damaged owns the shape */
+            n_verdict++;
+            /* the verdict must ride an ADDED in-progress for the same
+             * version, EARLIER in this window, not yet consumed by an
+             * earlier verdict for it (in-order matching — the writer is
+             * single and sequential) */
+            size_t j = i;
+            while (j > 0) {
+                j--;
+                if (g_bl[j].off < base) break;
+                if (consumed[j]) continue;
+                if (g_bl[j].v == g_bl[i].v && !strcmp(g_bl[j].status, "in-progress")) { consumed[j] = 1; j = SIZE_MAX; break; }
+            }
+            if (j != SIZE_MAX)
+                add_finding("bootlog-forged-verdict",
+                            "an ADDED '%lu %s %lu' line has no '%lu in-progress' line earlier in this window — fx-init appends in-progress when it starts a boot (init.zig:4387) and the verdict in that SAME boot (the g_boot_decided latch, init.zig:2619/2631/2726/4398), so no boot the host started is behind this line: it was APPENDED by hand. This is the forge that feeds fx-init's boot decision a verdict no boot produced (bootlog_last, init.zig:737): a forged 'ok' makes the next boot skip the roll-forward and keeps a broken generation CURRENT; a forged 'failed' forces one that should not happen",
+                            g_bl[i].v, st, g_bl[i].epoch, g_bl[i].v);
+        }
+        /* the TORN TAIL is readable in-guest: fx-init reads .bootlog with
+         * fgets, which returns a final unterminated line — so a forged
+         * verdict appended WITHOUT its newline still steers bootlog_last.
+         * Account it like any other added line or the check has a
+         * no-newline bypass. */
+        if (g_bl_torn && g_bl_len > base) {
+            char save = g_bl_bytes[g_bl_len];
+            g_bl_bytes[g_bl_len] = 0;
+            char *tail = g_bl_bytes + base;
+            char *last_nl = NULL;
+            for (char *q = tail; *q; q++) if (*q == '\n') last_nl = q;
+            if (last_nl) tail = last_nl + 1;
+            unsigned long tv; char ts[64]; unsigned long tep; char junk[8];
+            if (tail[0] && sscanf(tail, "%lu %63s %lu %7s", &tv, ts, &tep, junk) == 3) {
+                if (!strcmp(ts, "in-progress")) n_ip++;
+                else if (!strcmp(ts, "shutdown")) n_sd++;
+                else if (!strcmp(ts, "ok") || !strcmp(ts, "failed")) {
+                    n_verdict++;
+                    add_finding("bootlog-forged-verdict",
+                                "an ADDED TORN '%lu %s %lu' line (no trailing newline) has no in-progress behind it in this window — fx-init reads .bootlog with fgets, and fgets RETURNS a final unterminated line, so bootlog_last still sees this verdict in-guest; the missing newline does not make an appended forge unreadable, only harder to see",
+                                tv, ts, tep);
+                }
+            }
+            g_bl_bytes[g_bl_len] = save;
+        }
+        free(consumed);
+        if (n_ip > delta)
+            add_finding("bootlog-fabricated-boots",
+                        "%zu in-progress line(s) added but the host started only %lu boot(s) since the previous observation (host boots %lu -> %lu) — fx-init writes at most ONE in-progress per boot the host starts (init.zig:4387); the surplus was appended by something that is not fx-init booting",
+                        n_ip, delta, g_obs_boots, g_boots);
+        if (n_sd > delta)
+            add_finding("bootlog-fabricated-boots",
+                        "%zu shutdown line(s) added but the host started only %lu boot(s) since the previous observation (host boots %lu -> %lu) — at most one shutdown per boot (init.zig:3925)",
+                        n_sd, delta, g_obs_boots, g_boots);
+        if (n_ip + n_sd + n_verdict == 0 && !g_obs_bl_absent)
+            info("boot accounting: no .bootlog lines added this window");
+    }
+
+    /* ── the .recovery rows ADDED since the previous observation ── */
+    if (!(g_obs_rec_absent && g_rec_absent) && !(!g_obs_rec_absent && g_rec_absent)) {
+        size_t rec_base = g_obs_rec_absent ? 0 : g_obs_rec_bytes;
+        int skip_rec = 0;
+        if (!g_obs_rec_absent) {
+            if (g_rec_len < g_obs_rec_bytes) skip_rec = 1;      /* truncated: already a finding */
+            else {
+                char sha[65];
+                sha256_hex(g_rec_bytes ? g_rec_bytes : "", g_obs_rec_bytes, sha);
+                if (strcmp(sha, g_obs_rec_sha) != 0) skip_rec = 1; /* rewritten: already a finding */
+            }
+        }
+        if (!skip_rec && g_rec_len > rec_base) {
+            size_t n_rows = 0;
+            const char *q = g_rec_bytes + rec_base;
+            const char *end = g_rec_bytes + g_rec_len;
+            while (q < end) {
+                const char *nl = memchr(q, '\n', (size_t)(end - q));
+                size_t ll = nl ? (size_t)(nl - q) : (size_t)(end - q);
+                /* data rows start with a digit; grep-based readers count a
+                 * torn final row too, so a torn row is still growth */
+                if (ll && q[0] >= '0' && q[0] <= '9') n_rows++;
+                if (!nl) break;
+                q = nl + 1;
+            }
+            if (n_rows > delta)
+                add_finding("bootlog-fabricated-boots",
+                            "%zu .recovery data row(s) added but the host started only %lu boot(s) since the previous observation (host boots %lu -> %lu) — recovery_append runs at most once per boot (a successful roll-forward inside decide_boot_version); rows no boot wrote are a fabricated recovery history",
+                            n_rows, delta, g_obs_boots, g_boots);
+        }
+    }
+
+    if (!skip_bl)
+        info("boot accounting: host boots %lu -> %lu (delta %lu); this window added in-progress %zu, verdicts %zu, shutdown %zu — every verdict rides an in-progress the host's count can account for",
+             g_obs_boots, g_boots, delta, n_ip, n_verdict, n_sd);
+}
+
 /* the previous-observation comparison — THE load-bearing check */
 static void observation_compare(void) {
     if (!g_have_obs) {
@@ -1024,9 +1257,16 @@ static int do_rollback(void) {
 static void usage(FILE *f) {
     fprintf(f,
         "fx-audit — the AUDIT seat (host-side coherence detector + rollback trigger)\n"
-        "usage: fx-audit --store DIR [--rootfs DIR] [--obs-dir DIR] [--obs-file PATH]\n"
-        "                 [--fxstore BIN] [--re-enroll] [--rollback [V]]\n"
+        "usage: fx-audit --store DIR --boots N [--rootfs DIR] [--obs-dir DIR]\n"
+        "                 [--obs-file PATH] [--fxstore BIN] [--re-enroll] [--rollback [V]]\n"
         "  --store DIR     the store to audit (as the host sees it)\n"
+        "  --boots N       REQUIRED, host truth: how many boots the HOST has EVER\n"
+        "                  started on this store, cumulative. The off-disk anchor\n"
+        "                  that .bootlog/.recovery growth is accounted against —\n"
+        "                  the guest can neither see nor set it. Without it the\n"
+        "                  audit REFUSES (an appended forged line is invisible\n"
+        "                  without the anchor; assuming a count would make the\n"
+        "                  bound decorative).\n"
         "  --rootfs DIR    a host view of the guest rootfs (runs `fxstore verify`)\n"
         "  --obs-dir DIR   observation store dir (default $FX_AUDIT_OBS_DIR, else\n"
         "                  the sibling dir <store>.fx-audit-obs).  MUST NOT be\n"
@@ -1054,6 +1294,20 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--fxstore") && i + 1 < argc) g_fxstore = argv[++i];
         else if (!strncmp(argv[i], "--fxstore=", 10)) g_fxstore = argv[i] + 10;
         else if (!strcmp(argv[i], "--re-enroll")) g_reenroll = 1;
+        else if (!strcmp(argv[i], "--boots") && i + 1 < argc) {
+            char *end = NULL;
+            g_boots = strtoul(argv[++i], &end, 10);
+            if (!end || *end || end == argv[i] || argv[i][0] == '-')
+                die("--boots '%s' is not a non-negative integer", argv[i]);
+            g_boots_given = 1;
+        }
+        else if (!strncmp(argv[i], "--boots=", 8)) {
+            char *val = argv[i] + 8, *end = NULL;
+            g_boots = strtoul(val, &end, 10);
+            if (!end || *end || end == val || val[0] == '-')
+                die("--boots '%s' is not a non-negative integer", val);
+            g_boots_given = 1;
+        }
         else if (!strcmp(argv[i], "--rollback")) {
             g_rollback = 1;
             if (i + 1 < argc && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9') {
@@ -1070,6 +1324,8 @@ int main(int argc, char **argv) {
         else { fprintf(stderr, "fx-audit: unknown arg '%s'\n", argv[i]); usage(stderr); return 2; }
     }
     if (!g_store) { fprintf(stderr, "fx-audit: --store is required\n"); usage(stderr); return 2; }
+    if (!g_boots_given)
+        die("--boots is REQUIRED: the host's cumulative boot count on this store is the OFF-DISK anchor that .bootlog growth is accounted against — without it an appended forged line is INVISIBLE (the measured hole this seat exists to close), and silently assuming a count is how a bound becomes decorative. Pass --boots N (N = boots the host has EVER started on this store; 0 is valid)");
     check_safe_path(g_store, "--store");
     if (g_rootfs) check_safe_path(g_rootfs, "--rootfs");
     if (g_obsfile) check_safe_path(g_obsfile, "--obs-file");
@@ -1139,6 +1395,7 @@ int main(int argc, char **argv) {
     }
 
     printf("fx-audit: store %s (fxstore %s)\n", g_store_abs, g_fxstore);
+    printf("fx-audit: host boots on this store: %lu (the off-disk anchor; the guest can neither see nor set it)\n", g_boots);
     {
         char op[4096]; obs_path_for(op, sizeof op);
         printf("fx-audit: observation %s\n", op);
@@ -1237,6 +1494,7 @@ int main(int argc, char **argv) {
     run_check("facts-path-gone", check_facts_path_gone);
     run_check("src-of-artifact", check_src_of_artifact);
     run_check("records-damaged", check_records_damaged);
+    run_check("boot-accounting", check_boot_accounting);
     run_check("previous-observation", observation_compare);
 
     size_t pass = 0, skip = 0, fail = 0;
@@ -1255,7 +1513,7 @@ int main(int argc, char **argv) {
 
     if (g_bl_torn) info(".bootlog has a torn tail (%zu unterminated line(s)) — a crash mid-write, not a verdict", g_bl_torn);
     printf("checks: %zu pass, %zu failed; findings: %zu\n", pass, fail, g_nfindings);
-    printf("bound: this seat sees REWRITES and TRUNCATIONS of records it previously observed and cross-record INCOHERENCE; it CANNOT authenticate APPENDED lines, and a coherent tamper on a store it has never observed is undetectable by it. An in-guest cross-check is defeated by design — that is why this seat is host-side.\n");
+    printf("bound: this seat sees REWRITES and TRUNCATIONS of records it previously observed, cross-record INCOHERENCE, and — anchored on --boots — APPENDED .bootlog/.recovery growth the host's own boot count cannot account for. It still CANNOT see: a forged line-PAIR (in-progress + verdict) appended into the slack of a boot the host started but fx-init never recorded (killed before its in-progress, or no bootable generation) — closing that needs a per-boot host nonce, which changes the writer's format; a coherent tamper on a store it has never observed (the enrollment gap); .bootlog lines naming gc-pruned versions (legitimate). The anchor is only as true as the host's own bookkeeping — a boot the counting host does not know about reopens the hole. An in-guest cross-check is defeated by design — that is why this seat is host-side.\n");
     printf("evidence: the store's own records only — attempts.jsonl (the harness self-report) is never opened.\n");
 
     if (g_nfindings > 0) {

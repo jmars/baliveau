@@ -334,6 +334,32 @@ if [ -r "$KCONFIG" ] && grep -q '^CONFIG_IA32_EMULATION=y' "$KCONFIG"; then
 fi
 echo "qemu-agent-observe: fx-init is x86_64 static: $(file -b "$ZB/fx-init" | cut -c1-52)"
 
+# ─── the audit seat (host side), for the REAL-STORE boot-accounting demo ──
+# fx-audit correlates the disk .bootlog's growth with the boots THIS GATE
+# starts (the hypervisor's own count).  It shells fxstore for its record
+# reads; without a host fxstore the demonstration is SKIPPED with a loud
+# line (the seat's discriminations live in tests/test_fx_audit.sh, which
+# hard-requires fxstore) — the observation-loop assertions are unaffected.
+make -s build/fx-audit >/dev/null || fail "cannot build build/fx-audit"
+AUDIT_BIN="$REPO/build/fx-audit"
+[ -x "$AUDIT_BIN" ] || fail "no $AUDIT_BIN"
+[ "$AUDIT_BIN" -nt "$REPO/tools/fx-audit.c" ] \
+    || fail "$AUDIT_BIN is older than tools/fx-audit.c — a stale cached binary answered for the seat; rm -rf build and re-run"
+FXSTORE_AUDIT="$SIBS/fxstore/zig-out/bin/fxstore"
+if [ ! -x "$FXSTORE_AUDIT" ]; then
+    echo "qemu-agent-observe: LOUD: fxstore missing at $FXSTORE_AUDIT — the REAL-STORE audit demonstration is SKIPPED (build the sibling: cd ../fxstore/zig && zig build); tests/test_fx_audit.sh carries the seat's full discriminations"
+    FXSTORE_AUDIT=""
+fi
+
+# extract_store DEST-DIR — the disk's /store tree to a host directory
+# (debugfs rdump; the audit reads a host view of the store exactly as it
+# reads a host view of any record)
+extract_store() {
+    rm -rf "$1"; mkdir -p "$1"
+    "$DEBUGFS" -R "rdump /store $1" "$DISK" >/dev/null 2>&1
+    [ -d "$1/store" ] || { ls -la "$1" 2>/dev/null; fail "audit: rdump extracted no /store from $DISK into $1"; }
+}
+
 # ─── provisioning (toolchain-free path; qemu_ctrl.sh's shape) ─────────────
 echo "=== qemu-agent-observe: provisioning the store (toolchain-free) ==="
 export FX_SIBLINGS="${FX_SIBLINGS:-$SIBS}"
@@ -772,6 +798,24 @@ echo "                    wrote + ACTIVATED the crasher: v$V_A (hash recorded in
 echo "                    record ($(wc -l < "$WORK/obs-1-attempts.txt") lines) is ON THE DISK at /agent-data/attempts.jsonl"
 echo "                    — and its fx_write of the RECORD ITSELF was refused in-guest (FX_AGENT_WRITABLE named)"
 
+# ── the audit seat ENROLLS against the REAL store, with the host's OWN
+#    boot count: this gate has started exactly ONE boot on this disk.  The
+#    count is not read from anywhere in the guest — the gate is the
+#    hypervisor here, and its count is the off-disk anchor.
+if [ -n "$FXSTORE_AUDIT" ]; then
+    extract_store "$WORK/audit-ext1"
+    FXSTORE_BIN="$FXSTORE_AUDIT" "$AUDIT_BIN" --store "$WORK/audit-ext1/store" \
+        --obs-file "$WORK/audit-obs.obs" --boots 1 > "$WORK/audit1.out" 2>&1
+    _rc=$?
+    cp "$WORK/audit1.out" "$EVID/obs-audit-enroll.out"
+    [ "$_rc" = 0 ] || { cat "$WORK/audit1.out"; fail "[obs] audit: enrollment against the real store after boot 1 exited $_rc (a store written only by the REAL writers must audit coherent)"; }
+    grep -q 'ENROLLING' "$WORK/audit1.out" \
+        || fail "[obs] audit: the first run did not enroll"
+    grep -q '^VERDICT: coherent$' "$WORK/audit1.out" \
+        || fail "[obs] audit: enrollment verdict is not coherent"
+    echo "qemu-agent-observe: [obs] audit ENROLLED against the real store after boot 1 (--boots 1, coherent)"
+fi
+
 echo "=== qemu-agent-observe: [obs] boot 2 — the crasher's generation v$V_A boots and FAILS ==="
 boot "$WORK/img-obs.cpio.gz" "$WORK/obs-2.log"
 cp "$WORK/obs-2.log" "$EVID/obs-boot2-console.log"
@@ -891,6 +935,50 @@ S4=$(session_count)
 [ "$S4" = "$S1" ] || fail "[obs] boot 4: the session count grew ($S1 -> $S4) — the task was re-started"
 echo "qemu-agent-observe: [obs] SETTLED — max version v$OBS_MAX, exactly $OBS_FAILED failed line, $S4 session(s):"
 echo "                    the observing harness never re-issued the failed activation"
+
+# ── THE BOOT-ACCOUNTING DEMONSTRATION, on the REAL guest records ─────────
+# Since the enrollment after boot 1 this gate started boots 2, 3 and 4
+# (delta 3): v$V_A's failed boot, the roll-forward boot that republished
+# the bracket as v$V_C, and v$V_C's settled re-boot.  All of it is REAL
+# .bootlog growth written by the REAL fx-init inside the guest:
+#   (a) it must audit COHERENT with the host's own count (--boots 4) —
+#       legitimate growth is the half that makes the check usable;
+#   (b) the MOTIVATING FORGE on the same real bootlog — appending
+#       "v$V_A ok" so the next boot would read the crashed generation as
+#       good and NOT roll forward — must FIRE, named as a forged verdict.
+if [ -n "$FXSTORE_AUDIT" ]; then
+    extract_store "$WORK/audit-ext4"
+    # (a) legitimate growth, accounted by the host's boot delta
+    FXSTORE_BIN="$FXSTORE_AUDIT" "$AUDIT_BIN" --store "$WORK/audit-ext4/store" \
+        --obs-file "$WORK/audit-obs.obs" --boots 4 > "$WORK/audit4.out" 2>&1
+    _rc=$?
+    cp "$WORK/audit4.out" "$EVID/obs-audit-boot4.out"
+    [ "$_rc" = 0 ] || { cat "$WORK/audit4.out"; fail "[obs] audit: the real 4-boot history exited $_rc (legitimate growth must stay coherent)"; }
+    grep -q 'boot accounting: host boots 1 -> 4 (delta 3)' "$WORK/audit4.out" \
+        || fail "[obs] audit: the accounting did not see the host delta: $(grep 'boot accounting' "$WORK/audit4.out")"
+    grep -q '^VERDICT: coherent$' "$WORK/audit4.out" \
+        || fail "[obs] audit: the real 4-boot history is not coherent"
+    echo "qemu-agent-observe: [obs] audit: the REAL 3-boot growth since enrollment (v$V_A failed, the roll-forward, the settled re-boot) audits coherent with --boots 4"
+    # (b) the motivating forge, on the real guest-written bootlog
+    echo "$V_A ok 999" >> "$WORK/audit-ext4/store/.bootlog"
+    FXSTORE_BIN="$FXSTORE_AUDIT" "$AUDIT_BIN" --store "$WORK/audit-ext4/store" \
+        --obs-file "$WORK/audit-obs.obs" --boots 4 > "$WORK/audit4f.out" 2>&1
+    _rc=$?
+    cp "$WORK/audit4f.out" "$EVID/obs-audit-forged.out"
+    [ "$_rc" = "1" ] || { cat "$WORK/audit4f.out"; fail "[obs] audit: the forged '$V_A ok' on the real bootlog must be incoherent (exit 1), got $_rc"; }
+    grep -q '^INCOHERENT bootlog-forged-verdict ' "$WORK/audit4f.out" \
+        || fail "[obs] audit: the forge fired but not as a forged verdict: $(grep '^INCOHERENT' "$WORK/audit4f.out")"
+    grep -q '^check previous-observation: pass$' "$WORK/audit4f.out" \
+        || fail "[obs] audit: the forge tripped the prefix comparison too (it is an append — the arm is not isolating the accounting)"
+    # this disk carries the boot-3 roll-forward's .recovery row, whose
+    # from-failed IS v$V_A — so recovery-without-failure fires as well (the
+    # journal now points at a version whose last verdict says ok).  TWO
+    # independent catches; the accounting is the one that works even when
+    # no row exists (the FORGERY arm in tests/test_fx_audit.sh).
+    grep -q '^check recovery-without-failure: failed$' "$WORK/audit4f.out" \
+        || fail "[obs] audit: the real journal points at v$V_A's failure — the forge must also trip recovery-without-failure here"
+    echo "qemu-agent-observe: [obs] audit: the APPENDED '$V_A ok 999' on the REAL bootlog fires bootlog-forged-verdict (the append-only comparison still passes; the real .recovery row gives a SECOND, independent catch)"
+fi
 
 # ═══ ARM BLIND — the same fixture with today's harness: the ratchet ═══════
 DISK="$WORK/disk-blind.img"; new_disk "$DISK"

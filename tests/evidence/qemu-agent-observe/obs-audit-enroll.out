@@ -1,0 +1,19 @@
+fx-audit: store /tmp/qemuobs.OIzzyJ/audit-ext1/store (fxstore /var/data/workspace/fixpoint-linux/fxstore/zig-out/bin/fxstore)
+fx-audit: host boots on this store: 1 (the off-disk anchor; the guest can neither see nor set it)
+fx-audit: observation /tmp/qemuobs.OIzzyJ/audit-obs.obs
+check version-chain: pass
+check recovery-without-failure: pass
+fx-audit: check verify-drift SKIPPED: no --rootfs given (the rootfs lives inside the guest image; pass a host view of it to run fxstore verify)
+check verify-drift: pass
+check facts-path-gone: pass
+fx-audit: src_of: 8 binding(s), 0 source artifact(s) present in the store (absence is the oracle's host-tree fallback; a DISAPPEARANCE is the finding)
+check src-of-artifact: pass
+check records-damaged: pass
+fx-audit: boot accounting: enrolling — the host boot count 1 is recorded as the baseline; .bootlog growth is accounted from the NEXT audit
+check boot-accounting: pass
+fx-audit: first observation of this store: ENROLLING (nothing to compare — a coherent tamper is invisible until the host has seen the store once; this is the seat's bound)
+check previous-observation: pass
+checks: 8 pass, 0 failed; findings: 0
+bound: this seat sees REWRITES and TRUNCATIONS of records it previously observed, cross-record INCOHERENCE, and — anchored on --boots — APPENDED .bootlog/.recovery growth the host's own boot count cannot account for. It still CANNOT see: a forged line-PAIR (in-progress + verdict) appended into the slack of a boot the host started but fx-init never recorded (killed before its in-progress, or no bootable generation) — closing that needs a per-boot host nonce, which changes the writer's format; a coherent tamper on a store it has never observed (the enrollment gap); .bootlog lines naming gc-pruned versions (legitimate). The anchor is only as true as the host's own bookkeeping — a boot the counting host does not know about reopens the hole. An in-guest cross-check is defeated by design — that is why this seat is host-side.
+evidence: the store's own records only — attempts.jsonl (the harness self-report) is never opened.
+VERDICT: coherent

@@ -47,6 +47,35 @@
 #               The mutation control below proves the "only": a detector
 #               built without the comparison goes COHERENT on exactly this
 #               fixture.
+#   BOOTS       --boots is the off-disk anchor (the host's cumulative boot
+#               count on the store).  It is REQUIRED: without it the tool
+#               REFUSES (exit 2) — an optional anchor that silently defaults
+#               is a decorative bound.
+#   FORGERY     THE MEASURED HOLE, closed: an APPENDED "<failed v> ok" in
+#               the writer's exact shape (the forge that feeds bootlog_last
+#               a verdict no boot produced, so fx-init does NOT roll
+#               forward) fires bootlog-forged-verdict, named in those terms.
+#               FABBOOT: a COMPLETE forged boot (in-progress + verdict) with
+#               no host boot behind it fires bootlog-fabricated-boots.
+#               TORNFORGE: the same forge WITHOUT its trailing newline
+#               (fgets still returns it in-guest) fires too.
+#   BEFORE      THE FAIL-BEFORE, on the PINNED pre-change revision 030fbdc
+#               (git cat-file -e guard + cmp proving pin != working tree —
+#               a control that equals its subject proves nothing): the
+#               pinned tool, given the same enrollment -> forge sequence,
+#               calls the tampered store COHERENT.  The new tool also
+#               REFUSES the pinned tool's format-1 observation (it recorded
+#               no boot count; assuming one is the silent default this seat
+#               refuses).
+#   LEGIT       the other half of the accounting — LEGITIMATE growth stays
+#               coherent, each shape from the writer's own call sites: an
+#               ordinary boot (in-progress + ok), a boot that FAILS
+#               (in-progress + failed), a failure that ROLLS FORWARD
+#               (failed -> the real fxstore republish -> the new version's
+#               in-progress + ok + a .recovery row), a clean SHUTDOWN, a
+#               boot KILLED AT THE VERDICT (in-progress alone — this
+#               harness's own kill shape), and a SILENT boot the writer
+#               records nothing for (no bootable generation).
 #   TRIGGER     --rollback REFUSES a clean store (CURRENT untouched) and on
 #               the coherent-tamper store calls `fxstore rollback --hard`
 #               (CURRENT repointed, LOUD, naming the finding), after which
@@ -63,16 +92,28 @@
 # COPY of the source (sed, one line: `run_check("<name>", ...)`), and
 # asserts the corresponding fixture's audit goes COHERENT on the mutant —
 # the assertion FAILS unless the check is load-bearing.  The previous-
-# observation comparison's mutant is the COHERENT arm's control.  No pinned
-# pre-fix revision is used anywhere: the tool is NEW, no earlier revision
-# carries it, so there is no HEAD dependence to guard (stated so nobody
-# reads its absence as an oversight).
+# observation comparison's mutant is the COHERENT arm's control; the
+# boot-accounting mutant's is the FORGERY arm's.
+#
+# THE FAIL-BEFORE is PINNED at 030fbdc (the revision this change lands on
+# top of): the gate extracts tools/fx-audit.c AT THAT REVISION (git show,
+# guarded by git cat-file -e), PROVES it differs from the working tree
+# (cmp — a control that equals its subject proves nothing), builds it, and
+# shows the SAME appended forged verdict auditing COHERENT on it.  Nothing
+# depends on the position of HEAD; the pin is a fixed object name.
 #
 # FIXTURE HONESTY: .bootlog/.recovery are fx-init's files and fx-init does
 # not run host-side; the gate WRITES them in the writers' exact formats
-# (bootlog_append's "%u %s %u\n", recovery_line's "<epoch> <published>
-# <from-failed> <genhash>\n" under the verbatim RECOVERY_HEADER from
-# init.zig).  Everything else is written by the real writers: fx-activate
+# (bootlog_append's "%u %s %u\n" — a "<v> in-progress <epoch>" line AND the
+# verdict line for every boot, because that is what the writer appends per
+# boot (init.zig:4387 then the verdict sites); recovery_line's "<epoch>
+# <published> <from-failed> <genhash>\n" under the verbatim RECOVERY_HEADER
+# from init.zig).  The HOST BOOT COUNT narrative is likewise declared, not
+# measured: the baseline store's history is THREE boots the "host" (this
+# gate) says it started — v1's boot (ok), v2's boot (failed), the
+# roll-forward boot (republished CUR, ok) — so enrollment runs with
+# --boots 3 and every arm that grows the bootlog declares the boots it
+# added.  Everything else is written by the real writers: fx-activate
 # (host-built, the qemu-agent-observe.sh provisioning shape) and fxstore
 # itself (the soft `rollback` that fx-init's roll-forward drives in-guest).
 #
@@ -256,7 +297,10 @@ materialize_rootfs() {
 }
 
 # write_records STORE BOOTLOG_ROWS... — .bootlog + the header-only .recovery
-# in the WRITERS' exact formats (see FIXTURE HONESTY above)
+# in the WRITERS' exact formats (see FIXTURE HONESTY above).  Every boot is
+# written as its REAL line pair: "<v> in-progress <epoch>" (init.zig:4387,
+# when the boot starts) followed by that boot's verdict — never a bare
+# verdict, because the writer never emits one without its in-progress.
 write_records() {
     _st="$1"; shift
     : > "$_st/.bootlog"
@@ -288,9 +332,9 @@ genhash_of() { # genhash_of STORE VERSION -> the generation hash
 
 cur_of() { cat "$1/.db/snapshots/CURRENT" 2>/dev/null || fail "no CURRENT in $1"; }
 
-audit() { # audit STORE ROOTFS [extra args...] — runs the seat
-    _st="$1"; _rt="$2"; shift 2
-    FXSTORE_BIN="$FXSTORE" "$AUDIT" --store "$_st" --rootfs "$_rt" "$@"
+audit() { # audit STORE ROOTFS BOOTS [extra args...] — runs the seat
+    _st="$1"; _rt="$2"; _nb="$3"; shift 3
+    FXSTORE_BIN="$FXSTORE" "$AUDIT" --store "$_st" --rootfs "$_rt" --boots "$_nb" "$@"
 }
 
 expect_coh() { # expect_coh OUT EXIT LABEL — must be coherent
@@ -335,29 +379,41 @@ ROOT="$WORK/rootfs-a"
 mkdir -p "$ROOT"
 materialize_rootfs "$STORE" "$ROOT" "$CUR" "$PS_A"
 
-# the machine's history in fx-init's records: v1 ok, v2 failed, the
-# roll-forward republished v1's content as v$CUR, which then booted ok
+# the machine's history in fx-init's records, as THREE boots the host
+# started: v1 boots ok; v2 boots and FAILS; the next boot rolls forward
+# (fxstore soft rollback republishing v1's content as v$CUR) and boots ok.
+# Each boot is the writer's real line pair (in-progress at boot start,
+# init.zig:4387; the verdict from the g_boot_decided latch).
 write_records "$STORE" \
+    "$V1 in-progress 99" \
     "$V1 ok 100" \
+    "$V2 in-progress 100" \
     "$V2 failed 101" \
+    "$CUR in-progress 102" \
     "$CUR ok 103"
 echo "$CUR $V2 $GH_CUR" | awk '{ print "103 " $1 " " $2 " " $3 }' >> "$STORE/.recovery"
 
 
 OBS="$WORK/obs"
-audit "$STORE" "$ROOT" --obs-dir "$OBS" > "$WORK/out.clean1" 2>&1
+audit "$STORE" "$ROOT" 3 --obs-dir "$OBS" > "$WORK/out.clean1" 2>&1
 expect_coh "$WORK/out.clean1" $? "CLEAN first audit"
 grep -q 'ENROLLING' "$WORK/out.clean1" || fail "CLEAN: first run did not enroll"
-# idempotence + the append-only path: a LEGITIMATE new boot line between
-# audits must leave the store coherent (fx-init appends; it never rewrites)
-echo "$CUR ok 104" >> "$STORE/.bootlog"
-audit "$STORE" "$ROOT" --obs-dir "$OBS" > "$WORK/out.clean2" 2>&1
-expect_coh "$WORK/out.clean2" $? "CLEAN re-audit (idempotence + legal append)"
+grep -q 'host boot count 3 is recorded as the baseline' "$WORK/out.clean1" \
+    || fail "CLEAN: the enrollment did not record the host boot count"
+# idempotence + the append-only path: a LEGITIMATE new boot between audits
+# (the writer's real pair: in-progress at start, then the verdict) must
+# leave the store coherent — fx-init appends; it never rewrites
+echo "$CUR in-progress 104" >> "$STORE/.bootlog"
+echo "$CUR ok 105" >> "$STORE/.bootlog"
+audit "$STORE" "$ROOT" 4 --obs-dir "$OBS" > "$WORK/out.clean2" 2>&1
+expect_coh "$WORK/out.clean2" $? "CLEAN re-audit (idempotence + legal append: an ordinary boot)"
 grep -q 'append-only respected' "$WORK/out.clean2" \
     || fail "CLEAN re-audit: the legal append was not seen by the prefix comparison"
+grep -q 'boot accounting: host boots 3 -> 4 (delta 1); this window added in-progress 1, verdicts 1, shutdown 0' "$WORK/out.clean2" \
+    || fail "CLEAN re-audit: the ordinary boot was not accounted by the host delta: $(grep 'boot accounting' "$WORK/out.clean2")"
 grep -q 'disagreement' "$WORK/out.clean2" \
     && fail "CLEAN re-audit: a legal append produced a disagreement"
-echo "test_fx_audit: CLEAN: coherent on first audit; a legal bootlog append re-audits coherent"
+echo "test_fx_audit: CLEAN: coherent on first audit; an ordinary boot (in-progress + ok, --boots 3 -> 4) re-audits coherent"
 
 # ── the fixture scheme ───────────────────────────────────────────────────
 # every incoherence arm runs on a COPY of the clean baseline with its OWN
@@ -376,10 +432,15 @@ fresh() { # fresh NAME — copy store + observation file + build its rootfs
     materialize_rootfs "$WORK/store-$1" "$WORK/rootfs-$1" "$(cur_of "$WORK/store-$1")" "$PS_A"
 }
 
-run_fixture() { # run_fixture NAME [extra seat args...]
+run_fixture() { # run_fixture NAME [extra seat args...] — runs the seat.
+    # FBOOTS (default 4) is the host truth for this fixture: the baseline
+    # observation was taken after the clean arm's FOURTH declared boot, so
+    # every arm that grows the bootlog must set FBOOTS to declare the boots
+    # it added (the host's count is an INPUT, never inferred).
     _fxname="$1"; shift
     FXSTORE_BIN="$FXSTORE" "$AUDIT" --store "$WORK/store-$_fxname" \
-        --rootfs "$WORK/rootfs-$_fxname" --obs-file "$WORK/obsf-$_fxname.obs" "$@"
+        --rootfs "$WORK/rootfs-$_fxname" --obs-file "$WORK/obsf-$_fxname.obs" \
+        --boots "${FBOOTS:-4}" "$@"
 }
 
 # the coherent tamper, as a function (used by three arms)
@@ -408,17 +469,24 @@ echo "test_fx_audit: COHERENT tamper: every cross-check passes; caught ONLY by t
 # ══ the named incoherences, each on its own fresh copy ══════════════════
 
 # RWF: a roll-forward nobody recorded a failure for (from_failed points at
-# the ok v1); the control row points at the recorded v2 failure
+# the ok v1); the control row points at the recorded v2 failure.  Both rows
+# are declared with ONE host boot behind them (FBOOTS=5): the writer's real
+# order is recovery_append BEFORE the boot's in-progress line (init.zig:
+# decide_boot_version runs first), so a boot killed in between leaves
+# exactly this shape — row, no bootlog lines.  The accounting then passes
+# both and only the from-failed reader separates them.
 fresh rwf
 echo "200 $CUR $V1 $GH_CUR" >> "$WORK/store-rwf/.recovery"
-run_fixture rwf > "$WORK/out.rwf" 2>&1
+FBOOTS=5 run_fixture rwf > "$WORK/out.rwf" 2>&1
 expect_incoh "$WORK/out.rwf" $? "RWF" recovery-without-failure
 grep -q "last bootlog verdict is 'ok'" "$WORK/out.rwf" \
     || fail "RWF: the finding does not name the ok verdict: $(grep '^INCOHERENT recovery-without-failure' "$WORK/out.rwf")"
+grep -q '^check boot-accounting: pass$' "$WORK/out.rwf" \
+    || fail "RWF: boot-accounting fired too (isolation failed — the row has a declared boot behind it)"
 fresh rwfctl
 echo "201 $CUR $V2 $GH_CUR" >> "$WORK/store-rwfctl/.recovery"
-run_fixture rwfctl > "$WORK/out.rwfctl" 2>&1
-expect_coh "$WORK/out.rwfctl" $? "RWF control (failure IS recorded)"
+FBOOTS=5 run_fixture rwfctl > "$WORK/out.rwfctl" 2>&1
+expect_coh "$WORK/out.rwfctl" $? "RWF control (failure IS recorded, boot declared)"
 echo "test_fx_audit: RWF: fires on an unrecorded failure; control row passes"
 
 # DRIFT: an unmanaged rootfs file (fxstore verify exit 1, reused)
@@ -451,13 +519,16 @@ grep -q 'not a published version' "$WORK/out.chain" \
     || fail "CHAIN: the finding does not say CURRENT is not published"
 # CHAIN (b): a .recovery row with the WRONG content genhash — while the
 # failure itself IS recorded (recovery-without-failure must still pass:
-# two readers, one lie)
+# two readers, one lie).  FBOOTS=5 declares the boot behind the row (the
+# RWF arm's shape), so the accounting stays out of the isolation.
 fresh chain2
 echo "202 $CUR $V2 0000000000000000000000000000000000000000000000000000000000000000" >> "$WORK/store-chain2/.recovery"
-run_fixture chain2 > "$WORK/out.chain2" 2>&1
+FBOOTS=5 run_fixture chain2 > "$WORK/out.chain2" 2>&1
 expect_incoh "$WORK/out.chain2" $? "CHAIN recovery-genhash" version-chain
 grep -q '^check recovery-without-failure: pass$' "$WORK/out.chain2" \
     || fail "CHAIN(b): recovery-without-failure fired too (isolation failed)"
+grep -q '^check boot-accounting: pass$' "$WORK/out.chain2" \
+    || fail "CHAIN(b): boot-accounting fired too (isolation failed — the row has a declared boot behind it)"
 grep -q 'generation fact' "$WORK/out.chain2" \
     || fail "CHAIN(b): the finding does not name the genhash disagreement"
 echo "test_fx_audit: CHAIN: CURRENT=99 and a wrong recovery genhash each fire version-chain"
@@ -510,11 +581,12 @@ cp "$STORE/.bootlog" "$STORE_B/.bootlog"
 cp "$STORE/.recovery" "$STORE_B/.recovery"
 mkdir -p "$WORK/rootfs-b"
 materialize_rootfs "$STORE_B" "$WORK/rootfs-b" "$V1B" "$WORK/pkgset-store-b.dhall"
-# control: B against its OWN observation is coherent
-audit "$STORE_B" "$WORK/rootfs-b" --obs-dir "$WORK/obs-b" > "$WORK/out.fb1" 2>&1
+# control: B against its OWN observation is coherent (B's copied .bootlog
+# narrates the same 4 boots A's does, so its enrollment declares 4 too)
+audit "$STORE_B" "$WORK/rootfs-b" 4 --obs-dir "$WORK/obs-b" > "$WORK/out.fb1" 2>&1
 expect_coh "$WORK/out.fb1" $? "FACTS control (own observation)"
 # the arm: B audited against A's observation file
-audit "$STORE_B" "$WORK/rootfs-b" --obs-file "$AOBSFILE" > "$WORK/out.fb2" 2>&1
+audit "$STORE_B" "$WORK/rootfs-b" 4 --obs-file "$AOBSFILE" > "$WORK/out.fb2" 2>&1
 expect_incoh "$WORK/out.fb2" $? "FACTS rebuilt history" disagreement-facts-changed
 grep -q "version $V1B" "$WORK/out.fb2" \
     || fail "FACTS: the finding does not name version $V1B"
@@ -522,7 +594,7 @@ echo "test_fx_audit: FACTS: same version numbers, different content, against the
 
 # ══ THE TRIGGER ═════════════════════════════════════════════════════════
 # refuses a clean store
-audit "$STORE" "$ROOT" --obs-dir "$WORK/obs-trig-clean" --rollback > "$WORK/out.trigref" 2>&1
+audit "$STORE" "$ROOT" 4 --obs-dir "$WORK/obs-trig-clean" --rollback > "$WORK/out.trigref" 2>&1
 _rc=$?
 [ "$_rc" = "1" ] || fail "TRIGGER clean: expected refusal exit 1, got $_rc"
 grep -q 'refusing to roll back a coherent store' "$WORK/out.trigref" \
@@ -590,11 +662,214 @@ chmod 644 "$WORK/store-unreadable/.bootlog"
 # on agent-reachable disk)
 FXSTORE_BIN="$FXSTORE" "$AUDIT" --store "$WORK/store-unreadable" \
     --rootfs "$WORK/rootfs-unreadable" --obs-dir "$WORK/store-unreadable/obs-inside" \
+    --boots 4 \
     > "$WORK/out.inside" 2>&1
 _rc=$?
 [ "$_rc" = "2" ] || fail "LOUD: an --obs-dir inside the store must be refused (exit 2), got $_rc"
 grep -q 'INSIDE the store' "$WORK/out.inside" || fail "LOUD: the refusal does not say why"
 echo "test_fx_audit: LOUD: unreadable record -> exit 2; obs-inside-store refused"
+
+# ══ BOOTS: the anchor is REQUIRED — no silent default ═══════════════════
+FXSTORE_BIN="$FXSTORE" "$AUDIT" --store "$STORE" --rootfs "$ROOT" \
+    > "$WORK/out.noboots" 2>&1
+_rc=$?
+[ "$_rc" = "2" ] || fail "BOOTS: a missing --boots must be exit 2 (tool error), got $_rc"
+grep -q 'boots is REQUIRED' "$WORK/out.noboots" \
+    || fail "BOOTS: the refusal does not say what is missing"
+grep -q 'assuming a count' "$WORK/out.noboots" \
+    || fail "BOOTS: the refusal does not say WHY it refuses to assume"
+echo "test_fx_audit: BOOTS: no --boots -> exit 2, loud refusal (an optional anchor that silently defaults is a decorative bound)"
+
+# ══ FORGERY: the measured hole, closed ══════════════════════════════════
+# THE MOTIVATING EXPLOIT, on the store where it is actually invisible: a
+# failure that has NOT been rolled forward (no .recovery row — the moment
+# the exploit is used).  v$V2's last verdict is failed; the agent APPENDS
+# "<v$V2> ok" in the writer's exact shape.  bootlog_last (init.zig:737)
+# reads the LAST non-shutdown status, so the next boot would treat v$V2 as
+# ok and fx-init would NOT roll forward — the broken generation stays
+# current.  On the standard baseline (which carries a .recovery row from
+# v$V2) the bare forge also trips recovery-without-failure — a row pointing
+# at a version whose failure vanished; with NO row nothing cross-checks it
+# and only the host's boot count can see it.
+mk_norec() { # mk_norec NAME — a store whose failure was never rolled forward
+    # v1 boots ok; v2 boots and FAILS; the OPERATOR hard-rolls back to v1
+    # (fxstore rollback --hard — operator rollbacks write no .recovery row,
+    # by the journal's own header), and v1 boots ok again.  THREE boots,
+    # header-only .recovery.  Enrollment runs with its own observation
+    # file (the fresh-copied one describes the standard baseline).
+    _n="$1"
+    fresh "$_n"
+    write_records "$WORK/store-$_n" \
+        "$V1 in-progress 99" \
+        "$V1 ok 100" \
+        "$V2 in-progress 100" \
+        "$V2 failed 101" \
+        "$V1 in-progress 104" \
+        "$V1 ok 105"
+    FXSTORE_BIN="$FXSTORE" "$FXSTORE" rollback --hard "$V1" --store "$WORK/store-$_n" >/dev/null 2>&1 \
+        || fail "NOREC $_n: fxstore rollback --hard $V1 failed"
+    [ "$(cur_of "$WORK/store-$_n")" = "$V1" ] \
+        || fail "NOREC $_n: the hard rollback did not repoint CURRENT at v$V1"
+    rm -f "$WORK/obsf-$_n.obs"
+    FBOOTS=3 run_fixture "$_n" > "$WORK/out.norec-$_n" 2>&1
+    expect_coh "$WORK/out.norec-$_n" $? "NOREC enroll ($_n)"
+}
+
+mk_norec forg
+echo "$V2 ok 999" >> "$WORK/store-forg/.bootlog"
+FBOOTS=3 run_fixture forg > "$WORK/out.forg" 2>&1
+expect_incoh "$WORK/out.forg" $? "FORGERY" bootlog-forged-verdict
+grep -q "an ADDED '$V2 ok 999' line has no '$V2 in-progress' line earlier in this window" "$WORK/out.forg" \
+    || fail "FORGERY: the finding does not quote the forged line: $(grep '^INCOHERENT bootlog-forged-verdict' "$WORK/out.forg")"
+grep -q 'no boot the host started is behind this line' "$WORK/out.forg" \
+    || fail "FORGERY: the finding does not say no host boot is behind the line"
+grep -q 'forged .ok. makes the next boot skip the roll-forward' "$WORK/out.forg" \
+    || fail "FORGERY: the finding does not name the consequence (skipped roll-forward, broken generation stays current)"
+# the forge passes EVERY cross-check — the hole is closed by the count alone
+for _c in version-chain recovery-without-failure verify-drift facts-path-gone \
+          src-of-artifact records-damaged previous-observation; do
+    grep -q "^check $_c: pass\$" "$WORK/out.forg" \
+        || fail "FORGERY: cross-check $_c did not pass (the forge is not invisible to it — the arm is vacuous): $(grep '^check' "$WORK/out.forg")"
+done
+echo "test_fx_audit: FORGERY: the APPENDED '$V2 ok 999' passes every cross-check and fires bootlog-forged-verdict, named in the exploit's own terms"
+
+# FABBOOT: a COMPLETE forged boot (in-progress + verdict, both in the
+# writer's shape) with no host boot behind it — attribution alone would
+# pass this (the verdict rides its in-progress); only the COUNT catches it
+fresh fab
+echo "$CUR in-progress 104" >> "$WORK/store-fab/.bootlog"
+echo "$CUR ok 105" >> "$WORK/store-fab/.bootlog"
+run_fixture fab > "$WORK/out.fab" 2>&1
+expect_incoh "$WORK/out.fab" $? "FABBOOT" bootlog-fabricated-boots
+grep -q 'in-progress line(s) added but the host started only 0 boot(s)' "$WORK/out.fab" \
+    || fail "FABBOOT: the finding does not name the count disagreement: $(grep '^INCOHERENT bootlog-fabricated' "$WORK/out.fab")"
+echo "test_fx_audit: FABBOOT: a whole forged boot-pair with no host boot fires bootlog-fabricated-boots"
+
+# TORNFORGE: the same forge WITHOUT the trailing newline — fx-init reads
+# .bootlog with fgets, and fgets returns a final unterminated line, so the
+# forge steers bootlog_last just the same; the accounting must not have a
+# no-newline bypass
+mk_norec torn
+printf '%s' "$V2 ok 999" >> "$WORK/store-torn/.bootlog"
+FBOOTS=3 run_fixture torn > "$WORK/out.torn" 2>&1
+expect_incoh "$WORK/out.torn" $? "TORNFORGE" bootlog-forged-verdict
+grep -q 'TORN' "$WORK/out.torn" \
+    || fail "TORNFORGE: the finding does not say the line is torn: $(grep '^INCOHERENT bootlog-forged-verdict' "$WORK/out.torn")"
+grep -q '^check recovery-without-failure: pass$' "$WORK/out.torn" \
+    || fail "TORNFORGE: recovery-without-failure fired too (isolation failed)"
+echo "test_fx_audit: TORNFORGE: a forge without its newline still fires (fgets returns it in-guest)"
+
+# ══ LEGIT: every legitimate growth shape stays coherent ════════════════
+# a boot that FAILS (in-progress + failed) — FBOOTS declares one new boot
+fresh legfail
+echo "$CUR in-progress 110" >> "$WORK/store-legfail/.bootlog"
+echo "$CUR failed 111" >> "$WORK/store-legfail/.bootlog"
+FBOOTS=5 run_fixture legfail > "$WORK/out.legfail" 2>&1
+expect_coh "$WORK/out.legfail" $? "LEGIT failed boot"
+echo "test_fx_audit: LEGIT: a boot that fails (in-progress + failed, --boots 5) stays coherent"
+
+# a failure that ROLLS FORWARD: the failed boot, then the REAL fxstore soft
+# rollback (fx-init's own roll-forward driver) republishing v$V1's content
+# as a NEW version, then that generation's boot (in-progress + ok) and its
+# .recovery row — two boots, all growth accounted
+fresh legrwf
+echo "$CUR in-progress 110" >> "$WORK/store-legrwf/.bootlog"
+echo "$CUR failed 111" >> "$WORK/store-legrwf/.bootlog"
+FXSTORE_BIN="$FXSTORE" "$FXSTORE" rollback "$V1" --store "$WORK/store-legrwf" >/dev/null 2>&1 \
+    || fail "LEGIT rwf: fxstore rollback $V1 failed"
+ROLLV=$(cur_of "$WORK/store-legrwf")
+[ "$ROLLV" -gt "$CUR" ] || fail "LEGIT rwf: the republish did not ratchet ($ROLLV <= $CUR)"
+GH_ROLL=$(genhash_of "$WORK/store-legrwf" "$ROLLV")
+[ "$GH_ROLL" = "$GH1" ] || fail "LEGIT rwf: the republished content is not v$V1's (genhash $GH_ROLL != $GH1)"
+echo "$ROLLV in-progress 112" >> "$WORK/store-legrwf/.bootlog"
+echo "$ROLLV ok 113" >> "$WORK/store-legrwf/.bootlog"
+echo "111 $ROLLV $CUR $GH_ROLL" >> "$WORK/store-legrwf/.recovery"
+FBOOTS=6 run_fixture legrwf > "$WORK/out.legrwf" 2>&1
+expect_coh "$WORK/out.legrwf" $? "LEGIT roll-forward boot"
+grep -q '^check recovery-without-failure: pass$' "$WORK/out.legrwf" \
+    || fail "LEGIT rwf: recovery-without-failure fired on a real recorded failure (isolation failed)"
+echo "test_fx_audit: LEGIT: a failure that rolls forward (failed -> real fxstore republish v$ROLLV -> in-progress + ok + .recovery row, --boots 6) stays coherent"
+
+# a clean SHUTDOWN: the writer appends ip + ok + shutdown, ONE boot
+fresh legsd
+echo "$CUR in-progress 110" >> "$WORK/store-legsd/.bootlog"
+echo "$CUR ok 111" >> "$WORK/store-legsd/.bootlog"
+echo "$CUR shutdown 112" >> "$WORK/store-legsd/.bootlog"
+FBOOTS=5 run_fixture legsd > "$WORK/out.legsd" 2>&1
+expect_coh "$WORK/out.legsd" $? "LEGIT clean shutdown"
+echo "test_fx_audit: LEGIT: a clean shutdown (in-progress + ok + shutdown) stays coherent"
+
+# a boot KILLED AT THE VERDICT (init.zig's own comment: the harness kills
+# the VM at the verdict) — in-progress alone, no verdict: legal, the boot
+# never decided
+fresh legkill
+echo "$CUR in-progress 110" >> "$WORK/store-legkill/.bootlog"
+FBOOTS=5 run_fixture legkill > "$WORK/out.legkill" 2>&1
+expect_coh "$WORK/out.legkill" $? "LEGIT killed at verdict"
+echo "test_fx_audit: LEGIT: a boot killed at the verdict (in-progress alone) stays coherent"
+
+# a SILENT boot: the host started one more boot and the writer appended
+# NOTHING (no bootable generation: decide_boot_version returned 0, which
+# appends no line and pre-decides the verdict away, init.zig:4368-4379).
+# Coherent — and this is exactly the SLACK the stated bound admits: a boot
+# the host started but fx-init never recorded leaves the count richer than
+# the record, and a forger appending a line-pair into that slack would pass
+# (closing it needs a per-boot host nonce; see the tool's bound).
+fresh legq
+FBOOTS=5 run_fixture legq > "$WORK/out.legq" 2>&1
+expect_coh "$WORK/out.legq" $? "LEGIT silent boot"
+grep -q 'no .bootlog lines added this window' "$WORK/out.legq" \
+    || fail "LEGIT silent boot: the empty window was not reported as such: $(grep 'boot accounting' "$WORK/out.legq")"
+echo "test_fx_audit: LEGIT: a silent boot (started, nothing appended — no bootable generation) stays coherent"
+
+# ══ BEFORE: the fail-before, on the PINNED pre-change revision ══════════
+# The asymmetry a regression probe needs: on 030fbdc (the tree this change
+# lands on top of) the SAME forge went COHERENT.  The pin is guarded and
+# PROVEN DIFFERENT from the working tree — a control that equals its
+# subject proves nothing.
+git -C "$REPO" cat-file -e 030fbdc^{commit} 2>/dev/null \
+    || fail "BEFORE: the pinned revision 030fbdc does not exist (the fail-before control needs it)"
+git -C "$REPO" show 030fbdc:tools/fx-audit.c > "$WORK/pinned-fx-audit.c" \
+    || fail "BEFORE: cannot extract tools/fx-audit.c at 030fbdc"
+cmp -s "$WORK/pinned-fx-audit.c" "$REPO/tools/fx-audit.c" \
+    && fail "BEFORE: the pinned 030fbdc source is IDENTICAL to the working tree — the control equals its subject and proves nothing"
+cc -std=c11 -O2 -Wall -Wextra -I"$REPO/src/vendor/dhall-c" \
+   -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
+   -o "$WORK/fx-audit-pinned" "$WORK/pinned-fx-audit.c" "$REPO/src/vendor/dhall-c/sha256.c" \
+    || fail "BEFORE: cannot build the pinned 030fbdc fx-audit"
+# the no-recovery fixture (the store where the forge is truly invisible),
+# enrolled with the PINNED tool — its observation is format 1, no boot
+# count, and the pinned tool does not know --boots
+mk_norec before
+FXSTORE_BIN="$FXSTORE" "$WORK/fx-audit-pinned" --store "$WORK/store-before" \
+    --rootfs "$WORK/rootfs-before" --obs-file "$WORK/obsf-before-pinned.obs" \
+    > "$WORK/out.bp1" 2>&1
+expect_coh "$WORK/out.bp1" $? "BEFORE enroll (pinned tool)"
+# the IDENTICAL forge the FORGERY arm makes
+echo "$V2 ok 999" >> "$WORK/store-before/.bootlog"
+FXSTORE_BIN="$FXSTORE" "$WORK/fx-audit-pinned" --store "$WORK/store-before" \
+    --rootfs "$WORK/rootfs-before" --obs-file "$WORK/obsf-before-pinned.obs" \
+    > "$WORK/out.bp2" 2>&1
+expect_coh "$WORK/out.bp2" $? "BEFORE the forge goes COHERENT on 030fbdc (the measured hole)"
+grep -q 'append-only respected' "$WORK/out.bp2" \
+    || fail "BEFORE: the pinned tool did not even see the append (the fixture is wrong)"
+# the fail-after on the SAME tampered store: the new tool against its OWN
+# (format-2) enrollment of the same pre-forge state
+FBOOTS=3 run_fixture before > "$WORK/out.bp2new" 2>&1
+expect_incoh "$WORK/out.bp2new" $? "BEFORE/AFTER on the same store" bootlog-forged-verdict
+# and the new tool REFUSES the pinned tool's format-1 observation: a
+# baseline with no boot count cannot anchor growth, and assuming one is
+# the silent default this seat refuses
+FXSTORE_BIN="$FXSTORE" "$AUDIT" --store "$WORK/store-before" \
+    --rootfs "$WORK/rootfs-before" --obs-file "$WORK/obsf-before-pinned.obs" --boots 3 \
+    > "$WORK/out.bp3" 2>&1
+_rc=$?
+[ "$_rc" = "2" ] || fail "BEFORE: the new tool must refuse a format-1 observation (exit 2), got $_rc"
+grep -q 'FORMAT 1' "$WORK/out.bp3" \
+    || fail "BEFORE: the refusal does not name the format-1 baseline"
+grep -q 're-enroll' "$WORK/out.bp3" \
+    || fail "BEFORE: the refusal does not name the way out"
+echo "test_fx_audit: BEFORE: on the pinned 030fbdc the SAME appended '$V2 ok 999' audits COHERENT (exit 0); the new tool fires on the same store and REFUSES the pinned tool's format-1 observation (no boot count recorded — never assume one)"
 
 # ══ THE MUTATION CONTROL (positive control, per check) ══════════════════
 # a detector with exactly one check's registration deleted must go COHERENT
@@ -612,7 +887,8 @@ mutate() { # mutate NAME OUT — sed out one run_check registration
 }
 mut_run() { # mut_run BIN NAME — the mutant on fixture NAME
     FXSTORE_BIN="$FXSTORE" "$1" --store "$WORK/store-$2" \
-        --rootfs "$WORK/rootfs-$2" --obs-file "$WORK/obsf-$2.obs"
+        --rootfs "$WORK/rootfs-$2" --obs-file "$WORK/obsf-$2.obs" \
+        --boots "${MUT_BOOTS:-4}"
 }
 
 # the mutant fixtures reuse the arms' tampered copies (already built above):
@@ -623,7 +899,7 @@ expect_coh "$WORK/out.m-chain" $? "MUTANT version-chain (CURRENT=99 went coheren
 mutate recovery-without-failure  "$WORK/mut-recovery-without-failure"
 fresh m-rwf
 echo "200 $CUR $V1 $GH_CUR" >> "$WORK/store-m-rwf/.recovery"
-mut_run "$WORK/mut-recovery-without-failure" m-rwf > "$WORK/out.m-rwf" 2>&1
+MUT_BOOTS=5 mut_run "$WORK/mut-recovery-without-failure" m-rwf > "$WORK/out.m-rwf" 2>&1
 expect_coh "$WORK/out.m-rwf" $? "MUTANT recovery-without-failure (unrecorded failure went coherent)"
 mutate verify-drift              "$WORK/mut-verify-drift"
 mut_run "$WORK/mut-verify-drift" drift > "$WORK/out.m-drift" 2>&1
@@ -637,7 +913,10 @@ expect_coh "$WORK/out.m-damaged" $? "MUTANT records-damaged (foreign line went c
 mutate previous-observation      "$WORK/mut-previous-observation"
 mut_run "$WORK/mut-previous-observation" coh > "$WORK/out.m-prevobs" 2>&1
 expect_coh "$WORK/out.m-prevobs" $? "MUTANT previous-observation (THE BOUND: the coherent tamper goes coherent without host memory)"
-echo "test_fx_audit: MUTANTS: each check's fixture goes coherent when that one check is sed-ed out — including the previous-observation comparison on the coherent tamper (the bound, made visible)"
+mutate boot-accounting           "$WORK/mut-boot-accounting"
+MUT_BOOTS=3 mut_run "$WORK/mut-boot-accounting" forg > "$WORK/out.m-acc" 2>&1
+expect_coh "$WORK/out.m-acc" $? "MUTANT boot-accounting (the appended forged verdict goes coherent — the host-boot correlation is load-bearing)"
+echo "test_fx_audit: MUTANTS: each check's fixture goes coherent when that one check is sed-ed out — including the previous-observation comparison on the coherent tamper (the bound, made visible) and boot-accounting on the appended forged verdict"
 
 # src-of-artifact's own finding (disagreement-artifact-gone) is emitted by
 # the previous-observation walk, whose mutant arm above covers the
@@ -645,5 +924,5 @@ echo "test_fx_audit: MUTANTS: each check's fixture goes coherent when that one c
 # (absence is a legitimate fallback), so it has no failing fixture BY
 # DESIGN — the finding it feeds is the one the ARTIFACT arm pins.
 
-echo "test_fx_audit: PASS — the audit seat discriminates (clean passes with a real roll-forward history, each named incoherence fires from its own fixture, the coherent tamper passes every cross-check and is caught only by the previous observation, the trigger refuses clean and rolls back tampered via fxstore --hard, the verdict is independent of attempts.jsonl, and a one-check mutant goes blind on exactly its own fixture)"
+echo "test_fx_audit: PASS — the audit seat discriminates (clean passes with a real roll-forward history, each named incoherence fires from its own fixture, the coherent tamper passes every cross-check and is caught only by the previous observation, the APPENDED forged verdict is refused by the host-boot accounting on the new tree and passes on the pinned pre-change tree, every legitimate growth shape stays coherent, the trigger refuses clean and rolls back tampered via fxstore --hard, the verdict is independent of attempts.jsonl, and a one-check mutant goes blind on exactly its own fixture)"
 exit 0

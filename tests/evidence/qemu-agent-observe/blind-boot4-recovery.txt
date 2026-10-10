@@ -14,4 +14,4 @@
 # can forge or truncate it exactly as it can .bootlog; the counts are
 # reconstructible from .bootlog x the store's version/genhash history.
 # line: <epoch-s> <published-version> <from-failed-version> <content-genhash|->
-1791626315 7 5 4b40fb690a6e60c187b936c100e3aca9cedd48a482aa264125a74c0eea5a08c8
+1791638995 7 5 65aff6c1279bd25d507c99d1845e0736beab2aec3dd21f9d5355c315892b07a5

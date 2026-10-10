@@ -293,18 +293,63 @@ certifies coherence; neither says "improved".
       bootlog itself is the tampered record), prints a loud ROLLBACK line naming every
       finding that caused it, then re-enrolls against the post-rollback state.
       **RESIDUALS, stated rather than claimed away:** the seat sees REWRITES and
-      TRUNCATIONS of previously observed records — it CANNOT authenticate APPENDED
+      TRUNCATIONS of previously observed records — ~~it CANNOT authenticate APPENDED
       lines (a forged bootlog line in the writer's exact shape is indistinguishable by
-      content), and a coherent tamper on a never-observed store is undetectable by it;
-      both are printed in the tool's own output. `.bootlog` lines naming gc-pruned
+      content)~~ (SUPERSEDED by the entry below: with `--boots`, appended `.bootlog` /
+      `.recovery` growth beyond what the host's boot count can account for now fires),
+      and a coherent tamper on a never-observed store is undetectable by it (the
+      enrollment gap — stands); both are printed in the tool's own output. `.bootlog`
+      lines naming gc-pruned
       versions are deliberately NOT a finding (gc legitimately prunes snapshots while
       .bootlog outlives them — indistinguishable from a forged line). The two
       within-snapshot single-writer cross-checks (install genhash == the generation
       fact's; src_of's src_hash in srcstore) are implemented but have NO host-side
       fixture: every legitimate writer commits both sides in one txn and no raw fact
       editor exists outside the guest — the per-version observation hash covers that
-      tamper class at version grain. No pinned pre-fix revision: the tool is NEW, no
-      earlier revision carries it (so nothing here depends on HEAD).
+      tamper class at version grain. ~~No pinned pre-fix revision: the tool is NEW~~
+      (SUPERSEDED by the entry below: the boot-accounting change pins `030fbdc` as its
+      fail-before; the seat's own arms needed no pin because none existed before it).
+- [x] **THE APPENDED-LINE BLIND SPOT — CLOSED by correlating `.bootlog` growth with the boots
+      the HOST knows it started (`--boots`, gate `make test-audit`; §6b's own conclusion one
+      field further: the host is the hypervisor, so its boot count is off-disk knowledge the
+      guest can neither see nor forge).** The hole, measured: an APPENDED `"<failed v> ok
+      <epoch>"` in the writer's exact shape passed every check — and it defeats the substrate's
+      OWN recovery, because fx-init's boot decision (`bootlog_last`) reads the last non-shutdown
+      verdict, so the forged `ok` makes the next boot skip the roll-forward and keep the broken
+      generation current (epoch monotonicity cannot separate it: `genEpoch` is
+      wall-clock/env-overridable). The fix: `fx-audit --boots N` is REQUIRED (absent → exit 2,
+      loudly — an anchor that silently defaults is decorative; chosen over an env var (ambient,
+      invisible in evidence) and a host-maintained file (a stale-read failure mode: the count
+      must be true as-of THIS audit)); N is the cumulative boots the host has EVER started on
+      the store, recorded in the observation (format 2; a format-1 baseline is REFUSED with a
+      re-enroll instruction — never assume a count). The accounting rule is DERIVED from the
+      writer's call sites (init.zig): per host-started boot at most ONE `in-progress` (:4387,
+      only when a generation is bootable and its facts read; the no-generation path appends
+      NOTHING), at most ONE verdict (the `g_boot_decided` latch; :2619/:2631/:2726/:4398 — every
+      verdict site runs in a boot that already appended its in-progress for the SAME version),
+      at most ONE `shutdown` (:3925), at most ONE `.recovery` row (per successful roll-forward).
+      So: an added verdict with no added in-progress of that version earlier in the window is
+      `bootlog-forged-verdict` (the motivating forge, named in those terms — including its
+      no-newline variant, which fgets still reads in-guest); added in-progress/shutdown/recovery
+      lines beyond the host delta are `bootlog-fabricated-boots`. STRICT window semantics: a
+      verdict gets NO credit for an in-progress left open at the previous observation (the
+      audit is a between-boots instrument; where ambiguous, prefer the finding — a false stop
+      recovers and names itself, a false pass is the failure mode). **The asymmetry is pinned:**
+      on `030fbdc` (git cat-file -e guarded, cmp-proven different from the working tree) the
+      same forge audits COHERENT; on this tree it fires; a sed-mutant without the check goes
+      coherent on exactly that fixture. **Every legitimate growth shape stays coherent, from
+      fixtures:** ordinary boot, failed boot, failure→roll-forward (the real `fxstore rollback`
+      republish + `.recovery` row), clean shutdown, killed-at-verdict (in-progress alone), and
+      a silent boot (no bootable generation — appends nothing); plus a REAL in-guest
+      demonstration in `tests/qemu-agent-observe.sh` (enroll after boot 1 with the gate's own
+      count, coherent after 4 real boots, and the forge on the REAL guest-written bootlog
+      firing). **THE NARROWED BOUND (what still cannot be seen):** a forged line-PAIR
+      (in-progress + verdict) appended into the SLACK of a boot the host started but fx-init
+      never recorded (killed before its in-progress, or no bootable generation) — closing that
+      needs a per-boot host nonce, which changes the writer's format; the count is only as true
+      as the host's bookkeeping (a boot started outside the counting host, or a miscounted /
+      moved `--obs-file` reuse, reopens the hole); the enrollment gap stands (first run trusts,
+      loudly); gc-pruned versions stay deliberately skipped.
 - [x] **`attempts.jsonl` must never become evidence — now PINNED, not just stated.**
       `fx-audit` never opens it (or any harness self-report), and
       `tests/test_fx_audit.sh` pins the property behaviourally: the same incoherent
