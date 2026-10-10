@@ -175,6 +175,34 @@ $(BIN_OSIER): tools/fx-osier-share.c $(DHALL_SRC) $(YYJSON_SRC)
 
 .PHONY: test-osier-share
 
+# The AUDIT SEAT — the oracle's SIBLING (todo.md §4, design record §6b):
+# host-side, agent-unwritable, a function of observable system state.  Where
+# the oracle measures a generation, this seat asks whether the RECORDS
+# AGREE — .bootlog/.recovery (fx-init) x the version-bound facts (fx-activate)
+# x CURRENT (fxstore) x the rootfs (fxstore verify, exit 1 on drift) — and,
+# load-bearing, compares what it sees now against ITS OWN PREVIOUS
+# OBSERVATION (kept on host disk, never inside the store), which is the only
+# thing that catches a COHERENT in-guest rewrite of history.  The response is
+# the EXISTING rollback machinery, driven by the thin --rollback trigger.
+#   tools/fx-audit.c is the seat; tests/test_fx_audit.sh is the
+#   discrimination proof: a clean store passes, each named incoherence fires
+#   from its own fixture, the coherent tamper is caught ONLY by the
+#   previous-observation comparison (and a sed-mutated detector that skips
+#   that comparison goes blind on exactly that fixture), the trigger refuses
+#   a clean store and rolls back a tampered one through `fxstore rollback
+#   --hard`, and the verdict is pinned independent of attempts.jsonl (a
+#   self-report is never evidence).
+BIN_AUDIT := build/fx-audit
+
+test-audit: $(BIN_AUDIT)
+	bash tests/test_fx_audit.sh
+
+$(BIN_AUDIT): tools/fx-audit.c src/vendor/dhall-c/sha256.c src/vendor/dhall-c/dhall.h
+	@mkdir -p build
+	$(CC) $(CFLAGS) -Isrc/vendor/dhall-c $(LDFLAGS) -o $@ tools/fx-audit.c src/vendor/dhall-c/sha256.c
+
+.PHONY: test-audit
+
 # The slot ground for the first self-modification task (todo.md §5): the
 # deployment pre-declares ONE package whose src.path is a directory the
 # agent may write; the host-frozen recipe (a STUB — no Osier->Lua compiler

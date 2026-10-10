@@ -1,5 +1,5 @@
 metric osier-share
-store /tmp/qemuinguest.TVpG3q/rb1-store
+store /tmp/qemuinguest.vH7U8R/rb1-store
 snapshot 3
 osier_extensions .elm
 counted regular source files only (clean-tree exclusion rules apply)

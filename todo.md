@@ -259,32 +259,58 @@ certifies coherence; neither says "improved".
 
 ## 4. Design items awaiting a decision
 
-- [ ] **THE AUDIT AND ITS TRIGGER — the stance is AUDITING, NOT PROOFING (user, 2026-10-10; §6b).**
-      The agent is allowed to try to cheat; what must exist is that we can SEE it and STOP it →
-      rollback. Rollback is already built (`fxstore rollback [--hard] <v>`, the boot-failure
-      roll-forward, fx-init's hold-at-current `2feedf6`); **the missing piece is the TRIGGER** —
-      something that reads an incoherence and acts. `osier-share`'s sibling seat, and it belongs
-      HOST-SIDE for the same reason the oracle does.
-      - **THE AUDIT READS SEVERAL RECORDS WRITTEN BY DIFFERENT WRITERS AT DIFFERENT TIMES** — that is
-        what makes incoherence detectable with no sandbox: `.bootlog` (fx-init's per-boot verdicts),
-        `.recovery` (fx-init's roll-forward journal), the `install`/`provides`/`src_of`/`store` facts
-        (fx-activate), CURRENT (fxstore), `fxstore verify` (rootfs ↔ facts, exit 1 on drift), and the
-        host-side oracle.
-      - **INCOHERENCE, e.g.**: a `.recovery` row with no matching `failed` in `.bootlog`; a rootfs file
-        with no `install` fact; a generation naming a store path that is not there; a version chain
-        that does not line up; a `src_of` binding whose artifact is gone.
-      - **THE HOST IS THE ONLY WRITER THE AGENT CANNOT REACH**, and it already reads the disk at every
-        generation. So the strongest detector is **the host comparing what it sees now against what it
-        saw last** — a generation that rewrote its own history shows as a DISAGREEMENT WITH THE
-        PREVIOUS OBSERVATION, which no coherent in-guest rewrite can undo, because the previous
-        observation is not on the disk.
-      - **RESIDUAL, not claimed away**: an IN-GUEST cross-check is defeated by a COHERENT tamper. That
-        is the honest bound of this stance and the reason the auditor is host-side.
-- [ ] **`attempts.jsonl` must never become evidence.** It is the agent's SELF-REPORT and the agent can
-      reach it. The observation loop may keep using it (it is an efficiency layer), but nothing in the
-      stop/rollback path may depend on it. That property holds today — fx-init's roll-forward reads
-      `.bootlog`, its guardrail reads the store's facts — and it is easy to lose: it should be stated
-      where the loop's verdict is read, and pinned by a test.
+- [x] **THE AUDIT AND ITS TRIGGER — BUILT (`fx-audit`, gate `make test-audit`; the stance is
+      AUDITING, NOT PROOFING, user 2026-10-10; §6b).** The missing piece was the thing that
+      reads an incoherence and ACTS; it now exists as the oracle's SIBLING seat (host-side,
+      agent-unwritable, a function of observable system state — the same three properties
+      §7.1 defines for oracles): `tools/fx-audit.c`, invoked `fx-audit --store DIR
+      [--rootfs DIR] [--obs-dir DIR] [--rollback [V]]`, exit 0 coherent / 1 incoherent /
+      2 tool error. What it reads: `.bootlog` + `.recovery` (fx-init), the version-bound
+      facts (`fxstore facts`), CURRENT (fxstore), and `fxstore verify` for the rootfs
+      (REUSED, exit 1 on drift — not reimplemented). Named incoherences, each its own
+      check, message and fixture in `tests/test_fx_audit.sh`: recovery-without-failure,
+      verify-drift, facts-path-gone, version-chain (CURRENT not published; recovery
+      genhash vs the generation fact as-of its published version), bootlog-damaged /
+      recovery-damaged (a terminated line in a shape the only writer never writes —
+      beyond the record's starting set), disagreement-bootlog/recovery-rewritten,
+      disagreement-facts-changed, disagreement-artifact-gone, record-vanished.
+      **THE PREVIOUS-OBSERVATION COMPARISON (the load-bearing half):** the seat persists
+      its own observation OUTSIDE the store (default `<store>.fx-audit-obs`, REFUSED
+      inside it — host memory must not live on agent-reachable disk), keyed by the store
+      path, recording content hashes of the append-only records, a hash of EVERY
+      published version's facts (20 frozen relations, lines sorted so engine iteration
+      order cannot produce spurious disagreements), the timeline and the source-artifact
+      set; a first run ENROLS (stated in the output). A coherent in-guest rewrite
+      (.bootlog `failed`->`ok` + the recovery row stripped, all records agreeing) passes
+      EVERY cross-check and is caught ONLY here — the gate proves the "only" with a
+      sed-mutant that drops the comparison and goes coherent on exactly that fixture.
+      The observation is rewritten only after a COHERENT verdict (a tampered store keeps
+      reporting incoherent until acted on), `--re-enroll` resets the baseline.
+      **THE TRIGGER stays thin and separate:** the seat never mutates the audited system
+      when asked a question; `--rollback [V]` runs the audit and, only on incoherence,
+      calls the EXISTING `fxstore rollback --hard V` (refuses a clean store outright,
+      defaults V to the newest ok-per-.bootlog, marks that target UNTRUSTED when the
+      bootlog itself is the tampered record), prints a loud ROLLBACK line naming every
+      finding that caused it, then re-enrolls against the post-rollback state.
+      **RESIDUALS, stated rather than claimed away:** the seat sees REWRITES and
+      TRUNCATIONS of previously observed records — it CANNOT authenticate APPENDED
+      lines (a forged bootlog line in the writer's exact shape is indistinguishable by
+      content), and a coherent tamper on a never-observed store is undetectable by it;
+      both are printed in the tool's own output. `.bootlog` lines naming gc-pruned
+      versions are deliberately NOT a finding (gc legitimately prunes snapshots while
+      .bootlog outlives them — indistinguishable from a forged line). The two
+      within-snapshot single-writer cross-checks (install genhash == the generation
+      fact's; src_of's src_hash in srcstore) are implemented but have NO host-side
+      fixture: every legitimate writer commits both sides in one txn and no raw fact
+      editor exists outside the guest — the per-version observation hash covers that
+      tamper class at version grain. No pinned pre-fix revision: the tool is NEW, no
+      earlier revision carries it (so nothing here depends on HEAD).
+- [x] **`attempts.jsonl` must never become evidence — now PINNED, not just stated.**
+      `fx-audit` never opens it (or any harness self-report), and
+      `tests/test_fx_audit.sh` pins the property behaviourally: the same incoherent
+      store with that file ABSENT, PLANTED in the store and DOCTORED in the rootfs
+      produces a byte-identical verdict (cmp, exit codes equal) — a self-report cannot
+      talk the seat out of an incoherence (and cannot talk it into one either).
 
 - [ ] **THE BUILD VOCABULARY — designed (§6a of the design record), NOT BUILT. Build in this order,
       because each element's absence makes the next one decorative:**
