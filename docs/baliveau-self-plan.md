@@ -313,15 +313,51 @@ PATH, which recipes control. The child execs this ABSOLUTE path (no PATH search)
 it to `Run`: **absolute `argv[0]`, no PATH search** — then a recipe can only name binaries that
 already exist.
 
-**C. THE REACH MUST BE ENFORCED IN-GUEST, or the lever is decorative.** MEASURED: on `bwrap`-absent
-the child warns loudly, `chdir`s to the workdir and **`execvp`s the recipe UNWRAPPED**
-(`build.zig:711-733`). stage3's *existence* is still checked — stage3-absent is a loud 127 with no
-fallback — **but it is not used on that path**. `bwrap` is a host tool with no guest counterpart, so
-**in the guest an agent-authored `Copy` reaches `/fx/disk/agent-data/attempts.jsonl` just as well as
-a `Shell` would** — i.e. the observation loop's guarantee (the record is out of the agent's reach)
-would hold only by the *tool table*, and a recipe is a different door. Fix the fallback so it still
-goes through stage3/landlock: palisade is *mandatory*, and being the fallback's path is what makes it
-optional, which is an inconsistency rather than a design wall.
+**C. THE REACH BOUND — CORRECTED 2026-10-10, the user is right and my first version was wrong.**
+I wrote that the fix was to route the `bwrap`-absent fallback "so it still goes through
+stage3/landlock". MEASURED against the PINNED GUEST KERNEL (`fx-init/.kernel-cache/kernel/config`),
+that is not available and never could be:
+
+    # CONFIG_SECURITY is not set        -> no LSM framework => NO LANDLOCK
+    # CONFIG_SECCOMP is not set         -> and palisade's `n` (its syscall whitelist, stage3.c) is
+                                          cosmocc pledge, i.e. seccomp
+    # CONFIG_NAMESPACES is not set      -> bwrap is MADE of namespaces, so bwrap cannot exist in the
+                                          guest at all: not "unstaged", not "would need porting"
+
+So **stage3's two enforcement halves are both unavailable in the guest, and no kernel sandbox
+primitive of any kind exists there.** (Note `CONFIG_LSM="landlock,lockdown,yama,…"` at `:1784` — the
+default ORDERING string, inert with `CONFIG_SECURITY` off: a config line that LOOKS like a capability
+and is not. The project's most repeated pattern, now found in the kernel config itself.)
+
+**Requiring bwrap/palisade in the guest was the wrong layer, and the user's framing is the right one:
+THE VM IS THE BOUNDARY.** The guest is where containment starts — §2 already says it ("the guest is
+already the containment story"): the vocabulary there is a *fact* because the binaries do not exist,
+not because anything enforces it. What I conflated with "the agent escaping" was never escape; it was
+**the agent reaching its own guardrail's state through a door we had not counted** — the same class as
+the hole `648984f` closed. That is a much narrower concern, and it does not need a sandbox.
+
+**WHAT (C) BECOMES.** The actions are OURS — we define the vocabulary and we implement each action —
+so the bound belongs in `fxstore`'s action runner, IN USERSPACE: a `Copy`/`Rm`/`Mkdir`/`Symlink`/…
+is refused when its path is outside the build's own workdir and the path it is installing. That costs
+a path check per action, needs no kernel feature, and is the SAME lever as the vocabulary: we define
+the action, so we define what it may touch.
+
+**THE LAYERS, stated honestly, because expecting a sandbox that cannot exist is how a bound becomes
+decorative:**
+  1. **the VM** — everything the agent does happens inside it; that is where containment starts and
+     where it ends. Nothing in-guest can reach the host.
+  2. **the userspace action bound** — a recipe's writes confined to its build workdir + output.
+  3. **the substrate's own guardrail** — fx-init's hold-at-current backstop if a cycle does start.
+  4. **the oracle, which is HOST-side** — so no amount of in-guest tampering reaches the thing that
+     grades the work.
+**AND THE RESIDUAL, stated rather than implied:** the harness's record (`attempts.jsonl`) is a
+SELF-REPORT living inside the guest, and with no kernel bound a recipe can reach it. The damage is
+bounded — it lets the agent mislead its OWN loop (wasting cycles toward the oscillator) and NOT the
+substrate, whose boot verdict and roll-forward belong to fx-init, nor the oracle, which is host-side.
+If the loop's guarantee must hold against a MALICIOUS recipe rather than a cooperative agent, the
+answer is to make the record **tamper-EVIDENT** (content-addressed or hash-chained) rather than
+tamper-proof: a fact rather than a policy, which is the same conclusion this record keeps reaching.
+
 
 **D. THE REFUSAL IS AT ACTIVATION, AND IT IS LOUD.** An out-of-subset action must be **refused by
 name** where the config is validated — the `agentService` pattern (`500fc68`), same place, same
@@ -363,11 +399,13 @@ whose `src` is agent-writable and whose recipe is frozen. It stays as the proven
   into it)" needs a reboot the machine can perform on its own; today the change becomes live by
   hot-apply and takes effect at boot only because the next boot reads CURRENT.
 
-**STATUS: DESIGNED, NOT BUILT.** The five elements above, in dependency order: (C) the in-guest
-reach bound — without it nothing else holds; (D) the activation-time refusal; (A)+(B) the subset and
-the absolute-argv rule; (E) the config's inline packages and the merge in `fx-activate`. The rebuild
-of `fxstore` for the guest (static, musl, against a static libdatalog) is a prerequisite of any of
-it, because the builder must be able to run where the agent does.
+**STATUS: DESIGNED, NOT BUILT.** The five elements above, in dependency order: **(C) the userspace
+reach bound in `fxstore`'s action runner** — *not* a sandbox, which cannot exist in this kernel — then
+(D) the activation-time refusal, then (A)+(B) the subset and the absolute-argv rule, then (E) the
+config's inline packages and the merge in `fx-activate`. The rebuild of `fxstore` for the guest
+(static, musl, against a static libdatalog) is a prerequisite of any of it, because the builder must
+be able to run where the agent does — **and that prerequisite is now DONE** (`fx-harness 3b7dacc` +
+`fxstore 23a293f`: the loop runs in-guest, one image and one disk, run-set share 0.000000 → 0.100376).
 
 
 ---
@@ -645,6 +683,20 @@ from these inputs does denote the same bytes here.
     runs where the transcript **was** on the disk — a reader bug reported as a missing write.
 13. **The `fx-demo/evidence/image-contents.txt` claim is scoped to the browser lane's image.** I had
     been repeating it as a claim about the system; it is a claim about *that* image.
+14. **"THE IN-GUEST BUILD NEEDS A SANDBOX" WAS THE WRONG LAYER — the VM is the boundary.** I wrote
+    (§6a-C, first version) that the fix was to route the recipe's exec through stage3/landlock. The
+    PINNED GUEST KERNEL has `# CONFIG_SECURITY is not set` (no LSM ⇒ **no landlock**),
+    `# CONFIG_SECCOMP is not set` (and palisade's `n` IS seccomp, via cosmocc pledge), and
+    `# CONFIG_NAMESPACES is not set` (**bwrap is made of namespaces**, so bwrap cannot exist there at
+    all — not unstaged, not portable: impossible). So **no kernel sandbox primitive of any kind exists
+    in the guest**, stage3's two enforcement halves are both unavailable to it, and the `stage3` the
+    in-guest gate proves *executes* only proves its bare-usage path. **MEASURED.** And a config line
+    that LOOKS like the capability is present: `CONFIG_LSM="landlock,lockdown,yama,…"` is the default
+    ORDERING string and is inert with `CONFIG_SECURITY` off — the project's most repeated pattern,
+    this time inside the kernel config. What replaces it is a USERSPACE bound in `fxstore`'s action
+    runner (the actions are ours), with the residual stated: the harness's `attempts.jsonl` is a
+    SELF-REPORT, so the answer for a malicious recipe is to make it tamper-EVIDENT rather than
+    tamper-proof.
 
 ---
 

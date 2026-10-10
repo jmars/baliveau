@@ -261,11 +261,18 @@ certifies coherence; neither says "improved".
 
 - [ ] **THE BUILD VOCABULARY — designed (§6a of the design record), NOT BUILT. Build in this order,
       because each element's absence makes the next one decorative:**
-      1. **THE REACH BOUND, IN-GUEST.** On the `bwrap`-absent path the recipe is `execvp`'d UNWRAPPED
-         (`fxstore zig/src/build.zig:711-733`) — stage3's existence is checked but it is not USED. So
-         in the guest an agent-authored `Copy` reaches `/fx/disk/agent-data/attempts.jsonl` as well as
-         a `Shell` would, and the observation loop's guarantee survives only by the tool table. Fix
-         the fallback so it still goes through stage3/landlock.
+      1. **THE REACH BOUND — IN USERSPACE, NOT A SANDBOX (corrected 2026-10-10: the VM is the
+         boundary).** The pinned guest kernel has `# CONFIG_SECURITY is not set` (no LSM ⇒ no
+         landlock), `# CONFIG_SECCOMP is not set` (palisade's `n` IS seccomp), and
+         `# CONFIG_NAMESPACES is not set` (bwrap is MADE of namespaces ⇒ bwrap cannot exist in the
+         guest at all). So **no kernel sandbox primitive exists there**, and the `bwrap`-absent
+         UNWRAPPED path (`fxstore zig/src/build.zig:711-733`) is not a gap to close by sandboxing.
+         Instead the bound goes where the actions are OURS: `fxstore`'s action runner refuses a
+         `Copy`/`Rm`/`Mkdir`/`Symlink`/… whose path is outside the build's own workdir and the path
+         it installs. Residual, stated: the harness's `attempts.jsonl` is a SELF-REPORT, so against a
+         MALICIOUS recipe the answer is to make the record tamper-EVIDENT (content-addressed /
+         hash-chained) rather than tamper-proof — and the layers above it are fx-init's own guardrail
+         and the HOST-side oracle, neither of which in-guest tampering can reach.
       2. **THE ACTIVATION-TIME REFUSAL.** An out-of-subset action is refused BY NAME where the config
          is validated — the `agentService` pattern (`fx-init 500fc68`), same place, same loudness.
       3. **THE SUBSET AND THE ABSOLUTE-ARGV RULE.** `Shell` is excluded from the agent-authorable set
