@@ -16,10 +16,10 @@ Two repos are in play: **this one** (`fx-harness`) and **`../fx-init`** (PID 1, 
       version-bound relation dump the oracle needed. `zig build test` exit 0, mutation-checked.
 - [x] **`fx-init`** committed: `2feedf6` — the in-guest control fifo + the boot-recovery guardrail
       + their fix round. Clean-reviewed twice.
-- [ ] **Two reviews in flight** (read-only, dispatched after the commits): `review-osier-share`
-      (the oracle + its fxstore seat; the number will GRADE an agent, so silent wrongness is the
-      risk) and `review-writesurface` (648984f; a bypass of the closed write set is a blocker, not
-      a nit). Result nodes `handoff-osier-share-review`, `handoff-writesurface-review`.
+- [x] **The two reviews landed and their findings were applied** (`80618b4`): the oracle's two
+      blockers (an arbitrary `srcstore` pick; a run component silently leaving the denominator) and
+      the write-bound's findings (a red gate reading a moving ref; a false RUN; a documented spelling
+      that refused everything). Nodes `handoff-osier-share-review`, `handoff-writesurface-review`.
 
 ## 1. The oracle — the one thing that decides whether any of this is worth having
 
@@ -112,21 +112,24 @@ certifies coherence; neither says "improved".
       but **breaks `fxstore why`** (`provenance.zig:475` collects `provides_targets` by exact
       `origin == store_dir`, while `provides` emits `<hash>-<pkg>`, `activate.zig:1384-1393`). Needs a
       fix that satisfies both consumers.
-- [ ] **The `+64` poll window sits on an UNBOUNDED service set.** `svc_name_cb` (`fx-init
-      zig/src/init.zig:1085-1089`) grows `g_svc_cap` 16→32→64→128 with **no cap**, so a config with
-      >64 services still silently starves the poll set — the exact class the new comment describes as
-      closed. Pre-existing; the comment overclaims.
-- [ ] **The `console_pin` is a text heuristic.** It asserts the agent service row is a console service
-      and rejects a mutated non-console copy — but a config shape that passes the pin while shipping a
-      NON-console agent re-creates the **roll-forward spiral** (§ below). Review priority #5 on
-      `handoff-fx-harness-observe-review`.
+- [x] **The `+64` poll window on an unbounded service set is CLOSED** (`fx-init 4d6a8c2`): `SVC_MAX=64`
+      is now shared between the bound and the poll array, and an over-wide config is REFUSED BY NAME
+      with the ordinal, the window and the skipped-row count — the loud option, chosen over growing
+      silently. Gated by `tests/qemu_svc_limit.sh` (exit 0) against a pinned `9b20161` control that
+      boots the same 70-service config happily, which is the defect's silence itself.
+- [x] **The `console_pin` is no longer a text heuristic** (`fx-init 500fc68` + `fx-harness dfb77fa`):
+      `agentService` is a REQUIRED config field and activation refuses a named agent that is unknown
+      or non-console, so the identity is a FACT of the substrate. All three pins (including the
+      comment-blind copy in `qemu-agent-b2.sh`) are replaced by an `agent_pin` that runs the REAL
+      parser and requires it to refuse the mutants. Nothing left to harden here; the open question it
+      raised — whether fx-init needs the identity beyond validation — was answered NO, measured.
 - [ ] **`fx_read`/`fx_ls` still resolve arbitrary paths under `FX_VERB_ROOT`** — including a `..` that
       climbs *above* a stub root, because `root_join` concatenates strings rather than resolving.
       Pre-existing, read-only, reported by the 648984f lane and NOT silently fixed there. Adjacent to
       the closed write set, so it must not be mistaken for closed: the write bound is a *write* bound.
-- [ ] **`tests/qemu-agent-b2.sh:~602` carries the comment-blind substring `console_pin`** that
-      `tests/qemu-agent-observe.sh` had fixed (a `console = Some "console"` inside a COMMENT passes a
-      non-console row). Same one-line `strip_comments` fix; out of the 648984f lane's scope.
+- [x] **The comment-blind `console_pin` in `tests/qemu-agent-b2.sh` is CLOSED** (`dfb77fa`) — replaced
+      with the parser-backed `agent_pin` along with the other two copies. No `strip_comments` needed:
+      the pin no longer reads the config as text at all.
 - [x] **A torn ATTEMPT line can no longer yield RUN — the DAMAGE RULE (decided and implemented).**
       The loader skipped an unterminated record line, which was conservative for a torn *result* line
       (no result → the UNRESOLVED branch, never a silent `done`) but NOT for a torn *attempt* line
