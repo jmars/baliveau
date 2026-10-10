@@ -1,1 +1,1 @@
-LUAJIT-X64-RAN arch=x64 traces=1,0 sh=false popen=false
+LUAJIT-X64-RAN arch=x64 traces=1,0

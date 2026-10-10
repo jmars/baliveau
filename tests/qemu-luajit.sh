@@ -31,15 +31,24 @@
 #
 # THE DISK MARKER (the durable half of the proof): read back from the raw
 # ext4 image with debugfs after the guest is killed (the settle+quiet+fsck
-# belt the other gates use).  Its CONTENT carries more than presence: the
-# JIT's two-sided trace counts (on>=1, off=0 — the JIT compiles traces IN
-# THE GUEST) and the audit's ARM-2 hatch expectations (os.execute/io.popen
-# must FAIL in the guest: system(3)/popen(3) need /bin/sh, which this guest
-# does not ship), verified here for the first time IN a guest.
+# belt the other gates use).  There are TWO durable files, each written by
+# the seat that OWNS its evidence:
+#   /<MARK64>.txt      the LuaJIT probe's own business: the JIT's two-sided
+#                      trace counts (on>=1, off=0 — the JIT compiles traces
+#                      IN THE GUEST).  The hatch question is NOT answered
+#                      here any more: this gate no longer re-implements the
+#                      audit's arm-2 probes inline.
+#   /<MARK64>.arm2     the AUDIT's own evidence: the host stages
+#                      tests/luajit-audit.sh into the image and the
+#                      `luajit-arm2` service runs it IN the guest (busybox sh,
+#                      --arm2 --arm2-out), so the arm that exists to be run in
+#                      the guest is the arm that produces the evidence.  Both
+#                      files are read back off the raw image below.
 #
 # NO STALE BYTES: the gate builds BOTH artifacts fresh, audits them, stages,
-# and then CMPs three ways — built == staged == extracted-from-the-image — so
-# the boot provably ran the bytes this gate built, not a cached neighbour.
+# and then CMPs four ways — built == staged == extracted-from-the-image, for
+# both LuaJIT binaries AND for the audit script the arm-2 service executes --
+# so the boot provably ran the bytes this gate built, not a cached neighbour.
 # (A cached binary answering for a property of the system has bitten this
 # repo three times; the cmp is the seat that makes it impossible here.)
 #
@@ -186,24 +195,39 @@ jit.off()
 local off_starts = 0
 jit.attach(function(what) if what == "start" then off_starts = off_starts + 1 end end, "trace")
 for i = 1, 300 do s = s + i * 2 end
--- audit ARM 2's hatch probes, run where they finally mean something: this
--- guest ships no /bin/sh, so system(3)/popen(3) must not succeed here.
-local r = os.execute("true")
-local sh_ok = (r == 0 or r == true)
-local pf = io.popen("echo hi")
-local popen_ok = (pf ~= nil)
+-- audit ARM 2's hatch probes are NOT re-implemented here: they belong to
+-- tests/luajit-audit.sh, whose --arm2 arm this gate now RUNS IN THIS GUEST as
+-- its own service (busybox sh, --arm2 --arm2-out) and reads back off the raw
+-- disk image.  One probe set, one implementation -- and the arm that exists to
+-- be run in the guest is the arm that produces the evidence.  This probe's
+-- business is the JIT and its own marker.
+-- (The copy removed from here ran the SAME two commands with the SAME
+-- predicates -- `r == 0 or r == true`, `f ~= nil` -- so it agreed with arm 2 in
+-- substance.  Its FAILURE handling did not: a probe that RAISED inside this Lua
+-- script aborted the script BEFORE the marker write, so the gate would have
+-- reported a hatch question as "the x86_64 LuaJIT never ran" -- where arm 2
+-- runs each probe as its own process, names the failing check, and still leaves
+-- durable evidence of the verdict.)
 -- the durable half of the proof: a file on the virtio disk
 local f = assert(io.open("/fx/disk/" .. marker .. ".txt", "w"))
 f:write(marker .. " arch=" .. jit.arch
-        .. " traces=" .. on_starts .. "," .. off_starts
-        .. " sh=" .. tostring(sh_ok)
-        .. " popen=" .. tostring(popen_ok) .. "\n")
+        .. " traces=" .. on_starts .. "," .. off_starts .. "\n")
 f:close()
 print(marker .. " arch=" .. jit.arch .. " traces=" .. on_starts .. "," .. off_starts)
 LUA
 chmod 644 "$PROBE"
+# The audit script the arm-2 service executes INSIDE the guest -- a COPY of
+# this repo's file, cmp'd against the image's extracted bytes below, so the
+# boot provably runs the audit this gate read.
+cp "$REPO/tests/luajit-audit.sh" "$ROOT/usr/fx-agent/luajit-audit.sh" \
+    || fail "cannot stage the audit script into the payload root"
+chmod 644 "$ROOT/usr/fx-agent/luajit-audit.sh"
+[ -s "$ROOT/usr/fx-agent/luajit-audit.sh" ] || fail "the staged audit script is empty"
+AUDIT_SHA=$(sha256sum "$REPO/tests/luajit-audit.sh" | awk '{print $1}')
+echo "qemu-luajit: staging tests/luajit-audit.sh into the image (sha256 $AUDIT_SHA) — the arm-2 service runs THIS file in the guest"
 
-# ─── the service config: heartbeat + the x86_64 run + the i386 control ────
+# ─── the service config: heartbeat + the x86_64 run + the i386 control + ─
+# ─── the in-guest AUDIT run (arm 2) ──────────────────────────────────────
 MARK64="LUAJIT-X64-RAN"
 MARK32="LUAJIT-I386-RAN"
 CFG="$WORK/luajit-service.dhall"
@@ -235,6 +259,11 @@ in  { hostname = "luabox"
             probe = None Probe,
             env = None (List { key : Text, value : Text }),
             console = Some "console" }
+        , { name = "luajit-arm2", argv = [ "/usr/bin/busybox", "sh", "/usr/fx-agent/luajit-audit.sh", "/usr/fx-agent/bin/luajit", "--arm2", "--arm2-out", "/fx/disk/$MARK64.arm2" ], pkg = None Text,
+            on = "all", restart = Some "never", backoffMs = None Natural,
+            probe = None Probe,
+            env = None (List { key : Text, value : Text }),
+            console = Some "console" }
         ]
     , extraEtc = None (List { path : Text, content : Text })
     , bootGraceMs = Some 15000
@@ -245,8 +274,8 @@ CCHK="$INIT/zig/zig-out/bin/config_check"
 if [ -x "$CCHK" ]; then
     out=$("$CCHK" "$CFG" 2>&1) || { echo "$out" >&2; fail "config_check rejected the service config"; }
     n=$(printf '%s\n' "$out" | grep -c '^service\[[0-9]*\]\.name=')
-    [ "$n" = 3 ] || fail "config_check saw $n services, want 3"
-    echo "qemu-luajit: config_check OK — 3 services"
+    [ "$n" = 4 ] || fail "config_check saw $n services, want 4"
+    echo "qemu-luajit: config_check OK — 4 services"
 else
     echo "qemu-luajit: WARNING: $CCHK absent — the service config was not parser-checked" >&2
 fi
@@ -346,12 +375,12 @@ IMG="$WORK/luajit.cpio.gz"
 sh "$INIT/tests/mkinitramfs.sh" -s "$STORE" -r "$ROOT" -k "$KERNEL" \
     -o "$IMG" -l "$WORK/img.list" || fail "mkinitramfs failed"
 for want in usr/fx-agent/bin/luajit usr/fx-agent/bin/luajit.i386 \
-            usr/fx-agent/luajit-probe.lua; do
+            usr/fx-agent/luajit-probe.lua usr/fx-agent/luajit-audit.sh; do
     grep -qx "$want" "$WORK/img.list" || fail "the image does not carry $want"
 done
-echo "qemu-luajit: the image carries both LuaJIT ABIs + the probe (v$V store)"
+echo "qemu-luajit: the image carries both LuaJIT ABIs + the probe + the audit (v$V store)"
 
-# CMP 2/3 and 3/3 — the IMAGE's bytes == the built bytes (extract, then cmp).
+# CMP 2/4 and 3/4 — the IMAGE's bytes == the built bytes (extract, then cmp).
 # The image is TWO CONCATENATED cpio archives (an early device-node segment,
 # then the staged tree — mkinitramfs's early-cpio pattern), and cpio stops at
 # the FIRST trailer, so extracting a payload file means skipping the dev
@@ -386,7 +415,12 @@ cmp "$LJ64" "$XDIR/usr/fx-agent/bin/luajit" \
     || fail "the image's luajit is NOT the freshly built x86_64 artifact (stale image bytes?)"
 cmp "$LJ32" "$XDIR/usr/fx-agent/bin/luajit.i386" \
     || fail "the image's luajit.i386 is NOT the freshly built i386 artifact"
+# CMP 4/4 — and the AUDIT SCRIPT the in-guest arm-2 service executes is the one
+# this gate read: the arm-2 evidence below is evidence about THESE bytes.
+cmp "$REPO/tests/luajit-audit.sh" "$XDIR/usr/fx-agent/luajit-audit.sh" \
+    || fail "the image's luajit-audit.sh is NOT the repo's (the arm-2 run would be of other bytes)"
 echo "qemu-luajit: the image's LuaJIT bytes are the freshly built ones (devseg $DEVSEG skipped, extract + cmp)"
+echo "qemu-luajit: the image's luajit-audit.sh is byte-identical to tests/luajit-audit.sh (cmp)"
 
 # ─── the disk + the boot (qemu-agent-slot's driver shape) ──────────────────
 DISK="$WORK/disk.img"
@@ -443,6 +477,15 @@ grep -q "fx-init: disk store mounted (current v$V)" "$CON" \
 # POSITIVE: the x86_64 artifact EXECUTED (its console line, from its probe).
 grep -qF "$MARK64 arch=x64 traces=" "$CON" \
     || { tail -40 "$CON" >&2; halt; fail "the x86_64 LuaJIT never ran (no '$MARK64' console line)"; }
+# POSITIVE, and the seat this gate exists to call: tests/luajit-audit.sh --arm2
+# RAN IN THIS GUEST.  Its own banner and its own verdict are the console proof;
+# the durable half is the .arm2 file read back off the raw image below.  Fail
+# direction: delete/repoint the luajit-arm2 service, or a hatch that leaks
+# (verdict FAILED), and one of these two greps stops matching.
+grep -qF "ARM 2 (guest-only hatch probes): running IN the guest" "$CON" \
+    || { tail -40 "$CON" >&2; halt; fail "the audit's arm 2 never ran in the guest (no ARM-2 banner on the console)"; }
+grep -qF "luajit-audit: ARM 2: hatch probes held" "$CON" \
+    || { tail -40 "$CON" >&2; halt; fail "the in-guest audit did NOT report the hatch probes held"; }
 # NEGATIVE CONTROL: the i386 artifact must NOT have executed — its marker
 # line can only come from the probe running under luajit.i386.
 if grep -qF "$MARK32" "$CON"; then
@@ -456,7 +499,7 @@ grep -q 'fx-init: exec failed' "$CON" \
 # The verdict: boot-FAILED BY CONSTRUCTION (fail-closed on the i386 service).
 grep -q "fx-init: boot-FAILED v$V" "$CON" \
     || { tail -30 "$CON" >&2; halt; fail "want boot-FAILED v$V (the i386 control must fail the boot)"; }
-echo "qemu-luajit: console OK — $MARK64 present, $MARK32 absent, exec failed + boot-FAILED v$V"
+echo "qemu-luajit: console OK — $MARK64 present, $MARK32 absent, exec failed + boot-FAILED v$V; the audit's arm 2 ran in-guest and held"
 halt
 
 # ── the durable half: the disk marker, read back from the raw image ───────
@@ -475,10 +518,30 @@ DUMP_MSG=$("$DEBUGFS" -R "dump /$MARK64.txt $MARKFILE" "$DISK" 2>&1 </dev/null)
 cp "$MARKFILE" "$EVID/$MARK64.txt"
 echo "--- qemu-luajit: the durable marker, read back off the disk image ---"
 cat "$MARKFILE"
-# Content, not just presence: the marker line, x64 arch, TWO-SIDED JIT counts
-# (>=1 trace with the JIT on, 0 after jit.off()), and the ARM-2 hatches held.
-grep -Eq "^$MARK64 arch=x64 traces=[1-9][0-9]*,0 sh=false popen=false$" "$MARKFILE" \
-    || fail "the disk marker's content is wrong (want '$MARK64 arch=x64 traces=N,0 sh=false popen=false'): $(cat "$MARKFILE")"
+# Content, not just presence: the marker line and TWO-SIDED JIT counts (>=1
+# trace with the JIT on, 0 after jit.off()).  The regex is ANCHORED: this file
+# carries the JIT half ONLY, and a re-added inline hatch field ('sh=...') makes
+# it stop matching — the duplicate cannot creep back unnoticed.
+grep -Eq "^$MARK64 arch=x64 traces=[1-9][0-9]*,0$" "$MARKFILE" \
+    || fail "the disk marker's content is wrong (want '$MARK64 arch=x64 traces=N,0'): $(cat "$MARKFILE")"
+# THE ARM-2 EVIDENCE, off the same disk: written IN the guest by
+# tests/luajit-audit.sh --arm2 (--arm2-out), i.e. by the arm itself rather than
+# by a second implementation.  Fail direction: if the audit never ran, this
+# file is absent; if a hatch leaked, verdict=FAILED; if it ran against other
+# bytes, the cmp above already refused.  The artifact is named so evidence
+# cannot be read as belonging to the other ABI.
+ARM2FILE="$WORK/$MARK64.arm2"
+DUMP2_MSG=$("$DEBUGFS" -R "dump /$MARK64.arm2 $ARM2FILE" "$DISK" 2>&1 </dev/null)
+# -s, not -e: MEASURED on this arm's first in-guest run, the file existed on the
+# disk with the right name and ZERO BYTES (an unflushed page-cache write, the
+# guest stopped before writeback).  An empty evidence file is not evidence.
+[ -s "$ARM2FILE" ] \
+    || fail "the in-guest audit's arm-2 evidence at /$MARK64.arm2 is missing or EMPTY ($(ls -l "$ARM2FILE" 2>&1 | tail -1); debugfs: $DUMP2_MSG)"
+cp "$ARM2FILE" "$EVID/$MARK64.arm2"
+echo "--- qemu-luajit: the audit's arm-2 evidence, read back off the disk image ---"
+cat "$ARM2FILE"
+grep -Eq '^ARM2 art=luajit verdict=held checks=3 failed=0$' "$ARM2FILE" \
+    || fail "the in-guest arm-2 evidence is wrong (want 'ARM2 art=luajit verdict=held checks=3 failed=0'): $(cat "$ARM2FILE")"
 # And the control's marker file must NOT exist on the disk (asserted on the
 # output file + the not-found message; see the NOTE above for why the exit
 # code is worthless here).
@@ -492,7 +555,7 @@ case "$CTRL_MSG" in
     *"File not found"*) ;;
     *) fail "the i386 marker's absence could not be established (debugfs: $CTRL_MSG)" ;;
 esac
-echo "qemu-luajit: disk OK — /$MARK64.txt present with the expected content; /$MARK32.txt absent"
+echo "qemu-luajit: disk OK — /$MARK64.txt (JIT half) and /$MARK64.arm2 (the audit's arm-2 half) present with the expected content; /$MARK32.txt absent"
 
 # ─── evidence + exit ────────────────────────────────────────────────────────
 {
@@ -502,6 +565,8 @@ echo "qemu-luajit: disk OK — /$MARK64.txt present with the expected content; /
     echo "i386-art   $SHA32  build/luajit.musl  (built, staged, in-image, REFUSED by guest: ENOEXEC)"
     echo "version    v$V"
     echo "marker     $(cat "$MARKFILE")"
+    echo "arm2       $(cat "$ARM2FILE")"
+    echo "audit      $AUDIT_SHA  tests/luajit-audit.sh  (staged, in-image, RUN IN GUEST as --arm2)"
 } > "$EVID/facts.txt"
-echo "=== qemu-luajit: PASS — x86_64 LuaJIT executed in the guest (marker on the disk); the i386 one could not ==="
+echo "=== qemu-luajit: PASS — x86_64 LuaJIT executed in the guest (marker on the disk) and the audit's own arm 2 ran there; the i386 one could not ==="
 exit 0

@@ -3,4 +3,6 @@ kernel     51b226c62e0ce48a9720984be71ce7729d7860132cf40767dbde9b3e38193db5  (fx
 x86_64-art 2f68bedf7e8450e10dcbbcef7bf3b33486202f14d03799470177612f2b3f5d15  build/luajit-x86_64.musl  (built, staged, in-image, EXECUTED in guest)
 i386-art   a0ec950381aafedb611bca76a984b6bc73d5e4c51e320fed998e260c53a52c08  build/luajit.musl  (built, staged, in-image, REFUSED by guest: ENOEXEC)
 version    v3
-marker     LUAJIT-X64-RAN arch=x64 traces=1,0 sh=false popen=false
+marker     LUAJIT-X64-RAN arch=x64 traces=1,0
+arm2       ARM2 art=luajit verdict=held checks=3 failed=0
+audit      9a6912295508d9f081dc16d97881a30cf2552b55a0b4c890893760a41020c4fa  tests/luajit-audit.sh  (staged, in-image, RUN IN GUEST as --arm2)

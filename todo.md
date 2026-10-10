@@ -224,17 +224,31 @@ certifies coherence; neither says "improved".
       (a–j: the measured cell, the readable control, EACCES, absent-is-silence, the done exemption,
       torn poison + scope, the record directory/EACCES, the verb's three states, and the pinned
       7afa0c2 pre-fix asymmetry — RUN vs ERROR on the identical fixture).
-- [ ] **The LuaJIT audit's ARM 2 is a seat that is NEVER CALLED — a second implementation runs
-      instead.** `tests/luajit-audit.sh --arm2` is the guest-only hatch probe (`os.execute`/`io.popen`
-      must fail where there is no `/bin/sh`); it REFUSES to run on the host, and its message still says
-      "NOT YET RUN — pass --arm2 once a guest image exists". A guest image exists now, and
-      `tests/qemu-luajit.sh` re-implements those SAME two probes inline in its Lua script and writes
-      the result into the durable marker (`sh=false popen=false`). So the evidence is substantively
-      the same, but there are TWO implementations of one probe set and the audit's own guest path —
-      the one that exists to be run there — is exercised by nothing, so it can rot silently, and its
-      message is now false. Fix by having the gate run `tests/luajit-audit.sh --arm2` IN the guest (one
-      implementation) or by deleting the duplicate and correcting the message. This is the project's
-      "there is often a second thing doing the same job" pattern, caught only by asking who CALLS it.
+- [x] **The LuaJIT audit's ARM 2 is a seat that is NEVER CALLED — a second implementation runs
+      instead.** CLOSED 2026-10-13: the duplicate is GONE and the called implementation is the
+      audit's own. `tests/qemu-luajit.sh` no longer re-implements the hatch probes inline; it
+      stages `tests/luajit-audit.sh` into the image (cmp'd against the repo's bytes, and the
+      image's extracted bytes) and its new `luajit-arm2` service runs it INSIDE the guest as
+      `/usr/bin/busybox sh /usr/fx-agent/luajit-audit.sh /usr/fx-agent/bin/luajit --arm2
+      --arm2-out /fx/disk/<MARK>.arm2` (the pivoted root binds /lib64 + /usr only, so busybox is
+      the one shell there and `/bin/sh` — this arm's premise — is absent). MEASURED in-guest:
+      the audit's own banner, its three `ok:` checks and "hatch probes held" appear on the
+      console, and `ARM2 art=luajit verdict=held checks=3 failed=0` is read back OFF THE RAW
+      IMAGE. The two arms are now exclusive: `--arm2` runs arm 2 only (the guest has neither
+      file(1) nor readelf, so arm 1 cannot share the invocation) and arm 2 gained an
+      ARM-EXECUTES control, which makes "this arm is meaningful for the x86_64 artifact only"
+      (the i386 artifact cannot exec in this guest) a named FAILING assertion instead of a
+      comment. The three false messages are corrected: "NOT YET RUN — pass --arm2 once a guest
+      image exists" was true of nothing and now names its caller
+      (`tests/qemu-luajit.sh` / `make test-luajit-guest`). Two MEASURED findings along the way:
+      (a) arm 2's first in-guest run left the evidence file on the disk with the right name and
+      ZERO BYTES (an unflushed page-cache write; PID1 stops the guest as soon as it decides the
+      boot verdict, and this lane's i386 control fails the boot by construction) — arm 2 now
+      calls `sync(2)` (which WAITS) and refuses loudly if it cannot, and the gate asserts a
+      NON-EMPTY file; (b) `dirname(1)` does not exist in the guest (its PATH carries only the
+      applets the image symlinks), so the audit's repo-root `cd` is now parameter expansion.
+      Gated: `make test-luajit-guest` rc=0 by asymmetry — with the audit repointed at a missing
+      script the same gate fails at "the audit's arm 2 never ran in the guest".
 - [ ] **Two ungated oracle paths**: the two-origins-one-install-target refusal and the
       `<store>/<hash>-<pkg>/` argv spelling are implemented but have no fixture. Also ungated: the
       64-candidate cap, the shallow-clone SKIP paths, and the in-guest `done→attempt→result` order
