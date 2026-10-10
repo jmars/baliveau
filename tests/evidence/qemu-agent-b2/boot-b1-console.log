@@ -1,7 +1,6 @@
 c[?7l[2J[0mSeaBIOS (version rel-1.17.0-2-g4f253b9b-prebuilt.qemu.org)
-Booting from ROM...
-c[?7l[2JLinux version 6.12.19 (root@cf88c41ef967) (gcc (Debian 14.2.0-19) 14.2.0, GNU ld (GNU Binutils for Debian) 2.44) #1 SMP Wed Sep 30 21:19:35 UTC 2026
-Command line: console=ttyS0,115200 rdinit=/fx/store/708f61e1d7efcb7db5d62e6d6d6172592d0f9c4b99067b3e70b68a3879f453ab-fx-init/fx-init fx.store=/fx/store panic=-1 oops=panic
+Booting from ROM..c[?7l[2J[0m.Linux version 6.12.19 (root@cf88c41ef967) (gcc (Debian 14.2.0-19) 14.2.0, GNU ld (GNU Binutils for Debian) 2.44) #1 SMP Wed Sep 30 21:19:35 UTC 2026
+Command line: console=ttyS0,115200 rdinit=/fx/store/553c9faa9e15f01b31ab8be573571a9eb1dd3067ca84a4ff75e66dcb62c814df-fx-init/fx-init fx.store=/fx/store panic=-1 oops=panic
 BIOS-provided physical RAM map:
 BIOS-e820: [mem 0x0000000000000000-0x000000000009fbff] usable
 BIOS-e820: [mem 0x000000000009fc00-0x000000000009ffff] reserved
@@ -16,13 +15,13 @@ BIOS-e820: [mem 0x000000fd00000000-0x000000ffffffffff] reserved
 NX (Execute Disable) protection: active
 APIC: Static calls initialized
 tsc: Fast TSC calibration using PIT
-tsc: Detected 3499.872 MHz processor
+tsc: Detected 3499.651 MHz processor
 last_pfn = 0x7ffdc max_arch_pfn = 0x400000000
 x86/PAT: PAT support disabled because CONFIG_X86_PAT is disabled in the kernel.
 x86/PAT: Configuration [0-7]: WB  WT  UC- UC  WB  WT  UC- UC  
 found SMP MP-table at [mem 0x000f5470-0x000f547f]
 Using GB pages for direct mapping
-RAMDISK: [mem 0x7f2ba000-0x7ffcffff]
+RAMDISK: [mem 0x7f1e6000-0x7ffcffff]
 ACPI: Early table checksum verification disabled
 ACPI: RSDP 0x00000000000F52A0 000014 (v00 BOCHS )
 ACPI: RSDT 0x000000007FFE2367 000038 (v01 BOCHS  BXPC     00000001 BXPC 00000001)
@@ -73,7 +72,7 @@ CPU topo: Allowing 1 present CPUs plus 0 hotplug CPUs
 clocksource: refined-jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 7645519600211568 ns
 setup_percpu: NR_CPUS:2 nr_cpumask_bits:1 nr_cpu_ids:1 nr_node_ids:1
 percpu: Embedded 41 pages/cpu s137880 r0 d30056 u2097152
-Kernel command line: console=ttyS0,115200 rdinit=/fx/store/708f61e1d7efcb7db5d62e6d6d6172592d0f9c4b99067b3e70b68a3879f453ab-fx-init/fx-init fx.store=/fx/store panic=-1 oops=panic
+Kernel command line: console=ttyS0,115200 rdinit=/fx/store/553c9faa9e15f01b31ab8be573571a9eb1dd3067ca84a4ff75e66dcb62c814df-fx-init/fx-init fx.store=/fx/store panic=-1 oops=panic
 random: crng init done
 Dentry cache hash table entries: 262144 (order: 9, 2097152 bytes, linear)
 Inode-cache hash table entries: 131072 (order: 8, 1048576 bytes, linear)
@@ -107,8 +106,8 @@ ACPI: Core revision 20240827
 clocksource: hpet: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 19112604467 ns
 APIC: Switch to symmetric I/O mode setup
 ..TIMER: vector=0x30 apic1=0 pin1=2 apic2=-1 pin2=-1
-clocksource: tsc-early: mask: 0xffffffffffffffff max_cycles: 0x3272d7aff8d, max_idle_ns: 440795250527 ns
-Calibrating delay loop (skipped), value calculated using timer frequency.. 6999.74 BogoMIPS (lpj=13999488)
+clocksource: tsc-early: mask: 0xffffffffffffffff max_cycles: 0x3272078c196, max_idle_ns: 440795291477 ns
+Calibrating delay loop (skipped), value calculated using timer frequency.. 6999.30 BogoMIPS (lpj=13998604)
 Last level iTLB entries: 4KB 512, 2MB 255, 4MB 127
 Last level dTLB entries: 4KB 512, 2MB 255, 4MB 127, 1GB 0
 Spectre V2 : User space: Vulnerable
@@ -136,8 +135,8 @@ rcu: Hierarchical SRCU implementation.
 rcu: 	Max phase no-delay instances is 1000.
 smp: Bringing up secondary CPUs ...
 smp: Brought up 1 node, 1 CPU
-smpboot: Total of 1 processors activated (6999.74 BogoMIPS)
-Memory: 2029184K/2096616K available (6144K kernel code, 806K rwdata, 652K rodata, 784K init, 1132K bss, 64440K reserved, 0K cma-reserved)
+smpboot: Total of 1 processors activated (6999.30 BogoMIPS)
+Memory: 2028336K/2096616K available (6144K kernel code, 806K rwdata, 652K rodata, 784K init, 1132K bss, 65288K reserved, 0K cma-reserved)
 devtmpfs: initialized
 clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 7645041785100000 ns
 futex hash table entries: 256 (order: 2, 16384 bytes, linear)
@@ -250,27 +249,28 @@ serio: i8042 KBD port at 0x60,0x64 irq 1
 serio: i8042 AUX port at 0x60,0x64 irq 12
 amd_pstate: the _CPC object is not present in SBIOS or ACPI disabled
 IPI shorthand broadcast: enabled
-sched_clock: Marking stable (429085167, 117937491)->(563255549, -16232891)
+sched_clock: Marking stable (413226375, 115289819)->(552322095, -23805901)
 input: AT Translated Set 2 keyboard as /devices/platform/i8042/serio0/input/input1
-Freeing initrd memory: 13400K
+Freeing initrd memory: 14248K
 Freeing unused kernel image (initmem) memory: 784K
 Write protecting the kernel read-only data: 8192k
 Freeing unused kernel image (rodata/data gap) memory: 1396K
-Run /fx/store/708f61e1d7efcb7db5d62e6d6d6172592d0f9c4b99067b3e70b68a3879f453ab-fx-init/fx-init as init process
+Run /fx/store/553c9faa9e15f01b31ab8be573571a9eb1dd3067ca84a4ff75e66dcb62c814df-fx-init/fx-init as init process
 fx-init: store from kernel command line fx.store=/fx/store
 fx-init: boot start store /fx/store
 EXT4-fs (vda): recovery complete
-EXT4-fs (vda): mounted filesystem 8d4c43cd-24ee-46e8-aa37-f9971f9a29ee r/w with ordered data mode. Quota mode: disabled.
+EXT4-fs (vda): mounted filesystem 22f5e808-2519-4a9b-a8b2-655f5370e3d7 r/w with ordered data mode. Quota mode: disabled.
 fx-init: disk store adopted ramfs v5 over disk v3 (bootlog preserved)
 fx-init: disk store mounted (current v5)
 fx-init: pivot_root EINVAL (initramfs root is the namespace root) — switch_root fallback (MS_MOVE + chroot) applied
 fx-init: pivoted to tmpfs root (magic 0x1021994)
 fx-init: virtio control up (/dev/vport0p1)
+fx-init: fifo control up (/run/fx/control.in + /run/fx/control.out)
 fx-init: no UNIX control socket (/run/fx/control.sock: socket failed: Function not implemented — this kernel has no socket layer: CONFIG_NET is not set) — the virtio control port carries the protocol
 agent_main: warning: the loop hit the turn limit (--max-turns 2) with tool calls still pending: this run did NOT finish the task, so NO 'done' marker is recorded for it — the task stays eligible for the next boot
-input: ImExPS/2 Generic Explorer Mouse as /devices/platform/i8042/serio1/input/input3
 B2-AGENT-RAN-b2-agent-9f3c
-tsc: Refined TSC clocksource calibration: 3500.055 MHz
-clocksource: tsc: mask: 0xffffffffffffffff max_cycles: 0x3273850dcf9, max_idle_ns: 440795323136 ns
+input: ImExPS/2 Generic Explorer Mouse as /devices/platform/i8042/serio1/input/input3
+tsc: Refined TSC clocksource calibration: 3500.042 MHz
+clocksource: tsc: mask: 0xffffffffffffffff max_cycles: 0x327378a0298, max_idle_ns: 440795319412 ns
 clocksource: Switched to clocksource tsc
 fx-init: boot-ok v5

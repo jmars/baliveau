@@ -267,6 +267,7 @@ in  { hostname = "luabox"
         ]
     , extraEtc = None (List { path : Text, content : Text })
     , bootGraceMs = Some 15000
+    , agentService = None Text
     }
 DHALL
 [ -s "$CFG" ] || fail "cannot write the service config"

@@ -31,4 +31,5 @@ in  { hostname = "b2-agent-9f3c"
         ]
     , extraEtc = None (List { path : Text, content : Text })
     , bootGraceMs = Some 15000
+    , agentService = Some "b2verifier"
     }

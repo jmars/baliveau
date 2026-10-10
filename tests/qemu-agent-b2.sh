@@ -406,6 +406,7 @@ in  { hostname = "$MARKER"
         ]
     , extraEtc = None (List { path : Text, content : Text })
     , bootGraceMs = Some 15000
+    , agentService = Some "b2verifier"
     }
 DHALL
 } > "$WORK/config1.dhall" || fail "cannot write config1"
@@ -426,6 +427,7 @@ in  { hostname = "b2-crasher"
         ]
     , extraEtc = None (List { path : Text, content : Text })
     , bootGraceMs = Some 15000
+    , agentService = None Text
     }
 DHALL
 } > "$WORK/config2.dhall" || fail "cannot write config2"
@@ -562,7 +564,8 @@ agent_svc() { # agent_svc FIXTURE -> the fxagent service row (Dhall)
             console = Some "console" }
 DHALL
 }
-gen_cfg() { # gen_cfg OUTFILE SERVICES_TAIL
+gen_cfg() { # gen_cfg OUTFILE SERVICES_TAIL GRACE [AGENT] — AGENT default: None Text
+    _agent="${4:-None Text}"
     {
         svc_head
         cat <<DHALL
@@ -579,60 +582,81 @@ in  { hostname = "fixbox"
         ]
     , extraEtc = None (List { path : Text, content : Text })
     , bootGraceMs = Some $3
+    , agentService = $_agent
     }
 DHALL
     } > "$1" || fail "cannot write $1"
     [ -s "$1" ] || fail "$1 is empty"
 }
 
-gen_cfg "$WORK/svc-agent1.dhall" "$(agent_svc /usr/fx-agent/b2-arm1.sse)" 15000
-gen_cfg "$WORK/svc-agent2.dhall" "$(agent_svc /usr/fx-agent/b2-arm2.sse)" 30000
+gen_cfg "$WORK/svc-agent1.dhall" "$(agent_svc /usr/fx-agent/b2-arm1.sse)" 15000 'Some "fxagent-b2"'
+gen_cfg "$WORK/svc-agent2.dhall" "$(agent_svc /usr/fx-agent/b2-arm2.sse)" 30000 'Some "fxagent-b2"'
 gen_cfg "$WORK/svc-preboot.dhall" "" 12000          # arm 2's known-good, AGENT-FREE generation
 
-# ─── THE CONSOLE PIN (load-bearing, not decoration) ────────────────────────
+# ─── THE AGENT PIN (substrate-owned; replaces the console-ness text search) ─
 # The harness's refusal EXITS 0, and fx-init pins "failed" for a service that
-# exits during the grace window ONLY when that service is NON-console — it ignores
-# the exit status entirely.  A console service is EXEMPT, so the refusal cannot
-# pin a failure on the generation it describes.  A NON-console agent would turn
-# every refusal into a NEW roll-forward oscillator (the refusal pins v failed on
-# the rolled-forward generation; the next boot rolls forward; the agent refuses
-# again).  The agent-bearing rows are therefore ASSERTED console — and the
-# assertion proves it can FAIL, by rejecting a mutated copy of the same config.
-console_pin() { # console_pin CFG... — every fx-agent service row must be a console service
-    python3 - "$@" <<'PYEOF'
+# exits during the grace window ONLY when that service is NON-console — it
+# ignores the exit status entirely.  A NON-console agent would turn every
+# refusal into a NEW roll-forward oscillator (the refusal pins v failed on
+# the rolled-forward generation; the next boot rolls forward; the agent
+# refuses again).  The rule the old TEXT search approximated (matching the
+# `console = Some "console"` assignment on fx-agent rows) now lives in the
+# SUBSTRATE: fx-init's config parser REQUIRES an agentService field and
+# refuses a declared agent that is not a console service, at
+# config-check/activation, before any boot.  The pin asserts the DECLARATION
+# through the real parser binary and proves it can FAIL, by demanding the
+# substrate REFUSE (a) the same config with the declaration OMITTED and
+# (b) the same config with the agent row turned NON-console, naming the
+# service.  A stale config_check (one that still accepts either mutant)
+# fails the pin loudly — that is intentional.
+agent_pin() { # agent_pin CFG NAME — CFG must declare NAME as its agent ('-' = None)
+    _pc="${FX_INIT_CONFIG_CHECK:-$INIT/zig/zig-out/bin/config_check}"
+    [ -x "$_pc" ] || fail "agent pin: $_pc missing — build fx-init's zig port (the pin runs the real parser, it does not approximate one)"
+    _cfg="$1"; _want="$2"
+    _out=$("$_pc" "$_cfg" 2>&1) || { printf '%s\n' "$_out" >&2; fail "agent pin: the substrate refused the payload config $_cfg"; }
+    printf '%s\n' "$_out" | grep -q "^agent_service=$_want\$" \
+        || fail "agent pin: $_cfg does not declare agent_service=$_want (dump says: $(printf '%s\n' "$_out" | sed -n 's/^agent_service=//p' | head -1))"
+    # FIREABILITY (a): the declaration OMITTED must be refused, not defaulted.
+    grep -v 'agentService' "$_cfg" > "$WORK/agent-pin-omit.dhall"
+    cmp -s "$WORK/agent-pin-omit.dhall" "$_cfg" \
+        && fail "agent pin: $_cfg carries no agentService line — the omission mutant could not be built"
+    _oout=$("$_pc" "$WORK/agent-pin-omit.dhall" 2>&1) \
+        && fail "agent pin: the substrate ACCEPTED $_cfg with agentService OMITTED — the required-field bound is gone (stale config_check?)"
+    printf '%s\n' "$_oout" | grep -q "config missing 'agentService'" \
+        || fail "agent pin: the omission refusal does not say the field is missing: $_oout"
+    # FIREABILITY (b): a NAMED agent turned NON-console must be refused, named.
+    if [ "$_want" != "-" ]; then
+        python3 - "$_cfg" "$_want" "$WORK/agent-pin-nc.dhall" <<'PYEOF2'
 import re, sys
-
-def rows(txt):
-    return [r for r in re.split(r"(?=\{ name =)", txt) if "fx-agent/bin/fx-agent" in r]
-
-def nonconsole(txt):
-    return [r for r in rows(txt) if 'console = Some "console"' not in r]
-
-paths, n = sys.argv[1:], 0
-for p in paths:
-    txt = open(p).read()
-    r = rows(txt)
-    if not r:
-        sys.exit("console pin: no fx-agent service row in %s" % p)
-    n += len(r)
-    for b in nonconsole(txt):
-        sys.exit("console pin: an fx-agent service row in %s is NOT a console service "
-                 "(the refusal's exit 0 would then pin a failure on the healthy generation):\n%s"
-                 % (p, b.strip()[:300]))
-
-# FIREABILITY: the predicate must REJECT the same rows with console removed.
-txt = open(paths[0]).read()
-mutated = "".join(re.sub(r'console = Some "console"', 'console = None Text', p)
-                  if "fx-agent/bin/fx-agent" in p else p
-                  for p in re.split(r"(?=\{ name =)", txt))
-if mutated == txt or not nonconsole(mutated):
-    sys.exit("console pin: the mutant is not non-console — the pin cannot fail")
-print("console pin: %d fx-agent service row(s) are console services, and a "
-      "NON-console mutant is rejected" % n)
-PYEOF
+src, name, dst = sys.argv[1], sys.argv[2], sys.argv[3]
+txt = open(src).read()
+out, hit = [], 0
+for row in re.split(r"(?=\{ name =)", txt):
+    if ('name = "%s"' % name) in row and 'console = Some "console"' in row:
+        row = row.replace('console = Some "console"', 'console = None Text', 1)
+        hit += 1
+    out.append(row)
+if hit != 1:
+    sys.exit("agent pin: expected exactly one console row naming %s in %s, found %d"
+             % (name, src, hit))
+open(dst, "w").write("".join(out))
+PYEOF2
+        [ -s "$WORK/agent-pin-nc.dhall" ] || fail "agent pin: the non-console mutant could not be built"
+        _nout=$("$_pc" "$WORK/agent-pin-nc.dhall" 2>&1) \
+            && fail "agent pin: the substrate ACCEPTED a NON-console agent service — the oscillator bound is gone (stale config_check?)"
+        printf '%s\n' "$_nout" | grep -q "agentService '$_want'" \
+            || fail "agent pin: the non-console refusal does not name '$_want': $_nout"
+        echo "agent pin: $(basename "$_cfg") declares agent_service=$_want; the substrate refuses an omitted declaration and a non-console $_want mutant (named)"
+    else
+        echo "agent pin: $(basename "$_cfg") declares agent_service=- (no agent); the substrate refuses an omitted declaration"
+    fi
 }
-console_pin "$WORK/config1.dhall" "$WORK/svc-agent1.dhall" "$WORK/svc-agent2.dhall" \
-    || fail "an fx-agent service in the payload is not a console service (see console_pin)"
+# EVERY payload config DECLARES its agent (or its absence) through the substrate.
+agent_pin "$WORK/config1.dhall" "b2verifier"
+agent_pin "$WORK/config2.dhall" "-"
+agent_pin "$WORK/svc-agent1.dhall" "fxagent-b2"
+agent_pin "$WORK/svc-agent2.dhall" "fxagent-b2"
+agent_pin "$WORK/svc-preboot.dhall" "-"
 
 # both configs must PARSE as fx-init reads them (fx-init's own config_check)
 CCHK="$INIT/zig/zig-out/bin/config_check"

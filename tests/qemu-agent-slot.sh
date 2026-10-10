@@ -358,6 +358,7 @@ in  { hostname = "slotbox"
         ]
     , extraEtc = None (List { path : Text, content : Text })
     , bootGraceMs = Some 30000
+    , agentService = Some "slotagent"
     }
 DHALL
 } > "$WORK/bracket.dhall" || fail "cannot write the bracket config"
@@ -377,80 +378,72 @@ in  { hostname = "slotbox2"
         ]
     , extraEtc = None (List { path : Text, content : Text })
     , bootGraceMs = Some 30000
+    , agentService = None Text
     }
 DHALL
 } > "$WORK/slotconfig.dhall" || fail "cannot write the slot config"
 
-# ─── the console pin (the agent row must be a console service) ───────────
+# ─── the agent pin (substrate-owned; this file's own copy) ────────────────
 # Same reasoning as tests/qemu-agent-observe.sh (this file's own copy; the
 # observe gate's helpers are another lane's): a refusal exits 0, and fx-init
 # pins `failed` for a NON-console service that exits during grace — an
-# agent row that is not console would turn every refusal into a
-# roll-forward oscillator.  The matcher is comment-blind and SELF-TESTED,
-# and it rejects a mutated non-console copy (it can fail).
-console_pin() { # console_pin CFG...
-    python3 - "$@" <<'PYEOF'
+# agent row that is not console would turn every refusal into a roll-forward
+# oscillator.  The rule the old TEXT search approximated now lives in the
+# SUBSTRATE: fx-init's config parser REQUIRES an agentService field and
+# refuses a declared agent that is not a console service, at
+# config-check/activation, before any boot.  The pin asserts the DECLARATION
+# through the real parser binary and proves it can FAIL, by demanding the
+# substrate REFUSE (a) the same config with the declaration OMITTED and
+# (b) the same config with the agent row turned NON-console, naming the
+# service.  A stale config_check (one that still accepts either mutant)
+# fails the pin loudly — that is intentional.
+agent_pin() { # agent_pin CFG NAME — CFG must declare NAME as its agent ('-' = None)
+    _pc="${FX_INIT_CONFIG_CHECK:-$INIT/zig/zig-out/bin/config_check}"
+    [ -x "$_pc" ] || fail "agent pin: $_pc missing — build fx-init's zig port (the pin runs the real parser, it does not approximate one)"
+    _cfg="$1"; _want="$2"
+    _out=$("$_pc" "$_cfg" 2>&1) || { printf '%s\n' "$_out" >&2; fail "agent pin: the substrate refused the payload config $_cfg"; }
+    printf '%s\n' "$_out" | grep -q "^agent_service=$_want\$" \
+        || fail "agent pin: $_cfg does not declare agent_service=$_want (dump says: $(printf '%s\n' "$_out" | sed -n 's/^agent_service=//p' | head -1))"
+    # FIREABILITY (a): the declaration OMITTED must be refused, not defaulted.
+    grep -v 'agentService' "$_cfg" > "$WORK/agent-pin-omit.dhall"
+    cmp -s "$WORK/agent-pin-omit.dhall" "$_cfg" \
+        && fail "agent pin: $_cfg carries no agentService line — the omission mutant could not be built"
+    _oout=$("$_pc" "$WORK/agent-pin-omit.dhall" 2>&1) \
+        && fail "agent pin: the substrate ACCEPTED $_cfg with agentService OMITTED — the required-field bound is gone (stale config_check?)"
+    printf '%s\n' "$_oout" | grep -q "config missing 'agentService'" \
+        || fail "agent pin: the omission refusal does not say the field is missing: $_oout"
+    # FIREABILITY (b): a NAMED agent turned NON-console must be refused, named.
+    if [ "$_want" != "-" ]; then
+        python3 - "$_cfg" "$_want" "$WORK/agent-pin-nc.dhall" <<'PYEOF2'
 import re, sys
-
-def strip_comments(txt):
-    out, i, n, in_str = [], 0, len(txt), False
-    while i < n:
-        c = txt[i]
-        if in_str:
-            out.append(c)
-            if c == "\\" and i + 1 < n:
-                out.append(txt[i + 1]); i += 1
-            elif c == '"':
-                in_str = False
-            i += 1
-            continue
-        if c == '"':
-            in_str = True; out.append(c); i += 1; continue
-        if txt.startswith("--", i):
-            while i < n and txt[i] != "\n": i += 1
-            continue
-        if txt.startswith("{-", i):
-            depth, i = 1, i + 2
-            while i < n and depth:
-                if txt.startswith("{-", i): depth += 1; i += 2
-                elif txt.startswith("-}", i): depth -= 1; i += 2
-                else: i += 1
-            continue
-        out.append(c); i += 1
-    return "".join(out)
-
-def rows(txt):
-    return [r for r in re.split(r"(?=\{ name =)", txt) if "fx-agent/bin/fx-agent" in r]
-
-def nonconsole(txt):
-    return [r for r in rows(txt) if 'console = Some "console"' not in r]
-
-probe = ('{ name = "x", argv = [ "/usr/fx-agent/bin/fx-agent" ],'
-         ' console = None Text }  -- console = Some "console"')
-if not nonconsole(strip_comments(probe)):
-    sys.exit("console pin: the matcher is COMMENT-BLIND")
-probe2 = ('{ name = "x", argv = [ "/usr/fx-agent/bin/fx-agent" ],'
-          ' console = Some "console" }  -- console = None Text')
-if nonconsole(strip_comments(probe2)):
-    sys.exit("console pin: a comment wrongly FAILED a console row")
-
-for p in sys.argv[1:]:
-    txt = strip_comments(open(p).read())
-    if not rows(txt):
-        sys.exit("console pin: no fx-agent service row in %s" % p)
-    for b in nonconsole(txt):
-        sys.exit("console pin: an fx-agent row in %s is NOT a console service:\n%s"
-                 % (p, b.strip()[:300]))
-txt = strip_comments(open(sys.argv[1]).read())
-mutated = "".join(re.sub(r'console = Some "console"', 'console = None Text', p)
-                  if "fx-agent/bin/fx-agent" in p else p
-                  for p in re.split(r"(?=\{ name =)", txt))
-if mutated == txt or not nonconsole(mutated):
-    sys.exit("console pin: the mutant is not non-console — the pin cannot fail")
-print("console pin: fx-agent row(s) are console services (comment-stripped, self-tested)")
-PYEOF
+src, name, dst = sys.argv[1], sys.argv[2], sys.argv[3]
+txt = open(src).read()
+out, hit = [], 0
+for row in re.split(r"(?=\{ name =)", txt):
+    if ('name = "%s"' % name) in row and 'console = Some "console"' in row:
+        row = row.replace('console = Some "console"', 'console = None Text', 1)
+        hit += 1
+    out.append(row)
+if hit != 1:
+    sys.exit("agent pin: expected exactly one console row naming %s in %s, found %d"
+             % (name, src, hit))
+open(dst, "w").write("".join(out))
+PYEOF2
+        [ -s "$WORK/agent-pin-nc.dhall" ] || fail "agent pin: the non-console mutant could not be built"
+        _nout=$("$_pc" "$WORK/agent-pin-nc.dhall" 2>&1) \
+            && fail "agent pin: the substrate ACCEPTED a NON-console agent service — the oscillator bound is gone (stale config_check?)"
+        printf '%s\n' "$_nout" | grep -q "agentService '$_want'" \
+            || fail "agent pin: the non-console refusal does not name '$_want': $_nout"
+        echo "agent pin: $(basename "$_cfg") declares agent_service=$_want; the substrate refuses an omitted declaration and a non-console $_want mutant (named)"
+    else
+        echo "agent pin: $(basename "$_cfg") declares agent_service=- (no agent); the substrate refuses an omitted declaration"
+    fi
 }
-console_pin "$WORK/bracket.dhall" || fail "the agent service is not a console service (see console_pin)"
+# EVERY payload config DECLARES its agent (the bracket names slotagent; the
+# slot config the agent writes declares None — its agent-free shape is the
+# point of the 0% arm, and it must be DECLARED, not defaulted).
+agent_pin "$WORK/bracket.dhall" "slotagent"
+agent_pin "$WORK/slotconfig.dhall" "-"
 
 CCHK="$INIT/zig/zig-out/bin/config_check"
 if [ -x "$CCHK" ]; then

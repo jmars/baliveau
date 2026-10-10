@@ -256,6 +256,7 @@ in  { hostname = "osierbox"
     , services = [ $3 ] : List Service
     , extraEtc = None (List { path : Text, content : Text })
     , bootGraceMs = Some 30000
+    , agentService = None Text
     }
 EOF
 }

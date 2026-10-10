@@ -446,6 +446,14 @@ certifies coherence; neither says "improved".
 
 ## House rules this session earned (each cost something real)
 
+- **Suspect the INSTRUMENT before the phenomenon — and this cost me a wrong report.** I measured
+  "the new refusals exit 0" and was one step from telling the user the protection was inert and
+  dispatching a fix lane for it. The refusals exit **1**; my *echo* was wrong:
+  `echo "$(basename $f) rc=$?"` expands the command substitution **first**, and running `basename`
+  resets `$?` to **its own** status. The same class bit me twice more: `cmd | head; echo $?` reports
+  *head's* status, not `cmd`'s. **Capture `$?` into a variable on its own line, immediately**, before
+  any other expansion or pipeline. A perverse or inert-looking result usually means the instrument.
+
 - **A gate that reads a MOVING REF is not a gate — and a commit is an INPUT to the
   gate.** Phases 5g/8 of `tests/test_outcome.sh` built their "pre-fix" arm from
   `git show HEAD:`; the gate passed *before* the commit and went red the instant the
