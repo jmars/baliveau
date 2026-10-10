@@ -58,6 +58,76 @@ below that depends on the system is built; everything that depends on knowing wh
 
 ---
 
+## 1a. A SECOND GOAL: observability sufficient for a third-party EU AI Act report (user, 2026-10-10)
+
+> this system should provide enough observability for another tool to generate reports for the EU AI Act
+
+**WHAT THE GOAL ASKS FOR, precisely, and what it does not.** It asks that the system RECORD ENOUGH, in a
+form a separate tool can consume, for that tool to produce the reports. It does NOT ask baliveau to
+write the reports, and it does not make anything compliant — **this section is an ENGINEERING READING of
+a legal instrument, not legal advice, and the mapping would need counsel before anyone relied on it.**
+Keeping the tool separate is the same move the project makes for the oracle: the thing that GRADES (or
+here, DOCUMENTS) must not be authored by the thing being judged.
+
+**THE OBLIGATIONS THAT ARE OBSERVABILITY-SHAPED** (INTERPRETATION, and the reason the goal is
+tractable): Art. 12 + Art. 19 — automatic recording of events over the LIFETIME, including events
+relevant to identifying situations that may present a risk or a **substantial modification**, and
+retention of those logs; Art. 11 + Annex IV — technical documentation that includes the **changes made
+through the lifecycle**; Art. 9/72/73 — risk management, post-market monitoring, **serious-incident
+reporting**; Art. 14 — **human oversight** and the ability to intervene; Art. 17 — records of the
+quality-management system. Every one of those is, in engineering terms, "an attributable, durable,
+machine-readable record of what the system did, what changed, and who intervened."
+
+**WHAT ALREADY EXISTS BY CONSTRUCTION, which is why this is a goal and not a rewrite.** The substrate
+records, without being asked to:
+  - **a generation IS a store path** with a snapshot version, `install`/`provides`/`src_of` facts, and a
+    Dhakefile — content-addressed, so the system's states are enumerable and distinguishable;
+  - **`.bootlog`** — a durable per-boot verdict history (ok / failed / in-progress / shutdown);
+  - **`.recovery`** — a durable journal of AUTOMATIC roll-forwards, **which deliberately distinguishes
+    them from deliberate operator rollbacks and ordinary boots** (a distinction the Act's "who
+    intervened" question needs and that most systems do not make);
+  - **the runtime datalog** — `rt_effect`/`rt_control` record activations, rollbacks and shutdowns;
+  - **the oracle** — a per-generation, HOST-side measurement that a change is an improvement;
+  - **`fx-audit`** — machine-readable findings about the integrity of the record itself.
+So the observability is largely a matter of SURFACING what the substrate already holds, and the
+reporter is the third member of a family with the same three properties (`§7.1`): **host-side,
+agent-unwritable, a function of observable system state — it READS the substrate, it does not become a
+source of truth.**
+
+**AND THE TWO GOALS REINFORCE EACH OTHER, which is not a coincidence.** A log the subject can rewrite is
+not a log for a regulator. `§6b`'s stance (audit, not proof; the VM is the boundary; the host observes
+what the guest cannot change) is exactly what makes these records EVIDENTIALLY USABLE rather than merely
+present — the nonce-bound `.bootlog`, the host's previous-observation comparison, and the rule that
+**the harness's own `attempts.jsonl` is a self-report and never evidence** were built to stop an agent
+cheating its own guardrail; they are also what a third party would need in order to believe the record.
+
+**THE GAPS — the honest list, and the first is already carried in this record.** MEASURED unless noted:
+  1. **A generation cannot answer "which config produced me"** (§8.3): `generation(genhash, buildfile,
+     dhake, epoch)` and `genhash` is the canonical serialization of the FACTS, so the config's store
+     path is not a term. For "the changes made through the lifecycle" this is the direct gap: the chain
+     of generations exists, but the *input* of each step is not recorded with it.
+  2. **No change record as such.** The generation chain IS the substrate's change record, but nothing
+     states a change's INTENT or SEMANTICS (what was attempted and why) — only the resulting state.
+  3. **No risk/incident classification.** A failed boot, a refused activation, a rolled-back
+     generation and an audit incoherence are all candidate "situations that may present a risk" or
+     "substantial modifications"; nothing classifies them as such or links them to an affected
+     generation. (The raw events are recorded; the taxonomy is not.)
+  4. **Retention is unpoliced.** `.bootlog` / `.recovery` / `src_of` growth has no stated policy (§2),
+     and the RUNTIME log (`log.db`) lives under `/run/fx` — tmpfs, so it does not survive a reboot,
+     while the store's own files do. Art. 19's retention question therefore has a real answer for some
+     records and none for others, and that difference must be stated rather than assumed.
+  5. **Nothing distinguishes a record's READER from its WRITER** at the reporting boundary yet: the
+     reporter must be host-side for the same reason the oracle is, and that has to be a property of its
+     seat, not a convention.
+
+**WHAT THIS CHANGES ABOUT THE ROADMAP.** It adds no new subsystem — it promotes existing records to
+LOAD-BEARING and adds three small things: the config→generation link (gap 1), a change/incident record
+with a stated taxonomy (gaps 2-3), and a retention policy (gap 4). It also makes one existing rule
+non-negotiable rather than merely prudent: **the reportable record must be the substrate's, never the
+agent's self-report.**
+
+---
+
 ## 2. What already exists (the substrate)
 
 Sibling checkouts: `/var/data/workspace/fixpoint-linux/{fx-init,fxstore,fx-core,dhake,dhall-c,datalog-dafsa}`.
