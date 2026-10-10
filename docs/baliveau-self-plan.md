@@ -268,7 +268,7 @@ and **not recipes** — because a recipe is code the host runs.
 union, arrived at from the opposite direction. Two independent arguments landing on one boundary is
 the strongest evidence available that it is the real one.
 
-### 6a. AMENDMENT (2026-10-10, user decision) — the recipe IS admitted, as a composition over a fixed vocabulary
+## 6a. AMENDMENT (2026-10-10, user decision) — the recipe IS admitted, as a composition over a fixed vocabulary
 
 The conclusion above is right about an **unrestricted** recipe and wrong as a *boundary*. The user
 moved it, in two steps:
@@ -407,6 +407,69 @@ config's inline packages and the merge in `fx-activate`. The rebuild of `fxstore
 be able to run where the agent does — **and that prerequisite is now DONE** (`fx-harness 3b7dacc` +
 `fxstore 23a293f`: the loop runs in-guest, one image and one disk, run-set share 0.000000 → 0.100376).
 
+
+---
+
+## 6b. The stance: AUDITING, NOT PROOFING (user decision, 2026-10-10)
+
+> auditing, not proofing, let it try to cheat, but we should be able to see it and stop it -> rollback
+
+This settles how §6a's elements are weighted, and it demotes the one I had made load-bearing.
+
+**WHY IT FITS THE THESIS.** A bound built by *preventing* a write is a POLICY — something we grant or
+withhold, and something whose violation we can only hope we enumerated. Provenance and rollback are
+supposed to be properties of the SUBSTRATE, not permissions granted to the agent. So the agent is
+allowed to try, the attempt is made VISIBLE, and the response is a ROLLBACK. That is the same move the
+project makes everywhere else: the oracle is not a rule the agent follows, it is a seat the agent
+cannot write; the boot verdict is not the agent's self-assessment, it is fx-init's.
+
+**CONSEQUENCE FOR §6a.** Element **(C) is DOWNGRADED from load-bearing to optional defence-in-depth.**
+The load-bearing pair becomes the **DETECTOR** and the **ROLLBACK TRIGGER** — because with no kernel
+sandbox primitive in the guest (§8.14) and the VM as the boundary, *nothing in-guest can be proofed
+against the agent anyway*. What can be done is to make what it does leave a mark, and to act on the
+mark. (B) — the absolute-argv rule — and (D) — the activation-time refusal — stay: they are cheap,
+they are the SAME lever as the vocabulary, and they remove whole classes of accident rather than
+adversaries.
+
+**WHAT THE AUDIT READS — and WHY THE RECORDS ARE INDEPENDENT.** The detector is not one file: it is
+several records written by DIFFERENT WRITERS AT DIFFERENT TIMES, which is what makes incoherence
+detectable without a sandbox. One doctored file cannot make them agree:
+
+| record | written by | what it says |
+|---|---|---|
+| `<store>/.bootlog` | fx-init, per boot | the verdict of each generation that booted |
+| `<store>/.recovery` | fx-init, per automatic roll-forward | that a generation was republished, and from which |
+| `install` / `provides` / `src_of` / `store` facts | fx-activate, in the activation txn | what this generation installed, from where |
+| `<store>/.db/snapshots/CURRENT` | fxstore | which generation is current |
+| `fxstore verify` | fxstore, on demand | the rootfs against the facts — **exit 1 on drift** |
+| the oracle | the HOST | whether the change is an improvement |
+
+**THE HARNESS'S OWN `attempts.jsonl` IS A SELF-REPORT AND IS NEVER EVIDENCE.** The observation loop
+may keep using it — it is the agent's efficiency layer, and it stops the agent wasting cycles on
+something it already learned — but the SUBSTRATE's stop-and-roll-back must never depend on it. That
+property already holds and is worth stating so it is not lost: fx-init's roll-forward reads
+`.bootlog`, its guardrail reads the store's facts, and neither consults the harness's record.
+
+**WHAT INCOHERENCE LOOKS LIKE** (each of these is a detector, and each reads two independent
+records): a `.recovery` row with no matching `failed` in `.bootlog`; a rootfs file with no `install`
+fact (`verify`'s drift); a generation whose facts name a store path that is not there; a version
+chain that does not line up; an activation whose `src_of` binds a source hash whose artifact is gone.
+
+**THE RESPONSE EXISTS; THE TRIGGER IS WHAT IS MISSING.** Rollback is built and proven — `fxstore
+rollback [--hard] <v>`, the boot-failure roll-forward, and fx-init's hold-at-current backstop
+(`2feedf6`). What does not exist is something that reads an incoherence and ACTS on it.
+
+**WHERE THE DETECTOR MUST LIVE, and this is the load-bearing design point: HOST-SIDE.** The agent can
+write any file in the guest, so an in-guest auditor is auditing a witness the suspect can edit —
+cross-checks catch an INCOHERENT tamper, not a coherent one. The host is the one writer the agent
+cannot reach, and it already reads the disk at every generation (that is how every gate in this repo
+takes its evidence). So the audit belongs beside the oracle, on the same seat and the same principle:
+**the host compares what it sees now against what it saw last**, and a generation that rewrote its own
+history is visible as a DISAGREEMENT WITH THE PREVIOUS OBSERVATION — which no amount of coherent
+in-guest rewriting can undo, because the previous observation is not on the disk.
+**AND THE RESIDUAL, stated plainly:** an in-guest cross-check is defeated by a coherent tamper, and
+this design does not claim otherwise. That is the honest bound of "auditing, not proofing", and it is
+why the auditor is host-side rather than a second file inside the machine.
 
 ---
 

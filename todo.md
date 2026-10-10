@@ -259,6 +259,33 @@ certifies coherence; neither says "improved".
 
 ## 4. Design items awaiting a decision
 
+- [ ] **THE AUDIT AND ITS TRIGGER — the stance is AUDITING, NOT PROOFING (user, 2026-10-10; §6b).**
+      The agent is allowed to try to cheat; what must exist is that we can SEE it and STOP it →
+      rollback. Rollback is already built (`fxstore rollback [--hard] <v>`, the boot-failure
+      roll-forward, fx-init's hold-at-current `2feedf6`); **the missing piece is the TRIGGER** —
+      something that reads an incoherence and acts. `osier-share`'s sibling seat, and it belongs
+      HOST-SIDE for the same reason the oracle does.
+      - **THE AUDIT READS SEVERAL RECORDS WRITTEN BY DIFFERENT WRITERS AT DIFFERENT TIMES** — that is
+        what makes incoherence detectable with no sandbox: `.bootlog` (fx-init's per-boot verdicts),
+        `.recovery` (fx-init's roll-forward journal), the `install`/`provides`/`src_of`/`store` facts
+        (fx-activate), CURRENT (fxstore), `fxstore verify` (rootfs ↔ facts, exit 1 on drift), and the
+        host-side oracle.
+      - **INCOHERENCE, e.g.**: a `.recovery` row with no matching `failed` in `.bootlog`; a rootfs file
+        with no `install` fact; a generation naming a store path that is not there; a version chain
+        that does not line up; a `src_of` binding whose artifact is gone.
+      - **THE HOST IS THE ONLY WRITER THE AGENT CANNOT REACH**, and it already reads the disk at every
+        generation. So the strongest detector is **the host comparing what it sees now against what it
+        saw last** — a generation that rewrote its own history shows as a DISAGREEMENT WITH THE
+        PREVIOUS OBSERVATION, which no coherent in-guest rewrite can undo, because the previous
+        observation is not on the disk.
+      - **RESIDUAL, not claimed away**: an IN-GUEST cross-check is defeated by a COHERENT tamper. That
+        is the honest bound of this stance and the reason the auditor is host-side.
+- [ ] **`attempts.jsonl` must never become evidence.** It is the agent's SELF-REPORT and the agent can
+      reach it. The observation loop may keep using it (it is an efficiency layer), but nothing in the
+      stop/rollback path may depend on it. That property holds today — fx-init's roll-forward reads
+      `.bootlog`, its guardrail reads the store's facts — and it is easy to lose: it should be stated
+      where the loop's verdict is read, and pinned by a test.
+
 - [ ] **THE BUILD VOCABULARY — designed (§6a of the design record), NOT BUILT. Build in this order,
       because each element's absence makes the next one decorative:**
       1. **THE REACH BOUND — IN USERSPACE, NOT A SANDBOX (corrected 2026-10-10: the VM is the
