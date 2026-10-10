@@ -87,7 +87,58 @@
 #                        decorative — the --boots rule, applied to the
 #                        nonce ledger);
 #               FORMAT2  a format-2 observation (pre-nonce) is REFUSED with
-#                        a re-enroll instruction, the way format-1 was.
+#                        a re-enroll instruction, the way format-1 was;
+#               NONELEDGER  a ledger entry whose nonce is the literal
+#                        'none' is exit 2 — the WRITER reserves that token
+#                        (parse_kernel_nonce refuses fx.bootnonce=none), so
+#                        the host can never have issued it; accepting it
+#                        would make every placeholder line claimable as
+#                        that boot's.
+#   REARM       the WRITER's second verdict per boot, derived not patched:
+#               the in-guest `activate` publishes a NEW version (the
+#               store's CURRENT moves) and RE-ARMS the boot decision
+#               (init.zig:3415-3418), so ONE boot under ONE nonce can
+#               legitimately append a verdict for a version with NO
+#               in-progress of its own — fx-init's own suite measures the
+#               second DISK verdict (tests/qemu_boot_rollback.sh:18-27).
+#               The per-NONCE verdict budget (verdicts<=1 per nonce) rested
+#               on "the g_boot_decided latch allows one verdict per boot"
+#               and the writer refutes it — a HEALTHY boot audited as a
+#               forgery, the direction that rolls back a live machine.
+#               The derived accounting: verdicts are budgeted PER VERSION
+#               (<= in-progress lines for the version + 1 for the ONE
+#               re-arm verdict a first-published version can carry) and a
+#               verdict's provenance is EITHER a same-nonce in-progress OR
+#               the store's own record that the version was first
+#               published in the window.  Arms:
+#               REARM    the healthy shape (boot pair + the re-arm verdict
+#                        for the activated version, one nonce) stays
+#                        COHERENT and the re-arm attribution is NAMED;
+#               DGRACE   the during-grace activate (the boot's in-progress
+#                        for the booted version, the verdict for the
+#                        ACTIVATED one — the version-exact attribution
+#                        measured firing at the old per-nonce rule) stays
+#                        coherent;
+#               REARMFLIP a SECOND verdict for the activated version (the
+#                        flip that overwrites the re-arm verdict by
+#                        appending after it, wearing the same live nonce)
+#                        fires the per-VERSION budget — the one budget a
+#                        per-nonce rule cannot express;
+#               MIXED    a window with one nonced boot + one healthy
+#                        operator hand-boot ('none' placeholder lines,
+#                        ledger shorter than the window) is information
+#                        only: COHERENT, both regime lines printed, no
+#                        INCOHERENT — the regime a deployment hits by
+#                        accident, ungated until now;
+#               SUBST    the named hole: a verdict SUBSTITUTED inside a
+#                        live boot (the forger wears the boot's own nonce,
+#                        which /proc/cmdline makes readable in-guest, and
+#                        suppresses fx-init's verdict) audits coherent —
+#                        one verdict for one (nonce, version), every
+#                        anchor satisfied — and the tool must SAY so: the
+#                        arm asserts the printed bound names the
+#                        substitution, so the tool never claims a closure
+#                        it does not have.
 #   NONCE-W   the WRITER pin (fx-init 500fc68, git cat-file -e + cmp proving
 #               pin != working tree): the pinned writer's bootlog_append is
 #               the 3-field "%u %s %u" and knows no fx.bootnonce — the
@@ -145,10 +196,13 @@
 # the bare forged verdict audited coherent; its format-1 observation is
 # refused), at 88a73b8 (pre-NONCE: the forged PAIR into a silent boot's
 # slack audited coherent — the reviewer's measurement, reproduced on the
-# old-writer store it can read; its format-2 observation is refused), and
-# at fcebaa3 (the torn-verdict false positive); the WRITER side at fx-init
-# 500fc68 (the pre-nonce 3-field bootlog_append — no fx.bootnonce token
-# anywhere), asserted at source level with the same guards.
+# old-writer store it can read; its format-2 observation is refused), at
+# fcebaa3 (the torn-verdict false positive), and at be2fbd1 (pre-PER-VERSION
+# accounting: the healthy in-guest-activate re-arm boot audited INCOHERENT —
+# the false-positive BLOCKER this change fixes, both the per-nonce verdict
+# budget and the version-exact attribution pinned); the WRITER side at
+# fx-init 500fc68 (the pre-nonce 3-field bootlog_append — no fx.bootnonce
+# token anywhere), asserted at source level with the same guards.
 #
 # FIXTURE HONESTY: .bootlog/.recovery are fx-init's files and fx-init does
 # not run host-side; the gate WRITES them in the writers' exact formats
@@ -219,6 +273,8 @@ grep -aq 'silently dropped from the counting AND the forged-verdict attribution'
     || fail "STALE BINARY: $AUDIT does not contain this source's .bootlog cap-refusal message — the artifact answering for the seat was not built from tools/fx-audit.c"
 grep -aq 'no nonce the host issued for a boot in this window' "$AUDIT" \
     || fail "STALE BINARY: $AUDIT does not contain this source's nonce-binding message — the artifact answering for the seat was not built from tools/fx-audit.c (the per-boot-nonce change)"
+grep -aq 'the in-guest activate RE-ARM shape' "$AUDIT" \
+    || fail "STALE BINARY: $AUDIT does not contain this source's re-arm attribution message — the artifact answering for the seat was not built from tools/fx-audit.c (the per-version verdict accounting change)"
 
 # ── the per-boot nonce fixtures ───────────────────────────────────────────
 # nth ORDINAL — the deterministic nonce the gate (as the host) issued for
@@ -962,6 +1018,26 @@ grep -q 'decorative' "$WORK/out.pairnol" \
     || fail "PAIRNOLEDGER: the refusal does not say why it refuses to default"
 echo "test_fx_audit: PAIRNOLEDGER: --boots 3 -> 4 with no --nonces is exit 2, loud (the nonce ledger is an anchor, not an option)"
 
+# NONELEDGER — the ledger must agree with the WRITER's reservation: 'none'
+# is the writer's no-nonce-issued placeholder and parse_kernel_nonce REFUSES
+# fx.bootnonce=none as a host value, so the host can never have issued it.
+# A ledger that claimed it would let every placeholder line in a window
+# claim THAT boot's nonce — the reader must die (exit 2), not guess.  FAILS
+# if load_nonces ever accepts the token.
+fresh nres
+mkled "$WORK/nonces-nres.led" 4
+echo "5 none" >> "$WORK/nonces-nres.led"
+FXSTORE_BIN="$FXSTORE" "$AUDIT" --store "$WORK/store-nres" \
+    --rootfs "$WORK/rootfs-nres" --obs-file "$WORK/obsf-nres.obs" \
+    --boots 5 --nonces "$WORK/nonces-nres.led" > "$WORK/out.nres" 2>&1
+_rc=$?
+[ "$_rc" = "2" ] || fail "NONELEDGER: a ledger nonce 'none' must be exit 2 (the writer reserves the token), got $_rc: $(sed -n 1,3p "$WORK/out.nres")"
+grep -q "reserves 'none' as its no-nonce-issued placeholder" "$WORK/out.nres" \
+    || fail "NONELEDGER: the refusal does not name the writer's reservation: $(sed -n 1,3p "$WORK/out.nres")"
+grep -q 'Fix the ledger' "$WORK/out.nres" \
+    || fail "NONELEDGER: the refusal does not say whose record is wrong"
+echo "test_fx_audit: NONELEDGER: a ledger entry 'none' is exit 2 — the reader now agrees with the writer's reservation (the host never issued that token)"
+
 # CAP: the reader's .bootlog line table is a FIXED 4096.  Past it, lines
 # were SILENTLY DROPPED from both the counting and the forged-verdict
 # attribution — i.e. an audit that reports on a file it truncated, the exact
@@ -1138,6 +1214,147 @@ grep -q 'boot accounting: host boots 4 -> 5 (delta 1); this window added in-prog
     || fail "LEGIT ipsd: the shutdown-without-verdict boot was not accounted: $(grep 'boot accounting: host boots' "$WORK/out.ipsd")"
 echo "test_fx_audit: LEGIT: an in-progress followed by a shutdown (clean stop during the judgement, no verdict) stays coherent"
 
+# ══ THE RE-ARM: the writer's SECOND verdict per boot, derived not patched ═
+# The per-nonce verdict budget (<=1 verdict per nonce) rested on "the
+# g_boot_decided latch allows at most one verdict per boot" — and the writer
+# refutes it: the in-guest `activate` (the control channel; the agent-slot
+# loop's every task cycle) publishes a NEW version through fx-activate and
+# RE-ARMS the latch (init.zig:3415-3418), so one boot under one nonce
+# legitimately appends a verdict for the ACTIVATED version, which has NO
+# in-progress of its own in that boot.  fx-init's own suite measures the
+# second DISK verdict (tests/qemu_boot_rollback.sh:18-27).  A reader that
+# budgets verdicts per nonce calls this healthy boot a forgery and rolls a
+# healthy machine back.  The derived rule: verdicts are budgeted PER
+# VERSION (<= the window's in-progress lines for the version + 1 for the
+# ONE re-arm verdict a first-published version can carry), and a verdict's
+# provenance is EITHER a same-nonce in-progress OR the store's own record
+# that the version was first published in this window.
+# mk_rearm NAME — the common fixture: boot 5 boots v$CUR ok (the writer's
+# real pair under its issued nonce), then the harness drives the SAME
+# fx-activate the in-guest handler runs (publishing v$ACTV > v$CUR, CURRENT
+# moves — the store's own publish record), then the re-armed grace window
+# verdicts the ACTIVATED generation: "$ACTV failed" with NO in-progress for
+# it, wearing the SAME boot-5 nonce.  The activate uses CUR's OWN config
+# content so the materialized rootfs still reconciles (the audit verifies
+# against CURRENT's facts, which the publish moved).
+mk_rearm() { # mk_rearm NAME — sets REARM_V to the activated version
+    _n="$1"
+    fresh "$_n"
+    echo "$CUR in-progress 110 $(nth 5)" >> "$WORK/store-$_n/.bootlog"
+    echo "$CUR ok 111 $(nth 5)"          >> "$WORK/store-$_n/.bootlog"
+    _a=$(LD_LIBRARY_PATH="$DL" "$ZB/fx-activate" --store "$WORK/store-$_n" \
+            --package-set "$PS_A" --config "$WORK/cfg-store-a.dhall" 2>&1 \
+            | sed -n 's/.*as version \([0-9][0-9]*\).*/\1/p' | head -1)
+    [ -n "$_a" ] || fail "mk_rearm $_n: no version from the activate"
+    [ "$_a" -gt "$CUR" ] || fail "mk_rearm $_n: the activate did not ratchet ($_a <= $CUR)"
+    materialize_rootfs "$WORK/store-$_n" "$WORK/rootfs-$_n" "$_a" "$PS_A"
+    echo "$_a failed 112 $(nth 5)" >> "$WORK/store-$_n/.bootlog"
+    REARM_V="$_a"
+}
+
+# REARM — the healthy shape: ONE boot, ONE nonce, TWO verdicts, the second
+# for the activated version.  FAILS (exit 1) if any per-nonce verdict budget
+# survives, and FAILS the naming grep if the anchor accepts the line
+# silently (a pass that hides what accounted for it).
+mk_rearm rearm
+FBOOTS=5 run_fixture rearm > "$WORK/out.rearm" 2>&1
+expect_coh "$WORK/out.rearm" $? "REARM (one boot, one nonce: the boot's own verdict + the activate re-arm's verdict for the newly published version)"
+grep -q "an ADDED '$REARM_V failed 112' verdict rides no in-progress of its own, but v$REARM_V was FIRST PUBLISHED this window" "$WORK/out.rearm" \
+    || fail "REARM: the re-arm attribution is not NAMED (a silent pass): $(grep -i 're-arm\|first published' "$WORK/out.rearm")"
+grep -q 'INCOHERENT' "$WORK/out.rearm" \
+    && fail "REARM: a healthy re-arm boot was called incoherent: $(grep '^INCOHERENT' "$WORK/out.rearm")"
+echo "test_fx_audit: REARM: one boot, one nonce, TWO verdicts — the second for the in-guest-activated version, no in-progress of its own — stays COHERENT with the re-arm attribution NAMED (the per-nonce verdict budget the writer refuted is gone)"
+
+# DGRACE — the during-grace activate the review MEASURED firing at the old
+# version-exact attribution: the boot's in-progress names the version it
+# BOOTED, the (single) verdict names the ACTIVATED version, and the boot
+# never verdicts its own — the activate superseded the window before grace
+# expiry.  FAILS (exit 1) if a verdict is only ever attributable to a
+# same-version in-progress.
+fresh dgrace
+echo "$CUR in-progress 110 $(nth 5)" >> "$WORK/store-dgrace/.bootlog"
+DGV=$(LD_LIBRARY_PATH="$DL" "$ZB/fx-activate" --store "$WORK/store-dgrace" \
+        --package-set "$PS_A" --config "$WORK/cfg-store-a.dhall" 2>&1 \
+        | sed -n 's/.*as version \([0-9][0-9]*\).*/\1/p' | head -1)
+[ -n "$DGV" ] || fail "DGRACE: no version from the activate"
+materialize_rootfs "$WORK/store-dgrace" "$WORK/rootfs-dgrace" "$DGV" "$PS_A"
+echo "$DGV ok 111 $(nth 5)" >> "$WORK/store-dgrace/.bootlog"
+FBOOTS=5 run_fixture dgrace > "$WORK/out.dgrace" 2>&1
+expect_coh "$WORK/out.dgrace" $? "DGRACE (a during-grace activate: the boot's in-progress for the booted version, the verdict for the activated one)"
+grep -q "an ADDED '$DGV ok 111' verdict rides no in-progress of its own, but v$DGV was FIRST PUBLISHED this window" "$WORK/out.dgrace" \
+    || fail "DGRACE: the re-arm attribution is not NAMED: $(grep -i 're-arm\|first published' "$WORK/out.dgrace")"
+echo "test_fx_audit: DGRACE: a verdict for the ACTIVATED version while the boot's only in-progress names the booted one stays COHERENT (the review's SHOULD-FIX 1 shape)"
+
+# REARMFLIP — the one attack the derived budget exists to catch: a SECOND
+# verdict for the version the window already verdicted (the re-arm's own),
+# appended after it wearing the same live nonce, overwriting what
+# bootlog_last will read.  Per-nonce accounting is structurally blind here
+# (one nonce, and the writer may legitimately carry many verdicts on it);
+# the PER-VERSION budget is the catcher.  FAILS (goes coherent) if the
+# budget is removed or miscounts the re-arm allowance.
+mk_rearm rearmflip
+echo "$REARM_V ok 999 $(nth 5)" >> "$WORK/store-rearmflip/.bootlog"
+FBOOTS=5 run_fixture rearmflip > "$WORK/out.rearmflip" 2>&1
+expect_incoh "$WORK/out.rearmflip" $? "REARMFLIP (a second verdict for the version the window already verdicted)" bootlog-fabricated-boots
+grep -q "version $REARM_V carries 2 ADDED verdict line(s) this window but at most 1 can be behind them (0 in-progress line(s) for v$REARM_V, first published this window)" "$WORK/out.rearmflip" \
+    || fail "REARMFLIP: the finding does not name the version's verdict budget: $(grep '^INCOHERENT bootlog-fabricated' "$WORK/out.rearmflip")"
+grep -q '^INCOHERENT bootlog-forged-verdict ' "$WORK/out.rearmflip" \
+    && fail "REARMFLIP: provenance fired too (isolation failed — BOTH verdicts legitimately ride the first-published anchor; only the budget may fire): $(grep '^INCOHERENT' "$WORK/out.rearmflip")"
+echo "test_fx_audit: REARMFLIP: a SECOND verdict for the activated version (same live nonce) fires the PER-VERSION verdict budget — the flip a per-nonce rule cannot see"
+
+# ══ MIXED: one nonced boot + one operator hand-boot is information only ══
+# The regime a real deployment hits by accident: the host nonced boot 4 but
+# boot 5 was an operator hand-boot (no fx.bootnonce= — the writer stamps
+# its 'none' placeholder on every line that boot appends).  The ledger
+# honestly declares it by covering 4 of the 5 boots.  This window must
+# audit COHERENT with BOTH regime lines printed — a hand boot must never
+# roll a healthy machine back, and the uncovered boot must never silently
+# pass as nonce-accounted.  FAILS if the unbound info ever becomes a
+# finding (every hand boot = a rollback) or either regime line is dropped.
+mk_norec mixed
+echo "$V1 in-progress 106 $(nth 4)" >> "$WORK/store-mixed/.bootlog"
+echo "$V1 ok 107 $(nth 4)"          >> "$WORK/store-mixed/.bootlog"
+echo "$V1 in-progress 108 none"     >> "$WORK/store-mixed/.bootlog"
+echo "$V1 ok 109 none"              >> "$WORK/store-mixed/.bootlog"
+mkled "$WORK/nonces-mixed.led" 4
+FXSTORE_BIN="$FXSTORE" "$AUDIT" --store "$WORK/store-mixed" \
+    --rootfs "$WORK/rootfs-mixed" --obs-file "$WORK/obsf-mixed.obs" \
+    --boots 5 --nonces "$WORK/nonces-mixed.led" > "$WORK/out.mixed" 2>&1
+expect_coh "$WORK/out.mixed" $? "MIXED (a nonced boot + a healthy operator hand-boot)"
+grep -q 'INCOHERENT' "$WORK/out.mixed" \
+    && fail "MIXED: a healthy hand-boot window was called incoherent: $(grep '^INCOHERENT' "$WORK/out.mixed")"
+grep -q "2 ADDED .bootlog line(s) carry no nonce the host issued for a boot in this window (first: '$V1 in-progress 108 none') — the ledger covers 1 of the 2 window boot(s): a MIXED/MANUAL regime" "$WORK/out.mixed" \
+    || fail "MIXED: the hand-boot lines are not NAMED with the regime: $(grep 'MIXED' "$WORK/out.mixed")"
+grep -q 'the pair-forgery closure holds only for the covered boots' "$WORK/out.mixed" \
+    || fail "MIXED: the window summary does not state the closure's extent: $(grep 'pair-forgery closure' "$WORK/out.mixed")"
+grep -q 'boot accounting: host boots 3 -> 5 (delta 2); this window added in-progress 2, verdicts 2, shutdown 0' "$WORK/out.mixed" \
+    || fail "MIXED: both boots were not counted by the arithmetic: $(grep 'boot accounting: host boots' "$WORK/out.mixed")"
+echo "test_fx_audit: MIXED: one nonced boot + one healthy hand-boot ('none' lines, ledger 4 of 5) audits COHERENT, both regime lines printed, the uncovered boot named — never a rollback"
+
+# ══ SUBST: the named hole — a substituted verdict audits coherent ═══════
+# The one form the corrected accounting still cannot see: the agent (root
+# in the guest) reads its own /proc/cmdline nonce, appends the verdict
+# ITSELF in the writer's exact shape wearing that nonce, and suppresses
+# fx-init's own verdict (a panic before grace expiry).  One verdict for one
+# (nonce, version), every anchor satisfied — indistinguishable from the
+# healthy bytes.  The seat's contract in that direction is HONESTY, not
+# closure: the arm asserts the shape still audits coherent (over-tightening
+# it would false-positive every real boot) AND that the printed bound NAMES
+# the substitution, so no future reader mistakes the pair closure for
+# authorship verification.
+mk_norec subst
+echo "$V1 in-progress 106 $(nth 4)" >> "$WORK/store-subst/.bootlog"
+echo "$V1 ok 107 $(nth 4)"          >> "$WORK/store-subst/.bootlog"
+FBOOTS=4 run_fixture subst > "$WORK/out.subst" 2>&1
+expect_coh "$WORK/out.subst" $? "SUBST (a substituted verdict is byte-identical to the writer's own)"
+grep -q 'boot accounting: host boots 3 -> 4 (delta 1); this window added in-progress 1, verdicts 1, shutdown 0' "$WORK/out.subst" \
+    || fail "SUBST: the fixture is not the one-verdict shape the hole lives in: $(grep 'boot accounting: host boots' "$WORK/out.subst")"
+grep -q 'a verdict SUBSTITUTED inside a LIVE boot' "$WORK/out.subst" \
+    || fail "SUBST: the printed bound does not NAME the substitution hole — the tool claims more than it knows: $(sed -n '/^bound:/p' "$WORK/out.subst" | head -c 300)"
+grep -q "authorship inside the boot that owns the nonce is NOT distinguishable" "$WORK/out.subst" \
+    || fail "SUBST: the bound does not say WHY the hole cannot close from the host"
+echo "test_fx_audit: SUBST: a verdict substituted inside a live boot audits coherent (measured, unavoidable — the nonce is readable in-guest) and the printed bound NAMES the hole"
+
 # ══ BEFORE: the fail-before, on PINNED pre-change revisions ═════════════
 # The asymmetry a regression probe needs: on the pinned trees the SAME
 # forgeries went COHERENT.  Every pin is guarded (git cat-file -e) and
@@ -1256,6 +1473,33 @@ grep -q '2 ADDED .bootlog line(s) carry no nonce the host issued' "$WORK/out.pp3
     || fail "BEFORE-B/AFTER: the new tool did not name both forged lines: $(grep '^INCOHERENT bootlog-unbound' "$WORK/out.pp3")"
 echo "test_fx_audit: BEFORE-B: on the pinned 88a73b8 the forged PAIR into the silent boot's slack audits COHERENT (delta 1, attribution satisfied — the reviewer's measurement); the new tool fires bootlog-unbound-nonce on the SAME store and pair bytes"
 
+# ── BEFORE-C (be2fbd1, the per-NONCE-verdict reader): THE BLOCKER, pinned.
+# The revision this change fixes called the HEALTHY re-arm boot a forgery:
+# its per-nonce verdict budget ("the nonce ... carries 2 verdict line(s)")
+# and its version-exact in-progress attribution BOTH fire on one boot, one
+# nonce, the activate re-arm's legitimate second verdict — exit 1, a healthy
+# machine audited into a rollback (the review's measured BLOCKER, and
+# fx-init's own suite documents the writer path, tests/qemu_boot_rollback.
+# sh:18-27).  The pinned tool must REJECT this store; the working tree's
+# tool must audit the SAME store and bytes COHERENT — the fail-before of a
+# false-positive fix, the asymmetry that proves it.
+pin_build be2fbd1 "$WORK/fx-audit-pernonce-pin"
+mk_rearm beforec
+mkled "$WORK/nonces-beforec.led" 5
+FXSTORE_BIN="$FXSTORE" "$WORK/fx-audit-pernonce-pin" --store "$WORK/store-beforec" \
+    --rootfs "$WORK/rootfs-beforec" --obs-file "$WORK/obsf-beforec.obs" --boots 5 \
+    --nonces "$WORK/nonces-beforec.led" > "$WORK/out.bc1" 2>&1
+expect_incoh "$WORK/out.bc1" $? "BEFORE-C the healthy re-arm boot goes INCOHERENT on the pinned per-nonce-budget reader (the BLOCKER, fail-before)" \
+    bootlog-fabricated-boots bootlog-forged-verdict
+grep -q "carries 2 verdict line(s) — the g_boot_decided latch allows at most one verdict per boot" "$WORK/out.bc1" \
+    || fail "BEFORE-C: the pinned run did not make the refuted per-nonce-budget claim: $(grep '^INCOHERENT bootlog-fabricated' "$WORK/out.bc1")"
+grep -q "'$REARM_V failed 112' line has no '$REARM_V in-progress' line earlier in this window" "$WORK/out.bc1" \
+    || fail "BEFORE-C: the pinned run did not also fire the version-exact attribution on the re-arm verdict: $(grep '^INCOHERENT bootlog-forged' "$WORK/out.bc1")"
+# the same store, the same bytes, the WORKING tree's tool: coherent
+FBOOTS=5 run_fixture beforec > "$WORK/out.bc2" 2>&1
+expect_coh "$WORK/out.bc2" $? "BEFORE-C/AFTER on the same store and the same bytes"
+echo "test_fx_audit: BEFORE-C: on the pinned be2fbd1 the healthy re-arm boot (one nonce, the activate's second verdict) is REJECTED with the refuted per-nonce budget AND the version-exact attribution; the working tree audits the SAME store and bytes COHERENT (the BLOCKER's asymmetry)"
+
 # ── FORMAT2: the new tool refuses the pinned tool's format-2 observation —
 # a pre-nonce baseline cannot anchor a nonce-judged window, and assuming it
 # could is the silent default this seat refuses (the format-1 rule, again).
@@ -1355,7 +1599,41 @@ expect_coh "$WORK/out.m-acc" $? "MUTANT boot-accounting (the appended forged ver
 mkled "$WORK/nonces-pairsil.led" 4
 MUT_BOOTS=4 mut_run "$WORK/mut-boot-accounting" pairsil > "$WORK/out.m-pair" 2>&1
 expect_coh "$WORK/out.m-pair" $? "MUTANT boot-accounting on the PAIR forgery (a detector that stops requiring the nonce lets the silent-boot pair through)"
-echo "test_fx_audit: MUTANTS: each check's fixture goes coherent when that one check is sed-ed out — including the previous-observation comparison on the coherent tamper (the bound, made visible), boot-accounting on the appended forged verdict, and boot-accounting on the PAIR forgery (the nonce requirement is load-bearing)"
+# THE RE-ARM ANCHOR direction (the BLOCKER's own control): with the store's
+# publish record disabled as the second verdict anchor, the HEALTHY re-arm
+# shape — one boot, one nonce, the second verdict for the activated
+# version — goes INCOHERENT with bootlog-forged-verdict: exactly the false
+# positive the review measured, the direction that rolls a healthy machine
+# back.  The mutant is sed-built from a copy and cmp-proven different, the
+# pin_build discipline.
+sed 's|return 1; /\* REARM-ANCHOR|return 0; /* mutant-anchor|' "$REPO/tools/fx-audit.c" > "$WORK/mut-noanchor.c" \
+    || fail "cannot write the no-anchor mutant"
+cmp -s "$WORK/mut-noanchor.c" "$REPO/tools/fx-audit.c" \
+    && fail "the no-anchor mutation changed nothing (the sed matched no line — marker drift?)"
+cc -std=c11 -O2 -Wall -Wextra -I"$REPO/src/vendor/dhall-c" \
+   -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
+   -o "$WORK/mut-noanchor" "$WORK/mut-noanchor.c" "$REPO/src/vendor/dhall-c/sha256.c" \
+    || fail "cannot build the no-anchor mutant"
+mk_rearm m-noanchor
+MUT_BOOTS=5 mut_run "$WORK/mut-noanchor" m-noanchor > "$WORK/out.m-noanchor" 2>&1
+expect_incoh "$WORK/out.m-noanchor" $? "MUTANT no-rearm-anchor (the healthy re-arm boot goes INCOHERENT — the anchor is load-bearing in the false-positive direction)" bootlog-forged-verdict
+# THE PER-VERSION VERDICT BUDGET direction: with the budget loop disabled,
+# the FLIP (a second verdict for the version the window already verdicted,
+# wearing the same live nonce) goes coherent — the one catch a per-nonce
+# rule cannot express, proven load-bearing.
+sed 's|for (size_t k = 0; k < g_nvstat; k++) { /\* VERDICT-BUDGET|for (size_t k = 0; 0; k++) { /* mutant-budget|' "$REPO/tools/fx-audit.c" > "$WORK/mut-nobudget.c" \
+    || fail "cannot write the no-budget mutant"
+cmp -s "$WORK/mut-nobudget.c" "$REPO/tools/fx-audit.c" \
+    && fail "the no-budget mutation changed nothing (the sed matched no line — marker drift?)"
+cc -std=c11 -O2 -Wall -Wextra -I"$REPO/src/vendor/dhall-c" \
+   -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
+   -o "$WORK/mut-nobudget" "$WORK/mut-nobudget.c" "$REPO/src/vendor/dhall-c/sha256.c" \
+    || fail "cannot build the no-budget mutant"
+mk_rearm m-nobudget
+echo "$REARM_V ok 999 $(nth 5)" >> "$WORK/store-m-nobudget/.bootlog"
+MUT_BOOTS=5 mut_run "$WORK/mut-nobudget" m-nobudget > "$WORK/out.m-nobudget" 2>&1
+expect_coh "$WORK/out.m-nobudget" $? "MUTANT no-verdict-budget (the verdict FLIP goes coherent — the per-version budget is load-bearing)"
+echo "test_fx_audit: MUTANTS: each check's fixture goes coherent when that one check is sed-ed out — including the previous-observation comparison on the coherent tamper (the bound, made visible), boot-accounting on the appended forged verdict, and boot-accounting on the PAIR forgery (the nonce requirement is load-bearing); and the two intra-check seams: without the RE-ARM anchor the healthy re-arm boot goes INCOHERENT (the false-positive direction), without the PER-VERSION verdict budget the verdict FLIP goes coherent"
 
 # src-of-artifact's own finding (disagreement-artifact-gone) is emitted by
 # the previous-observation walk, whose mutant arm above covers the
