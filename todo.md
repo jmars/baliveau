@@ -66,6 +66,37 @@ certifies coherence; neither says "improved".
       does NOT see either: it is the per-task oracle, and the capability/activity seats are separate
       and still owed.
 
+## 1b. The second goal — observability sufficient for a third-party EU AI Act report
+
+User, 2026-10-10: *"this system should provide enough observability for another tool to generate reports
+for the EU AI Act."* Designed in `docs/baliveau-self-plan.md` §1a — an ENGINEERING READING of a legal
+instrument, NOT legal advice: the obligations that are observability-shaped reduce to "an attributable,
+durable, machine-readable record of what the system did, what changed, and who intervened", which the
+substrate already largely emits (a generation IS a store path with facts; `.bootlog`; `.recovery`, which
+distinguishes automatic roll-forwards from deliberate operator action; the runtime datalog; the oracle;
+`fx-audit`). **And the two goals reinforce each other: a log the subject can rewrite is not a log for a
+regulator** — §6b's audit stance is what makes these records evidentially usable. The gaps, to be built:
+
+- [ ] **THE CONFIG→GENERATION LINK.** `generation(genhash, buildfile, dhake, epoch)` and `genhash` is
+      the canonical serialization of the FACTS, so a generation CANNOT answer "which config produced
+      me" (§8.3). This is the direct gap for Annex IV's "changes made through the lifecycle": the chain
+      of generations exists, but each step's INPUT is not recorded with it. Adding the config's store
+      path as a term is the missing link.
+- [ ] **A CHANGE AND INCIDENT RECORD, with a stated taxonomy.** The generation chain IS the change
+      record, but nothing states a change's INTENT or SEMANTICS; and the raw events that the Act's
+      risk/incident language cares about (a failed boot, a refused activation, a rolled-back generation,
+      an audit incoherence) are recorded while nothing CLASSIFIES them or links them to an affected
+      generation. Decide the taxonomy explicitly rather than letting a reporter invent one.
+- [ ] **A RETENTION POLICY — and it is currently UNEQUAL, which must be stated rather than assumed.**
+      `.bootlog` / `.recovery` / `src_of` growth has no policy (§2), and the RUNTIME log (`log.db`)
+      lives under `/run/fx`, which is **tmpfs** and does not survive a reboot, while the store's own
+      files do. Art. 19's retention question therefore has a real answer for some records and none for
+      others.
+- [ ] **THE REPORTER AS THE THIRD HOST-SIDE SEAT**, with the oracle's three properties made a property
+      of its seat rather than a convention: host-side, agent-unwritable, a function of observable system
+      state — it READS the substrate and does not become a source of truth. Same family as
+      `osier-share` (is it better?) and `fx-audit` (is it honest?); this one asks "is it documented?".
+
 ## 2. Measurements still owed
 
 - [x] **A recovery counter** — `fx-init 4d6a8c2`: `<store>/.recovery`, an append-only journal beside
@@ -565,14 +596,19 @@ certifies coherence; neither says "improved".
          closure is computed, so no new file becomes agent-writable.
       PREREQUISITE for all of it: `fxstore` must run where the agent does — static, x86_64-linux-musl,
       against a static libdatalog (it is currently glibc-dynamic with a `.so` dependency).
-- [ ] **The agent's activation BYPASSES PID 1's commit.** It direct-execs `/bin/fx-activate`, which
-      reaches only the child half (config → closure → Dhakefile → facts → snapshot → CURRENT) and
-      skips PID 1's `run_dhake()` HOT-APPLY, the boot-decision re-arm, the service restart and the
-      `rt_effect` (`fx-init zig/src/init.zig:3218-3395`). The route is the control channel —
-      `fxctl --fifo` over `/run/fx/control.in` + `control.out`, which exists as "the in-guest
-      transport" (`fxctl.zig:45-53`) and is a PURE CLIENT (imports only `std`, opens no DB) — and the
-      half-wrong finding that sent the agent direct-exec is already flagged in this file's house
-      rules.
+- [x] **The agent's activation goes THROUGH PID 1 — the change is COMMITTED, not merely published**
+      (`fx-harness 2818813` + `fx-init f3f60fd`). It speaks PID 1's fifo protocol NATIVELY (one atomic
+      `activate <config>\n`, ≤4096 = PIPE_BUF, reply classified as `fxctl.classifyLine`, 600 s budget) —
+      NOT `fxctl --fifo`, because an activation is MEASURED at 63-65 s against fxctl's HARD 5 s fifo
+      poll budget, so fxctl would have returned a FALSE "no response" exit 1 on a SUCCESSFUL activation.
+      MEASURED BEFORE/AFTER on one fixture (pinned `be2fbd1`): the direct exec reached only the child
+      half, so the live root had no `/bin/mcp-stub-runner`; the channel route puts it there IN THE SAME
+      BOOT. It also DISCOVERED a failure mode — the hot-apply's restart sweep starts a second agent
+      instance mid-turn, which would re-issue the activation (an in-boot oscillator) — now guarded in
+      `src/llm2/agent_main.c` (`tests/test_sameboot.sh`), and, because the duplicate could also die
+      non-zero on the single-writer runstore and mark its OWN new generation FAILED (`qemu-agent-b2.sh`
+      went red), the activation no longer starts the agent service at all: exempted BY IDENTITY via the
+      required `agentService` field, now persisted as the `agent_svc` store fact.
 - [ ] **No in-guest reboot.** The control protocol carries `status|log|activate|rollback|shutdown`
       and no reboot (`init.zig:3098-3228`); the guest tests pass qemu `-no-reboot` with the HOST
       restarting the VM. "Activate … (causing a reboot into it)" needs a reboot the machine can
