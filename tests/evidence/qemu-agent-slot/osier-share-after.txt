@@ -1,0 +1,30 @@
+metric osier-share
+store /tmp/qemuslot.YAcUtl/rb3-store
+snapshot 5
+osier_extensions .elm
+counted regular source files only (clean-tree exclusion rules apply)
+objective run_set_share_fraction
+services 2 store_components_run 2 nonstore_run 0 nonstore_run_unattributed 0
+service heartbeat 71e1b2c7866c7b1cde0fce9cc6e343023232fe96d8f72c0cf657dd6b190f6607-fake-service/fakesvc fake-service
+service oslot-mcp c7a4b7b7b3d86ebf59a14b753f051a73f5769f91a29862da54a25ae1eff2890d-oslot/mcp-stub-runner oslot
+component fake-service 26658780512e9c498be8bae971d0010374dcddb7502483c1abe9a67570199602 host-verified 0 4302 0 1 run src_of
+component oslot acd4b58b73f4e3bc7da943ea06b47cbd2d6a3db33bf4482093525d85aaee567e store 428 428 1 1 run src_of
+component datalog-dafsa 902f10477a951b2b57d5e9e7ebe9851533f065a0019d250cb25b147a13ffd205 host-verified 208786 36217507 14 691 closure-only src_of
+component dhall-c ac3ea3174d40507cd9838dc93e7f844bffa75b3f0d358d4b17e0021c8a224c16 host-verified 26226 850505 1 1662 closure-only src_of
+component fxstore 07993dc534d18757c10075bcc8e2ea59bdbca8b41a6f7e9a5421054205cd6a28 host-verified 13551 920335803 1 414 closure-only src_of
+component dhake cbc832e95729723682f86d7f9d8bafbc0d3141a28a5224a5c8858b55aa8cbb24 host-verified 21775 1128132 1 718 closure-only src_of
+component fx-init cb5489a9c6d3d96a9915c9f04cc479ee4bdbd5940a0ab7f15024a1bc2370f891 host-verified 319096 97872745 29 2814 closure-only src_of
+component fxctl cb5489a9c6d3d96a9915c9f04cc479ee4bdbd5940a0ab7f15024a1bc2370f891 host-verified 319096 97872745 29 2814 closure-only src_of
+component fx-activate cb5489a9c6d3d96a9915c9f04cc479ee4bdbd5940a0ab7f15024a1bc2370f891 host-verified 319096 97872745 29 2814 closure-only src_of
+attribution src_of 9 srcstore-narrowed 0 (of 9 resolved)
+run_set_osier_bytes 428
+run_set_total_bytes 4730
+run_set_osier_files 1
+run_set_total_files 2
+run_set_share_fraction 0.090486
+closure_osier_bytes 1228054
+closure_total_bytes 1252154912
+closure_osier_files 105
+closure_total_files 11929
+closure_share_fraction 0.000981
+closure_components_resolved 9 of 9

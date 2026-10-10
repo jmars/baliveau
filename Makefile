@@ -175,6 +175,19 @@ $(BIN_OSIER): tools/fx-osier-share.c $(DHALL_SRC) $(YYJSON_SRC)
 
 .PHONY: test-osier-share
 
+# The slot ground for the first self-modification task (todo.md §5): the
+# deployment pre-declares ONE package whose src.path is a directory the
+# agent may write; the host-frozen recipe (a STUB — no Osier->Lua compiler
+# exists yet, and the artifact SAYS so) turns the agent's source into a
+# runnable artifact; the service RUNS in a guest; fx-osier-share moves
+# 0% -> non-zero over the RUN SET on the GUEST'S OWN disk store, attributed
+# by src_of.  Needs qemu+kvm, e2fsprogs (e2fsck/debugfs/mke2fs), zig, the
+# built sibling fxstore, and fx-init's m3/package-set-slot.dhall.
+test-agent-slot:
+	bash tests/qemu-agent-slot.sh
+
+.PHONY: test-agent-slot
+
 clean:
 	rm -rf build
 
