@@ -69,14 +69,31 @@
 #               pre-fix tool rejects the same store (exit 1) with a message
 #               naming an in-progress the SAME run's accounting line prints
 #               as present.
-#   KNOWN-HOLE  a forged PAIR (in-progress + a verdict) appended into the
-#               SLACK of a boot the host started but fx-init never recorded
-#               still passes — the admitted bound, ASSERTED so it can never
-#               be mistaken for coverage.  The TORN variant of that pair
-#               rides the same rule (the torn form behaves exactly like the
-#               terminated form); the pre-fix tool fired on it only as a
-#               side effect of the unconditional torn rule that produced
-#               TORNLEGIT's false positive.
+#   KNOWN-HOLE→CLOSED  the forged PAIR (in-progress + verdict) into a silent
+#               boot's slack was the admitted bound; the per-boot NONCE
+#               closes it and the arms assert the closing from both sides:
+#               PAIRSIL  the pair wearing a nonce the host never issued for
+#                        a window boot (invented / the 'none' placeholder /
+#                        a past window's / no field at all) fires
+#                        bootlog-unbound-nonce, and the silent boot's OWN
+#                        nonce is REPORTED as UNCLAIMED (info, coherent
+#                        direction: never a rollback of a healthy machine);
+#               PAIRONTOP the pair wearing a REAL window nonce that the
+#                        boot's own lines already spent — a forger that READ
+#                        a nonce off the disk cannot reuse it: per-nonce
+#                        accounting fires bootlog-fabricated-boots;
+#               PAIRNOLEDGER  --nonces absent with boots in the window is
+#                        exit 2 (an anchor that silently defaults is
+#                        decorative — the --boots rule, applied to the
+#                        nonce ledger);
+#               FORMAT2  a format-2 observation (pre-nonce) is REFUSED with
+#                        a re-enroll instruction, the way format-1 was.
+#   NONCE-W   the WRITER pin (fx-init 500fc68, git cat-file -e + cmp proving
+#               pin != working tree): the pinned writer's bootlog_append is
+#               the 3-field "%u %s %u" and knows no fx.bootnonce — the
+#               fail-before of the WRITER half, asserted at source level
+#               (the behaviour half lives in fx-init's zig tests and the
+#               real-guest demo in qemu-agent-observe.sh).
 #   CAP         a .bootlog (or .recovery) longer than the reader's line
 #               table is exit 2 NAMING the cap and the file — silently
 #               auditing a truncated view is exactly the silent pass the
@@ -122,12 +139,16 @@
 # observation comparison's mutant is the COHERENT arm's control; the
 # boot-accounting mutant's is the FORGERY arm's.
 #
-# THE FAIL-BEFORE is PINNED at 030fbdc (the revision this change lands on
-# top of): the gate extracts tools/fx-audit.c AT THAT REVISION (git show,
-# guarded by git cat-file -e), PROVES it differs from the working tree
-# (cmp — a control that equals its subject proves nothing), builds it, and
-# shows the SAME appended forged verdict auditing COHERENT on it.  Nothing
-# depends on the position of HEAD; the pin is a fixed object name.
+# THE FAIL-BEFORES are PINNED (nothing depends on the position of HEAD;
+# each pin is a fixed object name, guarded by git cat-file -e and cmp-proven
+# DIFFERENT from the working tree): the READER side at 030fbdc (pre---boots:
+# the bare forged verdict audited coherent; its format-1 observation is
+# refused), at 88a73b8 (pre-NONCE: the forged PAIR into a silent boot's
+# slack audited coherent — the reviewer's measurement, reproduced on the
+# old-writer store it can read; its format-2 observation is refused), and
+# at fcebaa3 (the torn-verdict false positive); the WRITER side at fx-init
+# 500fc68 (the pre-nonce 3-field bootlog_append — no fx.bootnonce token
+# anywhere), asserted at source level with the same guards.
 #
 # FIXTURE HONESTY: .bootlog/.recovery are fx-init's files and fx-init does
 # not run host-side; the gate WRITES them in the writers' exact formats
@@ -196,6 +217,19 @@ AUDIT="$REPO/build/fx-audit"
 # absence means the binary was not built from tools/fx-audit.c.
 grep -aq 'silently dropped from the counting AND the forged-verdict attribution' "$AUDIT" \
     || fail "STALE BINARY: $AUDIT does not contain this source's .bootlog cap-refusal message — the artifact answering for the seat was not built from tools/fx-audit.c"
+grep -aq 'no nonce the host issued for a boot in this window' "$AUDIT" \
+    || fail "STALE BINARY: $AUDIT does not contain this source's nonce-binding message — the artifact answering for the seat was not built from tools/fx-audit.c (the per-boot-nonce change)"
+
+# ── the per-boot nonce fixtures ───────────────────────────────────────────
+# nth ORDINAL — the deterministic nonce the gate (as the host) issued for
+# boot ORDINAL.  The real host mints random hex per launch; the gate's
+# nonces are deterministic because the FIXTURE lines must be fabricated in
+# the writer's exact shape with the very nonce the ledger names — the
+# binding under test is host-ledger <-> line-field, not randomness (which
+# is the live host's property, demonstrated in qemu-agent-observe.sh).
+nth() { printf 'badfee%08x' "$1"; }
+# mkled OUT LAST — the host's ledger: "<boot> <nonce>" per boot 1..LAST
+mkled() { : > "$1"; _i=1; while [ "$_i" -le "$2" ]; do echo "$_i $(nth $_i)" >> "$1"; _i=$((_i + 1)); done; }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/fxaudit.XXXXXX")" || fail mktemp
 if [ "${FX_AUDIT_KEEP:-0}" = "1" ]; then
@@ -354,7 +388,12 @@ write_records() {
 # Written only by fx-init at the roll-forward decision. Root in-guest
 # can forge or truncate it exactly as it can .bootlog; the counts are
 # reconstructible from .bootlog x the store's version/genhash history.
-# line: <epoch-s> <published-version> <from-failed-version> <content-genhash|->
+# line: <epoch-s> <published-version> <from-failed-version> <content-genhash|-> <boot-nonce|none>
+# The final field is THIS boot's fx.bootnonce= token from the kernel
+# command line (the HOST's per-launch record of the boot that wrote the
+# row; "none" = the host issued no nonce — an operator hand-boot).
+# It binds the row to that boot the way .bootlog's 4th field binds a
+# line: same boot, same nonce, fx-init never writes without one.
 EOF
 }
 
@@ -365,9 +404,9 @@ genhash_of() { # genhash_of STORE VERSION -> the generation hash
 
 cur_of() { cat "$1/.db/snapshots/CURRENT" 2>/dev/null || fail "no CURRENT in $1"; }
 
-audit() { # audit STORE ROOTFS BOOTS [extra args...] — runs the seat
-    _st="$1"; _rt="$2"; _nb="$3"; shift 3
-    FXSTORE_BIN="$FXSTORE" "$AUDIT" --store "$_st" --rootfs "$_rt" --boots "$_nb" "$@"
+audit() { # audit STORE ROOTFS BOOTS LEDGER [extra args...] — runs the seat
+    _st="$1"; _rt="$2"; _nb="$3"; _led="$4"; shift 4
+    FXSTORE_BIN="$FXSTORE" "$AUDIT" --store "$_st" --rootfs "$_rt" --boots "$_nb" --nonces "$_led" "$@"
 }
 
 expect_coh() { # expect_coh OUT EXIT LABEL — must be coherent
@@ -413,32 +452,36 @@ mkdir -p "$ROOT"
 materialize_rootfs "$STORE" "$ROOT" "$CUR" "$PS_A"
 
 # the machine's history in fx-init's records, as THREE boots the host
-# started: v1 boots ok; v2 boots and FAILS; the next boot rolls forward
+# started — v1 boots ok; v2 boots and FAILS; the next boot rolls forward
 # (fxstore soft rollback republishing v1's content as v$CUR) and boots ok.
 # Each boot is the writer's real line pair (in-progress at boot start,
-# init.zig:4387; the verdict from the g_boot_decided latch).
+# init.zig:4387; the verdict from the g_boot_decided latch), each wearing
+# the nonce the host issued for it (the gate's own ledger).
 write_records "$STORE" \
-    "$V1 in-progress 99" \
-    "$V1 ok 100" \
-    "$V2 in-progress 100" \
-    "$V2 failed 101" \
-    "$CUR in-progress 102" \
-    "$CUR ok 103"
-echo "$CUR $V2 $GH_CUR" | awk '{ print "103 " $1 " " $2 " " $3 }' >> "$STORE/.recovery"
+    "$V1 in-progress 99 $(nth 1)" \
+    "$V1 ok 100 $(nth 1)" \
+    "$V2 in-progress 100 $(nth 2)" \
+    "$V2 failed 101 $(nth 2)" \
+    "$CUR in-progress 102 $(nth 3)" \
+    "$CUR ok 103 $(nth 3)"
+echo "$CUR $V2 $GH_CUR $(nth 3)" | awk '{ print "103 " $1 " " $2 " " $3 " " $4 }' >> "$STORE/.recovery"
 
 
 OBS="$WORK/obs"
-audit "$STORE" "$ROOT" 3 --obs-dir "$OBS" > "$WORK/out.clean1" 2>&1
+mkled "$WORK/nonces-main.led" 3
+audit "$STORE" "$ROOT" 3 "$WORK/nonces-main.led" --obs-dir "$OBS" > "$WORK/out.clean1" 2>&1
 expect_coh "$WORK/out.clean1" $? "CLEAN first audit"
 grep -q 'ENROLLING' "$WORK/out.clean1" || fail "CLEAN: first run did not enroll"
 grep -q 'host boot count 3 is recorded as the baseline' "$WORK/out.clean1" \
     || fail "CLEAN: the enrollment did not record the host boot count"
 # idempotence + the append-only path: a LEGITIMATE new boot between audits
-# (the writer's real pair: in-progress at start, then the verdict) must
-# leave the store coherent — fx-init appends; it never rewrites
-echo "$CUR in-progress 104" >> "$STORE/.bootlog"
-echo "$CUR ok 105" >> "$STORE/.bootlog"
-audit "$STORE" "$ROOT" 4 --obs-dir "$OBS" > "$WORK/out.clean2" 2>&1
+# (the writer's real pair: in-progress at start, then the verdict, both
+# wearing the nonce the host issued for boot 4) must leave the store
+# coherent — fx-init appends; it never rewrites
+mkled "$WORK/nonces-main.led" 4
+echo "$CUR in-progress 104 $(nth 4)" >> "$STORE/.bootlog"
+echo "$CUR ok 105 $(nth 4)" >> "$STORE/.bootlog"
+audit "$STORE" "$ROOT" 4 "$WORK/nonces-main.led" --obs-dir "$OBS" > "$WORK/out.clean2" 2>&1
 expect_coh "$WORK/out.clean2" $? "CLEAN re-audit (idempotence + legal append: an ordinary boot)"
 grep -q 'append-only respected' "$WORK/out.clean2" \
     || fail "CLEAN re-audit: the legal append was not seen by the prefix comparison"
@@ -446,7 +489,10 @@ grep -q 'boot accounting: host boots 3 -> 4 (delta 1); this window added in-prog
     || fail "CLEAN re-audit: the ordinary boot was not accounted by the host delta: $(grep 'boot accounting' "$WORK/out.clean2")"
 grep -q 'disagreement' "$WORK/out.clean2" \
     && fail "CLEAN re-audit: a legal append produced a disagreement"
-echo "test_fx_audit: CLEAN: coherent on first audit; an ordinary boot (in-progress + ok, --boots 3 -> 4) re-audits coherent"
+# boot 4's nonce is CLAIMED by its own pair: no unclaimed-nonce report
+grep -q 'UNCLAIMED' "$WORK/out.clean2" \
+    && fail "CLEAN re-audit: a boot whose lines landed was reported UNCLAIMED: $(grep 'UNCLAIMED' "$WORK/out.clean2")"
+echo "test_fx_audit: CLEAN: coherent on first audit; an ordinary boot (in-progress + ok under boot 4's nonce, --boots 3 -> 4) re-audits coherent"
 
 # ── the fixture scheme ───────────────────────────────────────────────────
 # every incoherence arm runs on a COPY of the clean baseline with its OWN
@@ -469,11 +515,14 @@ run_fixture() { # run_fixture NAME [extra seat args...] — runs the seat.
     # FBOOTS (default 4) is the host truth for this fixture: the baseline
     # observation was taken after the clean arm's FOURTH declared boot, so
     # every arm that grows the bootlog must set FBOOTS to declare the boots
-    # it added (the host's count is an INPUT, never inferred).
+    # it added (the host's count is an INPUT, never inferred).  The ledger
+    # (one nonce per boot 1..FBOOTS) is minted per fixture the same way —
+    # the host's record of what it issued, never read from the store.
     _fxname="$1"; shift
+    mkled "$WORK/nonces-$_fxname.led" "${FBOOTS:-4}"
     FXSTORE_BIN="$FXSTORE" "$AUDIT" --store "$WORK/store-$_fxname" \
         --rootfs "$WORK/rootfs-$_fxname" --obs-file "$WORK/obsf-$_fxname.obs" \
-        --boots "${FBOOTS:-4}" "$@"
+        --boots "${FBOOTS:-4}" --nonces "$WORK/nonces-$_fxname.led" "$@"
 }
 
 # the coherent tamper, as a function (used by three arms)
@@ -509,7 +558,7 @@ echo "test_fx_audit: COHERENT tamper: every cross-check passes; caught ONLY by t
 # exactly this shape — row, no bootlog lines.  The accounting then passes
 # both and only the from-failed reader separates them.
 fresh rwf
-echo "200 $CUR $V1 $GH_CUR" >> "$WORK/store-rwf/.recovery"
+echo "200 $CUR $V1 $GH_CUR $(nth 5)" >> "$WORK/store-rwf/.recovery"
 FBOOTS=5 run_fixture rwf > "$WORK/out.rwf" 2>&1
 expect_incoh "$WORK/out.rwf" $? "RWF" recovery-without-failure
 grep -q "last bootlog verdict is 'ok'" "$WORK/out.rwf" \
@@ -517,7 +566,7 @@ grep -q "last bootlog verdict is 'ok'" "$WORK/out.rwf" \
 grep -q '^check boot-accounting: pass$' "$WORK/out.rwf" \
     || fail "RWF: boot-accounting fired too (isolation failed — the row has a declared boot behind it)"
 fresh rwfctl
-echo "201 $CUR $V2 $GH_CUR" >> "$WORK/store-rwfctl/.recovery"
+echo "201 $CUR $V2 $GH_CUR $(nth 5)" >> "$WORK/store-rwfctl/.recovery"
 FBOOTS=5 run_fixture rwfctl > "$WORK/out.rwfctl" 2>&1
 expect_coh "$WORK/out.rwfctl" $? "RWF control (failure IS recorded, boot declared)"
 echo "test_fx_audit: RWF: fires on an unrecorded failure; control row passes"
@@ -555,7 +604,7 @@ grep -q 'not a published version' "$WORK/out.chain" \
 # two readers, one lie).  FBOOTS=5 declares the boot behind the row (the
 # RWF arm's shape), so the accounting stays out of the isolation.
 fresh chain2
-echo "202 $CUR $V2 0000000000000000000000000000000000000000000000000000000000000000" >> "$WORK/store-chain2/.recovery"
+echo "202 $CUR $V2 0000000000000000000000000000000000000000000000000000000000000000 $(nth 5)" >> "$WORK/store-chain2/.recovery"
 FBOOTS=5 run_fixture chain2 > "$WORK/out.chain2" 2>&1
 expect_incoh "$WORK/out.chain2" $? "CHAIN recovery-genhash" version-chain
 grep -q '^check recovery-without-failure: pass$' "$WORK/out.chain2" \
@@ -616,10 +665,11 @@ mkdir -p "$WORK/rootfs-b"
 materialize_rootfs "$STORE_B" "$WORK/rootfs-b" "$V1B" "$WORK/pkgset-store-b.dhall"
 # control: B against its OWN observation is coherent (B's copied .bootlog
 # narrates the same 4 boots A's does, so its enrollment declares 4 too)
-audit "$STORE_B" "$WORK/rootfs-b" 4 --obs-dir "$WORK/obs-b" > "$WORK/out.fb1" 2>&1
+mkled "$WORK/nonces-b.led" 4
+audit "$STORE_B" "$WORK/rootfs-b" 4 "$WORK/nonces-b.led" --obs-dir "$WORK/obs-b" > "$WORK/out.fb1" 2>&1
 expect_coh "$WORK/out.fb1" $? "FACTS control (own observation)"
 # the arm: B audited against A's observation file
-audit "$STORE_B" "$WORK/rootfs-b" 4 --obs-file "$AOBSFILE" > "$WORK/out.fb2" 2>&1
+audit "$STORE_B" "$WORK/rootfs-b" 4 "$WORK/nonces-b.led" --obs-file "$AOBSFILE" > "$WORK/out.fb2" 2>&1
 expect_incoh "$WORK/out.fb2" $? "FACTS rebuilt history" disagreement-facts-changed
 grep -q "version $V1B" "$WORK/out.fb2" \
     || fail "FACTS: the finding does not name version $V1B"
@@ -627,7 +677,7 @@ echo "test_fx_audit: FACTS: same version numbers, different content, against the
 
 # ══ THE TRIGGER ═════════════════════════════════════════════════════════
 # refuses a clean store
-audit "$STORE" "$ROOT" 4 --obs-dir "$WORK/obs-trig-clean" --rollback > "$WORK/out.trigref" 2>&1
+audit "$STORE" "$ROOT" 4 "$WORK/nonces-main.led" --obs-dir "$WORK/obs-trig-clean" --rollback > "$WORK/out.trigref" 2>&1
 _rc=$?
 [ "$_rc" = "1" ] || fail "TRIGGER clean: expected refusal exit 1, got $_rc"
 grep -q 'refusing to roll back a coherent store' "$WORK/out.trigref" \
@@ -695,7 +745,7 @@ chmod 644 "$WORK/store-unreadable/.bootlog"
 # on agent-reachable disk)
 FXSTORE_BIN="$FXSTORE" "$AUDIT" --store "$WORK/store-unreadable" \
     --rootfs "$WORK/rootfs-unreadable" --obs-dir "$WORK/store-unreadable/obs-inside" \
-    --boots 4 \
+    --boots 4 --nonces "$WORK/nonces-unreadable.led" \
     > "$WORK/out.inside" 2>&1
 _rc=$?
 [ "$_rc" = "2" ] || fail "LOUD: an --obs-dir inside the store must be refused (exit 2), got $_rc"
@@ -727,29 +777,39 @@ echo "test_fx_audit: BOOTS: no --boots -> exit 2, loud refusal (an optional anch
 mk_norec() { # mk_norec NAME — a store whose failure was never rolled forward
     # v1 boots ok; v2 boots and FAILS; the OPERATOR hard-rolls back to v1
     # (fxstore rollback --hard — operator rollbacks write no .recovery row,
-    # by the journal's own header), and v1 boots ok again.  THREE boots,
-    # header-only .recovery.  Enrollment runs with its own observation
-    # file (the fresh-copied one describes the standard baseline).
+    # by the journal's own header), and v1 boots ok again.  THREE boots
+    # (nonces 1..3), header-only .recovery.  Enrollment runs with its own
+    # observation file (the fresh-copied one describes the standard
+    # baseline) — re-enrolling from the file-copied bytes would carry the
+    # STANDARD baseline's boot count (4), so the arm RE-ENROLLS at --boots 3.
     _n="$1"
     fresh "$_n"
     write_records "$WORK/store-$_n" \
-        "$V1 in-progress 99" \
-        "$V1 ok 100" \
-        "$V2 in-progress 100" \
-        "$V2 failed 101" \
-        "$V1 in-progress 104" \
-        "$V1 ok 105"
+        "$V1 in-progress 99 $(nth 1)" \
+        "$V1 ok 100 $(nth 1)" \
+        "$V2 in-progress 100 $(nth 2)" \
+        "$V2 failed 101 $(nth 2)" \
+        "$V1 in-progress 104 $(nth 3)" \
+        "$V1 ok 105 $(nth 3)"
     FXSTORE_BIN="$FXSTORE" "$FXSTORE" rollback --hard "$V1" --store "$WORK/store-$_n" >/dev/null 2>&1 \
         || fail "NOREC $_n: fxstore rollback --hard $V1 failed"
     [ "$(cur_of "$WORK/store-$_n")" = "$V1" ] \
         || fail "NOREC $_n: the hard rollback did not repoint CURRENT at v$V1"
     rm -f "$WORK/obsf-$_n.obs"
+    if [ "${NOREC_OLD:-0}" = "1" ]; then
+        # the PRE-NONCE writer's exact output (3-field lines, 4-field rows):
+        # what fx-init at the writer pin (500fc68) appends — the world the
+        # pinned pre-nonce readers audited.  The enroll still passes the
+        # ledger (the new tool parses it; nothing is judged at enrollment).
+        sed -i 's/ \(badfee[0-9a-f]*\)$//' "$WORK/store-$_n/.bootlog"
+        sed -i 's/ \(badfee[0-9a-f]*\)$//' "$WORK/store-$_n/.recovery"
+    fi
     FBOOTS=3 run_fixture "$_n" > "$WORK/out.norec-$_n" 2>&1
     expect_coh "$WORK/out.norec-$_n" $? "NOREC enroll ($_n)"
 }
 
 mk_norec forg
-echo "$V2 ok 999" >> "$WORK/store-forg/.bootlog"
+echo "$V2 ok 999 deadbad00000009" >> "$WORK/store-forg/.bootlog"
 FBOOTS=3 run_fixture forg > "$WORK/out.forg" 2>&1
 expect_incoh "$WORK/out.forg" $? "FORGERY" bootlog-forged-verdict
 grep -q "an ADDED '$V2 ok 999' line has no '$V2 in-progress' line earlier in this window" "$WORK/out.forg" \
@@ -770,8 +830,8 @@ echo "test_fx_audit: FORGERY: the APPENDED '$V2 ok 999' passes every cross-check
 # writer's shape) with no host boot behind it — attribution alone would
 # pass this (the verdict rides its in-progress); only the COUNT catches it
 fresh fab
-echo "$CUR in-progress 104" >> "$WORK/store-fab/.bootlog"
-echo "$CUR ok 105" >> "$WORK/store-fab/.bootlog"
+echo "$CUR in-progress 104 deadbad00000007" >> "$WORK/store-fab/.bootlog"
+echo "$CUR ok 105 deadbad00000007" >> "$WORK/store-fab/.bootlog"
 run_fixture fab > "$WORK/out.fab" 2>&1
 expect_incoh "$WORK/out.fab" $? "FABBOOT" bootlog-fabricated-boots
 grep -q 'in-progress line(s) added but the host started only 0 boot(s)' "$WORK/out.fab" \
@@ -783,7 +843,7 @@ echo "test_fx_audit: FABBOOT: a whole forged boot-pair with no host boot fires b
 # forge steers bootlog_last just the same; the accounting must not have a
 # no-newline bypass
 mk_norec torn
-printf '%s' "$V2 ok 999" >> "$WORK/store-torn/.bootlog"
+printf '%s' "$V2 ok 999 deadbad0000000" >> "$WORK/store-torn/.bootlog"
 FBOOTS=3 run_fixture torn > "$WORK/out.torn" 2>&1
 expect_incoh "$WORK/out.torn" $? "TORNFORGE" bootlog-forged-verdict
 grep -q 'TORN' "$WORK/out.torn" \
@@ -799,8 +859,12 @@ echo "test_fx_audit: TORNFORGE: a forge without its newline still fires (fgets r
 # not tamper" — so this is NOT a finding, and the torn line must still be
 # NAMED (a pass that hides it would be the silent pass the header forbids).
 mk_norec tleg
-echo "$V1 in-progress 106" >> "$WORK/store-tleg/.bootlog"
-printf '%s' "$V1 ok 107" >> "$WORK/store-tleg/.bootlog"
+echo "$V1 in-progress 106 $(nth 4)" >> "$WORK/store-tleg/.bootlog"
+# the torn verdict is cut MID-NONCE (the last character is missing): a torn
+# line's own nonce can never be trusted, so the attribution — not the torn
+# token — must answer for it
+NC4=$(nth 4)
+printf '%s' "$V1 ok 107 ${NC4%?}" >> "$WORK/store-tleg/.bootlog"
 FBOOTS=4 run_fixture tleg > "$WORK/out.tleg" 2>&1
 expect_coh "$WORK/out.tleg" $? "TORNLEGIT (a torn verdict riding its own boot's in-progress)"
 grep -q "an added TORN '$V1 ok 107' line" "$WORK/out.tleg" \
@@ -813,22 +877,90 @@ grep -q 'torn tail' "$WORK/out.tleg" \
     || fail "TORNLEGIT: the torn tail was not reported at all (a silent pass)"
 echo "test_fx_audit: TORNLEGIT: a torn verdict that rides its own boot's in-progress stays COHERENT and is NAMED (the pre-fix false positive — see TORNLEGIT-BEFORE)"
 
-# KNOWN-HOLE: the admitted bound, ASSERTED so it cannot be mistaken for
-# coverage.  The SAME forge, TORN, appended as a PAIR (in-progress +
-# verdict) into the SLACK of a boot the host started and the writer never
-# recorded (the silent-boot shape).  It passes — for exactly the reason the
-# TERMINATED pair passes (the review measured that): the window holds an
-# added in-progress the host delta accounts for, so the reader cannot tell a
-# forger's bytes from the unrecorded boot's own.  That is what a per-boot
-# nonce would close (out of scope; the run prints the bound).
-fresh hole
-echo "$CUR in-progress 104" >> "$WORK/store-hole/.bootlog"
-printf '%s' "$CUR ok 105" >> "$WORK/store-hole/.bootlog"
-FBOOTS=5 run_fixture hole > "$WORK/out.hole" 2>&1
-expect_coh "$WORK/out.hole" $? "KNOWN-HOLE (a forged TORN pair in an unrecorded boot's slack passes — the admitted bound)"
-grep -q 'CANNOT see: a forged line-PAIR' "$WORK/out.hole" \
-    || fail "KNOWN-HOLE: the run does not print the bound this arm is an instance of"
-echo "test_fx_audit: KNOWN-HOLE: a forged TORN pair in the slack of an unrecorded boot still passes (the admitted bound, printed on every run)"
+# ══ THE PAIR FORGERY, CLOSED (was KNOWN-HOLE) ════════════════════════════
+# THE MEASURED HOLE: a forged line-PAIR appended into the SLACK of a boot
+# the host started but fx-init never recorded (a SILENT boot) fully
+# impersonated that boot — the count accounted it, the attribution found
+# its own forged in-progress.  The per-boot nonce closes it; the arms pin
+# every nonce choice a forger has, and both DIRECTIONS of the closure.
+
+# PAIRSIL — the forger's realistic position: it cannot know a silent
+# boot's nonce (future nonces do not exist; a silent boot ran no service
+# to spend its own; a PAST boot's nonce is visible in-guest only on lines
+# that already spent it).  Boot 4 was started SILENT (its nonce issued,
+# nothing written), and the pair wears an INVENTED nonce.  It must FIRE
+# as unbound — and the silent boot's own nonce must be REPORTED UNCLAIMED
+# (a boot the host started that nothing speaks for is a visible, COHERENT
+# state — never a silent pass, never a rollback).
+mk_norec pairsil
+echo "$V2 in-progress 999 deadbad00000001" >> "$WORK/store-pairsil/.bootlog"
+echo "$V2 ok 999 deadbad00000001" >> "$WORK/store-pairsil/.bootlog"
+FBOOTS=4 run_fixture pairsil > "$WORK/out.pairsil" 2>&1
+expect_incoh "$WORK/out.pairsil" $? "PAIRSIL (a forged pair in a silent boot's slack, invented nonce)" bootlog-unbound-nonce
+grep -q "2 ADDED .bootlog line(s) carry no nonce the host issued for a boot in this window; first: '$V2 in-progress 999 deadbad00000001'" "$WORK/out.pairsil" \
+    || fail "PAIRSIL: the finding does not quote the forged pair's first line: $(grep '^INCOHERENT bootlog-unbound-nonce' "$WORK/out.pairsil")"
+grep -q 'no boot the host started is behind a nonce-less or foreign-nonce line' "$WORK/out.pairsil" \
+    || fail "PAIRSIL: the finding does not say no host boot is behind the pair"
+grep -q "the nonce the host issued for boot 4 ($(nth 4)) is UNCLAIMED" "$WORK/out.pairsil" \
+    || fail "PAIRSIL: the silent boot's nonce was not REPORTED unclaimed: $(grep 'UNCLAIMED' "$WORK/out.pairsil")"
+grep -q '^check boot-accounting: failed$' "$WORK/out.pairsil" \
+    || fail "PAIRSIL: boot-accounting did not fire"
+echo "test_fx_audit: PAIRSIL: the forged PAIR in a silent boot's slack FIRES bootlog-unbound-nonce (invented nonce), and the silent boot's own nonce is REPORTED UNCLAIMED"
+
+# PAIRCLS — the other nonce classes a nonce-less forger can wear, one line
+# each on the same shape: the PLACEHOLDER ("none" — what a hand-booted
+# writer emits, distinguishable from an issued nonce), NO FIELD AT ALL
+# (the pre-nonce writer's old shape), and a PAST window's REAL nonce (one
+# whose boot already spent it).  All must fire unbound — never silently
+# accepted as accounted, never silently skipped.
+mk_norec paircls
+echo "$V2 in-progress 998 none"            >> "$WORK/store-paircls/.bootlog"
+echo "$V2 ok 998 none"                     >> "$WORK/store-paircls/.bootlog"
+echo "$V2 in-progress 997"                 >> "$WORK/store-paircls/.bootlog"
+echo "$V2 ok 997"                          >> "$WORK/store-paircls/.bootlog"
+echo "$V2 in-progress 996 $(nth 2)"        >> "$WORK/store-paircls/.bootlog"
+echo "$V2 ok 996 $(nth 2)"                 >> "$WORK/store-paircls/.bootlog"
+FBOOTS=4 run_fixture paircls > "$WORK/out.paircls" 2>&1
+expect_incoh "$WORK/out.paircls" $? "PAIRCLS (placeholder / no-field / past-window nonce pairs)" bootlog-unbound-nonce
+grep -q '6 ADDED .bootlog line(s) carry no nonce' "$WORK/out.paircls" \
+    || fail "PAIRCLS: all six nonce-less lines must be named by one count: $(grep '^INCOHERENT bootlog-unbound-nonce' "$WORK/out.paircls")"
+grep -q 'a hex nonce from an earlier window or outside the ledger is one this boot was never issued' "$WORK/out.paircls" \
+    || fail "PAIRCLS: the finding does not name the earlier-window class (boot 2's real nonce, re-worn in window 4): $(grep '^INCOHERENT bootlog-unbound' "$WORK/out.paircls")"
+grep -q "the nonce the host issued for boot 4 ($(nth 4)) is UNCLAIMED" "$WORK/out.paircls" \
+    || fail "PAIRCLS: boot 4 was silent and its nonce must be REPORTED unclaimed"
+echo "test_fx_audit: PAIRCLS: placeholder, no-field and past-window-nonce pairs all fire unbound (the earlier-window class is named; boot 4's silent nonce is reported)"
+
+# PAIRONTOP — the strongest forger: it READ a REAL window nonce off the
+# disk (boot 4's lines are on the platter) and appends its pair wearing
+# THAT.  Boot 4 is no longer silent here — its own pair already spent the
+# nonce's budget, so the reuse fires the per-nonce accounting: a second
+# boot on paper wearing one real boot's nonce.
+mk_norec pairontop
+echo "$V1 in-progress 106 $(nth 4)" >> "$WORK/store-pairontop/.bootlog"
+echo "$V1 ok 107 $(nth 4)"          >> "$WORK/store-pairontop/.bootlog"
+echo "$V2 in-progress 999 $(nth 4)" >> "$WORK/store-pairontop/.bootlog"
+echo "$V2 ok 999 $(nth 4)"          >> "$WORK/store-pairontop/.bootlog"
+FBOOTS=4 run_fixture pairontop > "$WORK/out.pairontop" 2>&1
+expect_incoh "$WORK/out.pairontop" $? "PAIRONTOP (a pair wearing a real nonce its boot already spent)" bootlog-fabricated-boots
+grep -q "the nonce the host issued for boot 4 ($(nth 4)) carries 2 in-progress line(s) in this window" "$WORK/out.pairontop" \
+    || fail "PAIRONTOP: the finding does not name the REUSED nonce and its budget: $(grep '^INCOHERENT bootlog-fabricated' "$WORK/out.pairontop")"
+grep -q '^INCOHERENT bootlog-unbound-nonce ' "$WORK/out.pairontop" \
+    && fail "PAIRONTOP: a REAL window nonce must NOT be called unbound: $(grep '^INCOHERENT bootlog-unbound' "$WORK/out.pairontop")"
+echo "test_fx_audit: PAIRONTOP: a pair wearing a real window nonce its boot already spent fires the per-nonce budget (a disk-read nonce is not a reusable one)"
+
+# PAIRNOLEDGER — the anchor itself is required: a window with boots and no
+# ledger is exit 2, not a silently-narrower check (the --boots rule).
+mk_norec pairnol
+FXSTORE_BIN="$FXSTORE" "$AUDIT" --store "$WORK/store-pairnol" \
+    --rootfs "$WORK/rootfs-pairnol" --obs-file "$WORK/obsf-pairnol.obs" --boots 4 \
+    > "$WORK/out.pairnol" 2>&1
+_rc=$?
+[ "$_rc" = "2" ] || fail "PAIRNOLEDGER: a window with boots and no --nonces must be exit 2, got $_rc: $(sed -n 1,3p "$WORK/out.pairnol")"
+grep -q 'nonces is REQUIRED when the window holds boots' "$WORK/out.pairnol" \
+    || fail "PAIRNOLEDGER: the refusal does not name the missing anchor"
+grep -q 'decorative' "$WORK/out.pairnol" \
+    || fail "PAIRNOLEDGER: the refusal does not say why it refuses to default"
+echo "test_fx_audit: PAIRNOLEDGER: --boots 3 -> 4 with no --nonces is exit 2, loud (the nonce ledger is an anchor, not an option)"
 
 # CAP: the reader's .bootlog line table is a FIXED 4096.  Past it, lines
 # were SILENTLY DROPPED from both the counting and the forged-verdict
@@ -863,8 +995,8 @@ echo "test_fx_audit: CAP-REC: a .recovery longer than the 1024-row table is exit
 # ══ LEGIT: every legitimate growth shape stays coherent ════════════════
 # a boot that FAILS (in-progress + failed) — FBOOTS declares one new boot
 fresh legfail
-echo "$CUR in-progress 110" >> "$WORK/store-legfail/.bootlog"
-echo "$CUR failed 111" >> "$WORK/store-legfail/.bootlog"
+echo "$CUR in-progress 110 $(nth 5)" >> "$WORK/store-legfail/.bootlog"
+echo "$CUR failed 111 $(nth 5)" >> "$WORK/store-legfail/.bootlog"
 FBOOTS=5 run_fixture legfail > "$WORK/out.legfail" 2>&1
 expect_coh "$WORK/out.legfail" $? "LEGIT failed boot"
 echo "test_fx_audit: LEGIT: a boot that fails (in-progress + failed, --boots 5) stays coherent"
@@ -874,17 +1006,17 @@ echo "test_fx_audit: LEGIT: a boot that fails (in-progress + failed, --boots 5) 
 # as a NEW version, then that generation's boot (in-progress + ok) and its
 # .recovery row — two boots, all growth accounted
 fresh legrwf
-echo "$CUR in-progress 110" >> "$WORK/store-legrwf/.bootlog"
-echo "$CUR failed 111" >> "$WORK/store-legrwf/.bootlog"
+echo "$CUR in-progress 110 $(nth 5)" >> "$WORK/store-legrwf/.bootlog"
+echo "$CUR failed 111 $(nth 5)" >> "$WORK/store-legrwf/.bootlog"
 FXSTORE_BIN="$FXSTORE" "$FXSTORE" rollback "$V1" --store "$WORK/store-legrwf" >/dev/null 2>&1 \
     || fail "LEGIT rwf: fxstore rollback $V1 failed"
 ROLLV=$(cur_of "$WORK/store-legrwf")
 [ "$ROLLV" -gt "$CUR" ] || fail "LEGIT rwf: the republish did not ratchet ($ROLLV <= $CUR)"
 GH_ROLL=$(genhash_of "$WORK/store-legrwf" "$ROLLV")
 [ "$GH_ROLL" = "$GH1" ] || fail "LEGIT rwf: the republished content is not v$V1's (genhash $GH_ROLL != $GH1)"
-echo "$ROLLV in-progress 112" >> "$WORK/store-legrwf/.bootlog"
-echo "$ROLLV ok 113" >> "$WORK/store-legrwf/.bootlog"
-echo "111 $ROLLV $CUR $GH_ROLL" >> "$WORK/store-legrwf/.recovery"
+echo "$ROLLV in-progress 112 $(nth 6)" >> "$WORK/store-legrwf/.bootlog"
+echo "$ROLLV ok 113 $(nth 6)" >> "$WORK/store-legrwf/.bootlog"
+echo "111 $ROLLV $CUR $GH_ROLL $(nth 6)" >> "$WORK/store-legrwf/.recovery"
 FBOOTS=6 run_fixture legrwf > "$WORK/out.legrwf" 2>&1
 expect_coh "$WORK/out.legrwf" $? "LEGIT roll-forward boot"
 grep -q '^check recovery-without-failure: pass$' "$WORK/out.legrwf" \
@@ -893,9 +1025,9 @@ echo "test_fx_audit: LEGIT: a failure that rolls forward (failed -> real fxstore
 
 # a clean SHUTDOWN: the writer appends ip + ok + shutdown, ONE boot
 fresh legsd
-echo "$CUR in-progress 110" >> "$WORK/store-legsd/.bootlog"
-echo "$CUR ok 111" >> "$WORK/store-legsd/.bootlog"
-echo "$CUR shutdown 112" >> "$WORK/store-legsd/.bootlog"
+echo "$CUR in-progress 110 $(nth 5)" >> "$WORK/store-legsd/.bootlog"
+echo "$CUR ok 111 $(nth 5)" >> "$WORK/store-legsd/.bootlog"
+echo "$CUR shutdown 112 $(nth 5)" >> "$WORK/store-legsd/.bootlog"
 FBOOTS=5 run_fixture legsd > "$WORK/out.legsd" 2>&1
 expect_coh "$WORK/out.legsd" $? "LEGIT clean shutdown"
 echo "test_fx_audit: LEGIT: a clean shutdown (in-progress + ok + shutdown) stays coherent"
@@ -904,24 +1036,30 @@ echo "test_fx_audit: LEGIT: a clean shutdown (in-progress + ok + shutdown) stays
 # the VM at the verdict) — in-progress alone, no verdict: legal, the boot
 # never decided
 fresh legkill
-echo "$CUR in-progress 110" >> "$WORK/store-legkill/.bootlog"
+echo "$CUR in-progress 110 $(nth 5)" >> "$WORK/store-legkill/.bootlog"
 FBOOTS=5 run_fixture legkill > "$WORK/out.legkill" 2>&1
 expect_coh "$WORK/out.legkill" $? "LEGIT killed at verdict"
 echo "test_fx_audit: LEGIT: a boot killed at the verdict (in-progress alone) stays coherent"
 
-# a SILENT boot: the host started one more boot and the writer appended
-# NOTHING (no bootable generation: decide_boot_version returned 0, which
-# appends no line and pre-decides the verdict away, init.zig:4368-4379).
-# Coherent — and this is exactly the SLACK the stated bound admits: a boot
-# the host started but fx-init never recorded leaves the count richer than
-# the record, and a forger appending a line-pair into that slack would pass
-# (closing it needs a per-boot host nonce; see the tool's bound).
+# a SILENT boot: the host started one more boot (issuing its nonce) and the
+# writer appended NOTHING (no bootable generation: decide_boot_version
+# returned 0, which appends no line and pre-decides the verdict away,
+# init.zig:4368-4379).  Coherent — and the nonce makes the silence ITSELF a
+# reportable fact: the boot's nonce is UNCLAIMED.  This is the
+# false-positive direction the review priced: a machine that booted nothing
+# is not an incoherence, and an unclaimed nonce must NEVER roll a healthy
+# machine back.  (Before the nonce this slack was the forger's opening; now
+# the slack is NAMED every run — a pair claiming it cannot wear its nonce.)
 fresh legq
 FBOOTS=5 run_fixture legq > "$WORK/out.legq" 2>&1
 expect_coh "$WORK/out.legq" $? "LEGIT silent boot"
 grep -q 'no .bootlog lines added this window' "$WORK/out.legq" \
     || fail "LEGIT silent boot: the empty window was not reported as such: $(grep 'boot accounting' "$WORK/out.legq")"
-echo "test_fx_audit: LEGIT: a silent boot (started, nothing appended — no bootable generation) stays coherent"
+grep -q "the nonce the host issued for boot 5 ($(nth 5)) is UNCLAIMED" "$WORK/out.legq" \
+    || fail "LEGIT silent boot: the silent boot's issued nonce was not REPORTED unclaimed: $(grep 'UNCLAIMED' "$WORK/out.legq")"
+grep -q 'never roll a healthy machine back' "$WORK/out.legq" \
+    || fail "LEGIT silent boot: the unclaimed-nonce report does not state its own direction (reported, not a finding)"
+echo "test_fx_audit: LEGIT: a silent boot (started, nothing appended — no bootable generation) stays coherent AND its nonce is REPORTED UNCLAIMED"
 
 # the SAME version booted TWICE in one window: two boots of v$CUR, each the
 # writer's real line pair, in file order.  The second verdict must consume
@@ -931,10 +1069,10 @@ echo "test_fx_audit: LEGIT: a silent boot (started, nothing appended — no boot
 # the arm exits 1 bootlog-forged-verdict (it is the "consumed" half of the
 # attribution rule that this arm holds).
 fresh twice
-echo "$CUR in-progress 110" >> "$WORK/store-twice/.bootlog"
-echo "$CUR ok 111" >> "$WORK/store-twice/.bootlog"
-echo "$CUR in-progress 112" >> "$WORK/store-twice/.bootlog"
-echo "$CUR ok 113" >> "$WORK/store-twice/.bootlog"
+echo "$CUR in-progress 110 $(nth 5)" >> "$WORK/store-twice/.bootlog"
+echo "$CUR ok 111 $(nth 5)" >> "$WORK/store-twice/.bootlog"
+echo "$CUR in-progress 112 $(nth 6)" >> "$WORK/store-twice/.bootlog"
+echo "$CUR ok 113 $(nth 6)" >> "$WORK/store-twice/.bootlog"
 FBOOTS=6 run_fixture twice > "$WORK/out.twice" 2>&1
 expect_coh "$WORK/out.twice" $? "LEGIT same version booted twice in one window"
 grep -q 'boot accounting: host boots 4 -> 6 (delta 2); this window added in-progress 2, verdicts 2, shutdown 0' "$WORK/out.twice" \
@@ -953,28 +1091,28 @@ echo "test_fx_audit: LEGIT: the same version booted twice in one window (2 real 
 # if the row bound were tightened to one-per-window, or if the attribution
 # mis-paired the two cycles.
 fresh multi
-echo "$CUR in-progress 110" >> "$WORK/store-multi/.bootlog"
-echo "$CUR failed 111" >> "$WORK/store-multi/.bootlog"
+echo "$CUR in-progress 110 $(nth 5)" >> "$WORK/store-multi/.bootlog"
+echo "$CUR failed 111 $(nth 5)" >> "$WORK/store-multi/.bootlog"
 FXSTORE_BIN="$FXSTORE" "$FXSTORE" rollback "$V1" --store "$WORK/store-multi" >/dev/null 2>&1 \
     || fail "LEGIT multi: the first fxstore rollback failed"
 R1=$(cur_of "$WORK/store-multi")
 [ "$R1" -gt "$CUR" ] || fail "LEGIT multi: cycle 1 did not ratchet ($R1 <= $CUR)"
 GH_R1=$(genhash_of "$WORK/store-multi" "$R1")
 [ "$GH_R1" = "$GH1" ] || fail "LEGIT multi: cycle 1's republish is not v$V1's content"
-echo "$R1 in-progress 112" >> "$WORK/store-multi/.bootlog"
-echo "$R1 ok 113" >> "$WORK/store-multi/.bootlog"
-echo "111 $R1 $CUR $GH_R1" >> "$WORK/store-multi/.recovery"
-echo "$R1 in-progress 114" >> "$WORK/store-multi/.bootlog"
-echo "$R1 failed 115" >> "$WORK/store-multi/.bootlog"
+echo "$R1 in-progress 112 $(nth 6)" >> "$WORK/store-multi/.bootlog"
+echo "$R1 ok 113 $(nth 6)" >> "$WORK/store-multi/.bootlog"
+echo "111 $R1 $CUR $GH_R1 $(nth 6)" >> "$WORK/store-multi/.recovery"
+echo "$R1 in-progress 114 $(nth 7)" >> "$WORK/store-multi/.bootlog"
+echo "$R1 failed 115 $(nth 7)" >> "$WORK/store-multi/.bootlog"
 FXSTORE_BIN="$FXSTORE" "$FXSTORE" rollback "$V1" --store "$WORK/store-multi" >/dev/null 2>&1 \
     || fail "LEGIT multi: the second fxstore rollback failed"
 R2=$(cur_of "$WORK/store-multi")
 [ "$R2" -gt "$R1" ] || fail "LEGIT multi: cycle 2 did not ratchet ($R2 <= $R1)"
 GH_R2=$(genhash_of "$WORK/store-multi" "$R2")
 [ "$GH_R2" = "$GH1" ] || fail "LEGIT multi: cycle 2's republish is not v$V1's content"
-echo "$R2 in-progress 116" >> "$WORK/store-multi/.bootlog"
-echo "$R2 ok 117" >> "$WORK/store-multi/.bootlog"
-echo "115 $R2 $R1 $GH_R2" >> "$WORK/store-multi/.recovery"
+echo "$R2 in-progress 116 $(nth 8)" >> "$WORK/store-multi/.bootlog"
+echo "$R2 ok 117 $(nth 8)" >> "$WORK/store-multi/.bootlog"
+echo "115 $R2 $R1 $GH_R2 $(nth 8)" >> "$WORK/store-multi/.recovery"
 FBOOTS=8 run_fixture multi > "$WORK/out.multi" 2>&1
 expect_coh "$WORK/out.multi" $? "LEGIT multi-cycle roll-forward in one window"
 grep -q 'boot accounting: host boots 4 -> 8 (delta 4); this window added in-progress 4, verdicts 4, shutdown 0' "$WORK/out.multi" \
@@ -992,22 +1130,23 @@ echo "test_fx_audit: LEGIT: a MULTI-CYCLE roll-forward in one window (two real f
 # an open in-progress for the current version were turned into its own
 # finding (the "every boot must decide" reading the writer contradicts).
 fresh ipsd
-echo "$CUR in-progress 110" >> "$WORK/store-ipsd/.bootlog"
-echo "$CUR shutdown 111" >> "$WORK/store-ipsd/.bootlog"
+echo "$CUR in-progress 110 $(nth 5)" >> "$WORK/store-ipsd/.bootlog"
+echo "$CUR shutdown 111 $(nth 5)" >> "$WORK/store-ipsd/.bootlog"
 FBOOTS=5 run_fixture ipsd > "$WORK/out.ipsd" 2>&1
 expect_coh "$WORK/out.ipsd" $? "LEGIT in-progress then shutdown (clean stop during the judgement)"
 grep -q 'boot accounting: host boots 4 -> 5 (delta 1); this window added in-progress 1, verdicts 0, shutdown 1' "$WORK/out.ipsd" \
     || fail "LEGIT ipsd: the shutdown-without-verdict boot was not accounted: $(grep 'boot accounting: host boots' "$WORK/out.ipsd")"
 echo "test_fx_audit: LEGIT: an in-progress followed by a shutdown (clean stop during the judgement, no verdict) stays coherent"
 
-# ══ BEFORE: the fail-before, on the PINNED pre-change revision ══════════
-# The asymmetry a regression probe needs: on 030fbdc (the tree this change
-# lands on top of) the SAME forge went COHERENT.  The pin is guarded and
-# PROVEN DIFFERENT from the working tree — a control that equals its
-# subject proves nothing.
+# ══ BEFORE: the fail-before, on PINNED pre-change revisions ═════════════
+# The asymmetry a regression probe needs: on the pinned trees the SAME
+# forgeries went COHERENT.  Every pin is guarded (git cat-file -e) and
+# PROVEN DIFFERENT from the working tree (cmp) — a control that equals its
+# subject proves nothing, and this repo has shipped both a red gate (a
+# moving ref) and a vacuous one (a pin compared to itself).  Nothing here
+# reads HEAD: every pin is a fixed object name.
 # pin_build REV OUTFILE — the audit source at REV, built, with the DOMAIN
-# proof (exists; DIFFERS from the working tree; nothing here reads HEAD —
-# REV is a fixed object name).
+# proof (exists; DIFFERS from the working tree).
 pin_build() {
     _rev="$1"; _out="$2"
     git -C "$REPO" cat-file -e "$_rev^{commit}" 2>/dev/null \
@@ -1022,26 +1161,52 @@ pin_build() {
         || fail "PIN $_rev: cannot build the pinned fx-audit"
 }
 pin_build 030fbdc "$WORK/fx-audit-pinned"
-# the no-recovery fixture (the store where the forge is truly invisible),
-# enrolled with the PINNED tool — its observation is format 1, no boot
-# count, and the pinned tool does not know --boots
-mk_norec before
+pin_build 88a73b8 "$WORK/fx-audit-nonce-pin"
+pin_build fcebaa3 "$WORK/fx-audit-prefix"
+
+# ── THE WRITER PIN (fx-init 500fc68): the fail-before of the WRITER half ──
+# The pre-nonce writer cannot stamp a nonce: its bootlog_append is the
+# 3-field "%u %s %u" and its command line knows no fx.bootnonce.  Pinned by
+# object name, guarded, and cmp-PROVEN different from the working tree's
+# init.zig.  SOURCE-LEVEL, stated as such: the writer's behavioural proof
+# lives in fx-init's zig tests (bootlog_append/recovery_line format) and in
+# the REAL-GUEST demonstration (qemu-agent-observe.sh: the guest's own
+# .bootlog lines carry the host-issued nonces).
+PIN_INIT=500fc68
+git -C "$INIT" cat-file -e "$PIN_INIT^{commit}" 2>/dev/null \
+    || fail "WRITER PIN $PIN_INIT: the pinned fx-init revision does not exist (shallow clone?)"
+git -C "$INIT" show "$PIN_INIT:zig/src/init.zig" > "$WORK/init-pinned.zig" \
+    || fail "WRITER PIN $PIN_INIT: cannot extract zig/src/init.zig"
+cmp -s "$WORK/init-pinned.zig" "$INIT/zig/src/init.zig" \
+    && fail "WRITER PIN $PIN_INIT: the pinned init.zig is IDENTICAL to the working tree — the control would not be a pre-nonce artifact (pin wrong or the writer change missing)"
+grep -q 'fx.bootnonce' "$WORK/init-pinned.zig" \
+    && fail "WRITER PIN $PIN_INIT: the pinned writer already knows fx.bootnonce — the pin is not pre-nonce"
+grep -q 'fx.bootnonce' "$INIT/zig/src/init.zig" \
+    || fail "WRITER PIN: the working tree's init.zig has no fx.bootnonce — the writer change is missing from the tree under test"
+grep -q 'fprintf(f, "%u %s %u\\n", v, status, epoch)' "$WORK/init-pinned.zig" \
+    || fail "WRITER PIN $PIN_INIT: the pinned bootlog_append is not the 3-field shape the reader's old grammar expects"
+grep -q 'fprintf(f, "%u %s %u %s\\n", v, status, epoch, boot_nonce_str())' "$INIT/zig/src/init.zig" \
+    || fail "WRITER PIN: the working tree's bootlog_append does not write the 4th nonce field"
+echo "test_fx_audit: WRITER PIN: fx-init at $PIN_INIT writes the 3-field line (no fx.bootnonce anywhere); the working tree writes the 4-field nonce line (cmp-proven different)"
+
+# ── BEFORE-A (030fbdc, the pre---boots era): the ORIGINAL bare-verdict forge
+# passed; the new tool refuses its format-1 observation.
+NOREC_OLD=1 mk_norec before
 FXSTORE_BIN="$FXSTORE" "$WORK/fx-audit-pinned" --store "$WORK/store-before" \
     --rootfs "$WORK/rootfs-before" --obs-file "$WORK/obsf-before-pinned.obs" \
     > "$WORK/out.bp1" 2>&1
-expect_coh "$WORK/out.bp1" $? "BEFORE enroll (pinned tool)"
-# the IDENTICAL forge the FORGERY arm makes
+expect_coh "$WORK/out.bp1" $? "BEFORE-A enroll (pinned 030fbdc, pre-nonce 3-field lines)"
 echo "$V2 ok 999" >> "$WORK/store-before/.bootlog"
 FXSTORE_BIN="$FXSTORE" "$WORK/fx-audit-pinned" --store "$WORK/store-before" \
     --rootfs "$WORK/rootfs-before" --obs-file "$WORK/obsf-before-pinned.obs" \
     > "$WORK/out.bp2" 2>&1
-expect_coh "$WORK/out.bp2" $? "BEFORE the forge goes COHERENT on 030fbdc (the measured hole)"
+expect_coh "$WORK/out.bp2" $? "BEFORE-A the bare forged verdict goes COHERENT on 030fbdc (the original measured hole)"
 grep -q 'append-only respected' "$WORK/out.bp2" \
-    || fail "BEFORE: the pinned tool did not even see the append (the fixture is wrong)"
+    || fail "BEFORE-A: the pinned tool did not even see the append (the fixture is wrong)"
 # the fail-after on the SAME tampered store: the new tool against its OWN
-# (format-2) enrollment of the same pre-forge state
+# enrollment of the same pre-forge state
 FBOOTS=3 run_fixture before > "$WORK/out.bp2new" 2>&1
-expect_incoh "$WORK/out.bp2new" $? "BEFORE/AFTER on the same store" bootlog-forged-verdict
+expect_incoh "$WORK/out.bp2new" $? "BEFORE-A/AFTER on the same store" bootlog-forged-verdict
 # and the new tool REFUSES the pinned tool's format-1 observation: a
 # baseline with no boot count cannot anchor growth, and assuming one is
 # the silent default this seat refuses
@@ -1049,23 +1214,74 @@ FXSTORE_BIN="$FXSTORE" "$AUDIT" --store "$WORK/store-before" \
     --rootfs "$WORK/rootfs-before" --obs-file "$WORK/obsf-before-pinned.obs" --boots 3 \
     > "$WORK/out.bp3" 2>&1
 _rc=$?
-[ "$_rc" = "2" ] || fail "BEFORE: the new tool must refuse a format-1 observation (exit 2), got $_rc"
+[ "$_rc" = "2" ] || fail "BEFORE-A: the new tool must refuse a format-1 observation (exit 2), got $_rc"
 grep -q 'FORMAT 1' "$WORK/out.bp3" \
-    || fail "BEFORE: the refusal does not name the format-1 baseline"
+    || fail "BEFORE-A: the refusal does not name the format-1 baseline"
 grep -q 're-enroll' "$WORK/out.bp3" \
-    || fail "BEFORE: the refusal does not name the way out"
-echo "test_fx_audit: BEFORE: on the pinned 030fbdc the SAME appended '$V2 ok 999' audits COHERENT (exit 0); the new tool fires on the same store and REFUSES the pinned tool's format-1 observation (no boot count recorded — never assume one)"
+    || fail "BEFORE-A: the refusal does not name the way out"
+echo "test_fx_audit: BEFORE-A: on the pinned 030fbdc the SAME appended '$V2 ok 999' audits COHERENT (exit 0); the new tool fires on the same store and REFUSES the pinned tool's format-1 observation"
 
-# ── TORNLEGIT-BEFORE: the FALSE POSITIVE, pinned at fcebaa3 (the revision
-# this change lands on top of).  The PRE-FIX tool REJECTS A HEALTHY MACHINE
-# on the torn shape — exit 1 bootlog-forged-verdict — while the SAME run's
-# accounting line prints the in-progress its message claims is absent: it
-# both false-positives and mis-reasons.  This is the costly direction (a
-# spurious finding rolls back a healthy machine).  The pin's DOMAIN is
-# proven by pin_build's cmp; nothing depends on HEAD; both runs use the SAME
-# store and the SAME observation file, so the only variable is the tool.
-pin_build fcebaa3 "$WORK/fx-audit-prefix"
-mk_norec tpin
+# ── BEFORE-B (88a73b8, the pre-NONCE reader): THE PAIR FORGERY, the
+# reviewer-constructed hole this change closes.  The pinned reader KNOWS
+# --boots and its observation is format 2, but it has no nonce binding: on
+# the OLD-WRITER store (the only shape it can read coherently — a 4-field
+# line is damaged to it) the forged PAIR into a silent boot's slack passes
+# its count AND its attribution.  The new tool, on the SAME store and the
+# SAME pair bytes, fires.
+NOREC_OLD=1 mk_norec pairpin
+# the pinned tool enrolls the pre-pair state (its own observation file)
+FXSTORE_BIN="$FXSTORE" "$WORK/fx-audit-nonce-pin" --store "$WORK/store-pairpin" \
+    --rootfs "$WORK/rootfs-pairpin" --obs-file "$WORK/obsf-pairpin-old.obs" --boots 3 \
+    > "$WORK/out.pp1" 2>&1
+expect_coh "$WORK/out.pp1" $? "BEFORE-B enroll (pinned 88a73b8, pre-nonce 3-field lines)"
+# the new tool ALSO enrolls the same pre-pair state under its own format-3
+# baseline (its observation is taken from the same bytes)
+FBOOTS=3 run_fixture pairpin > "$WORK/out.pp1new" 2>&1
+expect_coh "$WORK/out.pp1new" $? "BEFORE-B new-tool enroll (same store, same bytes)"
+# THE FORGED PAIR (the reviewer's exact shape: in-progress + verdict, the
+# writer's old 3-field grammar, appended into boot 4's silent slack)
+echo "$V2 in-progress 999" >> "$WORK/store-pairpin/.bootlog"
+echo "$V2 ok 999" >> "$WORK/store-pairpin/.bootlog"
+# ...the pinned reader calls it COHERENT (the measured hole)
+FXSTORE_BIN="$FXSTORE" "$WORK/fx-audit-nonce-pin" --store "$WORK/store-pairpin" \
+    --rootfs "$WORK/rootfs-pairpin" --obs-file "$WORK/obsf-pairpin-old.obs" --boots 4 \
+    > "$WORK/out.pp2" 2>&1
+expect_coh "$WORK/out.pp2" $? "BEFORE-B THE PAIR GOES COHERENT on the pinned pre-nonce reader (the hole this change closes)"
+grep -q 'boot accounting: host boots 3 -> 4 (delta 1); this window added in-progress 1, verdicts 1, shutdown 0' "$WORK/out.pp2" \
+    || fail "BEFORE-B: the pinned tool did not account the pair as an ordinary boot (fixture wrong): $(grep 'boot accounting' "$WORK/out.pp2")"
+# ...the new tool, same store, same pair bytes, fires
+FBOOTS=4 run_fixture pairpin > "$WORK/out.pp3" 2>&1
+expect_incoh "$WORK/out.pp3" $? "BEFORE-B/AFTER on the same store and the same pair bytes" bootlog-unbound-nonce
+grep -q '2 ADDED .bootlog line(s) carry no nonce the host issued' "$WORK/out.pp3" \
+    || fail "BEFORE-B/AFTER: the new tool did not name both forged lines: $(grep '^INCOHERENT bootlog-unbound' "$WORK/out.pp3")"
+echo "test_fx_audit: BEFORE-B: on the pinned 88a73b8 the forged PAIR into the silent boot's slack audits COHERENT (delta 1, attribution satisfied — the reviewer's measurement); the new tool fires bootlog-unbound-nonce on the SAME store and pair bytes"
+
+# ── FORMAT2: the new tool refuses the pinned tool's format-2 observation —
+# a pre-nonce baseline cannot anchor a nonce-judged window, and assuming it
+# could is the silent default this seat refuses (the format-1 rule, again).
+FXSTORE_BIN="$FXSTORE" "$AUDIT" --store "$WORK/store-pairpin" \
+    --rootfs "$WORK/rootfs-pairpin" --obs-file "$WORK/obsf-pairpin-old.obs" --boots 4 \
+    --nonces "$WORK/nonces-pairpin.led" \
+    > "$WORK/out.fmt2" 2>&1
+_rc=$?
+[ "$_rc" = "2" ] || fail "FORMAT2: the new tool must refuse a format-2 observation (exit 2), got $_rc: $(sed -n 1,3p "$WORK/out.fmt2")"
+grep -q 'FORMAT 2' "$WORK/out.fmt2" \
+    || fail "FORMAT2: the refusal does not name the format-2 baseline"
+grep -q 're-enroll' "$WORK/out.fmt2" \
+    || fail "FORMAT2: the refusal does not name the way out"
+echo "test_fx_audit: FORMAT2: a pre-nonce (format-2) observation is REFUSED with a re-enroll instruction — never silently assumed"
+
+# ── TORNLEGIT-BEFORE (fcebaa3): the FALSE POSITIVE that would roll back a
+# healthy machine, pinned at the revision before the torn-attribution fix.
+# The PRE-FIX tool REJECTS a healthy crashed boot on the torn shape — exit
+# 1 bootlog-forged-verdict — while the SAME run's accounting line prints
+# the in-progress its message claims is absent: it both false-positives
+# and mis-reasons.  Runs on the OLD-shape fixture (the pinned tools cannot
+# read nonce lines); the WORKING TREE's torn acceptance is TORNLEGIT above
+# (nonce lines, cut mid-nonce).  The fix itself is pinned across two
+# readers: fcebaa3 rejects, 88a73b8 accepts the SAME store and the SAME
+# observation file, so the only variable is the tool.
+NOREC_OLD=1 mk_norec tpin
 FXSTORE_BIN="$FXSTORE" "$WORK/fx-audit-prefix" --store "$WORK/store-tpin" \
     --rootfs "$WORK/rootfs-tpin" --obs-file "$WORK/obsf-tpin-prefix.obs" --boots 3 \
     > "$WORK/out.tpin1" 2>&1
@@ -1080,13 +1296,13 @@ grep -q 'no in-progress behind it in this window' "$WORK/out.tpin2" \
     || fail "TORNLEGIT-BEFORE: the pre-fix run did not make the claim this arm pins: $(grep '^INCOHERENT bootlog-forged' "$WORK/out.tpin2")"
 grep -q 'this window added in-progress 1, verdicts 1, shutdown 0' "$WORK/out.tpin2" \
     || fail "TORNLEGIT-BEFORE: the pre-fix run did not print the accounting line that CONTRADICTS its own finding: $(grep 'boot accounting' "$WORK/out.tpin2")"
-FXSTORE_BIN="$FXSTORE" "$AUDIT" --store "$WORK/store-tpin" \
+FXSTORE_BIN="$FXSTORE" "$WORK/fx-audit-nonce-pin" --store "$WORK/store-tpin" \
     --rootfs "$WORK/rootfs-tpin" --obs-file "$WORK/obsf-tpin-prefix.obs" --boots 4 \
     > "$WORK/out.tpin3" 2>&1
-expect_coh "$WORK/out.tpin3" $? "TORNLEGIT-BEFORE/AFTER (the fixed tool, same store and same observation)"
+expect_coh "$WORK/out.tpin3" $? "TORNLEGIT-BEFORE/AFTER (88a73b8, same store and same observation)"
 grep -q 'TORN' "$WORK/out.tpin3" \
     || fail "TORNLEGIT-BEFORE/AFTER: the fixed tool does not even mention the torn line it tolerated"
-echo "test_fx_audit: TORNLEGIT-BEFORE: on the pinned fcebaa3 the SAME healthy torn-verdict store is REJECTED (exit 1, message contradicting its own accounting); the fixed tool accepts it on the same store and observation"
+echo "test_fx_audit: TORNLEGIT-BEFORE: on the pinned fcebaa3 the SAME healthy torn-verdict store is REJECTED (exit 1, message contradicting its own accounting); 88a73b8 accepts it on the same store and observation (the nonce-era working tree accepts the nonce-line twin in TORNLEGIT)"
 
 # ══ THE MUTATION CONTROL (positive control, per check) ══════════════════
 # a detector with exactly one check's registration deleted must go COHERENT
@@ -1103,9 +1319,10 @@ mutate() { # mutate NAME OUT — sed out one run_check registration
         || fail "cannot build the $1 mutant"
 }
 mut_run() { # mut_run BIN NAME — the mutant on fixture NAME
+    mkled "$WORK/nonces-$2.led" "${MUT_BOOTS:-4}"
     FXSTORE_BIN="$FXSTORE" "$1" --store "$WORK/store-$2" \
         --rootfs "$WORK/rootfs-$2" --obs-file "$WORK/obsf-$2.obs" \
-        --boots "${MUT_BOOTS:-4}"
+        --boots "${MUT_BOOTS:-4}" --nonces "$WORK/nonces-$2.led"
 }
 
 # the mutant fixtures reuse the arms' tampered copies (already built above):
@@ -1115,7 +1332,7 @@ mut_run "$WORK/mut-version-chain" chain > "$WORK/out.m-chain" 2>&1
 expect_coh "$WORK/out.m-chain" $? "MUTANT version-chain (CURRENT=99 went coherent — the check is load-bearing)"
 mutate recovery-without-failure  "$WORK/mut-recovery-without-failure"
 fresh m-rwf
-echo "200 $CUR $V1 $GH_CUR" >> "$WORK/store-m-rwf/.recovery"
+echo "200 $CUR $V1 $GH_CUR $(nth 5)" >> "$WORK/store-m-rwf/.recovery"
 MUT_BOOTS=5 mut_run "$WORK/mut-recovery-without-failure" m-rwf > "$WORK/out.m-rwf" 2>&1
 expect_coh "$WORK/out.m-rwf" $? "MUTANT recovery-without-failure (unrecorded failure went coherent)"
 mutate verify-drift              "$WORK/mut-verify-drift"
@@ -1133,7 +1350,12 @@ expect_coh "$WORK/out.m-prevobs" $? "MUTANT previous-observation (THE BOUND: the
 mutate boot-accounting           "$WORK/mut-boot-accounting"
 MUT_BOOTS=3 mut_run "$WORK/mut-boot-accounting" forg > "$WORK/out.m-acc" 2>&1
 expect_coh "$WORK/out.m-acc" $? "MUTANT boot-accounting (the appended forged verdict goes coherent — the host-boot correlation is load-bearing)"
-echo "test_fx_audit: MUTANTS: each check's fixture goes coherent when that one check is sed-ed out — including the previous-observation comparison on the coherent tamper (the bound, made visible) and boot-accounting on the appended forged verdict"
+# THE NONCE DIRECTION: a detector that stops REQUIRING the nonce must go
+# coherent on exactly the pair-forgery fixture — the check is the seat.
+mkled "$WORK/nonces-pairsil.led" 4
+MUT_BOOTS=4 mut_run "$WORK/mut-boot-accounting" pairsil > "$WORK/out.m-pair" 2>&1
+expect_coh "$WORK/out.m-pair" $? "MUTANT boot-accounting on the PAIR forgery (a detector that stops requiring the nonce lets the silent-boot pair through)"
+echo "test_fx_audit: MUTANTS: each check's fixture goes coherent when that one check is sed-ed out — including the previous-observation comparison on the coherent tamper (the bound, made visible), boot-accounting on the appended forged verdict, and boot-accounting on the PAIR forgery (the nonce requirement is load-bearing)"
 
 # src-of-artifact's own finding (disagreement-artifact-gone) is emitted by
 # the previous-observation walk, whose mutant arm above covers the

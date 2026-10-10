@@ -1,5 +1,5 @@
 metric osier-share
-store /tmp/qemuinguest.Nnkbtc/rb1-store
+store /tmp/qemuinguest.HT7uF7/rb1-store
 snapshot 3
 osier_extensions .elm
 counted regular source files only (clean-tree exclusion rules apply)
@@ -13,9 +13,9 @@ component datalog-dafsa 902f10477a951b2b57d5e9e7ebe9851533f065a0019d250cb25b147a
 component dhall-c ac3ea3174d40507cd9838dc93e7f844bffa75b3f0d358d4b17e0021c8a224c16 host-verified 26226 850505 1 1662 closure-only src_of
 component fxstore 00f085475525ea894c07be3ad0a5713f3e888f7d9a299ff4693d4f12aa9ca609 host-verified 13551 1133144490 1 467 closure-only src_of
 component dhake cbc832e95729723682f86d7f9d8bafbc0d3141a28a5224a5c8858b55aa8cbb24 host-verified 21775 1128132 1 718 closure-only src_of
-component fx-init f3b1fd333b182134e69f5e8cf71e181e60affce5282c1fbeb9c0b792cbe1f208 host-verified 319096 97886427 29 2830 closure-only src_of
-component fxctl f3b1fd333b182134e69f5e8cf71e181e60affce5282c1fbeb9c0b792cbe1f208 host-verified 319096 97886427 29 2830 closure-only src_of
-component fx-activate f3b1fd333b182134e69f5e8cf71e181e60affce5282c1fbeb9c0b792cbe1f208 host-verified 319096 97886427 29 2830 closure-only src_of
+component fx-init 37007d0cdd9ab49ffa3c5479e79f6398fc79c8384ee116b5ef7bb49acedacd84 host-verified 319096 97895648 29 2830 closure-only src_of
+component fxctl 37007d0cdd9ab49ffa3c5479e79f6398fc79c8384ee116b5ef7bb49acedacd84 host-verified 319096 97895648 29 2830 closure-only src_of
+component fx-activate 37007d0cdd9ab49ffa3c5479e79f6398fc79c8384ee116b5ef7bb49acedacd84 host-verified 319096 97895648 29 2830 closure-only src_of
 attribution src_of 8 srcstore-narrowed 0 (of 8 resolved)
 run_set_osier_bytes 0
 run_set_total_bytes 4302
@@ -23,7 +23,7 @@ run_set_osier_files 0
 run_set_total_files 1
 run_set_share_fraction 0.000000
 closure_osier_bytes 1227626
-closure_total_bytes 1465004217
+closure_total_bytes 1465031880
 closure_osier_files 104
 closure_total_files 12029
 closure_share_fraction 0.000838

@@ -1,6 +1,6 @@
-fx-audit: store /tmp/qemuobs.XL9hGp/audit-ext1/store (fxstore /var/data/workspace/fixpoint-linux/fxstore/zig-out/bin/fxstore)
+fx-audit: store /tmp/qemuobs.Sr0oe1/audit-ext1/store (fxstore /var/data/workspace/fixpoint-linux/fxstore/zig-out/bin/fxstore)
 fx-audit: host boots on this store: 1 (the off-disk anchor; the guest can neither see nor set it)
-fx-audit: observation /tmp/qemuobs.XL9hGp/audit-obs.obs
+fx-audit: observation /tmp/qemuobs.Sr0oe1/audit-obs.obs
 check version-chain: pass
 check recovery-without-failure: pass
 fx-audit: check verify-drift SKIPPED: no --rootfs given (the rootfs lives inside the guest image; pass a host view of it to run fxstore verify)
@@ -14,6 +14,6 @@ check boot-accounting: pass
 fx-audit: first observation of this store: ENROLLING (nothing to compare — a coherent tamper is invisible until the host has seen the store once; this is the seat's bound)
 check previous-observation: pass
 checks: 8 pass, 0 failed; findings: 0
-bound: this seat sees REWRITES and TRUNCATIONS of records it previously observed, cross-record INCOHERENCE, and — anchored on --boots — APPENDED .bootlog/.recovery growth the host's own boot count cannot account for. It still CANNOT see: a forged line-PAIR (in-progress + verdict, terminated or torn — a torn verdict rides the same in-progress attribution as a terminated one) appended into the slack of a boot the host started but fx-init never recorded (killed before its in-progress, or no bootable generation) — closing that needs a per-boot host nonce, which changes the writer's format; a coherent tamper on a store it has never observed (the enrollment gap); .bootlog lines naming gc-pruned versions (legitimate). The anchor is only as true as the host's own bookkeeping — a boot the counting host does not know about reopens the hole. An in-guest cross-check is defeated by design — that is why this seat is host-side.
+bound: this seat sees REWRITES and TRUNCATIONS of records it previously observed, cross-record INCOHERENCE, and — anchored on --boots and the per-boot nonce ledger (--nonces) — APPENDED .bootlog/.recovery growth the host cannot account for. IN THE NONCE REGIME (the host issues fx.bootnonce= per boot and every window boot is covered) the forged line-PAIR in a silent boot's slack is CLOSED: every ADDED line must wear a nonce the host issued for a boot in this window, per-nonce budgets hold at one in-progress / verdict / shutdown / row, and an unclaimed nonce is REPORTED as a silent boot. What it still CANNOT see: window boots the ledger does not cover (a mixed/manual regime — lines without a window nonce are named and counted, but a forged pair in an UNCOVERED boot's slack still passes the arithmetic); boots started off the counting host, or a miscounted / moved --obs-file reuse (the count and the ledger are only as true as the host's own bookkeeping); a coherent tamper on a store first seen at enrollment (the enrollment gap — first run trusts, loudly). That is the honest bound of auditing, not proofing (§6b), printed on every run so the tool never implies more than it knows.
 evidence: the store's own records only — attempts.jsonl (the harness self-report) is never opened.
 VERDICT: coherent

@@ -394,7 +394,8 @@ certifies coherence; neither says "improved".
       nothing reads HEAD) the pre-fix tool rejects the same healthy store (exit 1, message
       contradicting its own accounting) while the fixed tool accepts the SAME store and the SAME
       observation file (exit 0, torn line named). **WHAT THIS DOES NOT FIX (residual, out of
-      scope):** a forged line-PAIR into the slack of an unrecorded boot still passes — the
+      scope, SUPERSEDED by the per-boot-nonce entry below: CLOSED for nonce-covered boots):** a
+      forged line-PAIR into the slack of an unrecorded boot still passed — the
       terminated form was already measured passing, and the torn form now rides the same rule
       (the pre-fix tool caught the torn form only as a side effect of the unconditional rule that
       produced the false positive). The per-boot nonce closes BOTH shapes; its cost is unchanged
@@ -406,6 +407,92 @@ certifies coherence; neither says "improved".
       store with that file ABSENT, PLANTED in the store and DOCTORED in the rootfs
       produces a byte-identical verdict (cmp, exit codes equal) — a self-report cannot
       talk the seat out of an incoherence (and cannot talk it into one either).
+- [x] **THE FORGED LINE-PAIR — CLOSED by a PER-BOOT HOST NONCE (gate `make test-audit`;
+      the last residual of the appended-line work, closed from both sides).** The hole,
+      measured by the review that constructed it: a forged PAIR (`<v> in-progress` +
+      `<v> ok`) appended into the SLACK of a boot the host started but fx-init never
+      recorded (killed pre-in-progress, no bootable generation, the SVC_MAX-refused
+      config) fully impersonated that boot — the count accounted it (1+1 ≤ delta 1) and
+      the in-order attribution found its own forged in-progress. THE DESIGN: the host
+      (the hypervisor) mints an unpredictable hex nonce per launch and hands it down on
+      the kernel command line (`fx.bootnonce=`, the channel `fx.store=` already uses),
+      keeping its own ledger (`<boot> <nonce>` per line) HOST-SIDE; fx-init latches the
+      token once per PID1 lifetime (before `decide_boot_version`, the first possible
+      append) and stamps it as a TRAILING field on every `.bootlog` line (4th) and
+      `.recovery` row (5th) that boot appends — additive, MEASURED against every
+      reader: fx-init's own three readers parse `"%u %63s"` (2 fields, tail ignored),
+      the harness outcome reader `"%lu %31s %lu"` / `"%lu %lu %lu %71s"` (3/4 leading
+      fields, tail ignored), every test grep is prefix-style. A boot with no token (an
+      operator hand-boot) writes the DISTINGUISHABLE placeholder `none` — not valid
+      hex, so no host-minted nonce can collide with it, and the writer REFUSES
+      `fx.bootnonce=none` as a host value. WHY THE CLOSURE IS BY CONSTRUCTION, not a
+      timing argument the agent could erode: the guest CAN read its own `/proc/cmdline`,
+      so secrecy of the current nonce is not the mechanism — (1) a future boot's nonce
+      does not exist yet; (2) a past boot's nonce is visible in-guest ONLY on the lines
+      that boot itself wrote, and those already spent their per-boot budget, so reuse
+      fires the per-nonce accounting; (3) a SILENT boot runs no service at all (the
+      writer's own pre-decided failure path), so nobody is alive inside it to spend its
+      nonce; (4) an invented nonce is not in the host's ledger. THE READER:
+      `fx-audit --nonces FILE` (REQUIRED, exit 2, whenever the window holds boots —
+      the `--boots` rule applied to the ledger; loud dies on every self-contradiction:
+      two nonces for one boot, one nonce for two boots, a nonce for a boot past the
+      count). Observation format 3: a format-2 (pre-nonce) baseline is REFUSED with a
+      re-enroll instruction, the way format-1 was. The accounting is then applied PER
+      NONCE — ≤1 in-progress, ≤1 verdict, ≤1 shutdown, ≤1 `.recovery` row per nonce,
+      and a verdict needs a same-nonce in-progress (one boot, one nonce, latched at
+      start): a pair appended ON TOP of a real boot's lines fires the budget (the
+      strongest forger — one that READ a real nonce off the disk), a pair claiming a
+      silent boot fires `bootlog-unbound-nonce` because it cannot wear that boot's
+      nonce (invented / placeholder / earlier-window / no-field classes each named),
+      and the silent boot's OWN nonce is itself a REPORTED fact — UNCLAIMED, an info
+      line, coherent: a machine that booted nothing is not an incoherence, and an
+      unclaimed nonce must never roll a healthy machine back (the false-positive
+      direction the previous round shipped and review caught). A TORN verdict is never
+      nonce-judged on its own (possibly cut) token: it rides the in-window attribution
+      and is charged to the in-progress that answers for it. THE REGIMES, honestly
+      split: when the ledger covers every window boot (the harness regime), an added
+      line without a window nonce is a FINDING; when it covers fewer (a mixed/manual
+      regime — an operator hand-boot, declared by the short ledger), such lines are
+      NAMED by an info line and counted by the boot arithmetic only — never silently
+      accepted as accounted, never silently skipped. Roll-forward rows carry the SAME
+      boot's nonce by construction (the latch precedes `decide_boot_version`). THE
+      GATE (`tests/test_fx_audit.sh`, exit 0): PAIRSIL (invented-nonce pair in a
+      silent boot's slack fires unbound + the nonce REPORTED unclaimed), PAIRCLS
+      (placeholder / no-field / earlier-window classes), PAIRONTOP (a REAL reused
+      window nonce fires the per-nonce budget), PAIRNOLEDGER (exit 2), FORMAT2
+      (refused), every LEGITIMATE shape re-asserted under per-boot nonces — ordinary
+      boot, failed boot, roll-forward with its nonce-bound row, clean shutdown, killed
+      at verdict, the silent boot (asserting the UNCLAIMED report), same-version
+      twice, multi-cycle roll-forward, in-progress + shutdown — plus the mutant
+      direction (sed-deleted `boot-accounting` goes coherent on exactly the pair
+      fixture). THE ASYMMETRY, pinned on both sides with `git cat-file -e` + `cmp`
+      domain proofs: READER at `88a73b8` — the pre-nonce tool calls the SAME pair
+      COHERENT on the old-writer store (the reviewer's exact measurement, reproduced
+      with its own format-2 enrollment) while the new tool fires on the same store and
+      pair bytes; `030fbdc` keeps the original bare-verdict fail-before (and both
+      format-1/format-2 refusals are asserted); `fcebaa3` keeps the torn false
+      positive. WRITER at fx-init `500fc68` — pinned, cmp-proven different, and
+      asserted at source level (its `bootlog_append` is the 3-field `"%u %s %u"` and
+      it knows no `fx.bootnonce`; the working tree writes the 4-field line); the
+      writer's BEHAVIOURAL proof is fx-init's zig tests (format + placeholder + parse
+      battery, 63/63) and the REAL-GUEST demonstration in `tests/qemu-agent-observe.sh`:
+      the gate's own boot loop mints a urandom nonce per launch, passes
+      `fx.bootnonce=`, records the ledger, asserts PID1's console echo AND the real
+      disk lines carry the issued nonces (boots 1-2), the roll-forward row carries
+      boot 3's nonce, the 4-boot history audits coherent with `--boots 4 --nonces`,
+      and the forged PAIR on the REAL guest-written bootlog fires BOTH ways (an
+      invented nonce → unbound; boot 4's disk-read REAL nonce → the per-nonce budget).
+      **WHAT STILL CANNOT BE SEEN (the narrowed bound, printed on every run):** window
+      boots the ledger does not cover (the mixed/manual regime — a forged pair in an
+      UNCOVERED boot's slack still passes the arithmetic); boots started off the
+      counting host, or a miscounted/moved `--obs-file` reuse (the count AND the
+      ledger are only as true as the host's own bookkeeping — a host-side forger
+      defeats a host-side anchor by definition); the enrollment gap stands; and a
+      silent boot's own nonce, worn by a pair constructed HOST-side, is
+      indistinguishable from that boot's real lines — unreachable in the threat model
+      (the guest cannot learn it: no lines carry it, the cmdline is gone, no service
+      ran to read it), stated here so nobody mistakes the timing argument for a
+      mechanism.
 
 - [ ] **THE BUILD VOCABULARY — designed (§6a of the design record), NOT BUILT. Build in this order,
       because each element's absence makes the next one decorative:**

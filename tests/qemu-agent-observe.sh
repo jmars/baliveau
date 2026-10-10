@@ -328,6 +328,30 @@ esac
 init_journal_refusal "$ZB/fx-init" >/dev/null \
     || fail "the stale-binary guard REFUSES the real $ZB/fx-init — the guard is broken, not the cache"
 echo "[guard] stale-binary guard EXERCISED: it refuses a same-class stub that lacks the journal header, naming QEMU_AGENT_REBUILD_INIT=1, and still passes the real binary"
+
+# ─── the SECOND stale-binary guard: the staged fx-init must carry the
+# PER-BOOT NONCE writer (fx.bootnonce parsing), for the same reason as the
+# journal guard: the build above is skipped when the binary is cached, and a
+# pre-nonce fx-init would boot a guest whose .bootlog lines carry NO nonce —
+# every nonce assertion below would then fail for a reason that looks like a
+# reader bug.  Guard-as-function, failing path exercised, same ELF-class stub.
+init_nonce_refusal() { # init_nonce_refusal BIN
+    strings "$1" 2>/dev/null | grep -q 'fx.bootnonce' && return 0
+    printf '%s predates the per-boot nonce (fx-init fx.bootnonce=) — rebuild it: QEMU_AGENT_REBUILD_INIT=1 sh tests/qemu-agent-observe.sh\n' "$1"
+    return 1
+}
+NREF=""
+NREF="$(init_nonce_refusal "$ZB/fx-init")" || fail "$NREF"
+if NREF_STUB="$(init_nonce_refusal "$STUB" 2>/dev/null)"; then
+    fail "the nonce guard PASSED a binary that does not carry the nonce writer — THE GUARD IS INERT (a stale cache boots a nonce-less writer, and the nonce demo below would fail misleadingly)"
+fi
+case "${NREF_STUB:-}" in
+    *QEMU_AGENT_REBUILD_INIT=1*) ;;
+    *) fail "the nonce guard's refusal does not name the rebuild switch: '${NREF_STUB:-}'";;
+esac
+init_nonce_refusal "$ZB/fx-init" >/dev/null \
+    || fail "the nonce guard REFUSES the real $ZB/fx-init — the guard is broken, not the cache"
+echo "[guard] nonce-writer guard EXERCISED: it refuses a same-class stub lacking fx.bootnonce, naming QEMU_AGENT_REBUILD_INIT=1, and passes the real binary"
 KCONFIG="$KCACHE/kernel/config"
 if [ -r "$KCONFIG" ] && grep -q '^CONFIG_IA32_EMULATION=y' "$KCONFIG"; then
     fail "the pinned kernel HAS IA32 emulation — the guest-ABI premise is void, re-read this lane"
@@ -345,6 +369,8 @@ AUDIT_BIN="$REPO/build/fx-audit"
 [ -x "$AUDIT_BIN" ] || fail "no $AUDIT_BIN"
 [ "$AUDIT_BIN" -nt "$REPO/tools/fx-audit.c" ] \
     || fail "$AUDIT_BIN is older than tools/fx-audit.c — a stale cached binary answered for the seat; rm -rf build and re-run"
+grep -aq 'no nonce the host issued for a boot in this window' "$AUDIT_BIN" \
+    || fail "STALE BINARY: $AUDIT_BIN does not carry this source's nonce-binding message — the seat was not built from the per-boot-nonce tools/fx-audit.c"
 FXSTORE_AUDIT="$SIBS/fxstore/zig-out/bin/fxstore"
 if [ ! -x "$FXSTORE_AUDIT" ]; then
     echo "qemu-agent-observe: LOUD: fxstore missing at $FXSTORE_AUDIT — the REAL-STORE audit demonstration is SKIPPED (build the sibling: cd ../fxstore/zig && zig build); tests/test_fx_audit.sh carries the seat's full discriminations"
@@ -664,13 +690,27 @@ RDINIT="/fx/store/$(basename "$FXD")/fx-init"
 
 # ─── the boot driver (no chardev: every assertion is the console or the disk) ─
 qemu_pid=""
+# THE HOST'S PER-BOOT NONCE LEDGER — the hypervisor's own record of the
+# token it issued for each launch, handed to the guest on the kernel
+# command line (fx.bootnonce=) and NEVER written inside the guest.  This
+# gate mints it from /dev/urandom per launch (unpredictable, exactly the
+# live property the audit's window binding rests on; the fixture gates use
+# deterministic tokens because their lines are hand-fabricated to match).
+NONCE_LEDGER="$WORK/host-nonces.led"
+: > "$NONCE_LEDGER"
+NONCE_N=0
 boot() { # boot IMG CONLOG
     _img=$1 _con=$2
     : > "$_con"
+    NONCE_N=$((NONCE_N + 1))
+    BOOT_NONCE=$(od -An -N8 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')
+    [ -n "$BOOT_NONCE" ] || fail "cannot mint the boot nonce (no /dev/urandom?)"
+    echo "$NONCE_N $BOOT_NONCE" >> "$NONCE_LEDGER"
+    echo "qemu-agent-observe: [host] boot #$NONCE_N: fx.bootnonce=$BOOT_NONCE issued"
     qemu-system-x86_64 \
         -machine q35 -accel kvm -cpu host -m 2048 -smp 1 \
         -kernel "$KERNEL" -initrd "$_img" \
-        -append "console=ttyS0,115200 rdinit=$RDINIT fx.store=/fx/store panic=-1 oops=panic" \
+        -append "console=ttyS0,115200 rdinit=$RDINIT fx.store=/fx/store fx.bootnonce=$BOOT_NONCE panic=-1 oops=panic" \
         -nographic -no-reboot -monitor none -serial file:"$_con" \
         -drive "file=$DISK,format=raw,if=virtio" \
         >"$WORK/qemu.$$.out" 2>&1 &
@@ -805,7 +845,7 @@ echo "                    — and its fx_write of the RECORD ITSELF was refused 
 if [ -n "$FXSTORE_AUDIT" ]; then
     extract_store "$WORK/audit-ext1"
     FXSTORE_BIN="$FXSTORE_AUDIT" "$AUDIT_BIN" --store "$WORK/audit-ext1/store" \
-        --obs-file "$WORK/audit-obs.obs" --boots 1 > "$WORK/audit1.out" 2>&1
+        --obs-file "$WORK/audit-obs.obs" --boots 1 --nonces "$NONCE_LEDGER" > "$WORK/audit1.out" 2>&1
     _rc=$?
     cp "$WORK/audit1.out" "$EVID/obs-audit-enroll.out"
     [ "$_rc" = 0 ] || { cat "$WORK/audit1.out"; fail "[obs] audit: enrollment against the real store after boot 1 exited $_rc (a store written only by the REAL writers must audit coherent)"; }
@@ -813,7 +853,7 @@ if [ -n "$FXSTORE_AUDIT" ]; then
         || fail "[obs] audit: the first run did not enroll"
     grep -q '^VERDICT: coherent$' "$WORK/audit1.out" \
         || fail "[obs] audit: enrollment verdict is not coherent"
-    echo "qemu-agent-observe: [obs] audit ENROLLED against the real store after boot 1 (--boots 1, coherent)"
+    echo "qemu-agent-observe: [obs] audit ENROLLED against the real store after boot 1 (--boots 1 + the nonce ledger, coherent)"
 fi
 
 echo "=== qemu-agent-observe: [obs] boot 2 — the crasher's generation v$V_A boots and FAILS ==="
@@ -830,6 +870,24 @@ cp "$WORK/obs-2-bootlog.txt" "$EVID/obs-boot2-bootlog.txt"
 echo "--- [obs] boot 2: the disk .bootlog ---"; sed 's/^/    /' "$WORK/obs-2-bootlog.txt"
 grep -q "^$V_A failed " "$WORK/obs-2-bootlog.txt" \
     || { cat "$WORK/obs-2-bootlog.txt"; fail "[obs] boot 2: no '$V_A failed' line in the disk .bootlog"; }
+# THE WRITER PROOF, on the real guest's own bytes: every line the real
+# fx-init appended carries the nonce the HOST issued for the boot that
+# wrote it (latched from this launch's fx.bootnonce=), and PID1 ECHOED
+# the nonce on the console.  This is the strongest form of the writer half:
+# not a fixture, the live chain host-ledger -> kernel cmdline -> PID1 ->
+# the durable record.
+ledger_nonce() { awk -v n="$1" '$1 == n { print $2; exit }' "$NONCE_LEDGER"; }
+_b=1
+while [ "$_b" -le 2 ]; do
+    _nb=$(ledger_nonce "$_b")
+    [ -n "$_nb" ] || fail "[obs] bootlog nonce: the ledger has no nonce for boot $_b"
+    grep -q " $_nb\$" "$WORK/obs-2-bootlog.txt" \
+        || { cat "$WORK/obs-2-bootlog.txt"; fail "[obs] boot $_b: no .bootlog line carries the host-issued nonce $_nb — the real writer did not stamp the per-boot nonce"; }
+    grep -q "fx-init: boot nonce $_nb" "$WORK/obs-$_b.log" \
+        || fail "[obs] boot $_b: PID1 did not echo its nonce on the console"
+    _b=$((_b + 1))
+done
+echo "qemu-agent-observe: [obs] WRITER PROOF: boots 1-2's .bootlog lines carry the host-issued nonces, and PID1 echoed each on the console"
 
 echo "=== qemu-agent-observe: [obs] boot 3 — roll forward to the bracket under a NEW version; the agent OBSERVES and STOPS ==="
 boot "$WORK/img-obs.cpio.gz" "$WORK/obs-3.log"
@@ -881,8 +939,10 @@ echo "--- [obs] boot 3: the disk .recovery ---"; sed 's/^/    /' "$WORK/obs-3-re
 REC3_N=$(grep -c '^[0-9]' "$WORK/obs-3-recovery.txt" || true)
 [ "$REC3_N" = 1 ] \
     || { cat "$WORK/obs-3-recovery.txt"; fail "[obs] boot 3: the journal counts $REC3_N roll-forward(s) (want exactly 1 — this machine's first recovery)"; }
-grep -Eq "^[0-9]+ $V_C $V_A ([0-9a-f]+|-)\$" "$WORK/obs-3-recovery.txt" \
-    || { cat "$WORK/obs-3-recovery.txt"; fail "[obs] boot 3: the journal line does not name THIS roll-forward (published v$V_C from the failed v$V_A)"; }
+NB3=$(ledger_nonce 3)
+grep -Eq "^[0-9]+ $V_C $V_A ([0-9a-f]+|-) $NB3\$" "$WORK/obs-3-recovery.txt" \
+    || { cat "$WORK/obs-3-recovery.txt"; fail "[obs] boot 3: the journal line does not name THIS roll-forward (published v$V_C from the failed v$V_A) under BOOT 3's ISSUED NONCE $NB3 — the roll-forward row is not nonce-bound to the boot that wrote it"; }
+echo "qemu-agent-observe: [obs] boot 3's .recovery row carries boot 3's host-issued nonce ($NB3) — the roll-forward is bound to the boot that wrote it"
 # THE RECOVERY JOURNAL, AGENT HALF: the refused agent's OWN REPORT carries the
 # count — the fixture is never dispatched on this boot, so the report is the
 # only surface where this agent can see that the machine has recovered.  This
@@ -938,19 +998,34 @@ echo "                    the observing harness never re-issued the failed activ
 
 # ── THE BOOT-ACCOUNTING DEMONSTRATION, on the REAL guest records ─────────
 # Since the enrollment after boot 1 this gate started boots 2, 3 and 4
-# (delta 3): v$V_A's failed boot, the roll-forward boot that republished
-# the bracket as v$V_C, and v$V_C's settled re-boot.  All of it is REAL
-# .bootlog growth written by the REAL fx-init inside the guest:
-#   (a) it must audit COHERENT with the host's own count (--boots 4) —
-#       legitimate growth is the half that makes the check usable;
-#   (b) the MOTIVATING FORGE on the same real bootlog — appending
-#       "v$V_A ok" so the next boot would read the crashed generation as
-#       good and NOT roll forward — must FIRE, named as a forged verdict.
+# (delta 3), EACH under a nonce it minted and recorded in its ledger:
+# v$V_A's failed boot, the roll-forward boot that republished the bracket
+# as v$V_C, and v$V_C's settled re-boot.  All of it is REAL .bootlog
+# growth written by the REAL fx-init inside the guest, under the host's
+# own per-boot nonces:
+#   (a) it must audit COHERENT with the host's own count and ledger
+#       (--boots 4 --nonces) — legitimate growth is the half that makes
+#       the check usable;
+#   (b) the MOTIVATING FORGE on the same real bootlog — the forged PAIR
+#       (in-progress + verdict) that would make the next boot read the
+#       crashed generation as good and NOT roll forward — must FIRE.  Two
+#       forgers, two fresh extractions of the same disk, the same
+#       observation: one wears a nonce the host never issued, one wears
+#       boot 4's REAL nonce read off the disk.  BOTH must be caught (the
+#       second is the strongest: a disk-readable nonce is not reusable).
 if [ -n "$FXSTORE_AUDIT" ]; then
     extract_store "$WORK/audit-ext4"
-    # (a) legitimate growth, accounted by the host's boot delta
+    # each arm audits against its OWN COPY of the enrollment baseline: a
+    # COHERENT run rewrites the observation (advancing host_boots to 4 and
+    # collapsing the next window to delta 0), and the forge arms must judge
+    # the pair inside the REAL window (boots 2-4) where boot 4's own lines
+    # are present to conflict with the reuse
+    cp "$WORK/audit-obs.obs" "$WORK/audit-obs-b1.obs"
+    cp "$WORK/audit-obs.obs" "$WORK/audit-obs-b2.obs"
+    # (a) legitimate growth, accounted by the host's boot delta AND bound
+    #     per-boot by the nonce ledger
     FXSTORE_BIN="$FXSTORE_AUDIT" "$AUDIT_BIN" --store "$WORK/audit-ext4/store" \
-        --obs-file "$WORK/audit-obs.obs" --boots 4 > "$WORK/audit4.out" 2>&1
+        --obs-file "$WORK/audit-obs.obs" --boots 4 --nonces "$NONCE_LEDGER" > "$WORK/audit4.out" 2>&1
     _rc=$?
     cp "$WORK/audit4.out" "$EVID/obs-audit-boot4.out"
     [ "$_rc" = 0 ] || { cat "$WORK/audit4.out"; fail "[obs] audit: the real 4-boot history exited $_rc (legitimate growth must stay coherent)"; }
@@ -958,26 +1033,45 @@ if [ -n "$FXSTORE_AUDIT" ]; then
         || fail "[obs] audit: the accounting did not see the host delta: $(grep 'boot accounting' "$WORK/audit4.out")"
     grep -q '^VERDICT: coherent$' "$WORK/audit4.out" \
         || fail "[obs] audit: the real 4-boot history is not coherent"
-    echo "qemu-agent-observe: [obs] audit: the REAL 3-boot growth since enrollment (v$V_A failed, the roll-forward, the settled re-boot) audits coherent with --boots 4"
-    # (b) the motivating forge, on the real guest-written bootlog
-    echo "$V_A ok 999" >> "$WORK/audit-ext4/store/.bootlog"
-    FXSTORE_BIN="$FXSTORE_AUDIT" "$AUDIT_BIN" --store "$WORK/audit-ext4/store" \
-        --obs-file "$WORK/audit-obs.obs" --boots 4 > "$WORK/audit4f.out" 2>&1
+    grep -q 'UNCLAIMED' "$WORK/audit4.out" \
+        && fail "[obs] audit: a nonce was reported unclaimed on a disk where every boot wrote its lines: $(grep 'UNCLAIMED' "$WORK/audit4.out")"
+    echo "qemu-agent-observe: [obs] audit: the REAL 3-boot growth since enrollment (v$V_A failed, the roll-forward, the settled re-boot) audits coherent with --boots 4 --nonces (every line nonce-bound)"
+    # (b1) the forged PAIR wearing a nonce the host never issued
+    extract_store "$WORK/audit-ext4f1"
+    printf '%s in-progress 999 deadbad00000001\n%s ok 999 deadbad00000001\n' "$V_A" "$V_A" \
+        >> "$WORK/audit-ext4f1/store/.bootlog"
+    FXSTORE_BIN="$FXSTORE_AUDIT" "$AUDIT_BIN" --store "$WORK/audit-ext4f1/store" \
+        --obs-file "$WORK/audit-obs-b1.obs" --boots 4 --nonces "$NONCE_LEDGER" > "$WORK/audit4f1.out" 2>&1
     _rc=$?
-    cp "$WORK/audit4f.out" "$EVID/obs-audit-forged.out"
-    [ "$_rc" = "1" ] || { cat "$WORK/audit4f.out"; fail "[obs] audit: the forged '$V_A ok' on the real bootlog must be incoherent (exit 1), got $_rc"; }
-    grep -q '^INCOHERENT bootlog-forged-verdict ' "$WORK/audit4f.out" \
-        || fail "[obs] audit: the forge fired but not as a forged verdict: $(grep '^INCOHERENT' "$WORK/audit4f.out")"
-    grep -q '^check previous-observation: pass$' "$WORK/audit4f.out" \
+    cp "$WORK/audit4f1.out" "$EVID/obs-audit-forged-pair-invented.out"
+    [ "$_rc" = "1" ] || { cat "$WORK/audit4f1.out"; fail "[obs] audit: the forged PAIR (invented nonce) on the real bootlog must be incoherent (exit 1), got $_rc"; }
+    grep -q '^INCOHERENT bootlog-unbound-nonce ' "$WORK/audit4f1.out" \
+        || fail "[obs] audit: the pair forge fired but not as an unbound nonce: $(grep '^INCOHERENT' "$WORK/audit4f1.out")"
+    grep -q '^check previous-observation: pass$' "$WORK/audit4f1.out" \
         || fail "[obs] audit: the forge tripped the prefix comparison too (it is an append — the arm is not isolating the accounting)"
+    # (b2) the forged PAIR wearing boot 4's REAL nonce, read off the disk —
+    #      the strongest forger: the per-nonce budget, not the ledger's
+    #      contents, is what catches it
+    NB4=$(ledger_nonce 4)
+    extract_store "$WORK/audit-ext4f2"
+    printf '%s in-progress 998 %s\n%s ok 998 %s\n' "$V_A" "$NB4" "$V_A" "$NB4" \
+        >> "$WORK/audit-ext4f2/store/.bootlog"
+    FXSTORE_BIN="$FXSTORE_AUDIT" "$AUDIT_BIN" --store "$WORK/audit-ext4f2/store" \
+        --obs-file "$WORK/audit-obs-b2.obs" --boots 4 --nonces "$NONCE_LEDGER" > "$WORK/audit4f2.out" 2>&1
+    _rc=$?
+    cp "$WORK/audit4f2.out" "$EVID/obs-audit-forged-pair-realnonce.out"
+    [ "$_rc" = "1" ] || { cat "$WORK/audit4f2.out"; fail "[obs] audit: the forged PAIR wearing boot 4's real nonce must be incoherent (exit 1), got $_rc"; }
+    grep -q '^INCOHERENT bootlog-fabricated-boots ' "$WORK/audit4f2.out" \
+        || fail "[obs] audit: the real-nonce pair forge fired but not through the per-nonce budget: $(grep '^INCOHERENT' "$WORK/audit4f2.out")"
+    grep -q "carries 2 in-progress line(s)" "$WORK/audit4f2.out" \
+        || fail "[obs] audit: the per-nonce finding does not name the reused budget: $(grep '^INCOHERENT bootlog-fabricated' "$WORK/audit4f2.out")"
     # this disk carries the boot-3 roll-forward's .recovery row, whose
     # from-failed IS v$V_A — so recovery-without-failure fires as well (the
-    # journal now points at a version whose last verdict says ok).  TWO
-    # independent catches; the accounting is the one that works even when
-    # no row exists (the FORGERY arm in tests/test_fx_audit.sh).
-    grep -q '^check recovery-without-failure: failed$' "$WORK/audit4f.out" \
+    # journal now points at a version whose last verdict says ok): an
+    # independent SECOND catch on the (b1) extraction, asserted and stated.
+    grep -q '^check recovery-without-failure: failed$' "$WORK/audit4f1.out" \
         || fail "[obs] audit: the real journal points at v$V_A's failure — the forge must also trip recovery-without-failure here"
-    echo "qemu-agent-observe: [obs] audit: the APPENDED '$V_A ok 999' on the REAL bootlog fires bootlog-forged-verdict (the append-only comparison still passes; the real .recovery row gives a SECOND, independent catch)"
+    echo "qemu-agent-observe: [obs] audit: the forged PAIR on the REAL bootlog fires BOTH ways — an invented nonce as bootlog-unbound-nonce, and boot 4's disk-read REAL nonce as the per-nonce budget (a second independent catch: the real .recovery row names v$V_A)"
 fi
 
 # ═══ ARM BLIND — the same fixture with today's harness: the ratchet ═══════

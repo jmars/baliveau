@@ -1,0 +1,26 @@
+fx-audit: store /tmp/qemuobs.Sr0oe1/audit-ext4f1/store (fxstore /var/data/workspace/fixpoint-linux/fxstore/zig-out/bin/fxstore)
+fx-audit: host boots on this store: 4 (the off-disk anchor; the guest can neither see nor set it)
+fx-audit: observation /tmp/qemuobs.Sr0oe1/audit-obs-b1.obs
+check version-chain: pass
+check recovery-without-failure: failed
+fx-audit: check verify-drift SKIPPED: no --rootfs given (the rootfs lives inside the guest image; pass a host view of it to run fxstore verify)
+check verify-drift: pass
+check facts-path-gone: pass
+fx-audit: src_of: 8 binding(s), 0 source artifact(s) present in the store (absence is the oracle's host-tree fallback; a DISAPPEARANCE is the finding)
+check src-of-artifact: pass
+check records-damaged: pass
+fx-audit: boot accounting: host boots 1 -> 4 (delta 3); this window added in-progress 4, verdicts 4, shutdown 0 — every verdict rides an in-progress the host's count can account for
+check boot-accounting: failed
+fx-audit: .bootlog grew by 288 byte(s) (append-only respected)
+fx-audit: .recovery grew by 97 byte(s) (append-only respected)
+fx-audit: transition: CURRENT 5 -> 7 (activation or rollback — a change, not an incoherence)
+fx-audit: version 6 is new since the previous observation
+fx-audit: version 7 is new since the previous observation
+check previous-observation: pass
+INCOHERENT recovery-without-failure .recovery row (line 22): fx-init republished v7 from v5, but v5's last bootlog verdict is 'ok' (fx-init rolls forward only from failed/in-progress)
+INCOHERENT bootlog-fabricated-boots 4 in-progress line(s) added but the host started only 3 boot(s) since the previous observation (host boots 1 -> 4) — fx-init writes at most ONE in-progress per boot the host starts (init.zig:4387); the surplus was appended by something that is not fx-init booting
+INCOHERENT bootlog-unbound-nonce 2 ADDED .bootlog line(s) carry no nonce the host issued for a boot in this window; first: '5 in-progress 999 deadbad00000001' — the host issued a nonce for EVERY boot of this window (window nonces 3 == delta 3), and fx-init under that regime writes its boot's nonce on every line it appends (init.zig bootlog_append latches the fx.bootnonce= token once per PID1 lifetime), so no boot the host started is behind a nonce-less or foreign-nonce line: this is the forged line-PAIR shape that would otherwise impersonate a silent boot. A line with no nonce field is the PRE-NONCE writer's shape; 'none' is the writer's no-nonce-issued placeholder; a hex nonce from an earlier window or outside the ledger is one this boot was never issued
+checks: 6 pass, 2 failed; findings: 3
+bound: this seat sees REWRITES and TRUNCATIONS of records it previously observed, cross-record INCOHERENCE, and — anchored on --boots and the per-boot nonce ledger (--nonces) — APPENDED .bootlog/.recovery growth the host cannot account for. IN THE NONCE REGIME (the host issues fx.bootnonce= per boot and every window boot is covered) the forged line-PAIR in a silent boot's slack is CLOSED: every ADDED line must wear a nonce the host issued for a boot in this window, per-nonce budgets hold at one in-progress / verdict / shutdown / row, and an unclaimed nonce is REPORTED as a silent boot. What it still CANNOT see: window boots the ledger does not cover (a mixed/manual regime — lines without a window nonce are named and counted, but a forged pair in an UNCOVERED boot's slack still passes the arithmetic); boots started off the counting host, or a miscounted / moved --obs-file reuse (the count and the ledger are only as true as the host's own bookkeeping); a coherent tamper on a store first seen at enrollment (the enrollment gap — first run trusts, loudly). That is the honest bound of auditing, not proofing (§6b), printed on every run so the tool never implies more than it knows.
+evidence: the store's own records only — attempts.jsonl (the harness self-report) is never opened.
+VERDICT: incoherent (3 finding(s))

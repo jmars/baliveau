@@ -98,7 +98,19 @@
  *   bootlog-fabricated-boots   ADDED in-progress / shutdown / recovery
  *                              lines outnumbering the boots the HOST
  *                              reports starting since the previous
- *                              observation (--boots delta)
+ *                              observation (--boots delta), or — the nonce
+ *                              form — one nonce carrying more than its one
+ *                              boot's line budget, or a verdict on a nonce
+ *                              no in-progress wears
+ *   bootlog-unbound-nonce /
+ *   recovery-unbound-nonce     an ADDED line/row carrying no nonce the host
+ *                              issued for a boot in this window (no field,
+ *                              the "none" placeholder, a nonce from an
+ *                              earlier window, or one never issued) — in the
+ *                              harness regime (every window boot nonce-
+ *                              covered) this is the forged line-PAIR shape;
+ *                              in a mixed/manual regime it is named, not a
+ *                              finding
  *
  * A record that cannot be READ is its own LOUD state (exit 2), never a
  * silent pass — this repo has already paid for "a read error read as
@@ -204,22 +216,25 @@
  * A COHERENT tamper against a store this seat has never observed before is
  * UNDETECTABLE by it, and an in-guest cross-check is defeated by design.
  * This seat sees REWRITES and TRUNCATIONS of records it previously
- * observed, and — with --boots — APPENDED .bootlog/.recovery growth beyond
- * what the host's own boot count can account for.  What it still cannot
- * see: a forged line-pair (in-progress + verdict, TERMINATED OR TORN — the
- * torn form rides the same attribution as the terminated one, so the pair
- * passes in either shape) appended into the SLACK of a boot the host started
- * but fx-init never recorded (killed before its in-progress, or a boot with
- * no bootable generation — both append nothing); that slack exists whenever
- * the host delta exceeds the lines written, and closing it would need a host
- * nonce per boot, which changes the writer's format (stated, out of scope).
- * The count is only as true as the host's own bookkeeping: a boot started on
- * the store by something the counting host does not know (another VM, a
- * manual qemu), or a miscounted / moved --obs-file reuse, reopens the same
- * hole.  That is the honest bound of "auditing, not proofing" (§6b), printed
- * on every run so the tool never implies more than it knows.
+ * observed, and — with --boots + the --nonces ledger — APPENDED
+ * .bootlog/.recovery growth beyond what the host can account for, line by
+ * line, not merely in aggregate.  The per-boot nonce closed the measured
+ * pair-forgery (an in-progress + verdict pair appended into the slack of a
+ * silent boot): in the NONCE REGIME every ADDED line must wear a nonce the
+ * host issued for a boot in this window, per-nonce budgets hold at one
+ * in-progress / verdict / shutdown / row, a verdict needs a same-nonce
+ * in-progress, and an UNCLAIMED nonce is itself reported (a silent boot —
+ * visible, coherent, never a rollback by itself).  What it still cannot
+ * see: window boots the ledger does not cover (the mixed/manual regime —
+ * nonce-less lines are named and boot-counted, but a forged pair in an
+ * UNCOVERED boot's slack still passes the arithmetic); boots started off
+ * the counting host or a miscounted / moved --obs-file reuse (the count
+ * and the ledger are only as true as the host's own bookkeeping); and the
+ * enrollment gap (first run trusts, loudly).  That is the honest bound of
+ * "auditing, not proofing" (§6b), printed on every run so the tool never
+ * implies more than it knows.
  *
- * Host tool (like the oracle: native, no musl variant).  Links only the
+Host tool (like the oracle: native, no musl variant).  Links only the
  * vendored sha256.  Usage:
  *   fx-audit --store DIR --boots N [--rootfs DIR] [--obs-dir DIR]
  *            [--obs-file PATH] [--fxstore BIN] [--re-enroll] [--rollback [V]]
@@ -277,6 +292,10 @@ static unsigned long g_boots = 0;        /* --boots (required): cumulative
                                           * on this store — the OFF-DISK
                                           * anchor for .bootlog growth */
 static int g_boots_given = 0;
+static const char *g_nonces_path = NULL; /* --nonces (required when the window
+                                          * has boots): the HOST's own ledger
+                                          * of the nonce it issued per boot */
+static int g_nonces_given = 0;
 
 static char g_store_abs[4096];
 
@@ -286,7 +305,14 @@ static finding_t g_findings[MAX_FINDINGS];
 static size_t g_nfindings = 0;
 
 /* .bootlog */
-typedef struct { unsigned long v; char status[64]; unsigned long epoch; size_t off; } bl_line_t;
+typedef struct { unsigned long v; char status[64]; unsigned long epoch;
+                 char nonce[80];        /* the 4th field: the writer's
+                                          * per-boot nonce token, "" when the
+                                          * line has no 4th field (the
+                                          * pre-nonce writer's shape — history
+                                          * a nonce-era store may still carry;
+                                          * only ADDED lines are judged) */
+                 size_t off; } bl_line_t;
 static bl_line_t g_bl[4096];
 static size_t g_nbl = 0;
 static size_t g_bl_damaged = 0, g_bl_torn = 0;
@@ -296,7 +322,10 @@ static size_t g_bl_len = 0;
 static int g_bl_absent = 0;
 
 /* .recovery: data rows only (header is '#' lines) */
-typedef struct { unsigned long epoch, published, from_failed; char genhash[80]; size_t lineno; } rec_row_t;
+typedef struct { unsigned long epoch, published, from_failed; char genhash[80];
+                 char nonce[80];         /* 5th field, same meaning as
+                                          * .bootlog's 4th ("" = absent) */
+                 size_t lineno; size_t off; } rec_row_t;
 static rec_row_t g_rec[1024];
 static size_t g_nrec = 0;
 static size_t g_rec_damaged = 0;
@@ -534,7 +563,13 @@ static void read_bootlog(void) {
                                            * check needs the lines ADDED since
                                            * the previous observation */
         char junk[8];
-        if (sscanf(p, "%lu %63s %lu %7s", &b.v, b.status, &b.epoch, junk) == 3) {
+        /* The writer's grammar is "<v> <status> <epoch> <nonce>" (4 fields,
+         * init.zig bootlog_append); a line with only three is the PRE-NONCE
+         * writer's shape — history, legal in the baseline, judged only when
+         * ADDED.  A FIFTH field is not any writer's shape: damaged.  (nonce
+         * stays "" at nf==3: b was memset.) */
+        int nf = sscanf(p, "%lu %63s %lu %79s %7s", &b.v, b.status, &b.epoch, b.nonce, junk);
+        if (nf == 3 || nf == 4) {
             /* The table is FIXED.  Silently dropping the overflow would make
              * the COUNT and the ATTRIBUTION both partial while the run still
              * said "coherent" — a silent pass.  A fixed-array overflow is
@@ -591,8 +626,14 @@ static void read_recovery(void) {
         if (p[0] != '#') {
             rec_row_t r; memset(&r, 0, sizeof r);
             char junk[8];
-            if (sscanf(p, "%lu %lu %lu %79s %7s", &r.epoch, &r.published, &r.from_failed, r.genhash, junk) == 4) {
+            /* "<epoch> <pub> <from> <genhash|-> <nonce>" (5 fields,
+             * init.zig recovery_line); 4 = the pre-nonce history shape;
+             * 6 = no writer's shape (damaged) */
+            int nf = sscanf(p, "%lu %lu %lu %79s %79s %7s", &r.epoch, &r.published, &r.from_failed, r.genhash, r.nonce, junk);
+            if (nf == 4 || nf == 5) {
                 r.lineno = lineno;
+                r.off = (size_t)(p - g_rec_bytes); /* for the added-row
+                                                    * window selection */
                 /* same loud-overflow rule as .bootlog: rows past g_rec[]
                  * would vanish from the added-row accounting without a
                  * word */
@@ -722,7 +763,11 @@ static void obs_write(void) {
     FILE *f = fopen(tmp, "w");
     if (!f) die("cannot write observation '%s': %s", tmp, strerror(errno));
     char sha[65];
-    fprintf(f, "fx-audit-observation 2\n");
+    /* FORMAT 3: adds nothing over 2 field-wise; the bump is the REGIME
+     * marker — a format-2 baseline predates the per-boot nonce and its
+     * window semantics differ (added lines were never nonce-judged), so it
+     * is refused rather than assumed (see obs_read). */
+    fprintf(f, "fx-audit-observation 3\n");
     fprintf(f, "store %s\n", g_store_abs);
     if (g_bl_absent) fprintf(f, "bootlog_absent 1\n");
     else {
@@ -759,14 +804,20 @@ static void obs_read(void) {
     }
     char line[LINE_MAX_];
     line[0] = 0;
-    if (!fgets(line, sizeof line, f) || strcmp(line, "fx-audit-observation 2\n") != 0) {
+    if (!fgets(line, sizeof line, f) || strcmp(line, "fx-audit-observation 3\n") != 0) {
         /* a format-1 file is a baseline from BEFORE the host-boot anchor:
          * it carries no boot count, so the appended-line accounting has no
          * delta to compare against.  Assuming one is exactly the silent
          * default this seat refuses — die loudly and name the way out. */
         if (line[0] && !strncmp(line, "fx-audit-observation 1", 22))
             die("observation '%s' is FORMAT 1 (predates --boots): it recorded no host boot count, so .bootlog growth cannot be anchored against it — re-establish the baseline with --re-enroll --boots N (the enrollment gap applies until then)", path);
-        die("observation '%s' is not format 2", path);
+        /* a format-2 file predates the per-boot nonce: its windows were
+         * never nonce-judged, so a nonce accounting computed against it
+         * would compare growth measured under two different regimes — the
+         * same silent assumption, refused the same way */
+        if (line[0] && !strncmp(line, "fx-audit-observation 2", 22))
+            die("observation '%s' is FORMAT 2 (predates the per-boot nonce): its baseline was taken before .bootlog lines were nonce-bound, so this window's growth cannot be nonce-judged against it — re-establish the baseline with --re-enroll --boots N --nonces F (the enrollment gap applies until then)", path);
+        die("observation '%s' is not format 3", path);
     }
     while (fgets(line, sizeof line, f)) {
         char name[64], v1[4096], v2[4096], v3[4096];
@@ -1014,21 +1065,111 @@ static void check_records_damaged(void) {
 }
 
 /* consume the most recent ADDED, not-yet-consumed '<v> in-progress' line at
- * an index BELOW `before`; 1 if one was found.  This is the attribution rule
- * both verdict forms ride: a verdict is answered for by its OWN boot's
- * in-progress, EARLIER in the window and not already consumed by an earlier
- * verdict (the writer is single and sequential).  A TERMINATED and a TORN
- * verdict get exactly this — nothing else — so a crash mid-append is not
- * reported as a forgery. */
-static int bl_consume_ip(size_t before, unsigned long v, size_t base, char *consumed) {
+ * an index BELOW `before`; returns its INDEX, or -1 when none was found.
+ * This is the attribution rule both verdict forms ride: a verdict is
+ * answered for by its OWN boot's in-progress, EARLIER in the window and not
+ * already consumed by an earlier verdict (the writer is single and
+ * sequential).  A TERMINATED and a TORN verdict get exactly this — nothing
+ * else — so a crash mid-append is not reported as a forgery.  The index is
+ * what binds a TORN verdict (whose own nonce may be cut mid-write and so
+ * cannot be trusted) to the nonce of the in-progress that answers for it. */
+static long bl_consume_ip(size_t before, unsigned long v, size_t base, char *consumed) {
     size_t j = before;
     while (j > 0) {
         j--;
         if (g_bl[j].off < base) break;
         if (consumed[j]) continue;
-        if (g_bl[j].v == v && !strcmp(g_bl[j].status, "in-progress")) { consumed[j] = 1; return 1; }
+        if (g_bl[j].v == v && !strcmp(g_bl[j].status, "in-progress")) { consumed[j] = 1; return (long)j; }
     }
-    return 0;
+    return -1;
+}
+
+/* ── the host's per-boot nonce ledger (the pair-forgery anchor) ──────────
+ *
+ * THE HOLE THIS CLOSES (measured by the review that constructed it): a
+ * forged line-PAIR ("<v> in-progress <e>" + "<v> ok <e>") appended into the
+ * SLACK of a boot the host started but fx-init never recorded (killed
+ * before its in-progress, a refused service table, no bootable generation)
+ * fully impersonates that boot — the count arithmetic accounts it (1 ip +
+ * 1 verdict <= delta 1) and the in-order attribution finds its own forged
+ * in-progress behind it.  The count could not tell a forger's bytes from
+ * an unrecorded boot's own.
+ *
+ * THE ANCHOR: the host issues an unpredictable per-boot nonce on the kernel
+ * command line (fx.bootnonce=, minted at launch), records "<boot> <nonce>"
+ * in its own ledger, and fx-init stamps that nonce on every .bootlog line
+ * and .recovery row it appends during the boot (init.zig bootlog_append /
+ * recovery_line, latched once per PID1 lifetime before any append).  The
+ * guest can read its OWN cmdline — so the closure is NOT secrecy of the
+ * current nonce; it is that (1) a nonce for a FUTURE boot does not exist
+ * yet, (2) a PAST boot's nonce is visible in-guest only on the lines that
+ * boot itself wrote — and those already spent its per-boot line budget, so
+ * reuse fires the per-nonce accounting below, (3) a SILENT boot (nothing
+ * written) runs no agent service at all (no services load — the writer's
+ * own pre-decided failure path), so nobody is alive inside it to spend its
+ * nonce, and (4) an invented nonce is not in the host's ledger.  The
+ * per-boot accounting is then applied PER NONCE: <=1 in-progress, <=1
+ * verdict, <=1 shutdown, <=1 .recovery row per nonce, and a verdict only
+ * rides in-progressive(s) wearing ITS OWN nonce (one boot, one nonce —
+ * every line of a boot carries the nonce latched at its start).
+ *
+ * THE REGIMES, honestly distinguished: when the ledger covers every boot of
+ * the window (window nonces == delta — the harness regime, the host issues
+ * one nonce per boot it starts) an ADDED line with no window nonce is a
+ * FINDING: the host issued a nonce for every boot, fx-init under that
+ * regime writes its nonce on every line, so no boot the host started is
+ * behind such a line.  When the window holds boots the host started
+ * WITHOUT a nonce (a mixed/manual regime — an operator hand-boot between
+ * audits, honestly declared by the short ledger), lines without a window
+ * nonce are NAMED and counted by the boot-count arithmetic only: reported,
+ * never silently accepted as accounted, and never silently skipped. */
+
+typedef struct { unsigned long boot; char nonce[80]; } nled_t;
+static nled_t g_nled[8192];
+static size_t g_nnled = 0;
+
+/* Load and validate the host's ledger.  Loud on every anomaly: this file is
+ * the HOST'S OWN MEMORY of what it issued, and a contradiction inside it is
+ * a tool error (exit 2), never a guess. */
+static void load_nonces(void) {
+    if (!g_nonces_given) return;
+    FILE *f = fopen(g_nonces_path, "r");
+    if (!f) die("cannot open --nonces '%s': %s — the host's nonce ledger is required to judge this window", g_nonces_path, strerror(errno));
+    char line[LINE_MAX_];
+    size_t lineno = 0;
+    while (fgets(line, sizeof line, f)) {
+        lineno++;
+        if (line[0] == '\n' || line[0] == '#') continue;
+        unsigned long boot;
+        char tok[80];
+        if (sscanf(line, "%lu %79s", &boot, tok) != 2)
+            die("%s:%zu: not the ledger's \"<boot> <nonce>\" shape: %s", g_nonces_path, lineno, line);
+        if (boot == 0)
+            die("%s:%zu: boot ordinal 0 — boots are counted from 1 (--boots semantics)", g_nonces_path, lineno);
+        if (boot > g_boots)
+            die("%s:%zu: a nonce for boot %lu but the host has started only %lu boot(s) — the ledger contradicts --boots", g_nonces_path, lineno, boot, g_boots);
+        if (g_nnled >= sizeof g_nled / sizeof g_nled[0])
+            die("%s: more than %zu ledger entries: this build's nonce table is FULL — raise the table and re-run", g_nonces_path, sizeof g_nled / sizeof g_nled[0]);
+        for (size_t i = 0; i < g_nnled; i++) {
+            if (g_nled[i].boot == boot)
+                die("%s:%zu: two nonces for boot %lu (first %s) — the host issued ONE nonce per boot", g_nonces_path, lineno, boot, g_nled[i].nonce);
+            if (!strcmp(g_nled[i].nonce, tok))
+                die("%s:%zu: nonce %s issued for both boot %lu and boot %lu — one nonce identifies one boot", g_nonces_path, lineno, tok, g_nled[i].boot, boot);
+        }
+        g_nled[g_nnled].boot = boot;
+        snprintf(g_nled[g_nnled].nonce, sizeof g_nled[g_nnled].nonce, "%s", tok);
+        g_nnled++;
+    }
+    if (ferror(f)) die("cannot read '%s': %s", g_nonces_path, strerror(errno));
+    fclose(f);
+}
+
+/* the ledger slot of a nonce token, or -1 (not issued by this host) */
+static long nonce_slot(const char *tok) {
+    if (!tok || !tok[0]) return -1;
+    for (size_t i = 0; i < g_nnled; i++)
+        if (!strcmp(g_nled[i].nonce, tok)) return (long)i;
+    return -1;
 }
 
 /* the host-boot accounting — the APPENDED-line blind spot, closed.
@@ -1048,6 +1189,42 @@ static void check_boot_accounting(void) {
     if (g_boots < g_obs_boots)
         die("the host boot count went DOWN (%lu at the previous observation -> %lu now) — the --boots input contradicts the host's own recorded memory; refusing to guess an accounting from it", g_obs_boots, g_boots);
     unsigned long delta = g_boots - g_obs_boots;
+
+    /* ── the nonce window ──
+     * The ledger's entries for boots IN THIS WINDOW ((obs, boots]) are the
+     * nonces a legitimately-written added line may wear.  Without the
+     * ledger the window cannot be judged at all — the pair-forgery blind
+     * spot reopens silently — so it is REQUIRED whenever the window holds
+     * boots (the same rule as --boots: an anchor that silently defaults is
+     * decorative). */
+    if (delta > 0 && !g_nonces_given)
+        die("--nonces is REQUIRED when the window holds boots (%lu since the previous observation): the host's ledger of the nonce it issued per boot is what binds an ADDED line to the boot that wrote it — without it a forged line-PAIR in a silent boot's slack is invisible (the measured hole), and silently skipping the nonce accounting is how a bound becomes decorative. Pass --nonces FILE with \"<boot> <nonce>\" per line (a window boot the host started with NO nonce is declared by its absence from the ledger — a mixed/manual regime, reported not guessed)");
+    size_t *wslot = NULL;      /* ledger slot per window boot, by scan order */
+    unsigned long nwin = 0;    /* nonces issued for boots in this window */
+    if (g_nonces_given) {
+        wslot = xmalloc((g_nnled ? g_nnled : 1) * sizeof *wslot);
+        for (size_t i = 0; i < g_nnled; i++)
+            if (g_nled[i].boot > g_obs_boots && g_nled[i].boot <= g_boots)
+                wslot[nwin++] = i;
+        if (nwin > delta)
+            die("the ledger holds %lu nonce(s) for this window's %lu boot(s) (host boots %lu -> %lu) — the host issued more nonces than boots it started; its own record contradicts itself, refusing to account from it", nwin, delta, g_obs_boots, g_boots);
+    }
+    /* STRICT = the harness regime: the host issued a nonce for EVERY boot
+     * of the window, so every ADDED line must wear one.  nwin < delta is
+     * the mixed/manual regime (named below), never silently accepted. */
+    int strict = g_nonces_given && (nwin == delta);
+    /* per-nonce usage: indexed by LEDGER slot (so a PAST nonce reused on an
+     * added line is attributable: nonce_slot finds its slot, its boot is
+     * outside the window) */
+    size_t *nip = xmalloc((g_nnled ? g_nnled : 1) * sizeof *nip);
+    size_t *nvd = xmalloc((g_nnled ? g_nnled : 1) * sizeof *nvd);
+    size_t *nsd = xmalloc((g_nnled ? g_nnled : 1) * sizeof *nsd);
+    size_t *nrw = xmalloc((g_nnled ? g_nnled : 1) * sizeof *nrw);
+    for (size_t i = 0; i < g_nnled; i++) nip[i] = nvd[i] = nsd[i] = nrw[i] = 0;
+    size_t n_unbound_bl = 0;   /* added lines with no window nonce */
+    char unbound_bl_first[256]; unbound_bl_first[0] = 0;
+    size_t n_unbound_rec = 0;  /* added rows with no window nonce */
+    char unbound_rec_first[256]; unbound_rec_first[0] = 0;
 
     /* ── the .bootlog lines ADDED since the previous observation ── */
     size_t base = 0;                 /* byte offset where the added lines start */
@@ -1079,6 +1256,26 @@ static void check_boot_accounting(void) {
         for (size_t i = 0; i < g_nbl; i++) {
             if (g_bl[i].off < base) continue; /* not added this window */
             const char *st = g_bl[i].status;
+            /* nonce classification first (every ip/sd/verdict line the
+             * writer appends carries one; foreign statuses belong to
+             * records-damaged and are skipped as before) */
+            if (!strcmp(st, "in-progress") || !strcmp(st, "shutdown") ||
+                !strcmp(st, "ok") || !strcmp(st, "failed")) {
+                long ws = nonce_slot(g_bl[i].nonce);
+                int in_win = (ws >= 0 && g_nled[ws].boot > g_obs_boots && g_nled[ws].boot <= g_boots);
+                if (in_win) {
+                    if (!strcmp(st, "in-progress")) nip[ws]++;
+                    else if (!strcmp(st, "shutdown")) nsd[ws]++;
+                    else nvd[ws]++;
+                } else {
+                    n_unbound_bl++;
+                    if (n_unbound_bl == 1) {
+                        snprintf(unbound_bl_first, sizeof unbound_bl_first, "%lu %s %lu %s",
+                                 g_bl[i].v, g_bl[i].status, g_bl[i].epoch,
+                                 g_bl[i].nonce[0] ? g_bl[i].nonce : "(no field)");
+                    }
+                }
+            }
             if (!strcmp(st, "in-progress")) { n_ip++; continue; }
             if (!strcmp(st, "shutdown"))    { n_sd++; continue; }
             if (strcmp(st, "ok") && strcmp(st, "failed")) continue; /* foreign status: records-damaged owns the shape */
@@ -1087,7 +1284,7 @@ static void check_boot_accounting(void) {
              * version, EARLIER in this window, not yet consumed by an
              * earlier verdict for it (in-order matching — the writer is
              * single and sequential) */
-            if (!bl_consume_ip(i, g_bl[i].v, base, consumed))
+            if (bl_consume_ip(i, g_bl[i].v, base, consumed) < 0)
                 add_finding("bootlog-forged-verdict",
                             "an ADDED '%lu %s %lu' line has no '%lu in-progress' line earlier in this window — fx-init appends in-progress when it starts a boot (init.zig:4387) and the verdict in that SAME boot (the g_boot_decided latch, init.zig:2619/2631/2726/4398), so no boot the host started is behind this line: it was APPENDED by hand. This is the forge that feeds fx-init's boot decision a verdict no boot produced (bootlog_last, init.zig:737): a forged 'ok' makes the next boot skip the roll-forward and keeps a broken generation CURRENT; a forged 'failed' forces one that should not happen",
                             g_bl[i].v, st, g_bl[i].epoch, g_bl[i].v);
@@ -1117,19 +1314,37 @@ static void check_boot_accounting(void) {
             char *last_nl = NULL;
             for (char *q = tail; *q; q++) if (*q == '\n') last_nl = q;
             if (last_nl) tail = last_nl + 1;
-            unsigned long tv; char ts[64]; unsigned long tep; char junk[8];
-            if (tail[0] && sscanf(tail, "%lu %63s %lu %7s", &tv, ts, &tep, junk) == 3) {
+            unsigned long tv; char ts[64]; unsigned long tep; char tnonce[80]; char junk[8];
+            int tnf = sscanf(tail, "%lu %63s %lu %79s %7s", &tv, ts, &tep, tnonce, junk);
+            if (tnf == 3) tnonce[0] = 0;
+            if (tail[0] && (tnf == 3 || tnf == 4)) {
                 if (!strcmp(ts, "in-progress")) n_ip++;
                 else if (!strcmp(ts, "shutdown")) n_sd++;
                 else if (!strcmp(ts, "ok") || !strcmp(ts, "failed")) {
                     n_verdict++;
-                    if (bl_consume_ip(g_nbl, tv, base, consumed))
+                    /* a torn line's own nonce may be CUT mid-write (tnf==3,
+                     * or a truncated 4th field), so a torn verdict is never
+                     * nonce-judged on its own token: it rides the in-window
+                     * attribution below, and when an in-progress answers for
+                     * it, THAT in-progress's nonce is charged — the boot the
+                     * host counts is the same boot either way.  A forger
+                     * cannot use this as a bypass: a torn tail is the file's
+                     * LAST line, so its forged in-progress partner must be
+                     * TERMINATED and must itself wear a window nonce (or be
+                     * an unbound finding), and the answering slot is charged
+                     * a second verdict when the boot already wrote one. */
+                    long aj = bl_consume_ip(g_nbl, tv, base, consumed);
+                    if (aj >= 0) {
+                        long aws = nonce_slot(g_bl[aj].nonce);
+                        int awin = (aws >= 0 && g_nled[aws].boot > g_obs_boots && g_nled[aws].boot <= g_boots);
+                        if (awin) nvd[aws]++;
                         info("boot accounting: an added TORN '%lu %s %lu' line (no trailing newline) is accounted for by an added '%lu in-progress' line earlier in this window — one boot the host started wrote both and the append was cut short mid-write; counted, not a finding",
                              tv, ts, tep, tv);
-                    else
+                    } else {
                         add_finding("bootlog-forged-verdict",
                                     "an ADDED TORN '%lu %s %lu' line (no trailing newline) has no unconsumed '%lu in-progress' line earlier in this window — a torn tail is what a crash mid-append leaves, and a hand-appended line without its newline looks identical, so the in-progress attribution decides it; a boot that started writes its in-progress FIRST (init.zig:4387, before the verdict sites), so no boot the host's count accounts for is behind this line. fx-init reads .bootlog with fgets, which RETURNS a final unterminated line, so bootlog_last still sees this verdict in-guest: the missing newline does not make an appended forge unreadable, only harder to see",
                                     tv, ts, tep, tv);
+                    }
                 }
             }
             g_bl_bytes[g_bl_len] = save;
@@ -1176,7 +1391,90 @@ static void check_boot_accounting(void) {
                 add_finding("bootlog-fabricated-boots",
                             "%zu .recovery data row(s) added but the host started only %lu boot(s) since the previous observation (host boots %lu -> %lu) — recovery_append runs at most once per boot (a successful roll-forward inside decide_boot_version); rows no boot wrote are a fabricated recovery history",
                             n_rows, delta, g_obs_boots, g_boots);
+            /* the nonce binding for rows (same classification as lines; a
+             * TORN final row is counted by n_rows above but never
+             * nonce-judged — its token may be cut mid-write) */
+            for (size_t i = 0; i < g_nrec; i++) {
+                if (g_rec[i].off < rec_base) continue; /* not added */
+                long ws = nonce_slot(g_rec[i].nonce);
+                int in_win = (ws >= 0 && g_nled[ws].boot > g_obs_boots && g_nled[ws].boot <= g_boots);
+                if (in_win) {
+                    nrw[ws]++;
+                } else {
+                    n_unbound_rec++;
+                    if (n_unbound_rec == 1)
+                        snprintf(unbound_rec_first, sizeof unbound_rec_first, "%lu %lu %lu %s %s",
+                                 g_rec[i].epoch, g_rec[i].published, g_rec[i].from_failed,
+                                 g_rec[i].genhash,
+                                 g_rec[i].nonce[0] ? g_rec[i].nonce : "(no field)");
+                }
+            }
         }
+    }
+
+    /* ── the nonce verdicts (the pair-forgery closure) ────────────────────
+     * Order matters for the reader: the STRICT regime turns every unbound
+     * added line into a finding; the mixed/manual regime NAMES them and
+     * keeps only the boot-count arithmetic.  Both regimes report; neither
+     * silently accepts a line as nonce-accounted, and neither silently
+     * skips it.  (Counts only ever accumulate inside a judged walk, so a
+     * skipped record contributes zeros; the UNCLAIMED report additionally
+     * requires the bootlog walk to have run — unknown lines must not read
+     * as an unclaimed nonce.) */
+    if (g_nonces_given) {
+        if (n_unbound_bl) {
+            if (strict)
+                add_finding("bootlog-unbound-nonce",
+                            "%zu ADDED .bootlog line(s) carry no nonce the host issued for a boot in this window; first: '%s' — the host issued a nonce for EVERY boot of this window (window nonces %lu == delta %lu), and fx-init under that regime writes its boot's nonce on every line it appends (init.zig bootlog_append latches the fx.bootnonce= token once per PID1 lifetime), so no boot the host started is behind a nonce-less or foreign-nonce line: this is the forged line-PAIR shape that would otherwise impersonate a silent boot. A line with no nonce field is the PRE-NONCE writer's shape; 'none' is the writer's no-nonce-issued placeholder; a hex nonce from an earlier window or outside the ledger is one this boot was never issued",
+                            n_unbound_bl, unbound_bl_first, nwin, delta);
+            else
+                info("boot accounting: %zu ADDED .bootlog line(s) carry no nonce the host issued for a boot in this window (first: '%s') — the ledger covers %lu of the %lu window boot(s): a MIXED/MANUAL regime (window boots the host started without a nonce, e.g. an operator hand-boot). The nonce binding does not cover these lines; the boot-count arithmetic and the in-progress attribution still do. Reported, never silently accepted as nonce-accounted",
+                     n_unbound_bl, unbound_bl_first, nwin, delta);
+        }
+        if (n_unbound_rec) {
+            if (strict)
+                add_finding("recovery-unbound-nonce",
+                            "%zu ADDED .recovery row(s) carry no nonce the host issued for a boot in this window; first: '%s' — one row per boot, written by recovery_append under that boot's latched nonce; a row no issued nonce backs is a fabricated recovery",
+                            n_unbound_rec, unbound_rec_first);
+            else
+                info("boot accounting: %zu ADDED .recovery row(s) carry no window nonce (first: '%s') — the mixed/manual regime: counted by the boot arithmetic, not nonce-bound",
+                     n_unbound_rec, unbound_rec_first);
+        }
+        /* the per-nonce budget: at most one in-progress, one verdict, one
+         * shutdown, one row per nonce, and a verdict needs an in-progress
+         * wearing the SAME nonce (the writer latches one nonce per boot and
+         * writes every line of that boot under it) */
+        for (size_t w = 0; w < nwin; w++) {
+            size_t s = wslot[w];
+            unsigned long b = g_nled[s].boot;
+            const char *tok = g_nled[s].nonce;
+            if (nip[s] > 1)
+                add_finding("bootlog-fabricated-boots",
+                            "the nonce the host issued for boot %lu (%s) carries %zu in-progress line(s) in this window — fx-init appends at most ONE per boot (init.zig:4387); a second boot on paper wearing one real boot's nonce",
+                            b, tok, nip[s]);
+            if (nsd[s] > 1)
+                add_finding("bootlog-fabricated-boots",
+                            "the nonce the host issued for boot %lu (%s) carries %zu shutdown line(s) — at most one per boot (init.zig:3925)",
+                            b, tok, nsd[s]);
+            if (nvd[s] > 1)
+                add_finding("bootlog-fabricated-boots",
+                            "the nonce the host issued for boot %lu (%s) carries %zu verdict line(s) — the g_boot_decided latch allows at most one verdict per boot (init.zig:2619/2631/2726/4398)",
+                            b, tok, nvd[s]);
+            if (nvd[s] == 1 && nip[s] == 0)
+                add_finding("bootlog-fabricated-boots",
+                            "a verdict rides the nonce the host issued for boot %lu (%s), but NO in-progress line wears that nonce — a boot that started wrote its in-progress FIRST (init.zig:4387, before every verdict site), so a verdict whose nonce carries no in-progress is a forge wearing a stolen boot's nonce: the pair appended on top of a real boot's own lines",
+                            b, tok);
+            if (nrw[s] > 1)
+                add_finding("bootlog-fabricated-boots",
+                            "the nonce the host issued for boot %lu (%s) carries %zu .recovery row(s) — recovery_append runs at most once per boot",
+                            b, tok, nrw[s]);
+            if (!skip_bl && nip[s] + nvd[s] + nsd[s] + nrw[s] == 0)
+                info("boot accounting: the nonce the host issued for boot %lu (%s) is UNCLAIMED — no .bootlog line and no .recovery row this window carries it — a SILENT boot: the host started it and fx-init recorded nothing (no bootable generation, a refused service table, or killed before the in-progress append). REPORTED, not a finding: a machine that booted nothing is not an incoherence, and an unclaimed nonce must never roll a healthy machine back",
+                     b, tok);
+        }
+        if (!strict && delta > 0)
+            info("boot accounting: the nonce ledger covers %lu of the %lu boot(s) this window — the pair-forgery closure holds only for the covered boots (a forged pair in an uncovered boot's slack still passes the arithmetic; the run's bound states this)", nwin, delta);
+        free(wslot); free(nip); free(nvd); free(nsd); free(nrw);
     }
 
     if (!skip_bl)
@@ -1328,8 +1626,9 @@ static int do_rollback(void) {
 static void usage(FILE *f) {
     fprintf(f,
         "fx-audit — the AUDIT seat (host-side coherence detector + rollback trigger)\n"
-        "usage: fx-audit --store DIR --boots N [--rootfs DIR] [--obs-dir DIR]\n"
-        "                 [--obs-file PATH] [--fxstore BIN] [--re-enroll] [--rollback [V]]\n"
+        "usage: fx-audit --store DIR --boots N [--nonces FILE] [--rootfs DIR]\n"
+        "                 [--obs-dir DIR] [--obs-file PATH] [--fxstore BIN]\n"
+        "                 [--re-enroll] [--rollback [V]]\n"
         "  --store DIR     the store to audit (as the host sees it)\n"
         "  --boots N       REQUIRED, host truth: how many boots the HOST has EVER\n"
         "                  started on this store, cumulative. The off-disk anchor\n"
@@ -1338,6 +1637,17 @@ static void usage(FILE *f) {
         "                  audit REFUSES (an appended forged line is invisible\n"
         "                  without the anchor; assuming a count would make the\n"
         "                  bound decorative).\n"
+        "  --nonces FILE   REQUIRED when the window holds boots: the host's OWN\n"
+        "                  ledger of the per-boot nonce it issued, one\n"
+        "                  \"<boot> <nonce>\" per line (boot = the same ordinal\n"
+        "                  --boots counts; the nonce rides the kernel cmdline as\n"
+        "                  fx.bootnonce= and fx-init stamps it on every line and\n"
+        "                  row it appends that boot). Never read from the guest.\n"
+        "                  When the ledger covers every window boot, an ADDED\n"
+        "                  line without a window nonce is a FINDING (the forged\n"
+        "                  line-PAIR shape); when it covers fewer (a mixed/manual\n"
+        "                  regime), such lines are NAMED and counted by the boot\n"
+        "                  arithmetic only.\n"
         "  --rootfs DIR    a host view of the guest rootfs (runs `fxstore verify`)\n"
         "  --obs-dir DIR   observation store dir (default $FX_AUDIT_OBS_DIR, else\n"
         "                  the sibling dir <store>.fx-audit-obs).  MUST NOT be\n"
@@ -1365,6 +1675,17 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--fxstore") && i + 1 < argc) g_fxstore = argv[++i];
         else if (!strncmp(argv[i], "--fxstore=", 10)) g_fxstore = argv[i] + 10;
         else if (!strcmp(argv[i], "--re-enroll")) g_reenroll = 1;
+        else if (!strcmp(argv[i], "--nonces") && i + 1 < argc) {
+            g_nonces_path = argv[++i];
+            check_safe_path(g_nonces_path, "--nonces");
+            g_nonces_given = 1;
+        }
+        else if (!strncmp(argv[i], "--nonces=", 9)) {
+            if (!argv[i][9]) die("--nonces= needs the host's nonce ledger path");
+            g_nonces_path = argv[i] + 9;
+            check_safe_path(g_nonces_path, "--nonces");
+            g_nonces_given = 1;
+        }
         else if (!strcmp(argv[i], "--boots") && i + 1 < argc) {
             char *end = NULL;
             g_boots = strtoul(argv[++i], &end, 10);
@@ -1555,6 +1876,9 @@ int main(int argc, char **argv) {
     /* ── the previous observation (read BEFORE the checks so the compare
      * has it; written only at the end) ── */
     obs_read();
+    /* the host's nonce ledger is loaded AFTER obs_read (its window is
+     * defined by the observation's boot count) and BEFORE the checks */
+    load_nonces();
 
     /* ── the checks.  ONE run_check CALL PER LINE: the gate deletes exactly
      * one of these lines to build a mutated detector and prove the matching
@@ -1584,7 +1908,7 @@ int main(int argc, char **argv) {
 
     if (g_bl_torn) info(".bootlog has a torn tail (%zu unterminated line(s)) — a crash mid-write, not a verdict", g_bl_torn);
     printf("checks: %zu pass, %zu failed; findings: %zu\n", pass, fail, g_nfindings);
-    printf("bound: this seat sees REWRITES and TRUNCATIONS of records it previously observed, cross-record INCOHERENCE, and — anchored on --boots — APPENDED .bootlog/.recovery growth the host's own boot count cannot account for. It still CANNOT see: a forged line-PAIR (in-progress + verdict, terminated or torn — a torn verdict rides the same in-progress attribution as a terminated one) appended into the slack of a boot the host started but fx-init never recorded (killed before its in-progress, or no bootable generation) — closing that needs a per-boot host nonce, which changes the writer's format; a coherent tamper on a store it has never observed (the enrollment gap); .bootlog lines naming gc-pruned versions (legitimate). The anchor is only as true as the host's own bookkeeping — a boot the counting host does not know about reopens the hole. An in-guest cross-check is defeated by design — that is why this seat is host-side.\n");
+    printf("bound: this seat sees REWRITES and TRUNCATIONS of records it previously observed, cross-record INCOHERENCE, and — anchored on --boots and the per-boot nonce ledger (--nonces) — APPENDED .bootlog/.recovery growth the host cannot account for. IN THE NONCE REGIME (the host issues fx.bootnonce= per boot and every window boot is covered) the forged line-PAIR in a silent boot's slack is CLOSED: every ADDED line must wear a nonce the host issued for a boot in this window, per-nonce budgets hold at one in-progress / verdict / shutdown / row, and an unclaimed nonce is REPORTED as a silent boot. What it still CANNOT see: window boots the ledger does not cover (a mixed/manual regime — lines without a window nonce are named and counted, but a forged pair in an UNCOVERED boot's slack still passes the arithmetic); boots started off the counting host, or a miscounted / moved --obs-file reuse (the count and the ledger are only as true as the host's own bookkeeping); a coherent tamper on a store first seen at enrollment (the enrollment gap — first run trusts, loudly). That is the honest bound of auditing, not proofing (§6b), printed on every run so the tool never implies more than it knows.\n");
     printf("evidence: the store's own records only — attempts.jsonl (the harness self-report) is never opened.\n");
 
     if (g_nfindings > 0) {
