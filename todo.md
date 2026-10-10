@@ -405,11 +405,27 @@ certifies coherence; neither says "improved".
           component appears in the per-component table attributed **by the store** (not by a host
           tree), and the closure number moves with it. A number that moves without the component being
           attributed is not the same claim.
-        - **STILL MISSING BEYOND THE BACKEND:** nothing in the guest can yet BUILD a package (the
-          provisioned store is toolchain-free by design, `activate_paths`), so the first task needs
-          either a host-side build step or an in-guest one — decide which, and note that an in-guest
-          build is what makes the agent's source reach the store *inside* the machine rather than
-          being copied into it.
+        - **THE BUILD HAPPENS IN THE GUEST, AND THE IMAGE IS NOT THE UNIT OF CHANGE — DECIDED
+          (user, 2026-10-10, correcting me twice).** The agent is ALREADY INSIDE the machine. A new
+          generation must not require building, patching or injecting an **IMAGE**: the change is
+          carried by the **STORE**, which is already there on the disk the agent is running from. The
+          loop is **make changes -> APPLY them -> activate the new generation**, all in the running
+          system. What I had wrong, and what must NOT survive as the agent's loop: the current slot
+          chain (`tests/qemu-agent-slot.sh`) reads the source back OFF the disk image, builds on the
+          HOST, injects the result back with `e2fsck`/`debugfs -w`, and boots again — a host round
+          trip per iteration, which is exactly the dependency that makes iteration impossible.
+          MEASURED OBSTACLES to the corrected loop: (a) `fxstore` has never been built to run
+          anywhere but the host — dynamically linked against `libm.so.6`, `libc.so.6`,
+          `ld-linux-x86-64.so.2` AND `libdatalog.so`, so a musl guest cannot exec it; (b) the recipe
+          executor needs palisade `stage3`, whose absence is a LOUD exit 127 with NO fallback (only
+          bwrap-absent has the LOUD non-hermetic fallback, so an in-guest run legitimately falls back
+          to plain exec in the workdir and must SAY so) — `stage3` is a static System V x86-64 ELF and
+          runs on this host, so it is EXPECTED guest-viable but must be PROVED there;
+          (c) **THERE IS NO IN-GUEST REBOOT**: fx-init's control protocol carries
+          `status`/`log`/`activate`/`rollback`/`shutdown` and NO reboot (`init.zig:3098-3228`; only
+          "shutdown" exists), and the guest tests pass qemu `-no-reboot` (`qemu-agent-observe.sh:648`)
+          with the HOST restarting the VM. So "make it effective" currently depends on something
+          outside the guest, which is the same class of gap the user is pointing at.
 - [ ] **LuaJIT JIT on/off in the guest**: shipped ON and gated two-sidedly; the *compiler* and
       agent-authored MCP servers are the long-running workloads that justify it. Measure per lane.
       (2026-10-10: MEASURED IN-GUEST for the x86_64 artifact — `tests/qemu-luajit.sh`'s disk marker
