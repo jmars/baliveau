@@ -89,7 +89,12 @@
  *                              in-progress for that version in the same
  *                              window — no boot the host started is behind
  *                              it (the appended "<failed v> ok" that would
- *                              stop fx-init rolling forward)
+ *                              stop fx-init rolling forward).  A TORN
+ *                              (unterminated) verdict is judged by the same
+ *                              attribution, never rejected on sight: with an
+ *                              added in-progress answering for it, the torn
+ *                              line is NAMED and tolerated (a crash
+ *                              mid-append, not tamper).
  *   bootlog-fabricated-boots   ADDED in-progress / shutdown / recovery
  *                              lines outnumbering the boots the HOST
  *                              reports starting since the previous
@@ -97,7 +102,13 @@
  *
  * A record that cannot be READ is its own LOUD state (exit 2), never a
  * silent pass — this repo has already paid for "a read error read as
- * absence" (414b26c).  ABSENT is a recorded state, not an error: a store
+ * absence" (414b26c).  A record that cannot be read IN FULL is the same
+ * class, for the same reason: .bootlog and .recovery are parsed into fixed
+ * tables (g_bl[4096], g_rec[1024]), and a line past the table would be
+ * dropped from the counting AND from the forged-verdict attribution while
+ * the run still printed a verdict — so an over-long record is exit 2,
+ * naming the cap, the file and the line, instead of an audit of a truncated
+ * view.  ABSENT is a recorded state, not an error: a store
  * that has not booted yet has no .bootlog, and absent-at-enrollment is
  * legal (growth absent -> present is a transition, presence -> absent is a
  * finding).
@@ -163,7 +174,20 @@
  *   1. each added ok/failed for version v must be preceded, IN THE ADDED
  *      WINDOW, by an added in-progress for v not yet consumed by an
  *      earlier verdict for v — a verdict with no boot behind it is a
- *      FORGED VERDICT (the motivating exploit, named as that);
+ *      FORGED VERDICT (the motivating exploit, named as that).  A TORN
+ *      verdict (the file's LAST line, unterminated) rides the SAME
+ *      attribution, because fx-init reads .bootlog with fgets, which
+ *      RETURNS a final unterminated line — so a torn verdict still steers
+ *      bootlog_last in-guest and cannot be exempted from the rule.  But a
+ *      torn tail is equally what the writer leaves when it is killed
+ *      MID-APPEND between a boot's in-progress line and that boot's verdict,
+ *      and that boot is one the host's count accounts for: so a torn verdict
+ *      is TOLERATED when an added in-progress answers for it — with its own
+ *      line naming the torn verdict and that in-progress (never a silent
+ *      pass) — and reported as a forged verdict only when nothing in this
+ *      window accounts for it.  Always-finding was a MEASURED FALSE
+ *      POSITIVE: it rejected a healthy machine and its message named an
+ *      in-progress the same run's accounting line printed as present;
  *   2. added in-progress lines, shutdown lines and recovery rows must each
  *      number at most the host's boot DELTA — more boots on paper than the
  *      host started are FABRICATED BOOTS.
@@ -182,17 +206,18 @@
  * This seat sees REWRITES and TRUNCATIONS of records it previously
  * observed, and — with --boots — APPENDED .bootlog/.recovery growth beyond
  * what the host's own boot count can account for.  What it still cannot
- * see: a forged line-pair (in-progress + verdict) appended into the SLACK
- * of a boot the host started but fx-init never recorded (killed before its
- * in-progress, or a boot with no bootable generation — both append
- * nothing); that slack exists whenever the host delta exceeds the lines
- * written, and closing it would need a host nonce per boot, which changes
- * the writer's format (stated, out of scope).  The count is only as true
- * as the host's own bookkeeping: a boot started on the store by something
- * the counting host does not know (another VM, a manual qemu), or a
- * miscounted / moved --obs-file reuse, reopens the same hole.  That is the
- * honest bound of "auditing, not proofing" (§6b), printed on every run so
- * the tool never implies more than it knows.
+ * see: a forged line-pair (in-progress + verdict, TERMINATED OR TORN — the
+ * torn form rides the same attribution as the terminated one, so the pair
+ * passes in either shape) appended into the SLACK of a boot the host started
+ * but fx-init never recorded (killed before its in-progress, or a boot with
+ * no bootable generation — both append nothing); that slack exists whenever
+ * the host delta exceeds the lines written, and closing it would need a host
+ * nonce per boot, which changes the writer's format (stated, out of scope).
+ * The count is only as true as the host's own bookkeeping: a boot started on
+ * the store by something the counting host does not know (another VM, a
+ * manual qemu), or a miscounted / moved --obs-file reuse, reopens the same
+ * hole.  That is the honest bound of "auditing, not proofing" (§6b), printed
+ * on every run so the tool never implies more than it knows.
  *
  * Host tool (like the oracle: native, no musl variant).  Links only the
  * vendored sha256.  Usage:
@@ -487,7 +512,10 @@ static long ver_index(unsigned v) {
 
 /* .bootlog, the writer's exact grammar ("%u %s %u"): a TERMINATED line that
  * does not parse is damaged (a finding); an unterminated TAIL is a torn
- * mid-write (counted, not a finding — crash, not tamper). */
+ * mid-write (counted, not a finding — crash, not tamper).  A torn tail is
+ * NOT exempt from the boot accounting: fx-init's fgets returns it, so it is
+ * counted and attributed there like any other added line (see
+ * check_boot_accounting), and it is always NAMED in the run output. */
 static void read_bootlog(void) {
     char path[4096];
     snprintf(path, sizeof path, "%s/.bootlog", g_store_abs);
@@ -507,7 +535,16 @@ static void read_bootlog(void) {
                                            * the previous observation */
         char junk[8];
         if (sscanf(p, "%lu %63s %lu %7s", &b.v, b.status, &b.epoch, junk) == 3) {
-            if (g_nbl < sizeof g_bl / sizeof g_bl[0]) g_bl[g_nbl++] = b;
+            /* The table is FIXED.  Silently dropping the overflow would make
+             * the COUNT and the ATTRIBUTION both partial while the run still
+             * said "coherent" — a silent pass.  A fixed-array overflow is
+             * the most repeated defect in this repo (a bound that goes inert
+             * beyond a limit), so it is LOUD here: exit 2, naming the cap,
+             * the file and the line. */
+            if (g_nbl >= sizeof g_bl / sizeof g_bl[0])
+                die("%s has more than %zu parseable lines: this build's .bootlog table (g_bl[%zu]) is FULL at line %zu, and every line past it would be silently dropped from the counting AND the forged-verdict attribution — the audit would report on a file it truncated. Raise the table and re-run (the whole file is already read into memory; only the parsed table is capped)",
+                    path, sizeof g_bl / sizeof g_bl[0], sizeof g_bl / sizeof g_bl[0], g_nbl + 1);
+            g_bl[g_nbl++] = b;
         } else {
             /* the FINDING is added by check_records_damaged (the reader only
              * records — findings belong to checks so the gate's mutation
@@ -556,7 +593,13 @@ static void read_recovery(void) {
             char junk[8];
             if (sscanf(p, "%lu %lu %lu %79s %7s", &r.epoch, &r.published, &r.from_failed, r.genhash, junk) == 4) {
                 r.lineno = lineno;
-                if (g_nrec < sizeof g_rec / sizeof g_rec[0]) g_rec[g_nrec++] = r;
+                /* same loud-overflow rule as .bootlog: rows past g_rec[]
+                 * would vanish from the added-row accounting without a
+                 * word */
+                if (g_nrec >= sizeof g_rec / sizeof g_rec[0])
+                    die("%s has more than %zu data rows: this build's .recovery table (g_rec[%zu]) is FULL at row %zu (line %zu), and every row past it would be silently dropped from the added-row accounting — the audit would report on a file it truncated. Raise the table and re-run",
+                        path, sizeof g_rec / sizeof g_rec[0], sizeof g_rec / sizeof g_rec[0], g_nrec + 1, lineno);
+                g_rec[g_nrec++] = r;
             } else if (p[0] != 0) {
                 g_rec_damaged++;
                 if (g_rec_damaged == 1) {
@@ -970,6 +1013,24 @@ static void check_records_damaged(void) {
                     g_rec_damaged, g_rec_bad1_lineno, g_rec_bad1);
 }
 
+/* consume the most recent ADDED, not-yet-consumed '<v> in-progress' line at
+ * an index BELOW `before`; 1 if one was found.  This is the attribution rule
+ * both verdict forms ride: a verdict is answered for by its OWN boot's
+ * in-progress, EARLIER in the window and not already consumed by an earlier
+ * verdict (the writer is single and sequential).  A TERMINATED and a TORN
+ * verdict get exactly this — nothing else — so a crash mid-append is not
+ * reported as a forgery. */
+static int bl_consume_ip(size_t before, unsigned long v, size_t base, char *consumed) {
+    size_t j = before;
+    while (j > 0) {
+        j--;
+        if (g_bl[j].off < base) break;
+        if (consumed[j]) continue;
+        if (g_bl[j].v == v && !strcmp(g_bl[j].status, "in-progress")) { consumed[j] = 1; return 1; }
+    }
+    return 0;
+}
+
 /* the host-boot accounting — the APPENDED-line blind spot, closed.
  * observation_compare catches REWRITES; this check binds the GROWTH of the
  * append-only records to the boots the HOST reports starting (--boots
@@ -1026,14 +1087,7 @@ static void check_boot_accounting(void) {
              * version, EARLIER in this window, not yet consumed by an
              * earlier verdict for it (in-order matching — the writer is
              * single and sequential) */
-            size_t j = i;
-            while (j > 0) {
-                j--;
-                if (g_bl[j].off < base) break;
-                if (consumed[j]) continue;
-                if (g_bl[j].v == g_bl[i].v && !strcmp(g_bl[j].status, "in-progress")) { consumed[j] = 1; j = SIZE_MAX; break; }
-            }
-            if (j != SIZE_MAX)
+            if (!bl_consume_ip(i, g_bl[i].v, base, consumed))
                 add_finding("bootlog-forged-verdict",
                             "an ADDED '%lu %s %lu' line has no '%lu in-progress' line earlier in this window — fx-init appends in-progress when it starts a boot (init.zig:4387) and the verdict in that SAME boot (the g_boot_decided latch, init.zig:2619/2631/2726/4398), so no boot the host started is behind this line: it was APPENDED by hand. This is the forge that feeds fx-init's boot decision a verdict no boot produced (bootlog_last, init.zig:737): a forged 'ok' makes the next boot skip the roll-forward and keeps a broken generation CURRENT; a forged 'failed' forces one that should not happen",
                             g_bl[i].v, st, g_bl[i].epoch, g_bl[i].v);
@@ -1042,7 +1096,20 @@ static void check_boot_accounting(void) {
          * fgets, which returns a final unterminated line — so a forged
          * verdict appended WITHOUT its newline still steers bootlog_last.
          * Account it like any other added line or the check has a
-         * no-newline bypass. */
+         * no-newline bypass.
+         *
+         * A torn verdict gets the SAME in-window attribution as a terminated
+         * one, and for the same reason: a torn tail is what the writer
+         * leaves when it is killed MID-APPEND between a boot's in-progress
+         * line and that boot's verdict (the reader above classes a torn tail
+         * as "a crash mid-write, not tamper"), and that boot IS one the
+         * host's count accounts for.  Firing unconditionally rejected a
+         * HEALTHY machine and its message ("no in-progress behind it in this
+         * window") contradicted the SAME run's accounting line — a spurious
+         * finding rolls back a working system.  It is still never SILENT: a
+         * tolerated torn verdict is NAMED, with the in-progress that
+         * answers for it, and a torn verdict nothing in this window accounts
+         * for is a finding whose message is true of the evidence printed. */
         if (g_bl_torn && g_bl_len > base) {
             char save = g_bl_bytes[g_bl_len];
             g_bl_bytes[g_bl_len] = 0;
@@ -1056,9 +1123,13 @@ static void check_boot_accounting(void) {
                 else if (!strcmp(ts, "shutdown")) n_sd++;
                 else if (!strcmp(ts, "ok") || !strcmp(ts, "failed")) {
                     n_verdict++;
-                    add_finding("bootlog-forged-verdict",
-                                "an ADDED TORN '%lu %s %lu' line (no trailing newline) has no in-progress behind it in this window — fx-init reads .bootlog with fgets, and fgets RETURNS a final unterminated line, so bootlog_last still sees this verdict in-guest; the missing newline does not make an appended forge unreadable, only harder to see",
-                                tv, ts, tep);
+                    if (bl_consume_ip(g_nbl, tv, base, consumed))
+                        info("boot accounting: an added TORN '%lu %s %lu' line (no trailing newline) is accounted for by an added '%lu in-progress' line earlier in this window — one boot the host started wrote both and the append was cut short mid-write; counted, not a finding",
+                             tv, ts, tep, tv);
+                    else
+                        add_finding("bootlog-forged-verdict",
+                                    "an ADDED TORN '%lu %s %lu' line (no trailing newline) has no unconsumed '%lu in-progress' line earlier in this window — a torn tail is what a crash mid-append leaves, and a hand-appended line without its newline looks identical, so the in-progress attribution decides it; a boot that started writes its in-progress FIRST (init.zig:4387, before the verdict sites), so no boot the host's count accounts for is behind this line. fx-init reads .bootlog with fgets, which RETURNS a final unterminated line, so bootlog_last still sees this verdict in-guest: the missing newline does not make an appended forge unreadable, only harder to see",
+                                    tv, ts, tep, tv);
                 }
             }
             g_bl_bytes[g_bl_len] = save;
@@ -1513,7 +1584,7 @@ int main(int argc, char **argv) {
 
     if (g_bl_torn) info(".bootlog has a torn tail (%zu unterminated line(s)) — a crash mid-write, not a verdict", g_bl_torn);
     printf("checks: %zu pass, %zu failed; findings: %zu\n", pass, fail, g_nfindings);
-    printf("bound: this seat sees REWRITES and TRUNCATIONS of records it previously observed, cross-record INCOHERENCE, and — anchored on --boots — APPENDED .bootlog/.recovery growth the host's own boot count cannot account for. It still CANNOT see: a forged line-PAIR (in-progress + verdict) appended into the slack of a boot the host started but fx-init never recorded (killed before its in-progress, or no bootable generation) — closing that needs a per-boot host nonce, which changes the writer's format; a coherent tamper on a store it has never observed (the enrollment gap); .bootlog lines naming gc-pruned versions (legitimate). The anchor is only as true as the host's own bookkeeping — a boot the counting host does not know about reopens the hole. An in-guest cross-check is defeated by design — that is why this seat is host-side.\n");
+    printf("bound: this seat sees REWRITES and TRUNCATIONS of records it previously observed, cross-record INCOHERENCE, and — anchored on --boots — APPENDED .bootlog/.recovery growth the host's own boot count cannot account for. It still CANNOT see: a forged line-PAIR (in-progress + verdict, terminated or torn — a torn verdict rides the same in-progress attribution as a terminated one) appended into the slack of a boot the host started but fx-init never recorded (killed before its in-progress, or no bootable generation) — closing that needs a per-boot host nonce, which changes the writer's format; a coherent tamper on a store it has never observed (the enrollment gap); .bootlog lines naming gc-pruned versions (legitimate). The anchor is only as true as the host's own bookkeeping — a boot the counting host does not know about reopens the hole. An in-guest cross-check is defeated by design — that is why this seat is host-side.\n");
     printf("evidence: the store's own records only — attempts.jsonl (the harness self-report) is never opened.\n");
 
     if (g_nfindings > 0) {

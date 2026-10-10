@@ -1,6 +1,6 @@
-fx-audit: store /tmp/qemuobs.OIzzyJ/audit-ext4/store (fxstore /var/data/workspace/fixpoint-linux/fxstore/zig-out/bin/fxstore)
+fx-audit: store /tmp/qemuobs.XL9hGp/audit-ext4/store (fxstore /var/data/workspace/fixpoint-linux/fxstore/zig-out/bin/fxstore)
 fx-audit: host boots on this store: 4 (the off-disk anchor; the guest can neither see nor set it)
-fx-audit: observation /tmp/qemuobs.OIzzyJ/audit-obs.obs
+fx-audit: observation /tmp/qemuobs.XL9hGp/audit-obs.obs
 check version-chain: pass
 check recovery-without-failure: pass
 fx-audit: check verify-drift SKIPPED: no --rootfs given (the rootfs lives inside the guest image; pass a host view of it to run fxstore verify)
@@ -18,6 +18,6 @@ fx-audit: version 6 is new since the previous observation
 fx-audit: version 7 is new since the previous observation
 check previous-observation: pass
 checks: 8 pass, 0 failed; findings: 0
-bound: this seat sees REWRITES and TRUNCATIONS of records it previously observed, cross-record INCOHERENCE, and — anchored on --boots — APPENDED .bootlog/.recovery growth the host's own boot count cannot account for. It still CANNOT see: a forged line-PAIR (in-progress + verdict) appended into the slack of a boot the host started but fx-init never recorded (killed before its in-progress, or no bootable generation) — closing that needs a per-boot host nonce, which changes the writer's format; a coherent tamper on a store it has never observed (the enrollment gap); .bootlog lines naming gc-pruned versions (legitimate). The anchor is only as true as the host's own bookkeeping — a boot the counting host does not know about reopens the hole. An in-guest cross-check is defeated by design — that is why this seat is host-side.
+bound: this seat sees REWRITES and TRUNCATIONS of records it previously observed, cross-record INCOHERENCE, and — anchored on --boots — APPENDED .bootlog/.recovery growth the host's own boot count cannot account for. It still CANNOT see: a forged line-PAIR (in-progress + verdict, terminated or torn — a torn verdict rides the same in-progress attribution as a terminated one) appended into the slack of a boot the host started but fx-init never recorded (killed before its in-progress, or no bootable generation) — closing that needs a per-boot host nonce, which changes the writer's format; a coherent tamper on a store it has never observed (the enrollment gap); .bootlog lines naming gc-pruned versions (legitimate). The anchor is only as true as the host's own bookkeeping — a boot the counting host does not know about reopens the hole. An in-guest cross-check is defeated by design — that is why this seat is host-side.
 evidence: the store's own records only — attempts.jsonl (the harness self-report) is never opened.
 VERDICT: coherent

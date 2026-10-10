@@ -330,7 +330,9 @@ certifies coherence; neither says "improved".
       at most ONE `shutdown` (:3925), at most ONE `.recovery` row (per successful roll-forward).
       So: an added verdict with no added in-progress of that version earlier in the window is
       `bootlog-forged-verdict` (the motivating forge, named in those terms — including its
-      no-newline variant, which fgets still reads in-guest); added in-progress/shutdown/recovery
+      no-newline variant, which fgets still reads in-guest; SUPERSEDED in part by the entry
+      below: a TORN verdict is judged by the SAME attribution, not rejected on sight); added
+      in-progress/shutdown/recovery
       lines beyond the host delta are `bootlog-fabricated-boots`. STRICT window semantics: a
       verdict gets NO credit for an in-progress left open at the previous observation (the
       audit is a between-boots instrument; where ambiguous, prefer the finding — a false stop
@@ -350,6 +352,54 @@ certifies coherence; neither says "improved".
       as the host's bookkeeping (a boot started outside the counting host, or a miscounted /
       moved `--obs-file` reuse, reopens the hole); the enrollment gap stands (first run trusts,
       loudly); gc-pruned versions stay deliberately skipped.
+- [x] **THE TORN VERDICT and the READ-BOUND — the review's two should-fixes, decided and built
+      (gate `make test-audit`).** (1) THE FALSE POSITIVE, MEASURED: `check_boot_accounting`
+      fired `bootlog-forged-verdict` UNCONDITIONALLY for an added TORN ok/failed (an
+      unterminated appended line) — so a REAL crash shape (a boot's `"<v> in-progress"` line
+      landed, its verdict line was cut short mid-append) was rejected with exit 1, and the
+      message claimed "no in-progress behind it in this window" while the SAME run's accounting
+      line printed `added in-progress 1`. A spurious finding rolls back a HEALTHY machine; that
+      is the costly direction. DECIDED: a torn verdict gets the SAME in-window attribution as a
+      terminated one (one shared helper, `bl_consume_ip`), for the same reason the reader
+      already classes a torn tail as "a crash mid-write, not tamper" and for the reason fgets
+      forces anyway (an unterminated final line is READ in-guest, so a torn verdict cannot be
+      exempted from the rule). With an added in-progress for the same version answering for it:
+      tolerated, and NAMED by its own line ("…is accounted for by an added '<v> in-progress'
+      line earlier in this window — one boot the host started wrote both and the append was cut
+      short mid-write; counted, not a finding"), so it is never a silent pass (the torn tail is
+      also named in the run footer). With nothing in the window accounting for it: still a
+      finding, with a message TRUE of that evidence (the delta-0 `TORNFORGE` fixture, the
+      no-newline forge, still fires). (2) THE READ-BOUND: `.bootlog`/`.recovery` are parsed into
+      FIXED tables (`g_bl[4096]`, `g_rec[1024]`) and the overflow was SILENTLY DROPPED — from
+      both the counting and the forged-verdict attribution, i.e. an audit that reports on a file
+      it truncated: the silent pass the tool's header forbids. Now exit 2 (tool error), naming
+      the cap, the file and the line ("…has more than 4096 parseable lines: this build's
+      .bootlog table (g_bl[4096]) is FULL at line 4097 …"); raising the table is the fix when a
+      store outlives the cap, and the message says so. (3) NEW ASSERTIONS for the three
+      legitimate shapes the review found untested — the SAME version booted twice in one window
+      (`--boots 4 -> 6`; fails if the in-order consumption is dropped or made
+      per-version-global: the second verdict then finds no unconsumed in-progress and exits 1),
+      a MULTI-CYCLE roll-forward inside one window (two real `fxstore rollback` republishes,
+      `--boots 4 -> 8`, 4 boots / 2 rows; fails if `recovery-without-failure` reads anything but
+      the LAST non-shutdown verdict for a row's from-failed version — boot 6 wrote `R1 ok 113`,
+      boot 7 `R1 failed 115`, so a first-match reader calls row 2 unanswered — or if the row
+      bound were one-per-window), and an `in-progress` followed by a `shutdown` with NO verdict
+      (SIGTERM during the grace: `do_shutdown` appends its line whether or not the boot decided,
+      init.zig:3925 from :4461; fails if a shutdown were made to require a preceding verdict, or
+      if an open in-progress for CURRENT became its own finding). Plus a KNOWN-HOLE arm that
+      ASSERTS the admitted bound rather than leaving it implicit, and a CONTENT-level
+      stale-binary guard (the test greps the built binary for a message that exists only in this
+      source — an mtime check cannot see a shadowed artifact). **PINNED ASYMMETRY:** on
+      `fcebaa3` (git cat-file -e guarded; `cmp` PROVES the pin differs from the working tree;
+      nothing reads HEAD) the pre-fix tool rejects the same healthy store (exit 1, message
+      contradicting its own accounting) while the fixed tool accepts the SAME store and the SAME
+      observation file (exit 0, torn line named). **WHAT THIS DOES NOT FIX (residual, out of
+      scope):** a forged line-PAIR into the slack of an unrecorded boot still passes — the
+      terminated form was already measured passing, and the torn form now rides the same rule
+      (the pre-fix tool caught the torn form only as a side effect of the unconditional rule that
+      produced the false positive). The per-boot nonce closes BOTH shapes; its cost is unchanged
+      by this fix, and the run's printed bound now says "terminated or torn" so the shape is not
+      mistaken for coverage.
 - [x] **`attempts.jsonl` must never become evidence — now PINNED, not just stated.**
       `fx-audit` never opens it (or any harness self-report), and
       `tests/test_fx_audit.sh` pins the property behaviourally: the same incoherent

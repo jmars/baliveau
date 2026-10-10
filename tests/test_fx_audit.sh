@@ -59,6 +59,28 @@
 #               no host boot behind it fires bootlog-fabricated-boots.
 #               TORNFORGE: the same forge WITHOUT its trailing newline
 #               (fgets still returns it in-guest) fires too.
+#   TORNLEGIT   a boot whose append was CUT SHORT — its in-progress line
+#               landed, its verdict line is torn (no trailing newline) — is
+#               a CRASH the reader itself classes as "mid-write, not
+#               tamper", and the host count accounts for the boot: it stays
+#               COHERENT and LOUD (the torn tail and the in-progress behind
+#               it are both named), never a finding.  TORNLEGIT-BEFORE pins
+#               the FALSE POSITIVE the review MEASURED on fcebaa3: the
+#               pre-fix tool rejects the same store (exit 1) with a message
+#               naming an in-progress the SAME run's accounting line prints
+#               as present.
+#   KNOWN-HOLE  a forged PAIR (in-progress + a verdict) appended into the
+#               SLACK of a boot the host started but fx-init never recorded
+#               still passes — the admitted bound, ASSERTED so it can never
+#               be mistaken for coverage.  The TORN variant of that pair
+#               rides the same rule (the torn form behaves exactly like the
+#               terminated form); the pre-fix tool fired on it only as a
+#               side effect of the unconditional torn rule that produced
+#               TORNLEGIT's false positive.
+#   CAP         a .bootlog (or .recovery) longer than the reader's line
+#               table is exit 2 NAMING the cap and the file — silently
+#               auditing a truncated view is exactly the silent pass the
+#               tool's header forbids.
 #   BEFORE      THE FAIL-BEFORE, on the PINNED pre-change revision 030fbdc
 #               (git cat-file -e guard + cmp proving pin != working tree —
 #               a control that equals its subject proves nothing): the
@@ -74,8 +96,13 @@
 #               (failed -> the real fxstore republish -> the new version's
 #               in-progress + ok + a .recovery row), a clean SHUTDOWN, a
 #               boot KILLED AT THE VERDICT (in-progress alone — this
-#               harness's own kill shape), and a SILENT boot the writer
-#               records nothing for (no bootable generation).
+#               harness's own kill shape), a SILENT boot the writer records
+#               nothing for (no bootable generation), the SAME version
+#               booted TWICE in one window, a MULTI-CYCLE roll-forward (two
+#               roll-forwards between two audits), and an in-progress
+#               followed by a SHUTDOWN (a clean stop during the judgement —
+#               do_shutdown appends its line whether or not the boot ever
+#               decided a verdict, init.zig:3925/:4461).
 #   TRIGGER     --rollback REFUSES a clean store (CURRENT untouched) and on
 #               the coherent-tamper store calls `fxstore rollback --hard`
 #               (CURRENT repointed, LOUD, naming the finding), after which
@@ -163,6 +190,12 @@ make -s build/fx-audit >/dev/null || fail "cannot build build/fx-audit"
 AUDIT="$REPO/build/fx-audit"
 [ -x "$AUDIT" ] || fail "no $AUDIT"
 [ "$AUDIT" -nt "$REPO/tools/fx-audit.c" ] || fail "$AUDIT is older than tools/fx-audit.c — a stale cached binary answered for the seat; rm -rf build and re-run"
+# ...and the artifact must BE the one THIS source builds, not merely newer: a
+# cached, shadowed or half-built binary answering for the seat is a class this
+# repo has paid for five times.  The marker exists only in this source, so its
+# absence means the binary was not built from tools/fx-audit.c.
+grep -aq 'silently dropped from the counting AND the forged-verdict attribution' "$AUDIT" \
+    || fail "STALE BINARY: $AUDIT does not contain this source's .bootlog cap-refusal message — the artifact answering for the seat was not built from tools/fx-audit.c"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/fxaudit.XXXXXX")" || fail mktemp
 if [ "${FX_AUDIT_KEEP:-0}" = "1" ]; then
@@ -759,6 +792,74 @@ grep -q '^check recovery-without-failure: pass$' "$WORK/out.torn" \
     || fail "TORNFORGE: recovery-without-failure fired too (isolation failed)"
 echo "test_fx_audit: TORNFORGE: a forge without its newline still fires (fgets returns it in-guest)"
 
+# TORNLEGIT: the FALSE POSITIVE the review MEASURED, as a LEGITIMATE shape.
+# A boot whose append was cut short by a crash: its in-progress line landed,
+# its verdict line is torn.  The host started that boot (the delta accounts
+# for it) and the reader itself classes a torn tail as "a crash mid-write,
+# not tamper" — so this is NOT a finding, and the torn line must still be
+# NAMED (a pass that hides it would be the silent pass the header forbids).
+mk_norec tleg
+echo "$V1 in-progress 106" >> "$WORK/store-tleg/.bootlog"
+printf '%s' "$V1 ok 107" >> "$WORK/store-tleg/.bootlog"
+FBOOTS=4 run_fixture tleg > "$WORK/out.tleg" 2>&1
+expect_coh "$WORK/out.tleg" $? "TORNLEGIT (a torn verdict riding its own boot's in-progress)"
+grep -q "an added TORN '$V1 ok 107' line" "$WORK/out.tleg" \
+    || fail "TORNLEGIT: the tolerated torn line is not NAMED (a silent pass): $(grep 'TORN' "$WORK/out.tleg")"
+grep -q "accounted for by an added '$V1 in-progress' line" "$WORK/out.tleg" \
+    || fail "TORNLEGIT: the naming does not say WHICH in-progress accounts for it: $(grep 'TORN' "$WORK/out.tleg")"
+grep -q "boot accounting: host boots 3 -> 4 (delta 1); this window added in-progress 1, verdicts 1, shutdown 0" "$WORK/out.tleg" \
+    || fail "TORNLEGIT: the torn verdict was not counted in the accounting line: $(grep 'boot accounting: host boots' "$WORK/out.tleg")"
+grep -q 'torn tail' "$WORK/out.tleg" \
+    || fail "TORNLEGIT: the torn tail was not reported at all (a silent pass)"
+echo "test_fx_audit: TORNLEGIT: a torn verdict that rides its own boot's in-progress stays COHERENT and is NAMED (the pre-fix false positive — see TORNLEGIT-BEFORE)"
+
+# KNOWN-HOLE: the admitted bound, ASSERTED so it cannot be mistaken for
+# coverage.  The SAME forge, TORN, appended as a PAIR (in-progress +
+# verdict) into the SLACK of a boot the host started and the writer never
+# recorded (the silent-boot shape).  It passes — for exactly the reason the
+# TERMINATED pair passes (the review measured that): the window holds an
+# added in-progress the host delta accounts for, so the reader cannot tell a
+# forger's bytes from the unrecorded boot's own.  That is what a per-boot
+# nonce would close (out of scope; the run prints the bound).
+fresh hole
+echo "$CUR in-progress 104" >> "$WORK/store-hole/.bootlog"
+printf '%s' "$CUR ok 105" >> "$WORK/store-hole/.bootlog"
+FBOOTS=5 run_fixture hole > "$WORK/out.hole" 2>&1
+expect_coh "$WORK/out.hole" $? "KNOWN-HOLE (a forged TORN pair in an unrecorded boot's slack passes — the admitted bound)"
+grep -q 'CANNOT see: a forged line-PAIR' "$WORK/out.hole" \
+    || fail "KNOWN-HOLE: the run does not print the bound this arm is an instance of"
+echo "test_fx_audit: KNOWN-HOLE: a forged TORN pair in the slack of an unrecorded boot still passes (the admitted bound, printed on every run)"
+
+# CAP: the reader's .bootlog line table is a FIXED 4096.  Past it, lines
+# were SILENTLY DROPPED from both the counting and the forged-verdict
+# attribution — i.e. an audit that reports on a file it truncated, the exact
+# silent pass the tool's header forbids ("a record that cannot be READ is
+# its own LOUD state (exit 2), never a silent pass").  The forge sits AT
+# line 4097: the line that must not be able to escape.
+fresh cap
+i=0; while [ $i -lt 4096 ]; do echo "$CUR in-progress $((200 + i))" >> "$WORK/store-cap/.bootlog"; i=$((i+1)); done
+echo "$V2 ok 999" >> "$WORK/store-cap/.bootlog"
+FBOOTS=4 run_fixture cap > "$WORK/out.cap" 2>&1
+_rc=$?
+[ "$_rc" = "2" ] || fail "CAP: a .bootlog past the 4096-line table must be exit 2 (loud), got $_rc: $(sed -n 1,4p "$WORK/out.cap")"
+grep -q '4096' "$WORK/out.cap" || fail "CAP: the refusal does not name the CAP: $(sed -n 1,3p "$WORK/out.cap")"
+grep -q '\.bootlog' "$WORK/out.cap" || fail "CAP: the refusal does not name the FILE"
+grep -q 'silently dropped' "$WORK/out.cap" \
+    || fail "CAP: the refusal does not say what would have happened to the lines past the cap"
+echo "test_fx_audit: CAP: a .bootlog longer than the 4096-line table is exit 2, naming the cap and the file"
+
+# CAP-REC: the same for .recovery's 1024-row table
+fresh caprec
+i=0; while [ $i -lt 1024 ]; do echo "$((100 + i)) $CUR $V2 $GH_CUR" >> "$WORK/store-caprec/.recovery"; i=$((i+1)); done
+echo "9999 $CUR $V2 $GH_CUR" >> "$WORK/store-caprec/.recovery"
+FBOOTS=4 run_fixture caprec > "$WORK/out.caprec" 2>&1
+_rc=$?
+[ "$_rc" = "2" ] || fail "CAP-REC: a .recovery past the 1024-row table must be exit 2 (loud), got $_rc: $(sed -n 1,4p "$WORK/out.caprec")"
+grep -q '1024' "$WORK/out.caprec" || fail "CAP-REC: the refusal does not name the CAP"
+grep -q '\.recovery' "$WORK/out.caprec" || fail "CAP-REC: the refusal does not name the FILE"
+grep -q 'silently dropped' "$WORK/out.caprec" || fail "CAP-REC: the refusal does not say what would have happened"
+echo "test_fx_audit: CAP-REC: a .recovery longer than the 1024-row table is exit 2, naming the cap and the file"
+
 # ══ LEGIT: every legitimate growth shape stays coherent ════════════════
 # a boot that FAILS (in-progress + failed) — FBOOTS declares one new boot
 fresh legfail
@@ -822,21 +923,105 @@ grep -q 'no .bootlog lines added this window' "$WORK/out.legq" \
     || fail "LEGIT silent boot: the empty window was not reported as such: $(grep 'boot accounting' "$WORK/out.legq")"
 echo "test_fx_audit: LEGIT: a silent boot (started, nothing appended — no bootable generation) stays coherent"
 
+# the SAME version booted TWICE in one window: two boots of v$CUR, each the
+# writer's real line pair, in file order.  The second verdict must consume
+# the SECOND in-progress — not the first one twice, and not nothing.
+# FAILS if the in-order consumption is removed or made per-version-global:
+# the second verdict then finds no UNCONSUMED in-progress for its version and
+# the arm exits 1 bootlog-forged-verdict (it is the "consumed" half of the
+# attribution rule that this arm holds).
+fresh twice
+echo "$CUR in-progress 110" >> "$WORK/store-twice/.bootlog"
+echo "$CUR ok 111" >> "$WORK/store-twice/.bootlog"
+echo "$CUR in-progress 112" >> "$WORK/store-twice/.bootlog"
+echo "$CUR ok 113" >> "$WORK/store-twice/.bootlog"
+FBOOTS=6 run_fixture twice > "$WORK/out.twice" 2>&1
+expect_coh "$WORK/out.twice" $? "LEGIT same version booted twice in one window"
+grep -q 'boot accounting: host boots 4 -> 6 (delta 2); this window added in-progress 2, verdicts 2, shutdown 0' "$WORK/out.twice" \
+    || fail "LEGIT twice: both boots were not accounted: $(grep 'boot accounting: host boots' "$WORK/out.twice")"
+echo "test_fx_audit: LEGIT: the same version booted twice in one window (2 real pairs, --boots 4 -> 6) stays coherent"
+
+# a MULTI-CYCLE roll-forward inside ONE window: the current version fails, a
+# boot rolls forward to the republished generation (a .recovery row), THAT
+# generation fails too, and a second boot rolls forward again — two complete
+# cycles between two audits (4 boots, 2 rows).  Writer-faithful: the row is
+# written in the boot that rolls forward (init.zig:1624), before that boot's
+# in-progress line, and each row names the version that failed.
+# FAILS if recovery-without-failure reads anything but the LAST non-shutdown
+# verdict for a row's from-failed version (boot 6 wrote "$R1 ok 113", boot 7
+# wrote "$R1 failed 115": a first-match reader calls row 2 unanswered), or
+# if the row bound were tightened to one-per-window, or if the attribution
+# mis-paired the two cycles.
+fresh multi
+echo "$CUR in-progress 110" >> "$WORK/store-multi/.bootlog"
+echo "$CUR failed 111" >> "$WORK/store-multi/.bootlog"
+FXSTORE_BIN="$FXSTORE" "$FXSTORE" rollback "$V1" --store "$WORK/store-multi" >/dev/null 2>&1 \
+    || fail "LEGIT multi: the first fxstore rollback failed"
+R1=$(cur_of "$WORK/store-multi")
+[ "$R1" -gt "$CUR" ] || fail "LEGIT multi: cycle 1 did not ratchet ($R1 <= $CUR)"
+GH_R1=$(genhash_of "$WORK/store-multi" "$R1")
+[ "$GH_R1" = "$GH1" ] || fail "LEGIT multi: cycle 1's republish is not v$V1's content"
+echo "$R1 in-progress 112" >> "$WORK/store-multi/.bootlog"
+echo "$R1 ok 113" >> "$WORK/store-multi/.bootlog"
+echo "111 $R1 $CUR $GH_R1" >> "$WORK/store-multi/.recovery"
+echo "$R1 in-progress 114" >> "$WORK/store-multi/.bootlog"
+echo "$R1 failed 115" >> "$WORK/store-multi/.bootlog"
+FXSTORE_BIN="$FXSTORE" "$FXSTORE" rollback "$V1" --store "$WORK/store-multi" >/dev/null 2>&1 \
+    || fail "LEGIT multi: the second fxstore rollback failed"
+R2=$(cur_of "$WORK/store-multi")
+[ "$R2" -gt "$R1" ] || fail "LEGIT multi: cycle 2 did not ratchet ($R2 <= $R1)"
+GH_R2=$(genhash_of "$WORK/store-multi" "$R2")
+[ "$GH_R2" = "$GH1" ] || fail "LEGIT multi: cycle 2's republish is not v$V1's content"
+echo "$R2 in-progress 116" >> "$WORK/store-multi/.bootlog"
+echo "$R2 ok 117" >> "$WORK/store-multi/.bootlog"
+echo "115 $R2 $R1 $GH_R2" >> "$WORK/store-multi/.recovery"
+FBOOTS=8 run_fixture multi > "$WORK/out.multi" 2>&1
+expect_coh "$WORK/out.multi" $? "LEGIT multi-cycle roll-forward in one window"
+grep -q 'boot accounting: host boots 4 -> 8 (delta 4); this window added in-progress 4, verdicts 4, shutdown 0' "$WORK/out.multi" \
+    || fail "LEGIT multi: the four boots were not accounted: $(grep 'boot accounting: host boots' "$WORK/out.multi")"
+grep -q '^check recovery-without-failure: pass$' "$WORK/out.multi" \
+    || fail "LEGIT multi: a real SECOND roll-forward tripped recovery-without-failure: $(grep '^INCOHERENT' "$WORK/out.multi")"
+echo "test_fx_audit: LEGIT: a MULTI-CYCLE roll-forward in one window (two real fxstore republishes -> 2 rows, 4 boots, --boots 4 -> 8) stays coherent"
+
+# an in-progress followed by a SHUTDOWN and NO verdict: the boot started, was
+# told to stop during the grace (SIGTERM -> sigterm_handler sets g_shutdown ->
+# the main loop exits -> do_shutdown appends the shutdown line, init.zig:3925,
+# called from :4461), and never decided.  Writer-faithful: do_shutdown appends
+# its line whether or not the boot ever decided a verdict.
+# FAILS if the counter ever demanded a verdict before a shutdown line, or if
+# an open in-progress for the current version were turned into its own
+# finding (the "every boot must decide" reading the writer contradicts).
+fresh ipsd
+echo "$CUR in-progress 110" >> "$WORK/store-ipsd/.bootlog"
+echo "$CUR shutdown 111" >> "$WORK/store-ipsd/.bootlog"
+FBOOTS=5 run_fixture ipsd > "$WORK/out.ipsd" 2>&1
+expect_coh "$WORK/out.ipsd" $? "LEGIT in-progress then shutdown (clean stop during the judgement)"
+grep -q 'boot accounting: host boots 4 -> 5 (delta 1); this window added in-progress 1, verdicts 0, shutdown 1' "$WORK/out.ipsd" \
+    || fail "LEGIT ipsd: the shutdown-without-verdict boot was not accounted: $(grep 'boot accounting: host boots' "$WORK/out.ipsd")"
+echo "test_fx_audit: LEGIT: an in-progress followed by a shutdown (clean stop during the judgement, no verdict) stays coherent"
+
 # ══ BEFORE: the fail-before, on the PINNED pre-change revision ══════════
 # The asymmetry a regression probe needs: on 030fbdc (the tree this change
 # lands on top of) the SAME forge went COHERENT.  The pin is guarded and
 # PROVEN DIFFERENT from the working tree — a control that equals its
 # subject proves nothing.
-git -C "$REPO" cat-file -e 030fbdc^{commit} 2>/dev/null \
-    || fail "BEFORE: the pinned revision 030fbdc does not exist (the fail-before control needs it)"
-git -C "$REPO" show 030fbdc:tools/fx-audit.c > "$WORK/pinned-fx-audit.c" \
-    || fail "BEFORE: cannot extract tools/fx-audit.c at 030fbdc"
-cmp -s "$WORK/pinned-fx-audit.c" "$REPO/tools/fx-audit.c" \
-    && fail "BEFORE: the pinned 030fbdc source is IDENTICAL to the working tree — the control equals its subject and proves nothing"
-cc -std=c11 -O2 -Wall -Wextra -I"$REPO/src/vendor/dhall-c" \
-   -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
-   -o "$WORK/fx-audit-pinned" "$WORK/pinned-fx-audit.c" "$REPO/src/vendor/dhall-c/sha256.c" \
-    || fail "BEFORE: cannot build the pinned 030fbdc fx-audit"
+# pin_build REV OUTFILE — the audit source at REV, built, with the DOMAIN
+# proof (exists; DIFFERS from the working tree; nothing here reads HEAD —
+# REV is a fixed object name).
+pin_build() {
+    _rev="$1"; _out="$2"
+    git -C "$REPO" cat-file -e "$_rev^{commit}" 2>/dev/null \
+        || fail "PIN $_rev: the pinned revision does not exist (the control needs it)"
+    git -C "$REPO" show "$_rev:tools/fx-audit.c" > "$_out.c" \
+        || fail "PIN $_rev: cannot extract tools/fx-audit.c at $_rev"
+    cmp -s "$_out.c" "$REPO/tools/fx-audit.c" \
+        && fail "PIN $_rev: the pinned source is IDENTICAL to the working tree — the control equals its subject and proves nothing"
+    cc -std=c11 -O2 -Wall -Wextra -I"$REPO/src/vendor/dhall-c" \
+       -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
+       -o "$_out" "$_out.c" "$REPO/src/vendor/dhall-c/sha256.c" \
+        || fail "PIN $_rev: cannot build the pinned fx-audit"
+}
+pin_build 030fbdc "$WORK/fx-audit-pinned"
 # the no-recovery fixture (the store where the forge is truly invisible),
 # enrolled with the PINNED tool — its observation is format 1, no boot
 # count, and the pinned tool does not know --boots
@@ -870,6 +1055,38 @@ grep -q 'FORMAT 1' "$WORK/out.bp3" \
 grep -q 're-enroll' "$WORK/out.bp3" \
     || fail "BEFORE: the refusal does not name the way out"
 echo "test_fx_audit: BEFORE: on the pinned 030fbdc the SAME appended '$V2 ok 999' audits COHERENT (exit 0); the new tool fires on the same store and REFUSES the pinned tool's format-1 observation (no boot count recorded — never assume one)"
+
+# ── TORNLEGIT-BEFORE: the FALSE POSITIVE, pinned at fcebaa3 (the revision
+# this change lands on top of).  The PRE-FIX tool REJECTS A HEALTHY MACHINE
+# on the torn shape — exit 1 bootlog-forged-verdict — while the SAME run's
+# accounting line prints the in-progress its message claims is absent: it
+# both false-positives and mis-reasons.  This is the costly direction (a
+# spurious finding rolls back a healthy machine).  The pin's DOMAIN is
+# proven by pin_build's cmp; nothing depends on HEAD; both runs use the SAME
+# store and the SAME observation file, so the only variable is the tool.
+pin_build fcebaa3 "$WORK/fx-audit-prefix"
+mk_norec tpin
+FXSTORE_BIN="$FXSTORE" "$WORK/fx-audit-prefix" --store "$WORK/store-tpin" \
+    --rootfs "$WORK/rootfs-tpin" --obs-file "$WORK/obsf-tpin-prefix.obs" --boots 3 \
+    > "$WORK/out.tpin1" 2>&1
+expect_coh "$WORK/out.tpin1" $? "TORNLEGIT-BEFORE enroll (pre-fix fcebaa3)"
+echo "$V1 in-progress 106" >> "$WORK/store-tpin/.bootlog"
+printf '%s' "$V1 ok 107" >> "$WORK/store-tpin/.bootlog"
+FXSTORE_BIN="$FXSTORE" "$WORK/fx-audit-prefix" --store "$WORK/store-tpin" \
+    --rootfs "$WORK/rootfs-tpin" --obs-file "$WORK/obsf-tpin-prefix.obs" --boots 4 \
+    > "$WORK/out.tpin2" 2>&1
+expect_incoh "$WORK/out.tpin2" $? "TORNLEGIT-BEFORE (the pre-fix tool on a healthy crashed boot)" bootlog-forged-verdict
+grep -q 'no in-progress behind it in this window' "$WORK/out.tpin2" \
+    || fail "TORNLEGIT-BEFORE: the pre-fix run did not make the claim this arm pins: $(grep '^INCOHERENT bootlog-forged' "$WORK/out.tpin2")"
+grep -q 'this window added in-progress 1, verdicts 1, shutdown 0' "$WORK/out.tpin2" \
+    || fail "TORNLEGIT-BEFORE: the pre-fix run did not print the accounting line that CONTRADICTS its own finding: $(grep 'boot accounting' "$WORK/out.tpin2")"
+FXSTORE_BIN="$FXSTORE" "$AUDIT" --store "$WORK/store-tpin" \
+    --rootfs "$WORK/rootfs-tpin" --obs-file "$WORK/obsf-tpin-prefix.obs" --boots 4 \
+    > "$WORK/out.tpin3" 2>&1
+expect_coh "$WORK/out.tpin3" $? "TORNLEGIT-BEFORE/AFTER (the fixed tool, same store and same observation)"
+grep -q 'TORN' "$WORK/out.tpin3" \
+    || fail "TORNLEGIT-BEFORE/AFTER: the fixed tool does not even mention the torn line it tolerated"
+echo "test_fx_audit: TORNLEGIT-BEFORE: on the pinned fcebaa3 the SAME healthy torn-verdict store is REJECTED (exit 1, message contradicting its own accounting); the fixed tool accepts it on the same store and observation"
 
 # ══ THE MUTATION CONTROL (positive control, per check) ══════════════════
 # a detector with exactly one check's registration deleted must go COHERENT
