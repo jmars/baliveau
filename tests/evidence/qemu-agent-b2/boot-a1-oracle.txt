@@ -1,13 +1,15 @@
 boot_status:
-  7	ok
+  7	in-progress
+  9	ok
 generation_current:
-  7
+  9
 service_runtime:
-heartbeat	39	started	0
-fxagent-b2	0	stopped	0
+heartbeat	50	started	0
+fxagent-b2	40	started	0
+b2proof-b2-agent-9f3c	51	started	0
 OK
 OK
-/etc/hostname	6	33188	0	0	1791599340
+/etc/hostname	13	33188	0	0	1791673646
 OK
 OK
 OK

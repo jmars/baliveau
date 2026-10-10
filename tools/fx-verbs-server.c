@@ -8,19 +8,17 @@
  * bounded newline frames.  The whole verb surface is ONE table of rows
  * {name, argv template, description}:
  *
- *   fx_query         fxctl q <relation>   live datalog relations (generation,
+ *   fx_query         fxctl --fifo q <relation>
+ *                                         live datalog relations (generation,
  *                                         svc, svc_argv, install, provides,
- *                                         user, log)
- *   fx_status        fxctl status
- *   fx_activate      fx-activate <config>  the RUNNING ROOT's own activator
- *                                         (/bin/fx-activate, the binary PID1's
- *                                         activate handler execs) with the
- *                                         guest's persistent store + frozen
- *                                         package set.  NOT `fxctl activate`:
- *                                         fxctl has no transport in the guest
- *                                         (no socket layer; the virtio port's
- *                                         single input queue belongs to PID1).
- *   fx_rollback      fxctl rollback <version>
+ *                                         user, log) over PID1's fifo pair
+ *   fx_status        fxctl --fifo status
+ *   fx_activate      <native: the PID1 control channel>  the agent's
+ *                                         activation goes THROUGH PID1's own
+ *                                         activate handler (see THE CONTROL
+ *                                         CHANNEL below) so the change is
+ *                                         COMMITTED, not merely published
+ *   fx_rollback      fxctl --fifo rollback <version>
  *   fx_what          fxstore what <target>    provenance proof tree for an
  *                                             installed path
  *   fx_why           fxstore why <package>    closure + provided targets +
@@ -119,6 +117,39 @@
  * ENOSYS).  The verb's stdin is /dev/null so a verb that reads stdin cannot
  * steal MCP frames.
  *
+ * THE CONTROL CHANNEL (fx_activate's route, 2026-10).  The agent's activation
+ * must go THROUGH PID 1, not around it: PID1's `activate` handler (fx-init
+ * init.zig handle_request) does the WHOLE standard activation — it forks the
+ * fx-activate child (which evaluates the config, computes the closure, emits
+ * the per-generation Dhakefile, publishes the snapshot and moves store
+ * CURRENT), then RE-READS the store's facts (the service table becomes the
+ * NEW generation's), rt_set_generation_current, RE-ARMS the boot decision (a
+ * fresh grace window — the verdict latched for the old generation must not
+ * stand for the new one), RE-RUNS the boot path's dhake materialization on
+ * the LIVE post-pivot root (THE COMMIT: the new generation's /etc + /bin are
+ * put on the running system, no reboot), and records rt_effect("activate").
+ * A direct exec of /bin/fx-activate gets ONLY the child half: the generation
+ * is PUBLISHED (store CURRENT moves) but never COMMITTED — the difference
+ * between "the generation exists" and "the machine is running it".  So this
+ * server speaks PID1's fifo line protocol natively (see fifo_activate): it
+ * writes `activate <config>` to <run>/control.in and reads the reply (data
+ * lines, then `OK`, or a single `ERR <why>` refusal) off control.out.
+ *
+ * WHY NOT `fxctl --fifo activate` (the existing client): MEASURED, not
+ * guessed — an activation takes ~63s (host, warm cache, the slot package
+ * set), and fxctl's fifo read path is poll()-gated with a HARD 5s budget per
+ * read and no override (fxctl.zig PollSource).  fxctl would report
+ * "no response (timeout/disconnect)" exit 1 while PID1 is still mid-handler,
+ * and the activation would COMMIT a minute later anyway — a FALSE refusal on
+ * exactly the call whose diagnosis matters most.  The fast fxctl verbs
+ * (fx_query/fx_status/fx_rollback, replies in milliseconds) DO ride fxctl's
+ * fifo mode; only the one slow command needs this server's own budget.
+ *
+ * The fifo pair's documented bound, stated here because this server is one
+ * of its clients: it is SINGLE-CLIENT BY CONVENTION, NOT ENFORCEMENT — a
+ * second concurrent client's replies interleave on the shared control.out
+ * (garbled reads, never supervisor corruption; see fxctl.zig's header).
+ *
  * EXIT-CODE REPORTING — every tools/call reply text begins with "exit=<n>"
  * followed by the verb's stdout+stderr.  isError is NEVER set:
  * mcp_client.c:437-441 drops isError results entirely (returns -1, text
@@ -141,12 +172,14 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <poll.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -524,9 +557,11 @@ static char **build_verb_envp(void) {
         }
     }
 
-    /* forwarded when present (same list secrets.c forwards) */
+    /* forwarded when present (same list secrets.c forwards, plus FX_RUN so a
+     * relocated run dir reaches fxctl children the same way it reaches this
+     * server's own native channel client — ctrl_run_dir) */
     static const char *const FWD[] = { "HOME", "LANG", "LC_ALL", "TZ", "TERM",
-                                       "XDG_RUNTIME_DIR" };
+                                       "XDG_RUNTIME_DIR", "FX_RUN" };
     for (size_t i = 0; ok && i < sizeof(FWD) / sizeof(FWD[0]); i++) {
         const char *v = getenv(FWD[i]);
         if (!v || !*v) continue;
@@ -722,6 +757,289 @@ static char *store_if_present(void) {
         return NULL;
     }
     return sp;
+}
+
+/* ── the PID1 control channel (fx_activate's route) ─────────────────────── */
+
+/* defined below the native verbs (the JSON reply senders) */
+static int send_error(yyjson_val *idv, int code, const char *msg);
+static int send_capture_reply(yyjson_val *idv, Capture *out, int exitcode);
+
+/* The run dir holding the fifo pair: FX_RUN when the deployment sets it
+ * (fxctl's own rule, absolute), else <root>/run/fx — so a host stub root
+ * (FX_VERB_ROOT=/tmp/stub) finds the pair at /tmp/stub/run/fx exactly as the
+ * guest (root /) finds /run/fx, PID1's g_run.  Returns a malloc'd dir or
+ * NULL.  The SERVER's own env is read (not the child whitelist): the native
+ * client does not fork. */
+static char *ctrl_run_dir(void) {
+    const char *r = getenv("FX_RUN");
+    if (r && *r) {
+        char *out = strdup(r);
+        while (out && *out && out[strlen(out) - 1] == '/')
+            out[strlen(out) - 1] = '\0';
+        return out;
+    }
+    return root_join("run/fx");
+}
+
+/* fxctl's LINE_MAX_REQ: the request line (body + '\n') is capped at 4096 =
+ * PIPE_BUF exactly, so one write(2) of the whole line is atomic. */
+#define FXV_CTRL_LINE_MAX 4096
+
+/* The total reply budget.  NOT fxctl's 5s: PID1 answers only AFTER its whole
+ * activate handler ran (the fx-activate child + facts re-read + the live-root
+ * re-materialization), and MEASURED that takes ~63s on this class of store —
+ * see the header.  600s is beyond every caller's patience, so the budget's
+ * real job is to fail LOUDLY when PID1 never answers (its one EAGAIN-drop
+ * path), never to bound a healthy activation. */
+#define FXV_CTRL_BUDGET_MS 600000L
+
+/* One line's classification, EXACTLY fxctl's classifyLine: "OK" terminates
+ * success, "ERR" followed by end-of-line/space/tab terminates refusal
+ * (so "ERRSUFFIX" is a data line), everything else — the empty line
+ * included — is data.  PID1 is the grammar's authority; duplicating its
+ * client's classifier keeps the pair byte-compatible. */
+typedef enum { CTRL_LINE_OK, CTRL_LINE_ERR, CTRL_LINE_DATA } CtrlLineKind;
+
+static CtrlLineKind ctrl_classify(const char *line, size_t len) {
+    if (len == 2 && memcmp(line, "OK", 2) == 0) return CTRL_LINE_OK;
+    if (len >= 3 && memcmp(line, "ERR", 3) == 0 &&
+        (len == 3 || line[3] == ' ' || line[3] == '\t')) return CTRL_LINE_ERR;
+    return CTRL_LINE_DATA;
+}
+
+/* Run `activate <config>` through PID1's fifo pair.  Returns 0 having filled
+ * `out` (PID1's data lines and/or the refusal text) and `exitcode` (0 on OK,
+ * 1 on ERR / transport failure).  Returns -1 ONLY when the channel is absent
+ * (open failed; errno names why) — the caller decides what a channel-less
+ * deployment gets.  The caller has ALREADY refused a config path carrying
+ * whitespace: PID1's request grammar is strtok_r on space/tab and has no
+ * quoting, so such a path cannot be carried honestly. */
+static int fifo_activate(const char *config, Capture *out, int *exitcode) {
+    char *dir = ctrl_run_dir();
+    if (!dir) return -1;
+    char in_path[PATH_MAX], out_path[PATH_MAX];
+    if (snprintf(in_path, sizeof(in_path), "%s/control.in", dir) >=
+            (int)sizeof(in_path) ||
+        snprintf(out_path, sizeof(out_path), "%s/control.out", dir) >=
+            (int)sizeof(out_path)) {
+        free(dir);
+        cap_append_str(out, "fx-verbs: control channel path too long\n");
+        *exitcode = 1;
+        return 0;
+    }
+    free(dir);
+
+    /* fxctl's open flags: control.in O_WRONLY|O_NONBLOCK (a fifo write-open
+     * with no reader fails ENXIO IMMEDIATELY — PID1 parks its own reader
+     * forever, so ENXIO means PID1 is gone), control.out O_RDONLY|
+     * O_NONBLOCK.  Never a blocking open: a dead PID1 must be a fast
+     * failure, not a hang. */
+    int wfd = open(in_path, O_WRONLY | O_NONBLOCK);
+    if (wfd < 0) return -1;
+    int rfd = open(out_path, O_RDONLY | O_NONBLOCK);
+    if (rfd < 0) {
+        close(wfd);
+        return -1;
+    }
+
+    /* ONE write of "activate <config>\n" — capped by the caller-rejected
+     * whitespace bound and the length check below, so it always fits
+     * PIPE_BUF and is atomic (fxctl's two-syscall body/newline split can
+     * tear between two CONCURRENT clients; this cannot). */
+    char req[FXV_CTRL_LINE_MAX];
+    int n = snprintf(req, sizeof(req), "activate %s\n", config);
+    if (n < 0 || (size_t)n >= sizeof(req)) {
+        close(wfd);
+        close(rfd);
+        cap_append_str(out, "fx-verbs: fx_activate REFUSED: the config path is "
+                            "too long for the control channel's request line "
+                            "(4095 char bound)\n");
+        *exitcode = 1;
+        return 0;
+    }
+    size_t off = 0;
+    bool sent = true;
+    while (off < (size_t)n) {
+        ssize_t w = write(wfd, req + off, (size_t)n - off);
+        if (w < 0) {
+            if (errno == EINTR) continue;
+            sent = false;
+            break;
+        }
+        off += (size_t)w;
+    }
+    close(wfd); /* the request side is done; PID1 keeps its own reader */
+    if (!sent) {
+        close(rfd);
+        char msg[PATH_MAX + 128];
+        snprintf(msg, sizeof(msg), "fx-verbs: fx_activate: control channel "
+                                   "write failed: %s\n", strerror(errno));
+        cap_append_str(out, msg);
+        *exitcode = 1;
+        return 0;
+    }
+
+    /* Read until OK / ERR / EOF, poll()-gated under the TOTAL budget.  Data
+     * lines (PID1's "activated version N") are the diagnosis the model gets;
+     * an ERR line is appended verbatim so a refusal is LOUD. */
+    struct timeval t0;
+    gettimeofday(&t0, NULL);
+    char line[8192];       /* fxctl's fgets width: a longer line is split */
+    size_t llen = 0;
+    bool done = false;
+    int rc = 0;
+    while (!done) {
+        struct timeval now;
+        gettimeofday(&now, NULL);
+        long elapsed = (now.tv_sec - t0.tv_sec) * 1000L +
+                       (now.tv_usec - t0.tv_usec) / 1000L;
+        long remain = FXV_CTRL_BUDGET_MS - elapsed;
+        if (remain <= 0) break;
+        struct pollfd pf = { .fd = rfd, .events = POLLIN, .revents = 0 };
+        int pr = poll(&pf, 1, remain > INT_MAX ? INT_MAX : (int)remain);
+        if (pr < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        if (pr == 0) break; /* budget spent: fall out to the loud failure */
+        char buf[4096];
+        ssize_t r = read(rfd, buf, sizeof(buf));
+        if (r < 0) {
+            if (errno == EINTR) continue;
+            if (errno == EAGAIN) continue;
+            break;
+        }
+        if (r == 0) break; /* PID1's writer is gone */
+        for (ssize_t i = 0; i < r; i++) {
+            char ch = buf[i];
+            if (ch != '\n') {
+                if (llen + 1 < sizeof(line)) line[llen++] = ch;
+                continue;
+            }
+            switch (ctrl_classify(line, llen)) {
+            case CTRL_LINE_OK:
+                done = true;
+                rc = 0;
+                break;
+            case CTRL_LINE_ERR:
+                cap_append(out, line, llen);
+                cap_append_str(out, "\n");
+                done = true;
+                rc = 1;
+                break;
+            case CTRL_LINE_DATA:
+                cap_append(out, line, llen);
+                cap_append_str(out, "\n");
+                line[0] = '\0';
+                llen = 0;
+                break;
+            }
+            if (done) break;
+            line[0] = '\0';
+            llen = 0;
+        }
+    }
+    close(rfd);
+    if (!done) {
+        cap_append_str(out,
+            "fx-verbs: fx_activate: NO RESPONSE on the control channel within "
+            "the 600s budget — PID1 did not answer 'activate'.  The activation "
+            "may still have been PUBLISHED by PID1's child (check fx_outcome / "
+            "fx_generation) but THIS call cannot say it committed; do not "
+            "blindly re-issue it\n");
+        rc = 1;
+    }
+    *exitcode = rc;
+    return 0;
+}
+
+/* THE CHANNEL-LESS FALLBACK: exec the RUNNING ROOT's /bin/fx-activate
+ * directly — the OLD (pre-2026-10) route, with the SAME pinned argv PID1's
+ * own handler execs.  This is the REDUCED semantics and the banner says so:
+ * the generation is PUBLISHED to the store (CURRENT moves, the next boot
+ * runs it) but NOT COMMITTED (no live-root re-materialization, no boot-
+ * decision re-arm, no service restart, no runtime record).  It exists for a
+ * deployment whose PID1 has no fifo pair (setup failed / a future transport
+ * change), never as a silent downgrade: the banner is the reply's FIRST
+ * line. */
+static void fallback_direct_activate(const char *config, Capture *out,
+                                     int *exitcode) {
+    cap_append_str(out,
+        "fx-verbs: fx_activate: NO PID1 CONTROL CHANNEL — DIRECT-EXEC FALLBACK "
+        "with REDUCED semantics: the generation will be PUBLISHED to the store "
+        "(CURRENT moves; the next boot runs it) but NOT COMMITTED to the "
+        "running system (no hot-apply of /etc+/bin, no boot-decision re-arm, "
+        "no service restart, no runtime record).  Route fx-activate through "
+        "PID1's control channel for the full activation.\n");
+    char *cmd = resolve_command("fx-activate");
+    if (!cmd) {
+        cap_append_str(out, "fx-verbs: fx-activate not found under FX_VERB_ROOT (");
+        cap_append_str(out, fx_root());
+        cap_append_str(out, ")\n");
+        *exitcode = 127;
+        return;
+    }
+    char *argv[8];
+    size_t k = 0;
+    argv[k++] = cmd;
+    argv[k++] = (char *)"--store";
+    argv[k++] = (char *)FX_STORE_PATH;
+    argv[k++] = (char *)"--package-set";
+    argv[k++] = (char *)"/usr/fx/package-set.dhall";
+    argv[k++] = (char *)"--config";
+    argv[k++] = (char *)config;
+    argv[k] = NULL;
+    int ec = 127;
+    int rc = run_verb(argv, NULL, out, &ec);
+    free(cmd);
+    if (rc != 0) {
+        cap_append_str(out, "fx-verbs: failed to run the fallback exec\n");
+        ec = 127;
+    }
+    *exitcode = ec;
+}
+
+/* fx_activate's dispatch: STORE-SCOPED first (the shared refusal — the row's
+ * needs_store flag documents the same scope the exec rows carry in argv),
+ * then the whitespace bound (PID1's request grammar cannot carry such a
+ * path), then the channel, then the loud fallback.  Returns 0 (reply sent)
+ * or a send_* return. */
+static int native_activate(const char *config, yyjson_val *idv) {
+    Capture out;
+    if (!cap_init(&out)) return send_error(idv, -32603, "out of memory");
+    int exitcode = 1;
+
+    char *store = store_if_present();
+    if (!store) {
+        store_scope_refuse(&out, "fx_activate");
+        int sret = send_capture_reply(idv, &out, 1);
+        cap_free(&out);
+        return sret;
+    }
+    free(store);
+
+    if (!config || !*config ||
+        strchr(config, ' ') || strchr(config, '\t') ||
+        strchr(config, '\n') || strchr(config, '\r')) {
+        cap_append_str(&out, "fx-verbs: fx_activate REFUSED: the config path '");
+        cap_append_str(&out, config ? config : "(empty)");
+        cap_append_str(&out, "' is empty or contains whitespace — PID1's "
+                            "control-channel grammar is space/tab-delimited "
+                            "with no quoting, so such a path cannot be carried "
+                            "(the writable set's declared paths never carry "
+                            "whitespace)\n");
+        int sret = send_capture_reply(idv, &out, 1);
+        cap_free(&out);
+        return sret;
+    }
+
+    if (fifo_activate(config, &out, &exitcode) < 0)
+        fallback_direct_activate(config, &out, &exitcode);
+
+    int sret = send_capture_reply(idv, &out, exitcode);
+    cap_free(&out);
+    return sret;
 }
 
 static int native_read(const char *path, Capture *out, int *exitcode) {
@@ -1106,6 +1424,13 @@ typedef struct {
                            * server's cwd.  Only fx_build pins one: fxstore
                            * loads package-set.dhall from its cwd, and the
                            * image's frozen set lives at /usr/fx. */
+    bool needs_store;    /* STORE-SCOPED by declaration, not by an argv
+                           * token: fx_activate's channel argv carries no
+                           * store path (PID1 owns the store argument), so
+                           * the auto-detect below cannot see its scope —
+                           * the flag IS the scope, enforced by the native
+                           * handler AND honored by call_exec_verb should
+                           * the row ever gain an exec form. */
 } Verb;
 
 /* fx_write (path+content), fx_store_verify (optional rootfs) and fx_ls
@@ -1113,52 +1438,65 @@ typedef struct {
  * (package) does too, behind its closed-set gate; every other exec verb takes
  * exactly the one string argument named in its description. */
 static const Verb VERBS[] = {
-    { "fx_query", "fxctl", { "q", NULL },
-      "Run `fxctl q <relation>`: read one live datalog relation. Known relations: "
-      "generation, svc, svc_argv, install, provides, user, log. Argument: relation.", NULL },
-    { "fx_status", "fxctl", { "status", NULL },
-      "Run `fxctl status`: the live system status (current generation, services, "
-      "store state). Takes no arguments.", NULL },
-    /* fx_activate execs the RUNNING ROOT's /bin/fx-activate DIRECTLY — the
-     * same binary, with the same arguments, that fx-init's own activate
-     * handler uses (init.zig handle_request "activate": exec
-     * <store>/<hash>-fx-activate/fx-activate --store <g_store> --package-set
-     * /usr/fx/package-set.dhall --config <path>).
-     *
-     * WHY NOT `fxctl activate` (the pre-2026-10 row): fxctl's ONLY transports
-     * are $FX_RUN/control.sock and an explicit --chardev/FX_CHARDEV path.  In
-     * the guest CONFIG_NET is unset, so socket(2) is ENOSYS and there is no
-     * control.sock at all; and the only chardev is the virtio control port,
-     * which PID1 ITSELF reads (init.zig handle_virtio; the port has ONE input
-     * queue — the same property that forces the g_shell_pid latch, "while the
-     * child owns the port, handle_virtio must not read it").  A second reader
-     * on that port races PID1 for the request bytes, so an in-guest fxctl
-     * cannot be the loop's activation path.  The store/package-set are the
-     * guest's own: FX_STORE_PATH is the persistent store (g_store — a ramfs
-     * /fx/store activate would be lost on the restart) and
-     * /usr/fx/package-set.dhall is the frozen package set mkinitramfs ships.
-     * STORE-SCOPED: this row carries FX_STORE_PATH, so call_exec_verb refuses
-     * to run it when that path is absent (a diskless guest) instead of letting
-     * the child fail downstream.  Argument: config (the path of the config to
-     * activate). */
-    { "fx_activate", "fx-activate", { "--store", FX_STORE_PATH,
-                                      "--package-set", "/usr/fx/package-set.dhall",
-                                      "--config", NULL },
-      "ACTIVATE service configuration <config> on the running system. DURABLE-ONLY: "
-      "the new generation becomes CURRENT on the persistent store and takes effect at "
-      "the NEXT boot — the running system is not re-materialized (no hot-apply, no "
-      "PID1 boot-decision re-arm), so an fx_status read right after this still shows "
-      "the OLD generation. Runs the root's /bin/fx-activate with the image's frozen "
-      "package set. Argument: config (a path, e.g. /fx/disk/agent-config.dhall).", NULL },
-    { "fx_rollback", "fxctl", { "rollback", NULL },
-      "Run `fxctl rollback <version>`: roll the system back to generation <version>. "
-      "Argument: version.", NULL },
+    /* The fxctl rows ride fxctl's FIFO MODE (`--fifo`): in the guest the
+     * kernel has NO socket layer (CONFIG_NET unset — PID1's own console line
+     * says so), so fxctl's socket default is ENOSYS and these verbs would be
+     * dead; the fifo pair (<run>/control.in + control.out) is the transport
+     * fxctl's fifo mode was added AS ("the in-guest transport", fxctl.zig).
+     * `--fifo` is a bare flag fxctl strips before building the request line,
+     * so the wire grammar is unchanged.  These are the FAST commands (ms
+     * replies) — inside fxctl's 5s poll budget, unlike activate (see the
+     * header's WHY NOT fxctl note). */
+    { "fx_query", "fxctl", { "--fifo", "q", NULL },
+      "Run `fxctl q <relation>` over PID1's control channel: read one live "
+      "datalog relation. Known relations: generation, svc, svc_argv, install, "
+      "provides, user, log. Argument: relation.", NULL, false },
+    { "fx_status", "fxctl", { "--fifo", "status", NULL },
+      "Run `fxctl status` over PID1's control channel: the live system status "
+      "(current generation, services, store state). Takes no arguments.",
+      NULL, false },
+    /* fx_activate goes THROUGH PID1's activate handler over the fifo pair —
+     * the WHOLE standard activation, not just its child half: the handler
+     * forks fx-activate (config evaluation, closure, the per-generation
+     * Dhakefile, the snapshot publish, CURRENT moves), RE-READS the store's
+     * facts (the service table becomes the NEW generation's), records the
+     * runtime generation, RE-ARMS the boot decision (a fresh grace window —
+     * the verdict latched for the old generation must not stand for the new
+     * one), RE-MATERIALIZES the new generation's /etc + /bin on the LIVE
+     * running root (THE COMMIT: no reboot needed), and records
+     * rt_effect("activate").  The reply is PID1's own: "activated version N"
+     * on success, or its refusal as `ERR <why>` with exit=1 — including the
+     * service-table overflow refusal (the config is too wide for the
+     * supervisor's window).  A deployment with NO channel (the pair absent)
+     * falls back to direct fx-activate exec with a LOUD reduced-semantics
+     * banner: published, not committed (see fallback_direct_activate).
+     * STORE-SCOPED (needs_store): refuses by name when the persistent store
+     * is absent, exactly like its exec neighbours — the channel argv carries
+     * no store path, so the flag IS the scope.  The fifo pair is single-
+     * client by convention, not enforcement.  Argument: config (the path of
+     * the config to activate; no whitespace — the channel's request grammar
+     * is space/tab-delimited). */
+    { "fx_activate", NULL, { NULL, NULL },
+      "ACTIVATE service configuration <config> on the running system, THROUGH "
+      "PID1: the new generation is published AND COMMITTED — its /etc + /bin "
+      "are materialized on the RUNNING root (no reboot) and the boot decision "
+      "is re-armed for it, so an fx_status read right after shows the NEW "
+      "generation. The reply is PID1's own ('activated version N', or its "
+      "refusal with exit=1). Falls back to direct fx-activate exec (publish-"
+      "only, next boot) ONLY when no PID1 control channel exists, and says so "
+      "loudly. Argument: config (a path, e.g. /fx/disk/agent-config.dhall).",
+      NULL, true },
+    { "fx_rollback", "fxctl", { "--fifo", "rollback", NULL },
+      "Run `fxctl rollback <version>` over PID1's control channel: roll the "
+      "system back to generation <version> (durable: CURRENT moves; the "
+      "running services carry over until the next boot). Argument: version.",
+      NULL, false },
     { "fx_what", "fxstore", { "what", NULL },
       "Run `fxstore what <target>`: the install fact (provenance proof tree) "
-      "managing installed path <target>. Argument: target.", NULL },
+      "managing installed path <target>. Argument: target.", NULL, false },
     { "fx_why", "fxstore", { "why", NULL },
       "Run `fxstore why <package>`: why <package> is in the store — its closure, the "
-      "targets it provides, and the roots pulling it in. Argument: package.", NULL },
+      "targets it provides, and the roots pulling it in. Argument: package.", NULL, false },
     /* The store root is the guest's LIVE store (FX_STORE_PATH = fx-init's
      * g_store on the disk), not the initramfs's /fx/store snapshot: the
      * install facts a verdict must be judged against are the ones that
@@ -1170,7 +1508,7 @@ static const Verb VERBS[] = {
       "Run `fxstore verify`: reconcile the rootfs against the recorded install "
       "facts of the LIVE (" FX_STORE_PATH ") generation and report every drift. The "
       "first line of the reply text is `exit=1` exactly when drift was found — "
-      "that exit line is the drift gate. Optional argument: rootfs (default /).", NULL },
+      "that exit line is the drift gate. Optional argument: rootfs (default /).", NULL, false },
     /* fx_build — THE IN-GUEST BUILD VERB (todo.md §5's residual, closed):
      * the agent iterates WITHOUT sending code off the machine.  The argv is
      * PINNED: fxstore build --store <the guest's own persistent store> <pkg>
@@ -1199,7 +1537,7 @@ static const Verb VERBS[] = {
       "package name — is REFUSED (exit=1) naming the set, and the model "
       "cannot widen it. Takes no flags, no store, no recipe. "
       "Argument: package.",
-      "usr/fx" },
+      "usr/fx", false },
     /* THE OUTCOME INSTRUMENT — how an agent sees the result of its OWN last
      * activation (the roll-forward signal).  Both are NATIVE (no exec) and
      * STORE-SCOPED with NO store argument: they read <store>/.bootlog and
@@ -1217,25 +1555,25 @@ static const Verb VERBS[] = {
       "in-progress|shutdown). Read it after a restart to see whether the generation "
       "you activated booted ok, or FAILED and was rolled forward to older content "
       "under a HIGHER version number — and whether that has happened BEFORE. "
-      "Takes no arguments; store-scoped.", NULL },
+      "Takes no arguments; store-scoped.", NULL, false },
     { "fx_generation", NULL, { NULL, NULL },
       "Print the CURRENT generation of the store — the generation the running "
       "system came up in, from <store>/.db/snapshots/CURRENT: one line, "
       "'current <N>'. Exit 1 and names the file when it cannot be read (a version "
-      "is never guessed). Takes no arguments; store-scoped.", NULL },
+      "is never guessed). Takes no arguments; store-scoped.", NULL, false },
     { "fx_read", NULL, { NULL, NULL },
       "Read a file and return its content. Paths resolve under FX_VERB_ROOT. "
-      "Capped at 1 MiB. Argument: path.", NULL },
+      "Capped at 1 MiB. Argument: path.", NULL, false },
     { "fx_write", NULL, { NULL, NULL },
       "Write a file (create-or-truncate). The write surface is a CLOSED, HOST-DECLARED "
       "SET: only the exact paths listed in FX_AGENT_WRITABLE (colon-separated; each "
       "path may be spelled absolute or root-relative — both name the same file) may "
       "be written — a write to anything else is REFUSED (exit=1) naming the path and "
       "the set, and the model cannot widen the set. Does not follow a symlink at the "
-      "final path. Arguments: path, content.", NULL },
+      "final path. Arguments: path, content.", NULL, false },
     { "fx_ls", NULL, { NULL, NULL },
       "List a directory: one entry per line, directories suffixed '/'. Paths resolve "
-      "under FX_VERB_ROOT. Argument: path (default: the root itself).", NULL },
+      "under FX_VERB_ROOT. Argument: path (default: the root itself).", NULL, false },
 };
 
 #define NVERBS (sizeof(VERBS) / sizeof(VERBS[0]))
@@ -1373,8 +1711,21 @@ static int call_exec_verb(yyjson_val *idv, const Verb *v, char **argv_tail) {
         return send_error(idv, -32603,
                           "internal: verb table row has no NULL terminator in fixed[]");
     }
-    /* store-scoped rows (those carrying FX_STORE_PATH) refuse to run when the
-     * store is not there, naming the path: see FX_STORE_PATH. */
+    /* store-scoped rows refuse to run when the store is not there, naming
+     * the path: see FX_STORE_PATH.  TWO declarations of the same scope: a row
+     * whose fixed[] CARRIES the path (fx_store_verify, fx_build) is scoped by
+     * construction, and fx_activate — whose channel argv cannot carry it —
+     * declares it with needs_store. */
+    if (v->needs_store) {
+        char *sp = store_if_present();
+        if (!sp) {
+            store_scope_refuse(&out, v->name);
+            int sret = send_capture_reply(idv, &out, 1);
+            cap_free(&out);
+            return sret;
+        }
+        free(sp);
+    }
     for (size_t i = 0; i < nfix; i++) {
         if (strcmp(v->fixed[i], FX_STORE_PATH) != 0) continue;
         char *sp = store_if_present();
@@ -1531,6 +1882,19 @@ static int handle_tools_call(yyjson_val *root, yyjson_val *idv) {
         return sret;
     }
 
+    /* fx_activate: NATIVE — through PID1's control channel (see
+     * native_activate), never call_exec_verb (the row carries no command).
+     * Handled here, before the fx_outcome/fx_generation native pair and
+     * before the one-argument exec fallback below (whose REQ table no longer
+     * names it). */
+    if (strcmp(name, "fx_activate") == 0) {
+        const char *config = NULL;
+        if (arg_string(arguments, "config", &config) != 0)
+            return send_error(idv, -32602,
+                              "fx_activate requires string argument 'config' (a path)");
+        return native_activate(config, idv);
+    }
+
     /* fx_outcome / fx_generation: the native OUTCOME verbs.  Handled HERE,
      * before the "every remaining exec verb takes exactly one string argument"
      * fallback below — whose no-argument branch would otherwise hand a NULL cmd
@@ -1566,7 +1930,6 @@ static int handle_tools_call(yyjson_val *root, yyjson_val *idv) {
     {
         static const struct { const char *verb, *key, *what; } REQ[] = {
             { "fx_query",    "relation", "relation" },
-            { "fx_activate", "config",   "config"   },
             { "fx_rollback", "version",  "version"  },
             { "fx_what",     "target",   "target"   },
             { "fx_why",      "package",  "package"  },

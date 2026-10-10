@@ -1,7 +1,7 @@
 exit=1
 fxstore: verify / against store /fx/disk/store: 5 drift(s)
-/bin/fx-activate: link_target: symlink points at '/fx/disk/store/b0ea5acdd251397990bf497384007666f619e1d7c7889dd400e60e427313ec31-fx-activate/fx-activate' != store path '/fx/disk/store/b0ea5acdd251397990bf497384007666f619e1d7c7889dd400e60e427313ec31-fx-activate'
+/bin/fx-activate: link_target: symlink points at '/fx/disk/store/3922a8ee1af89d86d6f1e1fcb6b6fbb471f40743b6f45fd02586c28193b1142a-fx-activate/fx-activate' != store path '/fx/disk/store/3922a8ee1af89d86d6f1e1fcb6b6fbb471f40743b6f45fd02586c28193b1142a-fx-activate'
 /usr/lib/dhake: link_target: symlink points at '/fx/disk/store/8ec74aebab6dbe9e02cf90da0e6a6e6d4a0074a32c9587f73733e353a7466e6d-dhake/dhake.com' != store path '/fx/disk/store/8ec74aebab6dbe9e02cf90da0e6a6e6d4a0074a32c9587f73733e353a7466e6d-dhake'
-/bin/fakesvc: link_target: symlink points at '/fx/disk/store/3af71f29b33f18991a0b9a3f0e277b84f2d0d138df9059d91f8320b49a94e253-fake-service/fakesvc' != store path '/fx/disk/store/3af71f29b33f18991a0b9a3f0e277b84f2d0d138df9059d91f8320b49a94e253-fake-service'
-/bin/fxctl: link_target: symlink points at '/fx/disk/store/9bb2dc173a38d526bd72959882d49bd2fae39fc069fce4cc2889d9ea42eb540f-fxctl/fxctl' != store path '/fx/disk/store/9bb2dc173a38d526bd72959882d49bd2fae39fc069fce4cc2889d9ea42eb540f-fxctl'
-/bin/init: link_target: symlink points at '/fx/disk/store/553c9faa9e15f01b31ab8be573571a9eb1dd3067ca84a4ff75e66dcb62c814df-fx-init/fx-init' != store path '/fx/disk/store/553c9faa9e15f01b31ab8be573571a9eb1dd3067ca84a4ff75e66dcb62c814df-fx-init'
+/bin/fakesvc: link_target: symlink points at '/fx/disk/store/3d07e8dc3123bc923184c1570a786e0e091036f8167acd2ddd15c92411acc231-fake-service/fakesvc' != store path '/fx/disk/store/3d07e8dc3123bc923184c1570a786e0e091036f8167acd2ddd15c92411acc231-fake-service'
+/bin/fxctl: link_target: symlink points at '/fx/disk/store/679df641b02188545792b943a673b613d80c7e55123a8ec2c44bffb6d211225a-fxctl/fxctl' != store path '/fx/disk/store/679df641b02188545792b943a673b613d80c7e55123a8ec2c44bffb6d211225a-fxctl'
+/bin/init: link_target: symlink points at '/fx/disk/store/8895e7412e02097841f837ba446f700c78c14e5d5428a8c32881d288c05b3bbc-fx-init/fx-init' != store path '/fx/disk/store/8895e7412e02097841f837ba446f700c78c14e5d5428a8c32881d288c05b3bbc-fx-init'

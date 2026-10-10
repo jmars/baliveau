@@ -14,13 +14,23 @@
 #                                            must NOT shadow $ROOT/bin
 #   $ROOT/fx/store/bin/fxctl (decoy)
 #   $ROOT/fx/disk/store/                     the store-scoped verbs' store
+#   $ROOT/run/fx/control.{in,out}            a fake PID1 speaking the REAL fifo
+#                                            line protocol (created mid-run for
+#                                            the fx_activate channel arm, then
+#                                            removed for the fallback arm)
 # and drives the server over stdin/stdout with newline-delimited JSON-RPC 2.0
 # frames, asserting:
 #   the MCP handshake and framing (initialize / notifications/initialized
 #   silence / tools/list / tools/call / ping / id echo incl. string ids),
 #   every verb row of the table (exec verbs via the stubs, fx_read/fx_write/
 #   fx_ls natively under $ROOT), the fx_store_verify EXIT-1-on-drift gate
-#   surfacing as "exit=1" in the reply text, root-based command resolution
+#   surfacing as "exit=1" in the reply text, fx_activate's CONTROL-CHANNEL
+#   route (the request line `activate <config>' on control.in; PID1's
+#   "activated version N"+OK reply surfacing exit=0; PID1's ERR refusal —
+#   the service-table overflow shape — surfacing verbatim with exit=1; a
+#   whitespace config path refused BEFORE the channel; and the channel-less
+#   fallback exec'ing the pinned fx-activate argv behind a LOUD
+#   reduced-semantics banner), root-based command resolution
 #   (the running root's bin wins; usr/fx-core/bin then beats the store decoy),
 #   the STORE-SCOPED refusal (a row carrying /fx/disk/store will not run when
 #   that store is absent — it names the path instead of exec'ing a stub that
@@ -59,6 +69,10 @@ mkdir -p "$ROOT/usr/fx-core/bin" "$ROOT/fx/store/bin" "$ROOT/bin" "$ROOT/fx/disk
 
 cat > "$ROOT/usr/fx-core/bin/fxctl" <<STUB
 #!/bin/sh
+# fxctl's fifo mode passes a bare --fifo FIRST (the in-guest transport flag,
+# stripped before the request line is built) — the stub shifts it off the same
+# way so the case arms below see the real subcommand.
+case "\$1" in --fifo) shift ;; esac
 cmd="\$1"; shift
 case "\$cmd" in
   q)        echo "relation:\$1" ;;
@@ -164,7 +178,7 @@ printf '%s' "1791556310 10 9 dead" >> "$ROOT/fx/disk/store/.recovery"
 
 # ── the driver ───────────────────────────────────────────────────────────────
 python3 - "$ROOT" "$BIN" <<'DRIVER'
-import json, os, select, shutil, subprocess, sys
+import json, os, select, shutil, subprocess, sys, time
 
 root = sys.argv[1]
 bin = os.path.abspath(sys.argv[2])
@@ -270,11 +284,107 @@ ok("lookup falls through to usr/fx-core/bin over the fx/store/bin decoy",
 # 6-9 — the other exec verbs
 d = call("fx_status", {}, 11)
 ok("fx_status", "gen 42 current" in tool_text(d), tool_text(d))
+
+# 6a — fx_activate over a REAL control-channel fixture: a fake PID1 speaking
+# the documented fifo line protocol (the pair <root>/run/fx/control.in +
+# control.out; a request `activate <config>\n' on control.in; data lines then
+# OK on control.out).  This is PID1's own protocol (init.zig setup_fifo_ctrl /
+# handle_fifo), not a mock of this server — a stub that only echoed would
+# prove nothing about the wire grammar.  The fake parks its fds O_RDWR
+# exactly like PID1 (a fifo write-open with no reader is ENXIO).
+runfx = os.path.join(root, "run", "fx")
+os.makedirs(runfx, exist_ok=True)
+ctrl_in = os.path.join(runfx, "control.in")
+ctrl_out = os.path.join(runfx, "control.out")
+os.mkfifo(ctrl_in, 0o600)
+os.mkfifo(ctrl_out, 0o600)
+fake_log = os.path.join(root, "fake-pid1.log")
+fake = subprocess.Popen(["python3", "-c", r'''
+import os, sys, time
+cin, cout, log = sys.argv[1], sys.argv[2], sys.argv[3]
+# PID1's own shape: both ends O_RDWR|O_NONBLOCK — a parked reader on
+# control.in (a client's O_WRONLY open can never ENXIO) and a parked
+# writer on control.out (a client's read never EOFs when PID1 lives).
+fdi = os.open(cin, os.O_RDWR | os.O_NONBLOCK)
+fdo = os.open(cout, os.O_RDWR | os.O_NONBLOCK)
+n = 0
+with open(log, "w") as lg:
+    lg.write("ready\n"); lg.flush()
+    while True:
+        try:
+            b = os.read(fdi, 4096)
+        except BlockingIOError:
+            time.sleep(0.01); continue
+        if not b:
+            time.sleep(0.01); continue
+        for line in b.decode("latin1").split("\n"):
+            if not line.strip():
+                continue
+            n += 1
+            lg.write("req %d: %s\n" % (n, line)); lg.flush()
+            if n == 1:
+                # the success shape: PID1's data line then OK
+                os.write(fdo, b"activated version 9\nOK\n")
+            elif n == 2:
+                # the refusal shape: PID1's VERBATIM service-table overflow
+                # refusal (init.zig's format string — the smoke must speak the
+                # real protocol text, not an invented paraphrase)
+                os.write(fdo, b"ERR activated version 10 but REFUSED: service "
+                               b"'wide' is #65, window 64, 1 rows past it\n")
+            else:
+                os.write(fdo, b"ERR unknown command\n")
+''', ctrl_in, ctrl_out, fake_log])
+def wait_fake(nreq):
+    # nreq == 0 waits only for the fake's fds to be parked ("ready")
+    for _ in range(500):
+        try:
+            t = open(fake_log).read()
+            if t.count("req ") >= nreq and (nreq > 0 or "ready" in t):
+                return t
+        except OSError:
+            pass
+        time.sleep(0.02)
+    return ""
+wait_fake(0)  # the fake must hold its reader BEFORE the first request
+d = call("fx_activate", {"config": "/fx/disk/agent-config.dhall"}, 70)
+txt = tool_text(d)
+ok("fx_activate THROUGH PID1's channel: PID1's reply line reaches the model, exit=0",
+   txt.startswith("exit=0\n") and "activated version 9" in txt, txt)
+ok("fx_activate channel: the request line is exactly `activate <config>'",
+   "req 1: activate /fx/disk/agent-config.dhall" in wait_fake(1), txt)
+# THE REFUSAL PATH: PID1's ERR must surface as LOUD text + exit=1 — the
+# service-table overflow refusal is the diagnosis the model acts on.
+d = call("fx_activate", {"config": "/fx/disk/agent-config.dhall"}, 71)
+txt = tool_text(d)
+ok("fx_activate channel: PID1's REFUSAL is loud, verbatim, exit=1",
+   txt.startswith("exit=1\n") and "ERR activated version 10 but REFUSED" in txt
+   and "is #65, window 64," in txt, txt)
+# a config path with whitespace is refused BEFORE the channel (PID1's grammar
+# is space/tab-delimited with no quoting — such a path cannot be carried)
+d = call("fx_activate", {"config": "/fx/disk/agent bad.dhall"}, 72)
+txt = tool_text(d)
+ok("fx_activate: a whitespace config path is refused before the channel",
+   txt.startswith("exit=1\n") and "fx_activate REFUSED" in txt
+   and "whitespace" in txt, txt)
+ok("fx_activate: the whitespace refusal never reached PID1 "
+   "(no third request logged)",
+   wait_fake(2).count("req ") == 2, txt)
+fake.terminate(); fake.wait(timeout=5)
+
+# 6b — the CHANNEL-LESS fallback: with the pair gone (fake PID1 dead, fifos
+# removed), fx_activate execs the root's /bin/fx-activate directly — the OLD
+# route — and the reply's FIRST line is the LOUD reduced-semantics banner:
+# published, NOT committed.  A silent downgrade is the failure this catches.
+os.unlink(ctrl_in)
+os.unlink(ctrl_out)
 d = call("fx_activate", {"config": "/fx/disk/agent-config.dhall"}, 12)
 txt = tool_text(d)
-ok("fx_activate runs the RUNNING root's /bin/fx-activate with the guest store "
-   "+ frozen pkgset",
+ok("fx_activate with NO channel: direct-exec fallback with a LOUD banner",
    txt.startswith("exit=0\n") and
+   "NO PID1 CONTROL CHANNEL" in txt and
+   "REDUCED semantics" in txt and
+   "PUBLISHED" in txt and "NOT COMMITTED" in txt, txt)
+ok("fx_activate fallback: the pinned argv is intact (guest store + frozen pkgset)",
    "RUNBIN fx-activate args: --store /fx/disk/store --package-set "
    "/usr/fx/package-set.dhall --config /fx/disk/agent-config.dhall" in txt, txt)
 # the mkinitramfs -b STAGED copy is a DIFFERENT binary; it must not shadow the

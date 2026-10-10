@@ -1,0 +1,7 @@
+boot_status:
+  9	ok
+generation_current:
+  9
+service_runtime:
+heartbeat	37	started	0
+OK

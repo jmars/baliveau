@@ -32,13 +32,22 @@
 # no rt_effect and no runtime relation, so the system cannot supply it.
 #
 #   ARM OBSERVING (disk-obs, image-obs)  — the harness with the loop
-#     boot 1  the bracket v_B boots ok; the agent runs its recorded fixture
-#             (fx_outcome, fx_write the crasher config, fx_activate) -> a NEW
-#             generation v_A the HOST never created, recorded durably.
-#     boot 2  the SAME disk: v_A boots and FAILS in grace -> boot-FAILED v_A and
-#             "<v_A> failed" in the disk .bootlog.
+#     boot 1  the IDLE boot: the bracket v_B boots, the agent runs (binding
+#             only, zero tool calls) and the grace window judges v_B ok.  That
+#             verdict is the ROLL-FORWARD TARGET — under the channel route an
+#             activating first boot would preempt the bracket's window (the
+#             activation lands inside the grace), no ok generation would exist
+#             and the machine could never recover; the idle boot makes the
+#             precondition explicit instead of accidental.
+#     boot 2  the agent runs its recorded fixture (fx_outcome, fx_write the
+#             crasher config, fx_activate THROUGH PID1) -> a NEW generation v_A
+#             the HOST never created, recorded durably — and COMMITTED: the
+#             re-armed window judges v_A in the SAME boot (boot-FAILED v_A on
+#             the console, "<v_A> failed" in the disk .bootlog — the
+#             pre-2026-10 durable-only route needed a whole extra boot for it).
 #     boot 3  fx-init rolls forward to the newest ok generation below v_A (the
-#             bracket) under a NEW, HIGHER version v_C.  The agent service is
+#             bracket's v_B, judged ok by the idle boot) under a NEW, HIGHER
+#             version v_C.  The agent service is
 #             back — and this is where the arms diverge: the harness reads its
 #             own record, sees "v_A failed", REPORTS the failure on the console
 #             and STOPS.  No activation is issued (NO new session dir on the
@@ -55,10 +64,12 @@
 #     ONLY difference is that the payload's fx-agent was built with
 #     -DFX_HARNESS_NO_OBSERVE (make blind), i.e. it records exactly as the real
 #     one does but never reads its record back.  It re-runs and re-activates
-#     blindly: boot 3 rolls forward to v_C and the agent creates ANOTHER
-#     crasher generation v_A2 > v_C; boot 4 boots v_A2 and FAILS -> a SECOND
-#     failed line.  ASSERTED: the version keeps climbing past v_C and the
-#     .bootlog gains a failed line per cycle — THE RATCHET.
+#     blindly: boot 2 (after the same idle boot 1) activates v_A2, which
+#     FAILS IN-BOOT; boot 3 rolls forward to v_E and the blind agent creates
+#     ANOTHER crasher generation v_A3 > v_E — committed in-boot, it fails in
+#     the SAME boot -> a SECOND failed line.  ASSERTED: the version keeps
+#     climbing past v_E and the .bootlog gains a failed line per cycle —
+#     THE RATCHET.
 #
 # THE DIFFERENCE IS THE PROOF, and both arms are asserted in ONE run: if the
 # blind arm did not ratchet, the observing arm would be measuring nothing; if
@@ -598,9 +609,17 @@ done
 # through the tool server's own new verb), write the crasher config, activate
 # it.  The chardev transport SEEKs to 0 before every turn, so every boot replays
 # the same stream, and --max-turns 2 is exactly one dispatch round.
+# MODE "idle" (the first boot of each arm): text only, ZERO tool calls — the
+# agent runs, does nothing, exits; the bracket's grace window therefore
+# judges v_B undisturbed.  THAT ok verdict is the roll-forward's target, and
+# under the channel route it is no longer automatic: an activating first boot
+# would preempt the bracket's window (the activation lands inside the grace),
+# no ok generation would ever exist, and the machine would re-fail its
+# current generation forever instead of rolling forward.  The idle boot makes
+# the precondition explicit instead of accidental.
 cat > "$WORK/mkfixture.py" <<'PYEOF'
 import json, sys
-out, text, cfg_path, cfg_file = sys.argv[1:5]
+out, text, cfg_path, cfg_file, mode = sys.argv[1:6]
 content = open(cfg_file).read()
 def ev(name, obj):
     return "event: %s\ndata: %s\n\n" % (name, json.dumps(obj))
@@ -618,6 +637,13 @@ calls = [
     ("call_obs_tamper",   "fx_write",    {"path": "/fx/disk/agent-data/attempts.jsonl",
                                           "content": FORGED}),
 ]
+if mode == "idle":
+    # ONE harmless read, not zero calls: a zero-call run ends CLEANLY and
+    # records `done` for the task — which would settle it and make every
+    # later boot of the same task refuse to run (ALREADY_DONE).  With one
+    # call, --max-turns 2 leaves the replayed turn-2 call PENDING and the run
+    # is TURN-LIMITED: no done marker, the task stays eligible for boot 2.
+    calls = [("call_idle_outcome", "fx_outcome", {})]
 s = [ev("response.created", {"type": "response.created",
                              "response": {"id": "obs-fixture", "status": "in_progress"}}),
      ev("response.output_item.added",
@@ -653,13 +679,23 @@ PYEOF
 TEXT_MARKER="OBS-AGENT-RAN-$MARKER"
 for variant in obs blind; do
     python3 "$WORK/mkfixture.py" "$WORK/root-$variant/usr/fx-agent/arm.sse" \
-        "$TEXT_MARKER" "$AGENT_CONFIG" "$WORK/crasher.dhall" \
+        "$TEXT_MARKER" "$AGENT_CONFIG" "$WORK/crasher.dhall" crasher \
         || fail "cannot build the fixture ($variant)"
     grep -q 'fx_activate' "$WORK/root-$variant/usr/fx-agent/arm.sse" || fail "the fixture ($variant) has no fx_activate"
     grep -q 'fx_outcome'  "$WORK/root-$variant/usr/fx-agent/arm.sse" || fail "the fixture ($variant) has no fx_outcome read"
     grep -q 'obscrasher'  "$WORK/root-$variant/usr/fx-agent/arm.sse" || fail "the fixture ($variant) carries no crasher"
+    # the IDLE twin (same root, only the stream differs) for each arm's boot 1
+    cp -a "$WORK/root-$variant" "$WORK/root-$variant-idle" \
+        || fail "cannot copy the payload root ($variant-idle)"
+    python3 "$WORK/mkfixture.py" "$WORK/root-$variant-idle/usr/fx-agent/arm.sse" \
+        "$TEXT_MARKER" "$AGENT_CONFIG" "$WORK/crasher.dhall" idle \
+        || fail "cannot build the idle fixture ($variant)"
+    grep -q 'fx_activate' "$WORK/root-$variant-idle/usr/fx-agent/arm.sse" \
+        && fail "the idle fixture ($variant) carries an ACTIVATION — it is not idle"
+    grep -q 'fx_outcome' "$WORK/root-$variant-idle/usr/fx-agent/arm.sse" \
+        || fail "the idle fixture ($variant) carries no fx_outcome — a zero-call run would end cleanly and record done (wedging every later boot)"
 done
-echo "qemu-agent-observe: one fixture, two payloads: the observing fx-agent and the blind (-DFX_HARNESS_NO_OBSERVE) one"
+echo "qemu-agent-observe: two fixtures x two payloads: idle (boot 1) + crasher, on the observing and the blind agent"
 
 # ─── ONE activation on ONE store, then the two images ─────────────────────
 activate() { # activate CFG -> "activated <hash> as version N"
@@ -678,6 +714,8 @@ V_B=$(echo "$OUT_B" | version_of); [ -n "$V_B" ] || fail "cannot parse v_B from:
 echo "$OUT_B"
 image "$WORK/root-obs"   "$WORK/img-obs.list"   "$WORK/img-obs.cpio.gz"
 image "$WORK/root-blind" "$WORK/img-blind.list" "$WORK/img-blind.cpio.gz"
+image "$WORK/root-obs-idle"   "$WORK/img-obs-idle.list"   "$WORK/img-obs-idle.cpio.gz"
+image "$WORK/root-blind-idle" "$WORK/img-blind-idle.list" "$WORK/img-blind-idle.cpio.gz"
 for want in usr/fx-agent/bin/fx-agent usr/fx-agent/bin/fx-verbs-server \
             usr/fx-agent/cfg/config.dhall usr/fx-agent/arm.sse; do
     grep -qx "$want" "$WORK/img-obs.list"   || fail "image obs does not carry $want"
@@ -761,25 +799,50 @@ fi
 
 # ═══ ARM OBSERVING — the loop closes ═════════════════════════════════════
 DISK="$WORK/disk-obs.img"; new_disk "$DISK"
-echo "=== qemu-agent-observe: [obs] boot 1 — the bracket v$V_B; the agent writes and activates the crasher ==="
-boot "$WORK/img-obs.cpio.gz" "$WORK/obs-1.log"
+echo "=== qemu-agent-observe: [obs] boot 1 — the IDLE boot: the bracket v$V_B judges undisturbed (the roll-forward's target) ==="
+boot "$WORK/img-obs-idle.cpio.gz" "$WORK/obs-1.log"
 cp "$WORK/obs-1.log" "$EVID/obs-boot1-console.log"
 grep -n 'disk store mounted\|boot-ok\|boot-FAILED\|OBS-AGENT-RAN\|fakesvc exit' "$WORK/obs-1.log" | head -12
+grep -q "fx-init: disk store mounted (current v$V_B)" "$WORK/obs-1.log" \
+    || { tail -30 "$WORK/obs-1.log"; halt; fail "[obs] boot 1: the machine did not come up in the bracket v$V_B"; }
 grep -q "fx-init: boot-ok v$V_B" "$WORK/obs-1.log" \
-    || { tail -30 "$WORK/obs-1.log"; halt; fail "[obs] boot 1: want boot-ok v$V_B (the bracket's own verdict: an agent-driven activation is durable, NOT hot-applied)"; }
+    || { tail -30 "$WORK/obs-1.log"; halt; fail "[obs] boot 1: want boot-ok v$V_B — THE ROLL-FORWARD TARGET: without an ok generation below the crasher, the machine cannot recover (the idle boot exists to make this verdict, which an activating first boot would preempt)"; }
 grep -qF "$TEXT_MARKER" "$WORK/obs-1.log" \
-    || { tail -40 "$WORK/obs-1.log"; halt; fail "[obs] boot 1: the agent never ran (no '$TEXT_MARKER' on the console)"; }
+    || { tail -40 "$WORK/obs-1.log"; halt; fail "[obs] boot 1: the idle agent never ran (no '$TEXT_MARKER' on the console)"; }
+halt
+# the idle boot records the task<->agent BINDING but no activation intent
+read_from_disk "/agent-data/attempts.jsonl" "$WORK/obs-1-attempts.txt"
+grep -q " attempt " "$WORK/obs-1-attempts.txt" \
+    && { cat "$WORK/obs-1-attempts.txt"; fail "[obs] boot 1: the IDLE fixture recorded an activation attempt — it is not idle"; }
+grep -Eq '^[0-9]+ [0-9a-f]{16} agent ' "$WORK/obs-1-attempts.txt" \
+    || { cat "$WORK/obs-1-attempts.txt"; fail "[obs] boot 1: no task<->agent binding on the record"; }
+echo "qemu-agent-observe: [obs] boot 1 GREEN — the bracket v$V_B judged ok (idle agent, nothing dispatched)"
+
+echo "=== qemu-agent-observe: [obs] boot 2 — the agent writes and activates the crasher THROUGH PID1 (it COMMITS in-boot) ==="
+boot "$WORK/img-obs.cpio.gz" "$WORK/obs-2.log"
+cp "$WORK/obs-2.log" "$EVID/obs-boot2-console.log"
+grep -n 'disk store mounted\|boot-ok\|boot-FAILED\|OBS-AGENT-RAN\|fakesvc exit' "$WORK/obs-2.log" | head -12
+grep -q "fx-init: disk store mounted (current v$V_B)" "$WORK/obs-2.log" \
+    || { tail -30 "$WORK/obs-2.log"; halt; fail "[obs] boot 2: the machine did not come up in the bracket v$V_B"; }
+grep -qF "$TEXT_MARKER" "$WORK/obs-2.log" \
+    || { tail -40 "$WORK/obs-2.log"; halt; fail "[obs] boot 2: the agent never ran (no '$TEXT_MARKER' on the console)"; }
 halt
 # the agent's own durable record, read back OFF THE DISK: this file IS the
 # causal link, and it is only useful because it is on the virtio disk.
-read_from_disk "/agent-data/attempts.jsonl" "$WORK/obs-1-attempts.txt"
-cp "$WORK/obs-1-attempts.txt" "$EVID/obs-boot1-attempts.txt"
-[ -s "$WORK/obs-1-attempts.txt" ] \
-    || { cat "$WORK/obs-1-attempts.txt"; fail "[obs] boot 1: no durable activation record on the disk"; }
-V_A=$(sed -n 's/.* result .* \([0-9][0-9]*\) .*/\1/p' "$WORK/obs-1-attempts.txt" | head -1)
-[ -n "$V_A" ] || { cat "$WORK/obs-1-attempts.txt"; fail "[obs] boot 1: no recorded activation OUTCOME on the disk"; }
-[ "$V_A" -gt "$V_B" ] || fail "[obs] boot 1: the agent's generation v$V_A is not above the bracket v$V_B"
-grep -q " attempt " "$WORK/obs-1-attempts.txt" || fail "[obs] boot 1: no attempt line (the intent must be durable BEFORE the call)"
+read_from_disk "/agent-data/attempts.jsonl" "$WORK/obs-2-attempts.txt"
+cp "$WORK/obs-2-attempts.txt" "$EVID/obs-boot2-attempts.txt"
+[ -s "$WORK/obs-2-attempts.txt" ] \
+    || { cat "$WORK/obs-2-attempts.txt"; fail "[obs] boot 2: no durable activation record on the disk"; }
+V_A=$(sed -n 's/.* result .* \([0-9][0-9]*\) .*/\1/p' "$WORK/obs-2-attempts.txt" | head -1)
+[ -n "$V_A" ] || { cat "$WORK/obs-2-attempts.txt"; fail "[obs] boot 2: no recorded activation OUTCOME on the disk"; }
+[ "$V_A" -gt "$V_B" ] || fail "[obs] boot 2: the agent's generation v$V_A is not above the bracket v$V_B"
+# THE COMMIT MOVED THE FAILURE INTO THIS BOOT: PID1's re-armed window judged
+# the crasher generation before the halt — the console verdict and the disk
+# .bootlog line the pre-2026-10 gate needed a WHOLE NEXT BOOT for.
+grep -q "fx-init: boot-FAILED v$V_A" "$WORK/obs-2.log" \
+    || { grep -n 'boot-ok\|boot-FAILED' "$WORK/obs-2.log" | head -5; \
+         fail "[obs] boot 2: the channel activation did not COMMIT — no in-boot 'boot-FAILED v$V_A' verdict"; }
+grep -q " attempt " "$WORK/obs-2-attempts.txt" || fail "[obs] boot 2: no attempt line (the intent must be durable BEFORE the call)"
 # NO `done` MARKER: the guest's own recorded stream is replayed every turn, so
 # the loop's last allowed turn still carries tool calls that are never dispatched
 # — the run is TURN-LIMITED, it did not finish the task, and claiming otherwise
@@ -787,84 +850,85 @@ grep -q " attempt " "$WORK/obs-1-attempts.txt" || fail "[obs] boot 1: no attempt
 # continue it.  The harness must SAY SO on the console (its stderr is the
 # service's console here), which is what makes this an assertion about the
 # end-state rather than about a missing feature.
-grep -q " done " "$WORK/obs-1-attempts.txt" \
-    && { cat "$WORK/obs-1-attempts.txt"; fail "[obs] boot 1: a TURN-LIMITED run recorded 'done' — the next boot would call this unfinished task COMPLETE"; }
-grep -q "turn limit" "$WORK/obs-1.log" \
-    || { grep -n 'agent_main' "$WORK/obs-1.log" | head -5; fail "[obs] boot 1: the turn-limited run did not SAY so on the console"; }
+grep -q " done " "$WORK/obs-2-attempts.txt" \
+    && { cat "$WORK/obs-2-attempts.txt"; fail "[obs] boot 2: a TURN-LIMITED run recorded 'done' — the next boot would call this unfinished task COMPLETE"; }
+grep -q "turn limit" "$WORK/obs-2.log" \
+    || { grep -n 'agent_main' "$WORK/obs-2.log" | head -5; fail "[obs] boot 2: the turn-limited run did not SAY so on the console"; }
 # THE TASK<->AGENT BINDING must be on the disk record too: it is what makes a
 # DRIFTED task identity (a prompt that varies per boot, which silently disables
 # the loop) observable at all.
-OBS_TASK=$(awk '$3=="agent"{print $2; exit}' "$WORK/obs-1-attempts.txt")
+OBS_TASK=$(awk '$3=="agent"{print $2; exit}' "$WORK/obs-2-attempts.txt")
 [ -n "$OBS_TASK" ] \
-    || { cat "$WORK/obs-1-attempts.txt"; fail "[obs] boot 1: the disk record carries no task<->agent binding"; }
+    || { cat "$WORK/obs-2-attempts.txt"; fail "[obs] boot 2: the disk record carries no task<->agent binding"; }
 echo "$OBS_TASK" | grep -Eq '^[0-9a-f]{16}$' \
-    || { cat "$WORK/obs-1-attempts.txt"; fail "[obs] boot 1: the bound task id '$OBS_TASK' is not 16 hex"; }
-S1=$(session_count); [ "$S1" = 1 ] || fail "[obs] boot 1: expected 1 session on the disk, got $S1"
-# the fixture's FIRST call was the new verb, reading fx-init's REAL store
-SID=$( "$DEBUGFS" -R "ls -p /agent-data/sessions" "$DISK" 2>/dev/null \
-       | sed -n 's|^/[0-9]*/[0-9]*/[0-9]*/[0-9]*/\([^/.][^/]*\)/*$|\1|p' | head -1 )
-read_from_disk "/agent-data/sessions/$SID/messages.jsonl" "$WORK/obs-1-transcript.jsonl"
-cp "$WORK/obs-1-transcript.jsonl" "$EVID/obs-boot1-transcript.jsonl"
-grep -q 'fx_outcome' "$WORK/obs-1-transcript.jsonl" || fail "[obs] boot 1: the fixture's fx_outcome call is not in the transcript"
-grep -q "current $V_B" "$WORK/obs-1-transcript.jsonl" \
-    || { grep -o 'exit=0.current [0-9]*' "$WORK/obs-1-transcript.jsonl" | head -3; fail "[obs] boot 1: the fx_outcome tool result does not report the guest's real CURRENT (v$V_B)"; }
+    || { cat "$WORK/obs-2-attempts.txt"; fail "[obs] boot 2: the bound task id '$OBS_TASK' is not 16 hex"; }
+# TWO sessions now: the idle boot's (no tool calls) + the crasher boot's.
+S1=$(session_count); [ "$S1" = 2 ] || fail "[obs] boot 2: expected 2 sessions on the disk (idle + crasher), got $S1"
+# the crasher boot's transcript = EVERY session concatenated, then only the
+# one carrying tool calls is asserted (the idle session is text-only — that
+# absence is itself checked: no session but the crasher's dispatched anything)
+: > "$WORK/obs-2-transcript.jsonl"
+for _sess in $( "$DEBUGFS" -R "ls -p /agent-data/sessions" "$DISK" 2>/dev/null \
+       | sed -n 's|^/[0-9]*/[0-9]*/[0-9]*/[0-9]*/\([^/.][^/]*\)/*$|\1|p' ); do
+    read_from_disk "/agent-data/sessions/$_sess/messages.jsonl" "$WORK/obs-2-tmp.jsonl"
+    cat "$WORK/obs-2-tmp.jsonl" >> "$WORK/obs-2-transcript.jsonl" 2>/dev/null || :
+done
+cp "$WORK/obs-2-transcript.jsonl" "$EVID/obs-boot2-transcript.jsonl"
+grep -q 'fx_outcome' "$WORK/obs-2-transcript.jsonl" || fail "[obs] boot 2: the fixture's fx_outcome call is not in the transcript"
+grep -q "current $V_B" "$WORK/obs-2-transcript.jsonl" \
+    || { grep -o 'exit=0.current [0-9]*' "$WORK/obs-2-transcript.jsonl" | head -3; fail "[obs] boot 2: the fx_outcome tool result does not report the guest's real CURRENT (v$V_B)"; }
 # THE RECOVERY JOURNAL THROUGH THE MODEL'S OWN TOOL: fx-init creates it (with
 # its definition header, zero data lines) on EVERY boot from the first, so the
 # boot-1 reply must read "recoveries 0" — the machine saying "never recovered",
 # which is a DIFFERENT state than "no journal".  FAILS if the guest's fx-init
 # predates the journal (the reply would say "recovery absent" — a stale cached
 # guest build) or the verb does not read the file at all (no recoveries line).
-grep -q 'recoveries 0' "$WORK/obs-1-transcript.jsonl" \
-    || { grep -o 'recover.\{0,60\}' "$WORK/obs-1-transcript.jsonl" | head -3; \
-         fail "[obs] boot 1: the fx_outcome reply does not read the recovery journal as ZERO — a store that has never recovered is a measurement, not an absence (stale fx-init guest build?)"; }
+grep -q 'recoveries 0' "$WORK/obs-2-transcript.jsonl" \
+    || { grep -o 'recover.\{0,60\}' "$WORK/obs-2-transcript.jsonl" | head -3; \
+         fail "[obs] boot 2: the fx_outcome reply does not read the recovery journal as ZERO — a store that has never recovered is a measurement, not an absence (stale fx-init guest build?)"; }
 # THE RECORD IS NOT MODEL-WRITABLE, IN THE GUEST (SF1): the fixture's 4th call
 # fx_writes the record path itself.  The refusal must be IN THE TRANSCRIPT
 # (naming the host-declared set), the forged content must be NOWHERE in the
 # durable record on the disk, and the agent's own CONFIG write (the path the
 # host declared) must still have SUCCEEDED — a fix that refused it would have
 # broken the product to close the hole.
-grep -q 'fx_write REFUSED' "$WORK/obs-1-transcript.jsonl" \
-    || { grep -o 'fx_write.\{0,90\}' "$WORK/obs-1-transcript.jsonl" | head -4; \
-         fail "[obs] boot 1: the in-guest fx_write of the RECORD was not REFUSED — the writable set does not hold in the guest"; }
-grep -q 'FX_AGENT_WRITABLE' "$WORK/obs-1-transcript.jsonl" \
-    || fail "[obs] boot 1: the record-write refusal does not name the host-declared set"
-grep -q 'FORGED-RECORD-PROBE' "$WORK/obs-1-attempts.txt" \
-    && { cat "$WORK/obs-1-attempts.txt"; fail "[obs] boot 1: forged content REACHED the durable record — the model can erase its own history in the guest"; }
-grep -q "bytes to $AGENT_CONFIG" "$WORK/obs-1-transcript.jsonl" \
-    || { grep -o 'wrote [0-9]* bytes.\{0,50\}' "$WORK/obs-1-transcript.jsonl" | head -3; \
-         fail "[obs] boot 1: the agent's own CONFIG write was refused — the guest's writable set broke the agent's one legitimate write"; }
-echo "qemu-agent-observe: [obs] boot 1 GREEN — the agent READ the outcome through fx_outcome (current v$V_B),"
+grep -q 'fx_write REFUSED' "$WORK/obs-2-transcript.jsonl" \
+    || { grep -o 'fx_write.\{0,90\}' "$WORK/obs-2-transcript.jsonl" | head -4; \
+         fail "[obs] boot 2: the in-guest fx_write of the RECORD was not REFUSED — the writable set does not hold in the guest"; }
+grep -q 'FX_AGENT_WRITABLE' "$WORK/obs-2-transcript.jsonl" \
+    || fail "[obs] boot 2: the record-write refusal does not name the host-declared set"
+grep -q 'FORGED-RECORD-PROBE' "$WORK/obs-2-attempts.txt" \
+    && { cat "$WORK/obs-2-attempts.txt"; fail "[obs] boot 2: forged content REACHED the durable record — the model can erase its own history in the guest"; }
+grep -q "bytes to $AGENT_CONFIG" "$WORK/obs-2-transcript.jsonl" \
+    || { grep -o 'wrote [0-9]* bytes.\{0,50\}' "$WORK/obs-2-transcript.jsonl" | head -3; \
+         fail "[obs] boot 2: the agent's own CONFIG write was refused — the guest's writable set broke the agent's one legitimate write"; }
+echo "qemu-agent-observe: [obs] boot 2 GREEN — the agent READ the outcome through fx_outcome (current v$V_B),"
 echo "                    wrote + ACTIVATED the crasher: v$V_A (hash recorded in the transcript), and its"
-echo "                    record ($(wc -l < "$WORK/obs-1-attempts.txt") lines) is ON THE DISK at /agent-data/attempts.jsonl"
+echo "                    record ($(wc -l < "$WORK/obs-2-attempts.txt") lines) is ON THE DISK at /agent-data/attempts.jsonl"
 echo "                    — and its fx_write of the RECORD ITSELF was refused in-guest (FX_AGENT_WRITABLE named)"
 
 # ── the audit seat ENROLLS against the REAL store, with the host's OWN
-#    boot count: this gate has started exactly ONE boot on this disk.  The
-#    count is not read from anywhere in the guest — the gate is the
-#    hypervisor here, and its count is the off-disk anchor.
+#    boot count: this gate has started exactly TWO boots on this disk (the
+#    idle bracket boot and the crasher boot).  The count is not read from
+#    anywhere in the guest — the gate is the hypervisor here, and its count
+#    is the off-disk anchor.
 if [ -n "$FXSTORE_AUDIT" ]; then
     extract_store "$WORK/audit-ext1"
     FXSTORE_BIN="$FXSTORE_AUDIT" "$AUDIT_BIN" --store "$WORK/audit-ext1/store" \
-        --obs-file "$WORK/audit-obs.obs" --boots 1 --nonces "$NONCE_LEDGER" > "$WORK/audit1.out" 2>&1
+        --obs-file "$WORK/audit-obs.obs" --boots 2 --nonces "$NONCE_LEDGER" > "$WORK/audit1.out" 2>&1
     _rc=$?
     cp "$WORK/audit1.out" "$EVID/obs-audit-enroll.out"
-    [ "$_rc" = 0 ] || { cat "$WORK/audit1.out"; fail "[obs] audit: enrollment against the real store after boot 1 exited $_rc (a store written only by the REAL writers must audit coherent)"; }
+    [ "$_rc" = 0 ] || { cat "$WORK/audit1.out"; fail "[obs] audit: enrollment against the real store after boot 2 exited $_rc (a store written only by the REAL writers must audit coherent)"; }
     grep -q 'ENROLLING' "$WORK/audit1.out" \
         || fail "[obs] audit: the first run did not enroll"
     grep -q '^VERDICT: coherent$' "$WORK/audit1.out" \
         || fail "[obs] audit: enrollment verdict is not coherent"
-    echo "qemu-agent-observe: [obs] audit ENROLLED against the real store after boot 1 (--boots 1 + the nonce ledger, coherent)"
+    echo "qemu-agent-observe: [obs] audit ENROLLED against the real store after boot 2 (--boots 2 + the nonce ledger, coherent)"
 fi
 
-echo "=== qemu-agent-observe: [obs] boot 2 — the crasher's generation v$V_A boots and FAILS ==="
-boot "$WORK/img-obs.cpio.gz" "$WORK/obs-2.log"
-cp "$WORK/obs-2.log" "$EVID/obs-boot2-console.log"
-grep -n 'disk store mounted\|boot-ok\|boot-FAILED\|fakesvc exit\|obsagent' "$WORK/obs-2.log" | head -12
-grep -q "fx-init: disk store mounted (current v$V_A)" "$WORK/obs-2.log" \
-    || { tail -30 "$WORK/obs-2.log"; halt; fail "[obs] boot 2: the disk's CURRENT is not the agent's v$V_A"; }
-grep -q "fx-init: boot-FAILED v$V_A" "$WORK/obs-2.log" \
-    || { tail -30 "$WORK/obs-2.log"; halt; fail "[obs] boot 2: want boot-FAILED v$V_A (the crasher must fail in grace)"; }
-halt
+# boot 2's disk .bootlog, read off the same halt (no extra boot: under the
+# channel route the crasher's failure is IN boot 2, so the old fresh-boot
+# crasher boot no longer exists)
 read_from_disk "/store/.bootlog" "$WORK/obs-2-bootlog.txt"
 cp "$WORK/obs-2-bootlog.txt" "$EVID/obs-boot2-bootlog.txt"
 echo "--- [obs] boot 2: the disk .bootlog ---"; sed 's/^/    /' "$WORK/obs-2-bootlog.txt"
@@ -997,8 +1061,8 @@ echo "qemu-agent-observe: [obs] SETTLED — max version v$OBS_MAX, exactly $OBS_
 echo "                    the observing harness never re-issued the failed activation"
 
 # ── THE BOOT-ACCOUNTING DEMONSTRATION, on the REAL guest records ─────────
-# Since the enrollment after boot 1 this gate started boots 2, 3 and 4
-# (delta 3), EACH under a nonce it minted and recorded in its ledger:
+# Since the enrollment after boot 2 this gate started boots 3 and 4
+# (delta 2), EACH under a nonce it minted and recorded in its ledger:
 # v$V_A's failed boot, the roll-forward boot that republished the bracket
 # as v$V_C, and v$V_C's settled re-boot.  All of it is REAL .bootlog
 # growth written by the REAL fx-init inside the guest, under the host's
@@ -1029,7 +1093,7 @@ if [ -n "$FXSTORE_AUDIT" ]; then
     _rc=$?
     cp "$WORK/audit4.out" "$EVID/obs-audit-boot4.out"
     [ "$_rc" = 0 ] || { cat "$WORK/audit4.out"; fail "[obs] audit: the real 4-boot history exited $_rc (legitimate growth must stay coherent)"; }
-    grep -q 'boot accounting: host boots 1 -> 4 (delta 3)' "$WORK/audit4.out" \
+    grep -q 'boot accounting: host boots 2 -> 4 (delta 2)' "$WORK/audit4.out" \
         || fail "[obs] audit: the accounting did not see the host delta: $(grep 'boot accounting' "$WORK/audit4.out")"
     grep -q '^VERDICT: coherent$' "$WORK/audit4.out" \
         || fail "[obs] audit: the real 4-boot history is not coherent"
@@ -1076,28 +1140,33 @@ fi
 
 # ═══ ARM BLIND — the same fixture with today's harness: the ratchet ═══════
 DISK="$WORK/disk-blind.img"; new_disk "$DISK"
-echo "=== qemu-agent-observe: [blind] boot 1 — the SAME bracket v$V_B; the blind harness activates the crasher ==="
-boot "$WORK/img-blind.cpio.gz" "$WORK/blind-1.log"
+echo "=== qemu-agent-observe: [blind] boot 1 — the SAME idle boot: the bracket v$V_B judges ok ==="
+boot "$WORK/img-blind-idle.cpio.gz" "$WORK/blind-1.log"
 cp "$WORK/blind-1.log" "$EVID/blind-boot1-console.log"
 grep -n 'disk store mounted\|boot-ok\|boot-FAILED\|OBS-AGENT-RAN\|fakesvc exit' "$WORK/blind-1.log" | head -12
 grep -q "fx-init: boot-ok v$V_B" "$WORK/blind-1.log" \
-    || { tail -30 "$WORK/blind-1.log"; halt; fail "[blind] boot 1: want boot-ok v$V_B"; }
+    || { tail -30 "$WORK/blind-1.log"; halt; fail "[blind] boot 1: want boot-ok v$V_B (the roll-forward target, same as the observing arm)"; }
 grep -qF "$TEXT_MARKER" "$WORK/blind-1.log" \
     || { tail -40 "$WORK/blind-1.log"; halt; fail "[blind] boot 1: the blind harness never ran"; }
 halt
-read_from_disk "/agent-data/attempts.jsonl" "$WORK/blind-1-attempts.txt"
-cp "$WORK/blind-1-attempts.txt" "$EVID/blind-boot1-attempts.txt"
-V_A2=$(sed -n 's/.* result .* \([0-9][0-9]*\) .*/\1/p' "$WORK/blind-1-attempts.txt" | head -1)
-[ -n "$V_A2" ] || { cat "$WORK/blind-1-attempts.txt"; fail "[blind] boot 1: no recorded activation outcome on the disk"; }
-[ "$V_A2" -gt "$V_B" ] || fail "[blind] boot 1: v$V_A2 is not above the bracket v$V_B"
-echo "qemu-agent-observe: [blind] boot 1 GREEN — the blind harness (recording, but never reading back) activated v$V_A2"
+echo "qemu-agent-observe: [blind] boot 1 GREEN — idle bracket v$V_B ok (the blind arm shares the roll-forward precondition)"
 
-echo "=== qemu-agent-observe: [blind] boot 2 — v$V_A2 FAILS ==="
+echo "=== qemu-agent-observe: [blind] boot 2 — the blind harness activates the crasher; it COMMITS and FAILS in-boot ==="
 boot "$WORK/img-blind.cpio.gz" "$WORK/blind-2.log"
 cp "$WORK/blind-2.log" "$EVID/blind-boot2-console.log"
-grep -q "fx-init: boot-FAILED v$V_A2" "$WORK/blind-2.log" \
-    || { tail -30 "$WORK/blind-2.log"; halt; fail "[blind] boot 2: want boot-FAILED v$V_A2"; }
+grep -n 'disk store mounted\|boot-ok\|boot-FAILED\|OBS-AGENT-RAN\|fakesvc exit' "$WORK/blind-2.log" | head -12
+grep -qF "$TEXT_MARKER" "$WORK/blind-2.log" \
+    || { tail -40 "$WORK/blind-2.log"; halt; fail "[blind] boot 2: the blind harness never ran"; }
 halt
+read_from_disk "/agent-data/attempts.jsonl" "$WORK/blind-2-attempts.txt"
+cp "$WORK/blind-2-attempts.txt" "$EVID/blind-boot2-attempts.txt"
+V_A2=$(sed -n 's/.* result .* \([0-9][0-9]*\) .*/\1/p' "$WORK/blind-2-attempts.txt" | head -1)
+[ -n "$V_A2" ] || { cat "$WORK/blind-2-attempts.txt"; fail "[blind] boot 2: no recorded activation outcome on the disk"; }
+[ "$V_A2" -gt "$V_B" ] || fail "[blind] boot 2: v$V_A2 is not above the bracket v$V_B"
+grep -q "fx-init: boot-FAILED v$V_A2" "$WORK/blind-2.log" \
+    || { grep -n 'boot-ok\|boot-FAILED' "$WORK/blind-2.log" | head -5; halt; \
+         fail "[blind] boot 2: no in-boot 'boot-FAILED v$V_A2' — the blind activation did not COMMIT"; }
+echo "qemu-agent-observe: [blind] boot 2 GREEN — the blind harness (recording, but never reading back) activated v$V_A2, which FAILED IN-BOOT"
 read_from_disk "/store/.bootlog" "$WORK/blind-2-bootlog.txt"
 grep -q "^$V_A2 failed " "$WORK/blind-2-bootlog.txt" \
     || { cat "$WORK/blind-2-bootlog.txt"; fail "[blind] boot 2: no '$V_A2 failed' line"; }
@@ -1109,9 +1178,17 @@ cp "$WORK/blind-3.log" "$EVID/blind-boot3-console.log"
 grep -n 'rolling forward\|boot-ok\|boot-FAILED\|OBS-AGENT-RAN\|OBSERVED OUTCOME' "$WORK/blind-3.log" | head -12
 V_D=$(sed -n "s/.*fx-init: stale failed for v$V_A2; rolling forward to v\([0-9][0-9]*\).*/\1/p" "$WORK/blind-3.log" | head -1)
 [ -n "$V_D" ] || { tail -30 "$WORK/blind-3.log"; halt; fail "[blind] boot 3: no roll-forward line for v$V_A2"; }
-V_E=$(sed -n 's/.*fx-init: boot-ok v\([0-9][0-9]*\).*/\1/p' "$WORK/blind-3.log" | head -1)
-[ -n "$V_E" ] || { tail -30 "$WORK/blind-3.log"; halt; fail "[blind] boot 3: no boot-ok after the roll-forward"; }
-[ "$V_E" -gt "$V_A2" ] || fail "[blind] boot 3: rolled v$V_E not above v$V_A2"
+# The roll-forward line names the CONTENT TARGET (the previous ok generation,
+# like the observing arm's own check), NOT the republished version: the
+# republish lands as a new version, and under the channel route the blind
+# agent re-activates INSIDE that generation's grace window — the re-armed
+# window (judging the new crasher v_A3) owns this console's only verdict, so
+# no boot-ok for the rolled generation ever fires here.  (The observing arm's
+# boot 3 carries that boot-ok because its agent REPORTS instead of
+# activating.)  V_E := the roll target; the ratchet is measured by V_A3 and
+# the bootlog below.
+V_E=$V_D
+[ "$V_E" = "$V_B" ] || { halt; fail "[blind] boot 3: rolled to content v$V_D, want the previous ok generation v$V_B"; }
 grep -qF "$TEXT_MARKER" "$WORK/blind-3.log" \
     || { tail -40 "$WORK/blind-3.log"; halt; fail "[blind] boot 3: the restored bracket did not re-run the agent"; }
 grep -qF "$OBS_REPORT" "$WORK/blind-3.log" \
@@ -1121,22 +1198,20 @@ read_from_disk "/agent-data/attempts.jsonl" "$WORK/blind-3-attempts.txt"
 cp "$WORK/blind-3-attempts.txt" "$EVID/blind-boot3-attempts.txt"
 V_A3=$(sed -n 's/.* result .* \([0-9][0-9]*\) .*/\1/p' "$WORK/blind-3-attempts.txt" | tail -1)
 [ -n "$V_A3" ] || { cat "$WORK/blind-3-attempts.txt"; fail "[blind] boot 3: no second recorded activation on the disk"; }
-[ "$V_A3" -gt "$V_E" ] \
-    || { cat "$WORK/blind-3-attempts.txt"; fail "[blind] boot 3: the blind harness re-activated v$V_A3 which is NOT above the rolled-to v$V_E — the fixture was not re-run"; }
-echo "qemu-agent-observe: [blind] boot 3 — rolled forward to v$V_E and the blind harness RE-ACTIVATED: v$V_A3 > v$V_E"
-
-echo "=== qemu-agent-observe: [blind] boot 4 — the re-created failure fails again (a SECOND failed line) ==="
-boot "$WORK/img-blind.cpio.gz" "$WORK/blind-4.log"
-cp "$WORK/blind-4.log" "$EVID/blind-boot4-console.log"
-grep -n 'disk store mounted\|boot-ok\|boot-FAILED\|fakesvc exit' "$WORK/blind-4.log" | head -12
-grep -q "fx-init: disk store mounted (current v$V_A3)" "$WORK/blind-4.log" \
-    || { tail -30 "$WORK/blind-4.log"; halt; fail "[blind] boot 4: the disk's CURRENT is not the blind harness's v$V_A3"; }
-grep -q "fx-init: boot-FAILED v$V_A3" "$WORK/blind-4.log" \
-    || { tail -30 "$WORK/blind-4.log"; halt; fail "[blind] boot 4: want boot-FAILED v$V_A3 (the re-created failure)"; }
+[ "$V_A3" -gt "$V_A2" ] && [ "$V_A3" -gt "$V_E" ] \
+    || { cat "$WORK/blind-3-attempts.txt"; fail "[blind] boot 3: the blind harness re-activated v$V_A3 which is not above BOTH the first crasher v$V_A2 and the roll target v$V_E — the fixture was not re-run"; }
+# THE RE-CREATED FAILURE FAILS IN THIS SAME BOOT (the channel route commits
+# it): the second failed line the old gate needed a FOURTH boot for is on THIS
+# console, and the ratchet reads below come off this halt (the file keeps its
+# historical blind-4 name — the arms-difference block reads it there).
+grep -q "fx-init: boot-FAILED v$V_A3" "$WORK/blind-3.log" \
+    || { grep -n 'boot-ok\|boot-FAILED' "$WORK/blind-3.log" | head -5; halt; \
+         fail "[blind] boot 3: no in-boot 'boot-FAILED v$V_A3' — the re-created failure did not COMMIT"; }
+echo "qemu-agent-observe: [blind] boot 3 — rolled forward to v$V_E and the blind harness RE-ACTIVATED: v$V_A3 > v$V_E, failed IN-BOOT"
 halt
 read_from_disk "/store/.bootlog" "$WORK/blind-4-bootlog.txt"
 cp "$WORK/blind-4-bootlog.txt" "$EVID/blind-boot4-bootlog.txt"
-echo "--- [blind] boot 4: the disk .bootlog (the RATCHET) ---"; sed 's/^/    /' "$WORK/blind-4-bootlog.txt"
+echo "--- [blind] boot 3: the disk .bootlog (the RATCHET) ---"; sed 's/^/    /' "$WORK/blind-4-bootlog.txt"
 # THE SUBSTRATE HALF IS ARM-INDEPENDENT: the blind arm's fx-init also rolled
 # forward (boot 3, before its agent blindly re-activated), so its journal holds
 # exactly the one line TOO — the counter counts whether or not anyone reads it.
@@ -1146,13 +1221,13 @@ read_from_disk "/store/.recovery" "$WORK/blind-4-recovery.txt"
 cp "$WORK/blind-4-recovery.txt" "$EVID/blind-boot4-recovery.txt"
 BLIND_REC=$(grep -c '^[0-9]' "$WORK/blind-4-recovery.txt" || true)
 [ "$BLIND_REC" -ge 1 ] \
-    || { cat "$WORK/blind-4-recovery.txt"; fail "[blind] boot 4: the blind disk's journal is empty — the SUBSTRATE half did not count the blind arm's own roll-forward (fx-init predates 4d6a8c2?)"; }
+    || { cat "$WORK/blind-4-recovery.txt"; fail "[blind] boot 3: the blind disk's journal is empty — the SUBSTRATE half did not count the blind arm's own roll-forward (fx-init predates 4d6a8c2?)"; }
 BLIND_MAX=$(bootlog_max_version "$WORK/blind-4-bootlog.txt")
 BLIND_FAILED=$(bootlog_failed_count "$WORK/blind-4-bootlog.txt")
 [ "$BLIND_MAX" -gt "$V_E" ] \
-    || { cat "$WORK/blind-4-bootlog.txt"; fail "[blind] boot 4: the version did not climb past v$V_E (v$BLIND_MAX)"; }
+    || { cat "$WORK/blind-4-bootlog.txt"; fail "[blind] boot 3: the version did not climb past v$V_E (v$BLIND_MAX)"; }
 [ "$BLIND_FAILED" -ge 2 ] \
-    || { cat "$WORK/blind-4-bootlog.txt"; fail "[blind] boot 4: only $BLIND_FAILED failed line — no ratchet, this arm measures nothing"; }
+    || { cat "$WORK/blind-4-bootlog.txt"; fail "[blind] boot 3: only $BLIND_FAILED failed line — no ratchet, this arm measures nothing"; }
 echo "qemu-agent-observe: [blind] RATCHETED — max version v$BLIND_MAX (the observing arm stopped at v$V_C),"
 echo "                    $BLIND_FAILED failed lines (the observing arm kept 1)"
 

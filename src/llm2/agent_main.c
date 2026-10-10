@@ -59,13 +59,35 @@
 #include "tui.h"
 #include "yyjson.h"
 
+/* the same-boot guard's bootlog walk context (see the guard in
+ * agent_main_entry): the LAST "in-progress" version seen — boots append, so
+ * the newest in-progress line names the generation THIS boot started in. */
+typedef struct {
+    unsigned long in_progress;
+    int have;
+} SameBootCtx;
+
+static int same_boot_inprog_cb(void *u, unsigned long version,
+                               const char *status, unsigned long epoch) {
+    SameBootCtx *sb = u;
+    (void)epoch;
+    if (status && strcmp(status, "in-progress") == 0) {
+        sb->in_progress = version;
+        sb->have = 1;
+    }
+    return 0; /* never stops the walk: the LAST line wins */
+}
+
 /* Hard cap on prompt file size (bounded read to prevent OOM). */
 #define PROMPT_FILE_MAX (512 * 1024)
 
-/* The verb whose dispatch IS an activation: an agent-driven activation execs the
- * running root's /bin/fx-activate directly and writes NO rt_effect and NO
- * runtime relation (see tools/fx-verbs-server.c), so the harness's own durable
- * record is the ONLY causal link between the agent's action and a failed boot. */
+/* The verb whose dispatch IS an activation.  Since 2026-10 fx_activate routes
+ * THROUGH PID1's control channel (tools/fx-verbs-server.c), so the activation
+ * DOES write rt_effect and the runtime relations — but the harness's own
+ * durable record is STILL the only CROSS-BOOT causal link between the agent's
+ * action and a boot verdict (the runtime DB lives on PID1's tmpfs and dies
+ * with the boot), which is why the record is written before the call and
+ * consumed before every run. */
 #define FX_ACTIVATE_VERB "fx_activate"
 
 /* The guest's persistent store (fx-init's g_store — the path the tool server's
@@ -266,15 +288,27 @@ static void activation_config_arg(const char *args, char *out, size_t cap) {
     yyjson_doc_free(doc);
 }
 
-/* Parse the generation out of the activator's own reply ("activated <hash> as
- * version N ...").  Returns the version, or 0 when the reply names none (the
- * activation produced no generation — recorded, and treated as unresolved). */
+/* Parse the generation out of the activator's own reply.  TWO reply shapes,
+ * one per route, both naming the version:
+ *   "activated <hash> as version N ..." — fx-activate's own line (the
+ *       direct-exec route and the channel-less fallback)
+ *   "activated version N" — PID1's data line over the control channel (the
+ *       primary fx_activate route since 2026-10; before this accepted it, the
+ *       record named NO generation and every channel activation degraded the
+ *       verdict to UNRESOLVED regardless of the bootlog).
+ * Returns the version, or 0 when the reply names none (the activation
+ * produced no generation — recorded, and treated as unresolved). */
 static unsigned long activation_version_of(const char *reply) {
     if (!reply) return 0;
-    static const char NEEDLE[] = " as version ";
-    const char *p = strstr(reply, NEEDLE);
-    if (!p) return 0;
-    p += sizeof(NEEDLE) - 1;
+    static const char NEEDLE_OLD[] = " as version ";
+    static const char NEEDLE_PID1[] = "activated version ";
+    const char *p = strstr(reply, NEEDLE_OLD);
+    if (p) p += sizeof(NEEDLE_OLD) - 1;
+    else {
+        p = strstr(reply, NEEDLE_PID1);
+        if (p) p += sizeof(NEEDLE_PID1) - 1;
+        else return 0;
+    }
     if (*p < '0' || *p > '9') return 0;
     unsigned long v = strtoul(p, NULL, 10);
     return (v == 0) ? 0 : v; /* 0 is "no generation named", not a generation */
@@ -605,9 +639,10 @@ int agent_main_entry(int argc, char **argv) {
     fx_outcome_task_id(agent, prompt ? prompt : "", task_id, sizeof task_id);
 
     /* ── THE OBSERVATION LOOP: CONSUME THE DURABLE RECORD ON BOOT ───────────
-     * The harness's own record is the ONLY causal link between an activation it
-     * issued and a boot that failed (an agent-driven /bin/fx-activate writes no
-     * rt_effect and no runtime relation — see tools/fx-verbs-server.c).  So
+     * The harness's own record is the only CROSS-BOOT causal link between an
+     * activation it issued and a boot that failed (fx_activate routes through
+     * PID1's handler, which DOES write rt_effect — but into PID1's tmpfs
+     * runtime DB, which dies with the boot; the record is on the DISK).  So
      * EVERY run — not just an explicit --resume — reads it back before doing
      * anything, and a task whose activation failed is reported and NOT retried.
      * An explicit --resume is the operator saying "continue this conversation",
@@ -665,6 +700,56 @@ int agent_main_entry(int argc, char **argv) {
                 fputs(rep, stdout);
                 fflush(stdout);
                 return 0;
+            }
+            /* THE SAME-BOOT GUARD (2026-10, the control-channel activation).
+             * fx_activate now routes THROUGH PID1, whose handler COMMITS the
+             * generation on the LIVE root: it rebuilds the service table (every
+             * service ST_PENDING) and the main loop's next pass STARTS them —
+             * including, for a config that REDECLARES the agent service, a
+             * SECOND instance of this very process while the first is still
+             * mid-turn.  That successor reads the record BEFORE the first
+             * instance exits (no `done` yet) and BEFORE the re-armed boot
+             * window has judged the new generation (the re-arm writes NO
+             * .bootlog line — bootlog_append fires only at boot start, boot-ok,
+             * boot-failed and shutdown, never in the activate handler), so the
+             * verdict's C==A "readable silence" row would return RUN and the
+             * successor would RE-ISSUE the activation — an unbounded in-boot
+             * oscillator (each activation re-arms the window and starts another
+             * successor).  This guard closes it on positive evidence only: the
+             * record's own activation is the CURRENT store generation AND the
+             * bootlog says this boot STARTED on an older one — i.e. the store
+             * moved during THIS boot, which only the activate/rollback handlers
+             * do.  Silence (no in-progress line, a store that predates the
+             * bootlog) keeps the ordinary RUN: the guard never widens a
+             * refusal beyond what it can measure. */
+            if (oc.has_result && oc.version != 0 && oc.have_current &&
+                oc.current == oc.version) {
+                SameBootCtx sb = { 0, 0 };
+                FxBootlog bl;
+                if (fx_outcome_bootlog_read(store_path, same_boot_inprog_cb, &sb,
+                                            &bl) == 0 &&
+                    sb.have && sb.in_progress < oc.current) {
+                    fprintf(stdout,
+                        "fx-harness: SAME-BOOT ACTIVATION ON RECORD — ITS VERDICT "
+                        "IS STILL PENDING. NOT RE-RUNNING IT.\n"
+                        "  task     : %s (agent %s)\n"
+                        "  activated: %s -> generation v%lu, which IS the store's "
+                        "CURRENT and was activated DURING THIS BOOT (the bootlog "
+                        "says this boot started at v%lu)\n"
+                        "  pending  : PID1's re-armed boot window is still judging "
+                        "the new generation; no bootlog verdict exists for it yet, "
+                        "and this run is a successor instance of a still-running "
+                        "turn\n"
+                        "  rule     : an activation whose verdict is pending in "
+                        "THIS boot is not re-issued in this boot — re-arming and "
+                        "re-activating in a loop is the oscillator this unit stops\n"
+                        "  action   : this run stops here (exit 0).  The NEXT "
+                        "boot's record read decides the task normally\n",
+                        task_id, agent ? agent : "", oc.config[0] ? oc.config : "-",
+                        oc.version, sb.in_progress);
+                    fflush(stdout);
+                    return 0;
+                }
             }
 #endif
         }
@@ -853,6 +938,49 @@ int agent_main_entry(int argc, char **argv) {
     RunStore rs;
     memset(&rs, 0, sizeof rs);
     if (ckpt_run_open(&rs, data, err, sizeof err) != 0) {
+        /* THE HELD-LOCK SUCCESSOR (2026-10, the control-channel activation's
+         * self-interaction, the EARLIER sibling of the same-boot guard
+         * above).  PID1's activate/rollback handlers rebuild the service
+         * table and the supervisor's restart sweep starts every service
+         * fresh — including, for a config that redeclares an agent service,
+         * a SECOND instance of this very process while the first still
+         * holds the runstore (dl_open2's single-writer fcntl LOCK on
+         * <data>/LOCK).  That successor is EXPECTED, not faulty: the first
+         * instance is mid-turn and owns the record; the duplicate must not
+         * write beside it and must not fail anything.  A run that dies
+         * NONZERO here lands in ST_FAILED and fails the NEW generation's
+         * boot verdict — an agent that successfully activates a config
+         * would mark its own generation FAILED (measured: qemu-agent-b2's
+         * A1 console, 'locked by another writer' -> boot-FAILED v9).  The
+         * lock is fcntl-based, so it is only ever held by a LIVE writer: a
+         * crashed holder releases it at process death, and this arm cannot
+         * fire on a store nobody owns.  Exit 0 is safe for the same
+         * deployment reason as the guard's: the agent service is declared
+         * console (fx-init's config parser REFUSES a non-console
+         * agentService), and a console service's exit status never pins
+         * the boot.  The string match is against runstore.c's own
+         * DL_E_LOCKED message — the error contract between the two files
+         * (a distinct marker would need a new API for one caller). */
+        if (strstr(err, "locked by another writer (single-writer)") != NULL) {
+            printf(
+                "fx-harness: RUNSTORE HELD BY ANOTHER WRITER — THIS RUN IS A "
+                "DUPLICATE AGENT INSTANCE, NOT RE-RUNNING.\n"
+                "  store    : %s is locked by a live writer (single-writer fcntl)\n"
+                "  cause    : PID1's activate/rollback restart sweep started a "
+                "second agent service row while the first instance is still "
+                "mid-turn and holds the store\n"
+                "  rule     : one writer per runstore; the first instance's "
+                "record owns this task, and a successor that dies nonzero "
+                "here fails its own generation's boot verdict\n"
+                "  action   : this run stops here (exit 0).  The first "
+                "instance's outcome decides the task; the next boot starts "
+                "the agent service normally\n",
+                data);
+            fflush(stdout);
+            ckpt_messages_free(&prior);
+            config_free(&cfg);
+            return 0;
+        }
         fprintf(stderr, "agent_main: runstore_open(%s) failed: %s\n", data, err);
         ckpt_messages_free(&prior);
         config_free(&cfg);

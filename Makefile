@@ -261,8 +261,16 @@ clean:
 #                     re-runs the very task the real build refuses.  Both need
 #                     upstream's recorded SSE fixtures: override their directory
 #                     with VIBE_FIXTURE_DIR.
+#   test_sameboot.sh — THE SAME-BOOT GUARD (the control-channel activation's
+#                     self-interaction): PID1's hot-apply starts a SECOND agent
+#                     instance for a config that redeclares the agent service,
+#                     and that successor must not re-issue the still-unjudged
+#                     activation (boot entry < CURRENT + the record's own
+#                     version == CURRENT -> reported, exit 0), while a FRESH
+#                     boot of the same generation (entry == CURRENT) still runs.
 test: all blind
 	bash tests/test_resume.sh
 	bash tests/test_outcome.sh
+	bash tests/test_sameboot.sh
 
 .PHONY: all musl blind clean test

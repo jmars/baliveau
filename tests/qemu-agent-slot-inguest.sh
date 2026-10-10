@@ -215,6 +215,11 @@ fi
 strings_cap() { grep -aq "$2" "$1" 2>/dev/null; }
 strings_cap "$PL_BIN/fx-verbs-server" "fx_build" \
     || skip "staged fx-verbs-server predates fx_build — the payload is stale; re-run tools/stage-guest.sh"
+# THE CONTROL-CHANNEL ROUTE must be IN the staged payload (a stale pre-fix
+# server would silently run the direct-exec route and the commit assertions
+# below would fail unattributably): the fallback banner's marker string.
+strings_cap "$PL_BIN/fx-verbs-server" "NO PID1 CONTROL CHANNEL" \
+    || skip "staged fx-verbs-server predates the control-channel fx_activate — the payload is stale; re-run tools/stage-guest.sh"
 
 ZB="$PAYLOAD/init-x86_64-musl/bin"
 if [ ! -x "$ZB/fx-init" ] || [ "${QEMU_AGENT_REBUILD_INIT:-0}" = 1 ]; then
@@ -436,6 +441,40 @@ in  { hostname = "inguestbox3"
 DHALL
 } > "$WORK/stage3probe.dhall" || fail "cannot write the stage3-probe config"
 
+# THE OVER-WIDE CONFIG (the dedicated refusal boot): 66 distinct services —
+# two past PID1's 64-service supervision window (SVC_MAX).  fx-activate
+# ACCEPTS it (the activator has no service-count bound; MEASURED: the bound
+# lives in init.zig read_store_facts' svc_name_cb) and PUBLISHES it, and
+# PID1's activate handler then REFUSES to supervise it: the channel reply is
+# `ERR activated version N but REFUSED: service '<name>' is #65 ...` — the
+# loud, non-zero refusal the model must see.  Every service rides the
+# fake-service package (in the closure already); none ever runs (the refused
+# table is freed, nothing starts).
+{
+    svc_head
+    n=1
+    printf 'in  { hostname = "inguestwide"\n'
+    printf '    , packages = [ %s ]\n' "$BASE_PKGS"
+    printf '    , users = [ { name = "root", uid = 0, groups = [] : List Text } ]\n'
+    printf '    , services =\n'
+    printf '        [ %s\n' "$(heartbeat)"
+    n=2
+    while [ "$n" -le 66 ]; do
+        printf '        , { name = "widesvc%d", argv = [ "fakesvc", "ok" ], pkg = Some "fake-service",\n' "$n"
+        printf '            on = "all", restart = Some "never", backoffMs = None Natural,\n'
+        printf '            probe = None Probe,\n'
+        printf '            env = None (List { key : Text, value : Text }),\n'
+        printf '            console = None Text }\n'
+        n=$((n + 1))
+    done
+    printf '        ]\n'
+    printf '    , extraEtc = None (List { path : Text, content : Text })\n'
+    printf '    , bootGraceMs = Some 30000\n'
+    printf '    , agentService = None Text\n'
+    printf '    }\n'
+} > "$WORK/wideconfig.dhall" || fail "cannot write the over-wide config"
+[ -s "$WORK/wideconfig.dhall" ] || fail "the over-wide config is empty"
+
 # ─── the agent pin (qemu-agent-slot.sh's helper, verbatim in substance) ───
 agent_pin() { # agent_pin CFG NAME — CFG must declare NAME as its agent ('-' = None)
     _pc="${FX_INIT_CONFIG_CHECK:-$INIT/zig/zig-out/bin/config_check}"
@@ -480,10 +519,12 @@ PYEOF2
 agent_pin "$WORK/bracket.dhall" "slotagent"
 agent_pin "$WORK/slotconfig.dhall" "-"
 agent_pin "$WORK/stage3probe.dhall" "-"
+agent_pin "$WORK/wideconfig.dhall" "-"
 
 CCHK="$INIT/zig/zig-out/bin/config_check"
 if [ -x "$CCHK" ]; then
-    for c in "$WORK/bracket.dhall" "$WORK/slotconfig.dhall" "$WORK/stage3probe.dhall"; do
+    for c in "$WORK/bracket.dhall" "$WORK/slotconfig.dhall" "$WORK/stage3probe.dhall" \
+             "$WORK/wideconfig.dhall"; do
         out=$("$CCHK" "$c" 2>&1) || { echo "$out" >&2; fail "config_check rejected $c"; }
     done
 else
@@ -494,7 +535,11 @@ fi
 # FX_AGENT_WRITABLE names the agent's whole WRITE surface (the slot's one
 # source file + the task config); FX_AGENT_BUILDABLE names the agent's whole
 # BUILD surface (exactly the slot package).  Both are HOST-declared facts of
-# the deployment, not policies the model negotiates.
+# the deployment, not policies the model negotiates.  (The refusal arm's
+# over-wide config is PRE-PLACED on its disk by the host — the gate's own
+# debugfs surgery — so the agent's write surface stays exactly these two
+# paths; the probe's subject is the ACTIVATION refusal, not the write.)
+WIDE_CONFIG=/fx/disk/agent-wide.dhall
 WRITABLE="$SLOT_SRC_FILE:$AGENT_CONFIG"
 BUILDABLE="oslot"
 R="$WORK/root-1"
@@ -521,16 +566,26 @@ DHALL
 # ─── the fixture (the model, canned) ──────────────────────────────────────
 # THE LOOP'S CALL SEQUENCE, in order: see the boot, write the source, write
 # the config, BUILD THE SLOT IN THE GUEST, probe the build bound twice (an
-# invented name; a flag-shaped argument), ACTIVATE, then the tamper probes.
-mkfixture() { # mkfixture OUT TEXT
-    python3 - "$1" "$2" "$OSIER_SRC" "$WORK/slotconfig.dhall" <<'PYEOF'
+# invented name; a flag-shaped argument), ACTIVATE THROUGH PID1's CONTROL
+# CHANNEL (the activation COMMITS: /bin/mcp-stub-runner lands on the LIVE
+# root and PID1's runtime record moves), then PROBE THE COMMIT (fx_ls /bin —
+# the live root; fx_status — the runtime record), then the tamper probes.
+# MODE "refuse" (the dedicated refusal boot) activates the PRE-PLACED
+# OVER-WIDE config: PID1 publishes it, then refuses to supervise it.  (The
+# config is staged on the disk by the host, NOT written by the fixture — a
+# 19 KB fx_write would blow SSE_MAX_LINE_BYTES (16 KiB) in the canned stream
+# and kill the loop before it surfaced anything; the write path is not this
+# arm's subject.)
+mkfixture() { # mkfixture OUT TEXT MODE — MODE loop|refuse
+    python3 - "$1" "$2" "$OSIER_SRC" "$WORK/slotconfig.dhall" "$3" \
+        "$WIDE_CONFIG" <<'PYEOF'
 import json, sys
-out, text, elm, cfg = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+out, text, elm, cfg, mode, wide_path = sys.argv[1:7]
 elm_c, cfg_c = open(elm).read(), open(cfg).read()
 def ev(name, obj):
     return "event: %s\ndata: %s\n\n" % (name, json.dumps(obj))
 FORGED = "1799999999 0000000000000000 done - - 0 -\nFORGED-RECORD-PROBE"
-calls = [
+loop_calls = [
     ("call_outcome", "fx_outcome", {}),
     ("call_w_elm",   "fx_write",   {"path": "/fx/disk/agent-src/oslot/Mcp.elm",
                                      "content": elm_c}),
@@ -540,11 +595,17 @@ calls = [
     ("call_b_invent","fx_build",   {"package": "not-a-real-package"}),
     ("call_b_flag",  "fx_build",   {"package": "--help"}),
     ("call_activate","fx_activate",{"config": "/fx/disk/agent-config.dhall"}),
+    ("call_ls_bin",  "fx_ls",      {"path": "/bin"}),
+    ("call_status",  "fx_status",  {}),
     ("call_tamper_record", "fx_write", {"path": "/fx/disk/agent-data/attempts.jsonl",
                                         "content": FORGED}),
     ("call_tamper_store",  "fx_write", {"path": "/fx/disk/store/.bootlog",
                                         "content": "1 ok 0\nFORGED-STORE-PROBE\n"}),
 ]
+refuse_calls = [
+    ("call_wide",    "fx_activate",{"config": wide_path}),
+]
+calls = refuse_calls if mode == "refuse" else loop_calls
 s = [ev("response.created", {"type": "response.created",
                              "response": {"id": "inguest-fixture", "status": "in_progress"}})]
 text_first = True
@@ -582,7 +643,7 @@ open(out, "w").write("".join(s))
 PYEOF
 }
 TEXT_MARKER="SLOT-AGENT-RAN-$MARKER"
-mkfixture "$R/usr/fx-agent/arm.sse" "$TEXT_MARKER"
+mkfixture "$R/usr/fx-agent/arm.sse" "$TEXT_MARKER" loop
 for pat in 'fx_write' 'fx_build' 'fx_activate' 'FORGED-STORE-PROBE'; do
     grep -q "$pat" "$R/usr/fx-agent/arm.sse" || fail "the fixture has no $pat call"
 done
@@ -668,6 +729,25 @@ halt() {
     wait "$qemu_pid" 2>/dev/null
     qemu_pid=""
 }
+# One tool call's reply content out of a session transcript (JSONL): the
+# LIVE-ROOT and RUNTIME-RECORD probes read exactly their own reply, never a
+# whole-transcript grep (the fx_build reply names mcp-stub-runner in its own
+# recipe bytes, so a global grep would pass for a reason that is not /bin).
+tool_reply() { # tool_reply TRANSCRIPT CALLID -> that tool call's reply content
+    python3 - "$1" "$2" <<'PYLS'
+import json, sys
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        o = json.loads(line)
+    except ValueError:
+        continue
+    if o.get("role") == "tool" and o.get("tool_call_id") == sys.argv[2]:
+        print(o.get("content", ""))
+PYLS
+}
 new_disk() {
     qemu-img create -q "$1" 512M || fail "qemu-img create ($1) failed"
     "$MKE2FS" -q -t ext4 -J size=4 "$1" >/dev/null 2>&1 || fail "mke2fs ($1) failed"
@@ -692,6 +772,12 @@ disk_mkdirs() { # disk_mkdirs DISK DIR...
     for d in "$@"; do
         "$DEBUGFS" -R "ls -l $d" "$_dsk" >/dev/null 2>&1 || fail "debugfs cannot see $d after mkdir"
     done
+}
+disk_put() { # disk_put DISK LOCALFILE GUESTPATH (guest path from the fs root)
+    "$DEBUGFS" -w -R "write $2 $3" "$1" >/dev/null 2>&1 \
+        || fail "debugfs write failed for $3"
+    "$DEBUGFS" -R "cat $3" "$1" >/dev/null 2>&1 \
+        || fail "debugfs cannot read back $3 after write"
 }
 # read a whole directory TREE off the disk, per file (rdump chowns => EPERM;
 # every debugfs child gets < /dev/null — MEASURED in qemu-agent-slot.sh).
@@ -791,8 +877,15 @@ IMG_SHA=$(sha256sum "$WORK/img1.cpio.gz" | awk '{print $1}')
 boot "$WORK/img1.cpio.gz" "$WORK/boot1.log" "$DISK"
 cp "$WORK/boot1.log" "$EVID/boot1-console.log"
 grep -n 'disk store mounted\|boot-ok\|boot-FAILED\|SLOT-AGENT-RAN\|fxstore' "$WORK/boot1.log" | head -12
-grep -q "fx-init: boot-ok v$V_B" "$WORK/boot1.log" \
-    || { tail -30 "$WORK/boot1.log"; halt; fail "boot 1: want boot-ok v$V_B"; }
+# The boot STARTED in the bracket (disk CURRENT was v$V_B at mount).  The
+# bracket's OWN verdict may never fire: the agent can activate INSIDE the
+# grace window, and the channel route's handler then re-arms the decision for
+# the NEW generation — the console's verdict (asserted below, after the
+# record is read: boot-ok v$V_SLOT) belongs to the re-armed window.  (The
+# pre-2026-10 durable-only route never re-armed anything, so the bracket's
+# verdict always fired — that shape is pinned by the BEFORE arm.)
+grep -q "fx-init: disk store mounted (current v$V_B)" "$WORK/boot1.log" \
+    || { tail -30 "$WORK/boot1.log"; halt; fail "boot 1: the machine did not come up in the bracket v$V_B"; }
 grep -qF "$TEXT_MARKER" "$WORK/boot1.log" \
     || { tail -40 "$WORK/boot1.log"; halt; fail "boot 1: the agent never ran (no '$TEXT_MARKER')"; }
 # THE FXSTORE EXEC PROOF, ON THIS BOOT'S CONSOLE: the probe service ran the
@@ -851,9 +944,49 @@ grep -q 'not a bare package name' "$WORK/b1-transcript.jsonl" \
 # the writes + the activation + the tamper refusals
 grep -q "bytes to $SLOT_SRC_FILE" "$WORK/b1-transcript.jsonl" \
     || fail "boot 1: the agent's SOURCE write was refused — the writable set broke the task's one legitimate source write"
-grep -q "activated .* as version $V_SLOT" "$WORK/b1-transcript.jsonl" \
+# THE ROUTE: the reply is PID1's own channel line ("activated version N" —
+# the handler's data line), NOT fx-activate's "as version" child line: the
+# direct-exec route's marker must be ABSENT.
+grep -q "activated version $V_SLOT" "$WORK/b1-transcript.jsonl" \
     || { grep -o 'fx_activate.\{0,120\}' "$WORK/b1-transcript.jsonl" | head -3; \
-         fail "boot 1: the fx_activate reply does not report version $V_SLOT"; }
+         fail "boot 1: the fx_activate reply does not report 'activated version $V_SLOT' (PID1's channel reply)"; }
+grep -q " as version " "$WORK/b1-transcript.jsonl" \
+    && fail "boot 1: the activation took the DIRECT-EXEC route (fx-activate's own 'as version' reply) — the control channel was bypassed"
+# THE COMMIT, ON THE LIVE ROOT: the generation's install fact materializes
+# /bin/mcp-stub-runner via the hot-apply (run_dhake on the running root, no
+# reboot).  The CONTROL first: the fx_ls reply is exit=0 AND lists the
+# bracket's own /bin (dhake, shipped since v_B) — so mcp-stub-runner's
+# ABSENCE in the BEFORE arm below is a real absence, never a failed probe.
+# The check reads ONLY the call_ls_bin reply (the fx_build reply also names
+# mcp-stub-runner in its recipe bytes — a global grep would pass vacuously).
+LS_BIN_AFTER=$(tool_reply "$WORK/b1-transcript.jsonl" call_ls_bin)
+[ -n "$LS_BIN_AFTER" ] || fail "boot 1: no call_ls_bin tool reply in the transcript"
+printf '%s\n' "$LS_BIN_AFTER" | grep -q '^exit=0' \
+    || { printf '%s\n' "$LS_BIN_AFTER" | head -5; \
+         fail "boot 1: the fx_ls /bin listing did not succeed (exit!=0) — the commit assertion cannot stand on it"; }
+printf '%s\n' "$LS_BIN_AFTER" | grep -q 'dhake' \
+    || { printf '%s\n' "$LS_BIN_AFTER" | head -5; \
+         fail "boot 1: the fx_ls /bin listing carries no dhake entry (the bracket's own /bin) — the commit assertion cannot stand on it"; }
+printf '%s\n' "$LS_BIN_AFTER" | grep -q 'mcp-stub-runner' \
+    || { printf '%s\n' "$LS_BIN_AFTER" | head -8; \
+         fail "boot 1: /bin/mcp-stub-runner is NOT on the LIVE root after fx_activate — the activation did not COMMIT (no hot-apply)"; }
+# THE RUNTIME RECORD, THROUGH THE MODEL'S OWN VERB: fx_status (fxctl --fifo
+# status over PID1's channel) reports generation_current = the new version —
+# the rt_set_generation_current the handler wrote.
+STATUS_AFTER=$(tool_reply "$WORK/b1-transcript.jsonl" call_status)
+[ -n "$STATUS_AFTER" ] || fail "boot 1: no call_status tool reply in the transcript"
+printf '%s\n' "$STATUS_AFTER" | grep -q '^exit=0' \
+    || { printf '%s\n' "$STATUS_AFTER" | head -5; \
+         fail "boot 1: fx_status failed in-guest — the fifo transport for the fast fxctl verbs is broken"; }
+printf '%s\n' "$STATUS_AFTER" | grep -A1 '^generation_current:$' | grep -q "  $V_SLOT\$" \
+    || { printf '%s\n' "$STATUS_AFTER" | head -12; \
+         fail "boot 1: fx_status's generation_current is not v$V_SLOT — the runtime record did not move to the activated generation"; }
+# THE RE-ARM: the console carries a SECOND boot verdict — boot-ok for the NEW
+# generation, in the SAME boot (the re-armed grace window judged it).  The
+# bracket's own boot-ok v$V_B is already asserted above.
+grep -q "fx-init: boot-ok v$V_SLOT" "$WORK/boot1.log" \
+    || { grep -n 'boot-ok\|boot-FAILED' "$WORK/boot1.log" | head -5; \
+         fail "boot 1: no 'boot-ok v$V_SLOT' on the console — the activation did not RE-ARM the boot decision for the new generation"; }
 grep -q 'fx_write REFUSED' "$WORK/b1-transcript.jsonl" \
     || fail "boot 1: no in-guest fx_write refusal — the write-bound probes never fired"
 _nref=$(grep -c 'fx_write REFUSED' "$WORK/b1-transcript.jsonl" || true)
@@ -885,6 +1018,193 @@ read_from_disk "/store/.db/snapshots/CURRENT" "$WORK/b1-current.txt"
 [ "$(tr -dc '0-9' < "$WORK/b1-current.txt")" = "$V_SLOT" ] \
     || fail "boot 1: the disk store's CURRENT ($(cat "$WORK/b1-current.txt")) is not the slot generation v$V_SLOT"
 echo "qemu-agent-slot-inguest: boot 1 GREEN — written, BUILT IN-GUEST ($SLOT_DIRNAME + $SLOT_SRCNAME), activated v$V_SLOT; bound probes refused; tamper probes refused ($_nref)"
+
+# ═══ PHASE B0 — THE ASYMMETRY'S BEFORE HALF (the pinned pre-fix server) ══
+# THE DELIVERABLE: the SAME loop run against the PRE-FIX verb server (the
+# git-pinned revision this change landed on top of) PUBLISHES the generation
+# to the store but does NOT COMMIT it to the live root — /bin/mcp-stub-runner
+# is absent from the fx_ls listing while disk CURRENT holds the new version.
+# The pin is a FIXED revision, never HEAD's position; guarded with
+# cat-file -e; and cmp-proven to DIFFER from the working tree (an identical
+# extract would make every assertion below vacuous).
+PIN_REV="${FX_VERBS_PIN_REV:-be2fbd1}"
+if ! git -C "$REPO" cat-file -e "$PIN_REV^{commit}" 2>/dev/null; then
+    fail "the pinned pre-fix revision $PIN_REV is absent (git fetch it) — the asymmetry's BEFORE half cannot run, and passing without it would be a lie"
+fi
+git -C "$REPO" cat-file blob "$PIN_REV:tools/fx-verbs-server.c" \
+    > "$WORK/before-fx-verbs-server.c" 2>/dev/null \
+    || fail "cannot extract $PIN_REV:tools/fx-verbs-server.c"
+if cmp -s "$WORK/before-fx-verbs-server.c" "$REPO/tools/fx-verbs-server.c"; then
+    fail "the pinned extract is IDENTICAL to the working tree — the BEFORE arm would re-test the fixed server (vacuous asymmetry)"
+fi
+echo "=== qemu-agent-slot-inguest: phase B0 — building the PRE-FIX server ($PIN_REV, cmp-proven to differ) ==="
+( cd "$REPO" && zig cc -target x86_64-linux-musl -static -s -std=c11 -O2 -Wall -Wextra \
+    -Isrc -Isrc/vendor/yyjson -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
+    -o "$WORK/fx-verbs-server.before" \
+    "$WORK/before-fx-verbs-server.c" src/llm2/outcome.c src/vendor/yyjson/yyjson.c ) \
+    || fail "cannot build the pre-fix server"
+assert_guest_elf "$WORK/fx-verbs-server.before" "x86-64"
+strings_cap "$WORK/fx-verbs-server.before" "fx_build" \
+    || fail "the pinned pre-fix server predates fx_build — the pin is the wrong revision"
+if strings_cap "$WORK/fx-verbs-server.before" "NO PID1 CONTROL CHANNEL"; then
+    fail "the pinned pre-fix server already carries the control-channel route — the pin is the wrong revision"
+fi
+
+# the BEFORE arm's root: the SAME payload with the server SWAPPED, and the
+# swap ASSERTED (sha256 of the staged binary == the binary built above) — the
+# artifact this arm runs is provably the one just built, never a stale cache.
+RB="$WORK/root-before"
+cp -a "$PAYROOT" "$RB" || fail "cannot copy the payload rootdir (before arm)"
+cp "$WORK/fx-verbs-server.before" "$RB/usr/fx-agent/bin/fx-verbs-server" || fail "cannot swap the before server"
+chmod 755 "$RB/usr/fx-agent/bin/fx-verbs-server"
+[ "$(sha256sum "$RB/usr/fx-agent/bin/fx-verbs-server" | awk '{print $1}')" \
+  = "$(sha256sum "$WORK/fx-verbs-server.before" | awk '{print $1}')" ] \
+    || fail "the before arm's staged server is not the binary this gate built"
+mkdir -p "$RB/usr/fx-agent/cfg" || fail "cannot create the before arm's cfg dir"
+cp "$R/usr/fx-agent/cfg/config.dhall" "$RB/usr/fx-agent/cfg/config.dhall" || fail "cannot copy the agent config"
+mkfixture "$RB/usr/fx-agent/arm.sse" "$TEXT_MARKER" loop
+
+STORE0="$WORK/store-before"
+provision "$STORE0"
+OUT_B0=$(activate_host "$STORE0" "$WORK/bracket.dhall") || fail "activate before-bracket failed: $OUT_B0"
+V_B0=$(echo "$OUT_B0" | version_of); [ -n "$V_B0" ] || fail "cannot parse v_B0 from: $OUT_B0"
+image "$RB" "$WORK/imgb.list" "$WORK/imgb.cpio.gz" "$STORE0"
+FXD0=$(ls -d "$STORE0"/*-fx-init | head -1)
+RDINIT_SAVED="$RDINIT"
+RDINIT="/fx/store/$(basename "$FXD0")/fx-init"
+DISKB="$WORK/disk-before.img"; new_disk "$DISKB"; fsck_once "$DISKB" b
+disk_mkdirs "$DISKB" /agent-src /agent-src/oslot
+boot "$WORK/imgb.cpio.gz" "$WORK/bootb.log" "$DISKB"
+cp "$WORK/bootb.log" "$EVID/boot-before-console.log"
+grep -q "fx-init: boot-ok v$V_B0" "$WORK/bootb.log" \
+    || { tail -30 "$WORK/bootb.log"; halt; fail "before arm: want boot-ok v$V_B0"; }
+grep -qF "$TEXT_MARKER" "$WORK/bootb.log" \
+    || { tail -40 "$WORK/bootb.log"; halt; fail "before arm: the agent never ran"; }
+halt
+read_from_disk "/agent-data/attempts.jsonl" "$WORK/b0-record.txt"
+[ -s "$WORK/b0-record.txt" ] || fail "before arm: no durable record on the disk"
+V_SLOT0=$(sed -n 's/.* result .* \([0-9][0-9]*\).*/\1/p' "$WORK/b0-record.txt" | head -1)
+[ -n "$V_SLOT0" ] || { cat "$WORK/b0-record.txt"; fail "before arm: no recorded activation RESULT"; }
+[ "$V_SLOT0" -gt "$V_B0" ] || fail "before arm: the activation did not publish above the bracket"
+SID0=$( "$DEBUGFS" -R "ls -p /agent-data/sessions" "$DISKB" 2>/dev/null \
+        | sed -n 's|^/[0-9]*/[0-9]*/[0-9]*/[0-9]*/\([^/.][^/]*\)/*$|\1|p' | head -1 )
+[ -n "$SID0" ] || fail "before arm: no session on the disk"
+read_from_disk "/agent-data/sessions/$SID0/messages.jsonl" "$WORK/b0-transcript.jsonl"
+cp "$WORK/b0-transcript.jsonl" "$EVID/boot-before-transcript.jsonl"
+# 1. the OLD route's marker: fx-activate's own "as version" reply
+grep -q " as version $V_SLOT0" "$WORK/b0-transcript.jsonl" \
+    || { grep -o 'fx_activate.\{0,160\}' "$WORK/b0-transcript.jsonl" | head -3; \
+         fail "before arm: the reply is not fx-activate's own 'as version $V_SLOT0' — the pinned server did not take the direct-exec route"; }
+# 2. THE ABSENCE: the SAME fx_ls probe SUCCEEDED (dhake listed) but
+#    mcp-stub-runner is NOT in ITS listing — PUBLISHED, NOT COMMITTED.  This
+#    is the asymmetry's BEFORE half; the AFTER half is asserted on boot 1
+#    above.  The check reads ONLY the call_ls_bin tool reply (tool_reply):
+#    the fx_build reply ALSO contains the string (the recipe's own heredoc
+#    writes the file), so a whole-transcript grep would fail for a reason
+#    that is not the live root.
+LS_BIN_BEFORE=$(tool_reply "$WORK/b0-transcript.jsonl" call_ls_bin)
+[ -n "$LS_BIN_BEFORE" ] || fail "before arm: no call_ls_bin tool reply in the transcript"
+printf '%s\n' "$LS_BIN_BEFORE" | grep -q '^exit=0' \
+    || { printf '%s\n' "$LS_BIN_BEFORE" | head -5; \
+         fail "before arm: the fx_ls /bin listing did not succeed (exit!=0) — the absence assertion below would be vacuous"; }
+printf '%s\n' "$LS_BIN_BEFORE" | grep -q 'dhake' \
+    || { printf '%s\n' "$LS_BIN_BEFORE" | head -5; \
+         fail "before arm: the fx_ls /bin listing carries no dhake entry (the bracket's own /bin) — the absence assertion below would be vacuous"; }
+printf '%s\n' "$LS_BIN_BEFORE" | grep -q 'mcp-stub-runner' \
+    && { printf '%s\n' "$LS_BIN_BEFORE" | head -8; \
+         fail "BEFORE ARM: mcp-stub-runner IS in the live /bin listing of the pre-fix run — the publish-without-commit asymmetry is GONE (the pinned server committed?)"; }
+# 3. the generation IS published in the store: disk CURRENT is the new version
+read_from_disk "/store/.db/snapshots/CURRENT" "$WORK/b0-current.txt"
+[ "$(tr -dc '0-9' < "$WORK/b0-current.txt")" = "$V_SLOT0" ] \
+    || fail "before arm: disk CURRENT ($(cat "$WORK/b0-current.txt")) is not the published v$V_SLOT0 — the direct exec did not even publish"
+# 4. NO re-arm: no second boot verdict on the console, and the OLD fxctl
+#    transport (socket, ENOSYS in-guest) made fx_status dead — the pre-fix
+#    state the --fifo rows fix.
+grep -q "fx-init: boot-ok v$V_SLOT0" "$WORK/bootb.log" \
+    && fail "before arm: boot-ok v$V_SLOT0 on the console — the direct-exec route re-armed the boot decision, which only the channel route does"
+# ... the OLD fxctl transport (socket, ENOSYS in-guest) made fx_status dead
+# — the pre-fix state the --fifo rows fix.  MEASURED reply shape: "fxctl:
+# connect /run/fx/control.sock: Function not implemented" (connect(2) under
+# a CONFIG_NET-less kernel).
+grep -q 'control.sock: Function not implemented' "$WORK/b0-transcript.jsonl" \
+    || { grep -o 'call_status.\{0,200\}' "$WORK/b0-transcript.jsonl" | head -3; \
+         fail "before arm: fx_status did not fail with the socket-ENOSYS message — the pre-fix fxctl transport state is not what this arm pins"; }
+RDINIT="$RDINIT_SAVED"
+DISK="$WORK/disk.img"   # restore the LOOP disk: phase C boots it explicitly
+echo "qemu-agent-slot-inguest: BEFORE arm GREEN (pinned $PIN_REV) — PUBLISHED (disk CURRENT v$V_SLOT0) but NOT COMMITTED (no /bin/mcp-stub-runner on the live root, no re-armed boot-ok, fx_status dead on the socket transport); the fixed server COMMITS (boot 1 above)"
+
+# ═══ PHASE B1 — the refusal boot: PID1 REFUSES, the model SEES it ═══════
+# A dedicated boot+store (the refused config PUBLISHES a generation — running
+# this in the loop's boot would move disk CURRENT out from under boot 2).
+# The agent writes the OVER-WIDE config (in the writable set for exactly this
+# probe) and activates it THROUGH THE CHANNEL: fx-activate publishes it, PID1
+# read_store_facts refuses to supervise it, and the reply must come back to
+# the model as LOUD text with a NON-ZERO exit.
+echo "=== qemu-agent-slot-inguest: phase B1 — the refusal boot (an over-wide config through the channel) ==="
+RR="$WORK/root-refuse"
+cp -a "$PAYROOT" "$RR" || fail "cannot copy the payload rootdir (refuse arm)"
+mkdir -p "$RR/usr/fx-agent/cfg" || fail "cannot create the refuse arm's cfg dir"
+cp "$R/usr/fx-agent/cfg/config.dhall" "$RR/usr/fx-agent/cfg/config.dhall" || fail "cannot copy the agent config"
+mkfixture "$RR/usr/fx-agent/arm.sse" "$TEXT_MARKER" refuse
+grep -q 'call_wide' "$RR/usr/fx-agent/arm.sse" || fail "the refuse fixture has no fx_activate probe"
+STORER="$WORK/store-refuse"
+provision "$STORER"
+OUT_R=$(activate_host "$STORER" "$WORK/bracket.dhall") || fail "activate refuse-bracket failed: $OUT_R"
+V_BR=$(echo "$OUT_R" | version_of); [ -n "$V_BR" ] || fail "cannot parse v_BR from: $OUT_R"
+image "$RR" "$WORK/imgr.list" "$WORK/imgr.cpio.gz" "$STORER"
+FXDR=$(ls -d "$STORER"/*-fx-init | head -1)
+RDINIT_SAVED="$RDINIT"
+RDINIT="/fx/store/$(basename "$FXDR")/fx-init"
+DISKR="$WORK/disk-refuse.img"; new_disk "$DISKR"; fsck_once "$DISKR" r
+disk_mkdirs "$DISKR" /agent-src /agent-src/oslot
+# THE OVER-WIDE CONFIG, PRE-PLACED by the host (the guest mounts this disk at
+# /fx/disk, so /agent-wide.dhall IS /fx/disk/agent-wide.dhall — the path the
+# fixture's fx_activate names).  Read back once so the assertion below can
+# never pass over a torn placement.
+disk_put "$DISKR" "$WORK/wideconfig.dhall" /agent-wide.dhall
+boot "$WORK/imgr.cpio.gz" "$WORK/bootr.log" "$DISKR"
+cp "$WORK/bootr.log" "$EVID/boot-refuse-console.log"
+# No boot-verdict assertion here, deliberately: the refused activation does
+# NOT re-arm the window, and the (already-running) bracket window may expire
+# over the FREED service table — naming whatever g_current_version held at
+# that moment (a known fx-init quirk of the refusal path, out of this repo's
+# scope).  What this arm proves is the machine came up, the agent ran, and
+# the REFUSAL reached the model.
+grep -q "fx-init: disk store mounted (current v$V_BR)" "$WORK/bootr.log" \
+    || { tail -30 "$WORK/bootr.log"; halt; fail "refuse arm: the machine did not come up in the bracket v$V_BR"; }
+grep -qF "$TEXT_MARKER" "$WORK/bootr.log" \
+    || { tail -40 "$WORK/bootr.log"; halt; fail "refuse arm: the agent never ran"; }
+halt
+SIDR=$( "$DEBUGFS" -R "ls -p /agent-data/sessions" "$DISKR" 2>/dev/null \
+        | sed -n 's|^/[0-9]*/[0-9]*/[0-9]*/[0-9]*/\([^/.][^/]*\)/*$|\1|p' | head -1 )
+[ -n "$SIDR" ] || fail "refuse arm: no session on the disk"
+read_from_disk "/agent-data/sessions/$SIDR/messages.jsonl" "$WORK/br-transcript.jsonl"
+cp "$WORK/br-transcript.jsonl" "$EVID/boot-refuse-transcript.jsonl"
+# THE REFUSAL, AS THE MODEL SEES IT: exit=1 + PID1's ERR line verbatim — the
+# service-table overflow refusal naming the offender, the window, and the
+# count of skipped rows.
+grep -F 'exit=1\nERR activated version' "$WORK/br-transcript.jsonl" >/dev/null \
+    || { grep -o 'call_wide.\{0,300\}' "$WORK/br-transcript.jsonl" | head -3; \
+         fail "refuse arm: the reply is not PID1's refusal (exit=1 followed by its ERR line) — a refusal PID1 made did not reach the model as a loud failure"; }
+grep -Eq 'but REFUSED: service .widesvc[0-9]+. is #65' "$WORK/br-transcript.jsonl" \
+    || { grep -o 'call_wide.\{0,300\}' "$WORK/br-transcript.jsonl" | head -3; \
+         fail "refuse arm: the refusal does not name the 65th service and the window"; }
+grep -F ', window 64,' "$WORK/br-transcript.jsonl" >/dev/null \
+    || { grep -o 'call_wide.\{0,300\}' "$WORK/br-transcript.jsonl" | head -3; \
+         fail "refuse arm: the refusal does not state the window bound (PID1's verbatim ', window 64,' shape)"; }
+# the refused generation IS published (the child committed before the
+# refusal): disk CURRENT moved past the bracket — and the console carries
+# read_store_facts' own loud refusal line.
+read_from_disk "/store/.db/snapshots/CURRENT" "$WORK/br-current.txt"
+V_WR=$(tr -dc '0-9' < "$WORK/br-current.txt")
+[ -n "$V_WR" ] && [ "$V_WR" -gt "$V_BR" ] \
+    || fail "refuse arm: disk CURRENT ($V_WR) did not move past the bracket v$V_BR — the wide config was never published"
+grep -q 'refusing service table' "$WORK/bootr.log" \
+    || { grep -n 'refus' "$WORK/bootr.log" | head -5; \
+         fail "refuse arm: read_store_facts' loud refusal line is not on the console"; }
+RDINIT="$RDINIT_SAVED"
+DISK="$WORK/disk.img"   # restore the LOOP disk: phase C boots it explicitly
+echo "qemu-agent-slot-inguest: REFUSE arm GREEN — PID1 published v$V_WR and REFUSED to supervise it; the model saw 'ERR ... is #65 ... window holds 64' with exit=1"
 
 # ─── ARM 0%: the oracle AS-OF the bracket, over the guest-written store ──
 disk_read_tree "$DISK" /store "$WORK/rb1-store"

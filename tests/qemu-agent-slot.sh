@@ -897,8 +897,12 @@ echo "=== qemu-agent-slot: boot 2 — the agent activates the slot config -> v_s
 boot "$WORK/img-b.cpio.gz" "$WORK/boot2.log"
 cp "$WORK/boot2.log" "$EVID/boot2-console.log"
 grep -n 'disk store mounted\|boot-ok\|boot-FAILED\|SLOT-AGENT-RAN\|activated' "$WORK/boot2.log" | head -10
-grep -q "fx-init: boot-ok v$V_B" "$WORK/boot2.log" \
-    || { tail -30 "$WORK/boot2.log"; halt; fail "boot 2: want boot-ok v$V_B (the activation is durable-only; this boot still runs the bracket)"; }
+# The boot STARTED in the bracket; its OWN verdict may never fire — under the
+# channel route the agent activates inside the grace window and the re-armed
+# window (asserted below, after the record is read: boot-ok v$V_SLOT) owns
+# this console's verdict.
+grep -q "fx-init: disk store mounted (current v$V_B)" "$WORK/boot2.log" \
+    || { tail -30 "$WORK/boot2.log"; halt; fail "boot 2: the machine did not come up in the bracket v$V_B"; }
 grep -qF "$TEXT_MARKER" "$WORK/boot2.log" \
     || { tail -40 "$WORK/boot2.log"; halt; fail "boot 2: the fixture never dispatched — the observation loop did not reach the RUN verdict after the write-only boot 1"; }
 halt
@@ -917,9 +921,17 @@ for _sess in $( "$DEBUGFS" -R "ls -p /agent-data/sessions" "$DISK" 2>/dev/null \
     cat "$WORK/b2-tmp.jsonl" >> "$WORK/b2-transcript.jsonl" 2>/dev/null || :
 done
 cp "$WORK/b2-transcript.jsonl" "$EVID/boot2-transcript.jsonl"
-grep -q "activated .* as version $V_SLOT" "$WORK/b2-transcript.jsonl" \
+grep -q "activated version $V_SLOT" "$WORK/b2-transcript.jsonl" \
     || { grep -o 'fx_activate.\{0,120\}' "$WORK/b2-transcript.jsonl" | head -3; \
-         fail "boot 2: the fx_activate reply does not report version $V_SLOT"; }
+         fail "boot 2: the fx_activate reply does not report version $V_SLOT (PID1's channel reply 'activated version N')"; }
+# THE CHANNEL ROUTE'S COMMIT, IN THE CROSS-MACHINE GATE TOO: the activation
+# goes through PID1, so the re-armed window judges the NEW generation in the
+# SAME boot — a SECOND verdict on boot 2's console.  (Pre-2026-10 the
+# activation was durable-only: one verdict per console, the slot booted only
+# on the NEXT boot.)
+grep -q "fx-init: boot-ok v$V_SLOT" "$WORK/boot2.log" \
+    || { grep -n 'boot-ok\|boot-FAILED' "$WORK/boot2.log" | head -5; halt; \
+         fail "boot 2: no 'boot-ok v$V_SLOT' on the console — the channel activation did not COMMIT + RE-ARM in this boot"; }
 grep -q "current $V_B" "$WORK/b2-transcript.jsonl" \
     || { grep -o 'current [0-9]*' "$WORK/b2-transcript.jsonl" | head -3; \
          fail "boot 2: the fx_outcome reply does not report the guest's real CURRENT (v$V_B)"; }

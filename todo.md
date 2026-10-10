@@ -20,6 +20,18 @@ Two repos are in play: **this one** (`fx-harness`) and **`../fx-init`** (PID 1, 
       blockers (an arbitrary `srcstore` pick; a run component silently leaving the denominator) and
       the write-bound's findings (a red gate reading a moving ref; a false RUN; a documented spelling
       that refused everything). Nodes `handoff-osier-share-review`, `handoff-writesurface-review`.
+- [x] **The agent's activation goes THROUGH PID 1** (2026-10, uncommitted — `tools/fx-verbs-server.c`):
+      `fx_activate` spoke PID1's fifo line protocol natively (`activate <config>` on
+      `<run>/fx/control.in`, the reply off `control.out`) instead of direct-exec'ing `/bin/fx-activate`,
+      so the agent's change is COMMITTED (hot-apply of `/etc`+`/bin` on the live root, boot-decision
+      re-arm, service restart, `rt_effect`), not merely published. WHY NOT `fxctl --fifo` (the existing
+      client): MEASURED ~63s activation vs fxctl's hard 5s fifo poll budget — a false "no response"
+      refusal while PID1 still commits. The fast fxctl verbs (`fx_query`/`fx_status`/`fx_rollback`) DO
+      ride `--fifo` (they were socket-defaulted and ENOSYS-dead in the guest). Bounds kept: store-scope
+      (new `needs_store` row flag), a whitespace config-path refusal (PID1's grammar is unquoted
+      strtok), the fifo pair's single-client convention stated in the code. Channel-less deployments
+      fall back to the old direct exec behind a LOUD reduced-semantics banner. See
+      `handoff-activate-route-result`.
 
 ## 1. The oracle — the one thing that decides whether any of this is worth having
 
@@ -87,6 +99,42 @@ certifies coherence; neither says "improved".
       `.recovery` has the same shape and now the same question; `src_of` inherits it (never reaped).
 
 ## 3. Known defects, pre-existing, not hidden
+
+- [x] **A hot-applied config that REDECLARES the agent service starts a SECOND agent instance
+      mid-turn** (measured 2026-10, fx-init `svc_table_free` frees the old table's memory and never
+      stops the old processes — the issuer survives, unsupervised, and is reaped anonymously; the
+      rebuilt table starts every service fresh). The successor reads the record before the first
+      instance exits and before the re-armed window has judged (the re-arm writes NO `.bootlog`
+      line), so the verdict's C==A "readable silence" row returns RUN and the successor RE-ISSUES
+      the activation — an unbounded in-boot oscillator. Closed on the harness side by the SAME-BOOT
+      GUARD (`agent_main.c`: bootlog last `in-progress` version < CURRENT while the record's own
+      version == CURRENT -> loud stop; `tests/test_sameboot.sh`), and CLOSED AT THE ROOT in fx-init
+      (2026-10, the route-b2 fix): the config's REQUIRED `agentService` field is persisted as an
+      `agent_svc(name)` store fact (activate.zig; only for `Some`, wiped by clearRel like the other
+      generation facts), PID1 reads it in `read_store_facts`, and the activate/rollback channel arms
+      REMOVE that row from the rebuilt table (`svc_drop_agent`, init.zig) — the sweep never starts
+      it, the re-armed verdict never judges it, and the next BOOT starts it normally (the boot path
+      does not drop). Belt-and-braces on the harness side: a duplicate that nonetheless reaches
+      `ckpt_run_open` on a held single-writer lock now REPORTS ("RUNSTORE HELD BY ANOTHER WRITER —
+      ... DUPLICATE AGENT INSTANCE") and exits 0 instead of dying nonzero into ST_FAILED
+      (agent_main.c; `tests/test_sameboot.sh` cases C+D, asymmetry-proven against a pre-fix
+      binary). Gated end-to-end by `tests/qemu-agent-b2.sh` ARM 1 (config1 declares
+      `agentService = Some "b2verifier"`: exemption line on the console, no lock death, no DRIFT
+      canary, boot-ok v_NEW in-boot). The deeper `svc_table_free` semantics (old rows freed, never
+      stopped) are UNCHANGED by design — the exemption makes them harmless for the agent row; the
+      option (b) residual (the re-arm appends no `.bootlog` in-progress line) remains open below.
+- [ ] **The activate arm's re-arm still writes NO `.bootlog` line** — the re-armed window judges the
+      new generation, but nothing marks the window OPEN in the disk `.bootlog` at activation time
+      (only boot start / boot-ok / boot-failed / shutdown append). Harmless today because the
+      verdict line lands at decision time, but a crash between activation and verdict leaves the
+      next boot to infer the in-flight generation from CURRENT alone. (Option (b) of the original
+      oscillator note, split out because (a)/the exemption above is done.)
+- [ ] **The refused-activation path can latch a vacuous boot-ok**: on PID1's service-table overflow
+      refusal the table is FREED and the boot decision NOT re-armed, so an already-running grace
+      window may later expire over an EMPTY service table and record `boot-ok` for whatever
+      `g_current_version` then held — a generation that was just REFUSED. Measured from source
+      (init.zig read_store_facts refusal + boot_decision's vacuous `all_started`); the in-guest
+      refusal gate deliberately asserts no boot verdict for that arm. Fix belongs in fx-init.
 
 - [x] **The store CAN attribute a src_hash to a generation — `src_of` landed and the oracle consumes it**
       (was: "the store cannot attribute", found by the osier-share review). `srcstore` is append-only

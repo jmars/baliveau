@@ -54,58 +54,61 @@
 # it was NOT made (no other repo is touched).
 #
 # THE THREE ARMS
-#   ARM 1 (disk1) — THE CHANGE SURVIVES
+#   ARM 1 (disk1) — THE CHANGE IS COMMITTED LIVE AND SURVIVES THE RESTART
 #     image 1's ramfs CURRENT is the AGENT BRACKET generation (heartbeat + the
 #     fx-agent service carrying the arm-1 fixture).  boot A1: the agent runs its
-#     four recorded tool calls and fx_activate commits a generation the HOST
-#     NEVER CREATED (v_N > the image's CURRENT, parsed out of the agent's own
-#     tool result) — and NOTHING of it shows on A1's own console, because the
-#     activation is DURABLE, not hot-applied.  boot A2 (SAME image, SAME disk,
-#     no session) is where the machine comes back up in it: "disk store mounted
-#     (current v_N)" + "boot-ok v_N" + the agent-authored service's heartbeat.
-#     MEASURED — an earlier version of this comment claimed the heartbeat and a
-#     "fxstore: verify OK" land on A1's console; BOTH are wrong: 'heartbeat from
-#     b2proof-<marker>' is ABSENT from boot-a1-console.log (0 matches) and
-#     present in boot-a2-console.log (30), and 'fxstore: verify OK' is a
-#     HOST-PRE-CHECK STUB line (see the pre-check below), NOT a guest string at
-#     all: `grep fxstore` matches NOTHING in either console, because the verdict
-#     is the post-restart agent's OWN fx_store_verify TOOL CALL — its output
-#     goes to the agent transcript and is read back off the disk
-#     (boot-a2-verify-exit.txt), not printed by a service.
+#     four recorded tool calls and fx_activate routes through PID1's CONTROL
+#     CHANNEL, which COMMITS the generation the HOST NEVER CREATED live
+#     (v_N > the image's CURRENT, parsed out of the activation's own console
+#     line): the service table is rebuilt, the new root is dhake-applied to the
+#     RUNNING system, the boot window is RE-ARMED for v_N, and the agent-
+#     authored services run in the SAME boot — INCLUDING the verdict this lane
+#     used to wait for the restart for.  The one service the sweep must NOT
+#     start is the config's OWN agent (agentService = Some "b2verifier"):
+#     PID1 exempts it BY IDENTITY (the agent_svc store fact) — the running
+#     instance is the judge of this activation, and a duplicate would die on
+#     the single-writer runstore and FAIL v_N's verdict (the defect this gate
+#     caught).  Asserted on A1: boot-ok v_N (the re-armed window's in-boot
+#     verdict), 'heartbeat from b2proof-<marker>' PRESENT (the hot-apply), the
+#     exemption's console line, NO second agent instance (no TASK IDENTITY
+#     DRIFT — the duplicate's own startup warning, the canary), and over the
+#     control channel: generation_current v_N, /etc/hostname = the marker (the
+#     applied root), b2verifier NOT running (the exemption).  boot A2 (SAME
+#     image, SAME disk, no session) is the persistence proof: "disk store
+#     mounted (current v_N)" + "boot-ok v_N" + the heartbeat again, and the
+#     agent-authored VERIFIER service (b2verifier) now runs — started by the
+#     BOOT path, which the exemption does not touch — and its fx_store_verify
+#     tool call IS the verdict, read back off the virtio disk.
 #     Asserted too: the generation HASH before (host's activate output) and
-#     after (the agent's tool result, read off the disk) differ; the config
-#     read back off the disk is BYTE-IDENTICAL to the one the fixture carried.
+#     after (the activation's console line) differ; the config read back off
+#     the disk is BYTE-IDENTICAL to the one the fixture carried.
 #   ARM 2 (disk2) — THE CHANGE FAILS AND ROLLS BACK (the control for the
 #     rollback machinery; without it the test cannot tell "the loop works" from
 #     "nothing ever changed")
 #     boot B0 (image P: an AGENT-FREE healthy generation) boots v_P ok — an
 #     ok generation the roll-forward can land on.  boot B1 (image 2, the arm-2
-#     fixture = a config whose only service exits 7): the ADOPT boots v_A2, the
-#     agent activates the crasher (v_BAD) — and, because an agent-driven
-#     activation is NOT hot-applied, v_A2's own verdict still fires ok.  boot B2
-#     (the restart): the disk's CURRENT is v_BAD, the crasher fails in grace =>
-#     "boot-FAILED v_BAD" + a "<v_BAD> failed" line in the disk .bootlog.
-#     boot B3 (the restart after that): "stale failed for v_BAD; rolling forward
-#     to v_A2" (the newest OK generation below the failure — the PRE-CHANGE
-#     state) + boot-ok v_ROLL (v_ROLL > v_BAD), the crasher's generation NOT
-#     booted (the runtime plane has no b2crasher row).
-#     NOTE, MEASURED AND REPORTED: the roll-forward target is the bracket, which
-#     is where the agent service lives — so the agent re-runs in B3 and creates a
-#     FURTHER crasher generation that only the NEXT boot would judge.  A
-#     roll-forward onto an agent-bearing generation re-creates the failure; the
-#     test says so on the console instead of hiding it.
-#     CORRECTION (appended by the observation-loop unit, 2026-10): that
-#     re-creation NO LONGER HAPPENS.  In B3 the agent SERVICE still runs, but the
-#     harness now reads its own durable activation record BEFORE entering the
-#     loop, sees "v7 failed" in the store's .bootlog, prints
-#     "fx-harness: OBSERVED OUTCOME — THE ACTIVATION THIS HARNESS RECORDED FAILED.
-#      NOT REPEATING IT." and issues NO activation: the fixture is never
-#     dispatched (B2-AGENT-RAN is absent from boot-b3-console.log, and the report
-#     is at line 269 of it; no generation above the roll-forward's v9 is created).
-#     Every assertion below is unchanged and still passes (this run: PASS).
-#     THE TWO-ARMED PROOF of that behaviour — the ratchet vs the settle, on the
-#     SAME fixture — is tests/qemu-agent-observe.sh; this file's own runtime NOTE
-#     about the re-creation is now dormant.
+#     fixture = a config whose only service exits 7): the ADOPT boots v_A2,
+#     the agent activates the crasher (v_BAD) THROUGH PID1's channel, which
+#     hot-applies it: the service table is rebuilt to the crasher's, the
+#     window is RE-ARMED for v_BAD, and the crasher fails IN THIS BOOT =>
+#     "boot-FAILED v_BAD" + a "<v_BAD> failed" line in the disk .bootlog
+#     (v_A2's own window never fires — the re-arm preempted it — so v_A2 has
+#     an in-progress line and NO verdict).  boot B2 (the restart): the disk's
+#     CURRENT is v_BAD but the .bootlog already says it failed => "stale
+#     failed for v_BAD; rolling forward to v_P" (the newest OK generation
+#     below the failure — the AGENT-FREE pre-boot generation, because the
+#     bracket v_A2 never received a verdict) + boot-ok v_ROLL (v_ROLL >
+#     v_BAD), the crasher's generation NOT booted (the runtime plane has no
+#     b2crasher row).  boot B3 (the settled boot): current v_ROLL, boot-ok
+#     v_ROLL again — the machine STAYS on the rolled-forward generation.
+#     NOTE (2026-10, the control-channel route): the roll-forward target is
+#     now the AGENT-FREE pre-boot generation v_P (the bracket v_A2 never got a
+#     verdict — its window was preempted by the re-arm), so NO agent service
+#     runs in the rolled-forward boot and the old "the agent re-runs and
+#     re-creates the failure" hazard is out of this arm's shape entirely.  The
+#     OBSERVATION-LOOP behaviour that previously saved B3 (the harness reads
+#     its own durable record and refuses to re-issue a failed activation) is
+#     still proven where it is the point — tests/qemu-agent-observe.sh.
 #   NEGATIVE CONTROL (disk3) — THE PAYLOAD WITHHELD
 #     the SAME store as image 1, an EMPTY ROOTDIR: the agent service cannot
 #     exec, NOTHING is activated, and the old generation persists across both
@@ -879,20 +882,42 @@ RUN_LN=$(grep -nF "$TEXT_MARKER" "$WORK/con-a1.log" | head -1 | cut -d: -f1)
 [ -n "$PIVOT_LN" ] || fail "A1: no pivot line"
 [ "$RUN_LN" -gt "$PIVOT_LN" ] || fail "A1: the agent's marker precedes the pivot — it did not run POST-pivot"
 echo "qemu-agent-b2: AGENT RAN POST-PIVOT — pivot at line $PIVOT_LN, the agent's text at $RUN_LN"
-# A1's verdict is the RUNNING (old) generation: the agent's fx_activate is a
-# DIRECT exec of the root's activator, which publishes the generation in the
-# store but does NOT go through PID1's channel handler — so the running system
-# is NOT hot-applied and PID1 does not re-arm its boot decision.  The new
-# generation takes effect at the RESTART (boot A2), which is exactly the
-# "the machine comes back up in the new generation" shape this lane tests.
-# Asserted as an ASYMMETRY, not hidden:
+# A1's verdict is the ACTIVATED generation's: fx_activate routes through
+# PID1's control channel, whose handler COMMITS live — service table rebuilt,
+# root dhake-applied, boot window RE-ARMED for the new generation — so the
+# re-armed window judges v_N IN THIS BOOT (the bracket v_A1's own window is
+# preempted and never fires; measured in the first run of this shape).  The
+# version is parsed from the activation's OWN console line (fx-activate's
+# stdout reaches the console; only its stderr was piped to the handler) —
+# the host cannot know v_N before the agent acts, and the transcript is only
+# readable after the halt.
+V_NEW=$(sed -n 's/^activated [0-9a-f]\{40,\} as version \([0-9][0-9]*\).*/\1/p' "$WORK/con-a1.log" | head -1)
+H_NEW=$(sed -n 's/^activated \([0-9a-f]\{40,\}\) as version.*/\1/p' "$WORK/con-a1.log" | head -1)
+[ -n "$V_NEW" ] || { tail -40 "$WORK/con-a1.log"; halt; fail "A1: no 'activated <hash> as version N' console line — the in-guest activation never ran"; }
+[ "$V_NEW" -gt "$V_A1" ] || fail "A1: the agent's generation v$V_NEW is not above the image's CURRENT v$V_A1"
 V_A1_RUN=$(sed -n 's/.*fx-init: boot-ok v\([0-9][0-9]*\).*/\1/p' "$WORK/con-a1.log" | head -1)
-[ -n "$V_A1_RUN" ] || { tail -40 "$WORK/con-a1.log"; halt; fail "A1: no boot-ok verdict — the running generation did not settle"; }
-[ "$V_A1_RUN" = "$V_A1" ] || fail "A1: the running verdict is v$V_A1_RUN, want the image's CURRENT v$V_A1"
+[ -n "$V_A1_RUN" ] || { tail -40 "$WORK/con-a1.log"; halt; fail "A1: no boot-ok verdict — the activated generation did not settle"; }
+[ "$V_A1_RUN" = "$V_NEW" ] \
+    || fail "A1: the in-boot verdict is v$V_A1_RUN, want v$V_NEW (the re-armed window must judge the ACTIVATED generation)"
+grep -q "fx-init: boot-FAILED" "$WORK/con-a1.log" \
+    && { halt; fail "A1: a boot-FAILED verdict fired — the activated generation was failed (the second-agent-instance defect this lane catches)"; }
+echo "qemu-agent-b2: HOT-APPLY GREEN — the activation committed LIVE: the re-armed window's verdict is boot-ok v$V_NEW in the SAME boot"
+# THE AGENT EXEMPTION, asserted from the machine itself: the config's own
+# agentService row (b2verifier) must NOT be started by the activation's
+# restart sweep.  PID1 says so on the console, and the two symptoms of a
+# started duplicate are both absent: the runstore-lock death line, and TASK
+# IDENTITY DRIFT — the duplicate's OWN startup warning (it computes a
+# different task id than the record binds, because the verifier's prompt
+# differs from the bracket's; the warning is the second-instance canary).
+grep -qF "fx-init: agent service 'b2verifier' exempt from the activate restart sweep" "$WORK/con-a1.log" \
+    || { grep -n "agent service\|exempt" "$WORK/con-a1.log" | head; halt; fail "A1: no agent-exemption line — the activated config's agentService was not exempted"; }
+grep -q "locked by another writer" "$WORK/con-a1.log" \
+    && { halt; fail "A1: a second agent instance ran and died on the single-writer runstore"; }
+grep -q "TASK IDENTITY DRIFT" "$WORK/con-a1.log" \
+    && { halt; fail "A1: TASK IDENTITY DRIFT on the ACTIVATE boot — a second agent instance started (only the duplicate computes the verifier's task id)"; }
 grep -qF "heartbeat from $SVC_PROOF" "$WORK/con-a1.log" \
-    && { halt; fail "A1: the agent-authored service IS running in the same boot — this lane expects the direct exec to be durable-but-not-hot-applied; re-derive the claim"; }
-echo "qemu-agent-b2: NO-HOT-APPLY ASYMMETRY — the running generation is still v$V_A1 (boot-ok v$V_A1) and"
-echo "                '$SVC_PROOF' is NOT running in boot A1: the agent's activation is DURABLE, applied at the restart"
+    || { grep -n 'heartbeat' "$WORK/con-a1.log" | head; halt; fail "A1: the agent-authored service is NOT running in the same boot — the activation was not hot-applied; re-derive"; }
+echo "qemu-agent-b2: AGENT EXEMPTION GREEN — the sweep started $SVC_PROOF (hot-applied) but NOT the config's own b2verifier; no runstore clash, no DRIFT canary"
 
 # ── the ORACLE session (reads only; the guest is still running) ───────────
 { echo 'status'; echo 'probe'; echo 'q file'; echo "grep $SVC_PROOF"; echo 'grep b2verify'; } > "$WORK/req-a1.txt"
@@ -900,15 +925,20 @@ ctrl_session "$WORK/req-a1.txt" "$WORK/oracle-a1.txt"
 cp "$WORK/oracle-a1.txt" "$EVID/boot-a1-oracle.txt"
 echo "--- A1: the guest's LIVE state, read over the control channel by the harness ---"
 sed -n '1,45p' "$WORK/oracle-a1.txt" | sed 's/^/    /'
-grep -q "^  $V_A1\$" "$WORK/oracle-a1.txt" \
-    || { halt; fail "A1 oracle: the live generation_current is not v$V_A1 (the running generation)"; }
-echo "qemu-agent-b2: ORACLE GREEN — the guest's own live generation_current is v$V_A1 (the running generation)"
+grep -q "^  $V_NEW\$" "$WORK/oracle-a1.txt" \
+    || { halt; fail "A1 oracle: the live generation_current is not v$V_NEW (the ACTIVATED generation — rt_set_generation_current committed it live)"; }
+echo "qemu-agent-b2: ORACLE GREEN — the guest's own live generation_current is v$V_NEW (the ACTIVATED generation)"
 HOSTNAME_SIZE=$(grep '^/etc/hostname' "$WORK/oracle-a1.txt" | head -1 | awk -F'\t' '{print $2}')
-[ "$HOSTNAME_SIZE" = "6" ] \
-    || { echo "  /etc/hostname row: $(grep '^/etc/hostname' "$WORK/oracle-a1.txt" | head -1)"; halt; fail "A1 oracle: /etc/hostname size $HOSTNAME_SIZE, want 6 ('fixbox', the RUNNING generation's)"; }
-grep -q 'b2verify' "$WORK/oracle-a1.txt" \
-    && { halt; fail "A1 oracle: the agent's b2verify service is already running — this lane expects no hot-apply"; }
-echo "qemu-agent-b2: ORACLE GREEN — /etc/hostname is 6 bytes ('fixbox') ON THE RUNNING ROOT; the agent's services are not running yet"
+[ "$HOSTNAME_SIZE" = "${#MARKER}" ] \
+    || { echo "  /etc/hostname row: $(grep '^/etc/hostname' "$WORK/oracle-a1.txt" | head -1)"; halt; fail "A1 oracle: /etc/hostname size $HOSTNAME_SIZE, want ${#MARKER} ('$MARKER', the HOT-APPLIED root's)"; }
+echo "qemu-agent-b2: ORACLE GREEN — /etc/hostname is ${#MARKER} bytes ('$MARKER') ON THE RUNNING ROOT: the activated generation's /etc was dhake-applied live"
+# the runtime plane: the hot-applied services ARE there, the exempted agent
+# service is NOT (the sweep skipped it; only the BOOT path starts it — see A2).
+grep -qE "^b2proof-$MARKER[[:space:]]" "$WORK/oracle-a1.txt" \
+    || { awk -F'\t' '$1 ~ /b2proof|heartbeat|b2verifier/ {print}' "$WORK/oracle-a1.txt" | head; halt; fail "A1 oracle: the agent-authored $SVC_PROOF is not in the runtime plane"; }
+grep -q 'b2verifier' "$WORK/oracle-a1.txt" \
+    && { halt; fail "A1 oracle: b2verifier IS in the runtime plane — the activation sweep started the config's own agent (the duplicate this lane catches)"; }
+echo "qemu-agent-b2: ORACLE GREEN — $SVC_PROOF runs (hot-applied); b2verifier does NOT (exempted BY IDENTITY)"
 halt
 
 # ── the disk read-backs (the agent's own record, off the virtio disk) ────
@@ -930,12 +960,14 @@ grep -q '"name":"fx_write"' "$WORK/messages-a1.jsonl" || fail "A1: the transcrip
 grep -q '"name":"fx_activate"' "$WORK/messages-a1.jsonl" || fail "A1: the transcript carries no fx_activate tool call"
 grep -q 'wrote [0-9]* bytes to /fx/disk/agent-config.dhall' "$WORK/messages-a1.jsonl" \
     || { halt; fail "A1: the fx_write result is not in the transcript"; }
-H_NEW=$(sed -n 's/.*activated \([0-9a-f]\{40,\}\) as version \([0-9][0-9]*\).*/\1/p' "$WORK/messages-a1.jsonl" | head -1)
-V_NEW=$(sed -n 's/.*activated \([0-9a-f]\{40,\}\) as version \([0-9][0-9]*\).*/\2/p' "$WORK/messages-a1.jsonl" | head -1)
-[ -n "$H_NEW" ] || { halt; fail "A1: no 'activated <hash> as version N' in the agent's transcript (fx_activate produced no generation)"; }
+# the fx_activate result is PID1's CHANNEL reply ("activated version N" —
+# hash-less; the hash lives on the console line parsed above).  Both the
+# version agreement and the hash change are asserted against that console
+# line, the single place both shapes exist.
+grep -q "activated version $V_NEW" "$WORK/messages-a1.jsonl" \
+    || { halt; fail "A1: the transcript does not carry the channel reply 'activated version $V_NEW'"; }
 grep -q 'src-free' "$WORK/messages-a1.jsonl" \
     || echo "qemu-agent-b2: NOTE: the in-guest activation did not report 'src-free' — inspect the closure path"
-[ "$V_NEW" -gt "$V_A1" ] || fail "A1: the agent's generation v$V_NEW is not above the image's CURRENT v$V_A1"
 echo "qemu-agent-b2: GENERATION BEFORE: v$V_A1 hash $H_A1 (the host's activation, the image's CURRENT)"
 echo "qemu-agent-b2: GENERATION AFTER:  v$V_NEW hash $H_NEW (THE AGENT'S, activated in-guest)"
 [ "$H_NEW" != "$H_A1" ] || fail "A1: the generation hash did NOT change — the agent's config is the image's config"
@@ -944,6 +976,12 @@ cmp -s "$WORK/config-readback-a1.dhall" "$WORK/config1.dhall" \
     || { halt; fail "A1: the config on the disk is NOT the config the agent's fixture carried"; }
 cp "$WORK/config-readback-a1.dhall" "$EVID/boot-a1-disk-config.dhall"
 echo "qemu-agent-b2: ARM 1 A1 GREEN — the config ON THE DISK is byte-identical to the fixture's ($(wc -c < "$WORK/config1.dhall") bytes)"
+# the re-armed window's verdict is DURABLE: the disk .bootlog carries v_NEW's
+# ok line from THIS boot (the restart's roll-forward machinery reads exactly
+# this file — a vacuous verdict here would be invisible until the next boot).
+grep -q "^$V_NEW ok " "$WORK/bootlog-a1.txt" \
+    || { cat "$WORK/bootlog-a1.txt"; halt; fail "A1: the disk .bootlog has no '$V_NEW ok' line — the re-armed window's verdict was not recorded"; }
+echo "qemu-agent-b2: A1 BOOTLOG GREEN — '$V_NEW ok' is on the DISK .bootlog (the in-boot verdict is durable)"
 
 # ═══ ARM 1 boot A2 — THE RESTART: the new generation is what comes up ════
 echo "=== qemu-agent-b2: ARM 1 boot A2 (SAME image, SAME disk — the restart) ==="
@@ -1213,12 +1251,22 @@ echo "=== qemu-agent-b2: ARM 2 boot B1 (the agent activates a config that FAILS 
 boot "$WORK/img-2.cpio.gz" "$WORK/con-b1.log" 0
 cp "$WORK/con-b1.log" "$EVID/boot-b1-console.log"
 echo "--- B1: the running verdict + the agent ---"
-grep -n 'disk store mounted\|boot-ok\|boot-FAILED\|B2-AGENT-RAN\|heartbeat from' "$WORK/con-b1.log" | head -15
+grep -n 'disk store mounted\|boot-ok\|boot-FAILED\|B2-AGENT-RAN\|heartbeat from\|fakesvc exit' "$WORK/con-b1.log" | head -15
 grep -qF "$TEXT_MARKER" "$WORK/con-b1.log" \
     || { halt; fail "B1: the agent never ran (no '$TEXT_MARKER' on the console)"; }
-grep -q "fx-init: boot-ok v$V_A2" "$WORK/con-b1.log" \
-    || { tail -30 "$WORK/con-b1.log"; halt; fail "B1: want boot-ok v$V_A2 (the image's CURRENT; boot B0 left the disk at v$V_P, so the boot ADOPTS v$V_A2)"; }
-echo "qemu-agent-b2: ARM 2 B1 GREEN — the ADOPT booted v$V_A2 and the agent ran in it"
+# the activation is HOT-APPLIED: PID1 rebuilds the table to the crasher's,
+# re-arms the window for v_BAD, and the crasher fails IN THIS BOOT.  v_BAD is
+# parsed from the activation's console line (the host cannot know it before
+# the agent acts; the transcript is read after the halt).
+V_BAD=$(sed -n 's/^activated [0-9a-f]\{40,\} as version \([0-9][0-9]*\).*/\1/p' "$WORK/con-b1.log" | head -1)
+H_BAD=$(sed -n 's/^activated \([0-9a-f]\{40,\}\) as version.*/\1/p' "$WORK/con-b1.log" | head -1)
+[ -n "$V_BAD" ] || { tail -40 "$WORK/con-b1.log"; halt; fail "B1: no 'activated <hash> as version N' console line — the in-guest activation never ran"; }
+[ "$V_BAD" -gt "$V_A2" ] || fail "B1: the agent's crasher generation v$V_BAD is not above v$V_A2"
+grep -q 'fakesvc exit 7' "$WORK/con-b1.log" \
+    || { halt; fail "B1: the crasher's own output is not on the console — the activation was not hot-applied; re-derive"; }
+grep -q "fx-init: boot-FAILED v$V_BAD" "$WORK/con-b1.log" \
+    || { tail -30 "$WORK/con-b1.log"; halt; fail "B1: want boot-FAILED v$V_BAD (the hot-applied crasher must fail the re-armed window IN THIS BOOT)"; }
+echo "qemu-agent-b2: ARM 2 B1 GREEN — the agent activated the crasher in-guest (v$V_BAD) and the HOT-APPLY failed it IN THE SAME BOOT"
 halt
 # the agent's own record of the failing config it activated
 "$DEBUGFS" -R "ls -p /agent-data/sessions" "$DISK" >"$WORK/sess-b1.txt" 2>/dev/null || true
@@ -1230,78 +1278,85 @@ cp "$WORK/messages-b1.jsonl" "$EVID/boot-b1-disk-transcript.jsonl"
 read_from_disk "/agent-config.dhall" "$WORK/config-readback-b1.dhall"
 cmp -s "$WORK/config-readback-b1.dhall" "$WORK/config2.dhall" \
     || { fail "B1: the config on the disk is NOT the crasher config the fixture carried"; }
-V_BAD=$(sed -n 's/.*activated \([0-9a-f]\{40,\}\) as version \([0-9][0-9]*\).*/\2/p' "$WORK/messages-b1.jsonl" | head -1)
-H_BAD=$(sed -n 's/.*activated \([0-9a-f]\{40,\}\) as version \([0-9][0-9]*\).*/\1/p' "$WORK/messages-b1.jsonl" | head -1)
-[ -n "$V_BAD" ] || { cat "$WORK/messages-b1.jsonl" | cut -c1-200; fail "B1: no 'activated <hash> as version N' in the agent's transcript"; }
-[ "$V_BAD" -gt "$V_A2" ] || fail "B1: the agent's crasher generation v$V_BAD is not above v$V_A2"
+V_BAD_T=$(sed -n 's/.*activated version \([0-9][0-9]*\).*/\1/p' "$WORK/messages-b1.jsonl" | head -1)
+[ -n "$V_BAD_T" ] || { cat "$WORK/messages-b1.jsonl" | cut -c1-200; fail "B1: no 'activated version N' channel reply in the agent's transcript"; }
+[ "$V_BAD_T" = "$V_BAD" ] || fail "B1: the transcript's activation version v$V_BAD_T != the console's v$V_BAD — two different activations ran"
 echo "qemu-agent-b2: ARM 2 B1 GREEN — the agent activated the CRASHER in-guest: v$V_BAD (hash ${H_BAD%????????*}),"
-echo "                and the running generation stayed v$V_A2 (durable, not hot-applied — same asymmetry as ARM 1)"
+echo "                and the hot-applied crasher FAILED it in the same boot (boot-FAILED v$V_BAD above)"
+# the failure IS on the disk .bootlog from THIS boot — it is what the next
+# boot's stale-failed check reads (the roll-forward moved from B3 to B2).
+# The roll-forward TARGET is derived from this same bootlog (the newest ok
+# BELOW v_BAD): whether the bracket v_A2's own window fired before the
+# activation landed is a TIMING property (in-guest activation speed vs the
+# 30s bracket grace), so the gate derives the target instead of assuming the
+# preemption — and still discriminates, because the console's target must
+# match the bootlog-derived one exactly.
+read_from_disk "/store/.bootlog" "$WORK/bootlog-b1.txt"
+cp "$WORK/bootlog-b1.txt" "$EVID/boot-b1-bootlog.txt"
+grep -q "^$V_BAD failed " "$WORK/bootlog-b1.txt" \
+    || { cat "$WORK/bootlog-b1.txt"; fail "B1: the disk .bootlog has no '$V_BAD failed' line — the in-boot verdict was not recorded"; }
+V_TGT_EXP=$(awk -v bad="$V_BAD" '$1 < bad && $2 == "ok" && $1 > m { m = $1 } END { print m+0 }' "$WORK/bootlog-b1.txt")
+[ -n "$V_TGT_EXP" ] && [ "$V_TGT_EXP" != "0" ] || { cat "$WORK/bootlog-b1.txt"; fail "B1: no ok generation below v$V_BAD in the bootlog — the roll-forward has no target"; }
+grep -q "^$V_A2 ok " "$WORK/bootlog-b1.txt" \
+    && echo "qemu-agent-b2: B1 NOTE — v$V_A2's own window fired ok BEFORE the activation landed (slow in-guest activate); the roll-forward target is v$V_A2" \
+    || echo "qemu-agent-b2: B1 BOOTLOG GREEN — '$V_BAD failed' recorded, and v$V_A2 has NO verdict (its window was preempted); the roll-forward target is v$V_TGT_EXP"
 
-echo "=== qemu-agent-b2: ARM 2 boot B2 (the RESTART — the crasher's generation boots and FAILS in grace) ==="
+echo "=== qemu-agent-b2: ARM 2 boot B2 (the RESTART — stale failed on the disk, roll forward) ==="
 boot "$WORK/img-2.cpio.gz" "$WORK/con-b2.log" 0
 cp "$WORK/con-b2.log" "$EVID/boot-b2-console.log"
-echo "--- B2: the verdict + the crasher ---"
-grep -n 'disk store mounted\|boot-ok\|boot-FAILED\|b2crasher\|fakesvc exit\|heartbeat from' "$WORK/con-b2.log" | head -15
+echo "--- B2: the roll-forward + the verdict ---"
+grep -n 'disk store mounted\|rolling forward\|boot-ok\|boot-FAILED\|fakesvc exit\|heartbeat from\|B2-AGENT-RAN' "$WORK/con-b2.log" | head -20
 grep -q "fx-init: disk store mounted (current v$V_BAD)" "$WORK/con-b2.log" \
     || { tail -30 "$WORK/con-b2.log"; halt; fail "B2: the disk's CURRENT is not v$V_BAD (the agent's crasher)"; }
+V_TGT=$(sed -n "s/.*fx-init: stale failed for v$V_BAD; rolling forward to v\([0-9][0-9]*\).*/\1/p" "$WORK/con-b2.log" | head -1)
+[ -n "$V_TGT" ] || { tail -30 "$WORK/con-b2.log"; halt; fail "B2: no 'stale failed for v$V_BAD; rolling forward to vN' line — B1's in-boot failure did not reach the disk .bootlog"; }
+[ "$V_TGT" = "$V_TGT_EXP" ] \
+    || { sed -n 's/.*rolling forward.*/&/p' "$WORK/con-b2.log"; halt; fail "B2: rolled to v$V_TGT, want v$V_TGT_EXP (the newest OK generation below v$V_BAD in the B1 bootlog)"; }
+V_ROLL=$(sed -n 's/.*fx-init: boot-ok v\([0-9][0-9]*\).*/\1/p' "$WORK/con-b2.log" | head -1)
+[ -n "$V_ROLL" ] || { tail -30 "$WORK/con-b2.log"; halt; fail "B2: no boot-ok after the roll-forward"; }
+[ "$V_ROLL" -gt "$V_BAD" ] || fail "B2: rolled v$V_ROLL not above v$V_BAD (not a roll FORWARD)"
 grep -q 'fakesvc exit 7' "$WORK/con-b2.log" \
-    || { grep -n 'crasher' "$WORK/con-b2.log" | head; halt; fail "B2: the crasher's own output is not on the console"; }
-grep -q "fx-init: boot-FAILED v$V_BAD" "$WORK/con-b2.log" \
-    || { tail -30 "$WORK/con-b2.log"; halt; fail "B2: want boot-FAILED v$V_BAD (the crasher must fail in grace)"; }
-echo "qemu-agent-b2: ARM 2 B2 GREEN — the agent's crasher generation v$V_BAD booted and FAILED: boot-FAILED v$V_BAD"
+    && { halt; fail "B2: the crasher's generation RAN after the roll-forward"; }
+echo "qemu-agent-b2: ARM 2 B2 GREEN — the restart found v$V_BAD stale-failed on the disk and rolled forward to v$V_TGT (boot-ok v$V_ROLL, the crasher's generation NOT booted)"
+# WHICH generation the restarted machine is running, read live over the
+# control channel: the restored generation's own services, and NOT the
+# crasher's.  (The heartbeat row's console flag does not matter here — the
+# runtime plane is the instrument that can.)
+{ echo 'status'; } > "$WORK/req-b2.txt"
+ctrl_session "$WORK/req-b2.txt" "$WORK/oracle-b2.txt"
+cp "$WORK/oracle-b2.txt" "$EVID/boot-b2-oracle.txt"
+echo "--- B2: the restarted machine's live service table ---"
+sed -n '1,20p' "$WORK/oracle-b2.txt" | sed 's/^/    /'
+grep -qE '^heartbeat[[:space:]]' "$WORK/oracle-b2.txt" \
+    || { halt; fail "B2: the restored generation's heartbeat is not in the runtime plane"; }
+grep -qE '^b2crasher' "$WORK/oracle-b2.txt" \
+    && { halt; fail "B2: the crasher's service is in the runtime plane after the roll-forward"; }
 halt
 read_from_disk "/store/.bootlog" "$WORK/bootlog-b2.txt"
 cp "$WORK/bootlog-b2.txt" "$EVID/boot-b2-bootlog.txt"
-echo "--- B2: the disk .bootlog — the failure IS recorded ---"; sed 's/^/    /' "$WORK/bootlog-b2.txt"
 grep -q "^$V_BAD failed " "$WORK/bootlog-b2.txt" \
-    || { cat "$WORK/bootlog-b2.txt"; fail "B2: the disk .bootlog has no '$V_BAD failed' line"; }
-# The roll-forward target is the newest OK generation BELOW the failed one in
-# the DISK .bootlog — here the ARM-2 BRACKET (v$V_A2, booted ok in B1: the
-# agent's activation is not hot-applied, so PID1's own verdict for the bracket
-# stands).  That IS "the previous ok generation": the pre-change state.
-echo "qemu-agent-b2: ARM 2 B2 GREEN — the disk .bootlog records '$V_BAD failed'"
+    || { cat "$WORK/bootlog-b2.txt"; fail "B2: the disk .bootlog lost the '$V_BAD failed' line B1 wrote"; }
+echo "qemu-agent-b2: B2 BOOTLOG GREEN — B1's '$V_BAD failed' line survived the roll-forward boot"
 
-echo "=== qemu-agent-b2: ARM 2 boot B3 (the SAME image and disk — roll forward to the previous ok generation) ==="
+echo "=== qemu-agent-b2: ARM 2 boot B3 (the SETTLED boot — the machine STAYS rolled forward) ==="
 boot "$WORK/img-2.cpio.gz" "$WORK/con-b3.log" 0
 cp "$WORK/con-b3.log" "$EVID/boot-b3-console.log"
-echo "--- B3: the roll-forward + the verdict ---"
-grep -n 'disk store mounted\|rolling forward\|boot-ok\|boot-FAILED\|fakesvc exit\|heartbeat from\|B2-AGENT-RAN' "$WORK/con-b3.log" | head -20
-V_TGT=$(sed -n "s/.*fx-init: stale failed for v$V_BAD; rolling forward to v\([0-9][0-9]*\).*/\1/p" "$WORK/con-b3.log" | head -1)
-[ -n "$V_TGT" ] || { tail -30 "$WORK/con-b3.log"; halt; fail "B3: no 'stale failed for v$V_BAD; rolling forward to vN' line"; }
-[ "$V_TGT" = "$V_A2" ] \
-    || { sed -n 's/.*rolling forward.*/&/p' "$WORK/con-b3.log"; halt; fail "B3: rolled to v$V_TGT, want the previous ok generation v$V_A2"; }
-grep -q "fx-init: disk store mounted (current v$V_BAD)" "$WORK/con-b3.log" \
-    || { tail -20 "$WORK/con-b3.log"; halt; fail "B3: the disk's CURRENT was not v$V_BAD at boot"; }
-V_ROLL=$(sed -n 's/.*fx-init: boot-ok v\([0-9][0-9]*\).*/\1/p' "$WORK/con-b3.log" | head -1)
-[ -n "$V_ROLL" ] || { tail -30 "$WORK/con-b3.log"; halt; fail "B3: no boot-ok after the roll-forward"; }
-[ "$V_ROLL" -gt "$V_BAD" ] || fail "B3: rolled v$V_ROLL not above v$V_BAD (not a roll FORWARD)"
+echo "--- B3: the settled boot ---"
+grep -n 'disk store mounted\|rolling forward\|boot-ok\|boot-FAILED\|fakesvc exit\|B2-AGENT-RAN' "$WORK/con-b3.log" | head -12
+grep -q "fx-init: disk store mounted (current v$V_ROLL)" "$WORK/con-b3.log" \
+    || { tail -30 "$WORK/con-b3.log"; halt; fail "B3: the disk's CURRENT is not v$V_ROLL (the rolled-forward generation did not persist)"; }
+grep -q "fx-init: boot-ok v$V_ROLL" "$WORK/con-b3.log" \
+    || { tail -30 "$WORK/con-b3.log"; halt; fail "B3: want boot-ok v$V_ROLL (the settled boot)"; }
+grep -q 'rolling forward' "$WORK/con-b3.log" \
+    && { halt; fail "B3: ANOTHER roll-forward fired — the machine is not settled on v$V_ROLL"; }
 grep -q 'fakesvc exit 7' "$WORK/con-b3.log" \
-    && { halt; fail "B3: the crasher's generation RAN after the roll-forward"; }
-# WHICH generation the restarted machine is running, read live over the
-# control channel: the bracket's own services, and NOT the crasher's.  (The
-# bracket's heartbeat has console=None, so the console cannot show it — the
-# runtime plane is the instrument that can.)
-{ echo 'status'; } > "$WORK/req-b3.txt"
-ctrl_session "$WORK/req-b3.txt" "$WORK/oracle-b3.txt"
-cp "$WORK/oracle-b3.txt" "$EVID/boot-b3-oracle.txt"
-echo "--- B3: the restarted machine's live service table ---"
-sed -n '1,20p' "$WORK/oracle-b3.txt" | sed 's/^/    /'
-grep -qE '^heartbeat[[:space:]]' "$WORK/oracle-b3.txt" \
-    || { halt; fail "B3: the restored generation's heartbeat is not in the runtime plane"; }
-grep -qE '^b2crasher' "$WORK/oracle-b3.txt" \
-    && { halt; fail "B3: the crasher's service is in the runtime plane after the roll-forward"; }
-echo "qemu-agent-b2: ARM 2 GREEN — the failed generation is on the disk .bootlog, and the NEXT boot rolled"
-echo "                forward to the previous ok generation v$V_A2 (boot-ok v$V_ROLL); the crasher's generation was NOT booted"
-if grep -qF "$TEXT_MARKER" "$WORK/con-b3.log"; then
-    echo "qemu-agent-b2: NOTE (measured) — the rolled-to generation is the ARM-2 BRACKET, which carries the"
-    echo "                agent service, so the agent re-ran here and activated a FURTHER crasher generation"
-    echo "                (created in the store, not judged by this boot: no hot-apply).  A roll-forward onto"
-    echo "                an agent-bearing generation therefore RE-CREATES the failure for the next boot —"
-    echo "                reported, not hidden."
-fi
+    && { halt; fail "B3: the crasher's generation RAN in the settled boot"; }
 halt
 read_from_disk "/store/.bootlog" "$WORK/bootlog-b3.txt"
 cp "$WORK/bootlog-b3.txt" "$EVID/boot-b3-bootlog.txt"
+echo "qemu-agent-b2: ARM 2 GREEN — the in-boot failure (B1) is on the disk .bootlog, the NEXT boot rolled"
+echo "                forward to the bootlog-derived target v$V_TGT (boot-ok v$V_ROLL), and the boot after"
+echo "                that STAYS on it (current v$V_ROLL, boot-ok v$V_ROLL, no further roll, no crasher)"
 
 # ═══ THE NEGATIVE CONTROL — the payload withheld, nothing changes ═══════
 DISK="$WORK/disk3.img"; new_disk "$DISK"
@@ -1351,18 +1406,22 @@ echo "                the generation did not change, and all four asserted strin
 echo
 echo "qemu-agent-b2: PASS"
 echo "  ARM 1: the agent inspected (/fx/disk/store, /etc/hostname='fixbox'), wrote"
-echo "         $CONFIG_GUEST_PATH and ACTIVATED it in-guest through its own tool server:"
-echo "         v$V_NEW hash ${H_NEW%????????*} (the host built v$V_A1 = ${H_A1%????????*});"
-echo "         the RESTART came up in it: current v$V_NEW, boot-ok v$V_NEW, 'heartbeat from $SVC_PROOF',"
-echo "         and the restarted machine's own fx_store_verify call returned exit=1 with EXACTLY $DRIFT_N PINNED"
+echo "         $CONFIG_GUEST_PATH and ACTIVATED it in-guest THROUGH PID1's control channel:"
+echo "         v$V_NEW hash ${H_NEW%????????*} (the host built v$V_A1 = ${H_A1%????????*}), committed"
+echo "         LIVE — the re-armed window's own boot-ok v$V_NEW and 'heartbeat from $SVC_PROOF' are on"
+echo "         A1's console, and the config's OWN agent service was EXEMPTED from the activation sweep"
+echo "         (no duplicate instance, no runstore clash, no DRIFT canary); the RESTART persisted it:"
+echo "         current v$V_NEW, boot-ok v$V_NEW, and the restarted machine's own fx_store_verify call"
+echo "         returned exit=1 with EXACTLY $DRIFT_N PINNED"
 echo "         pre-existing /bin-link drifts — set-pinned, not class-pinned: every line must be a top-level /bin"
 echo "         link whose fact and target name the SAME <64hex>-<pkg> store dir, and the FOUR mutants of the"
 echo "         real report (repointed link / 6th drift / non-/bin path / renamed link) were each shown"
 echo "         failing the pin while the pre-fix assertion passed them (see the lane report: an fx-init bug,"
 echo "         not drift the agent caused)."
-echo "  ARM 2: the agent activated a crasher -> boot-FAILED v$V_BAD and '$V_BAD failed' in the disk .bootlog;"
-echo "         the NEXT boot rolled forward to the previous ok generation v$V_TGT -> boot-ok v$V_ROLL with the"
-echo "         crasher's generation NOT booted (the runtime plane confirms its services are gone)."
+echo "  ARM 2: the agent activated a crasher that was HOT-APPLIED and failed IN THE SAME BOOT"
+echo "         (B1: boot-FAILED v$V_BAD + '$V_BAD failed' in the disk .bootlog); the NEXT boot rolled"
+echo "         forward to the bootlog-derived target v$V_TGT -> boot-ok v$V_ROLL with the crasher's"
+echo "         generation NOT booted, and the boot after that STAYED settled (current v$V_ROLL, no further roll)."
 echo "  CONTROL: no payload -> nothing above v$V_A1, all asserted strings absent."
 echo "  EVIDENCE: tests/evidence/qemu-agent-b2/ (consoles, oracles, disk read-backs, bootlogs)."
 exit 0
