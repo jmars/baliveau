@@ -210,6 +210,17 @@ certifies coherence; neither says "improved".
       (a–j: the measured cell, the readable control, EACCES, absent-is-silence, the done exemption,
       torn poison + scope, the record directory/EACCES, the verb's three states, and the pinned
       7afa0c2 pre-fix asymmetry — RUN vs ERROR on the identical fixture).
+- [ ] **The LuaJIT audit's ARM 2 is a seat that is NEVER CALLED — a second implementation runs
+      instead.** `tests/luajit-audit.sh --arm2` is the guest-only hatch probe (`os.execute`/`io.popen`
+      must fail where there is no `/bin/sh`); it REFUSES to run on the host, and its message still says
+      "NOT YET RUN — pass --arm2 once a guest image exists". A guest image exists now, and
+      `tests/qemu-luajit.sh` re-implements those SAME two probes inline in its Lua script and writes
+      the result into the durable marker (`sh=false popen=false`). So the evidence is substantively
+      the same, but there are TWO implementations of one probe set and the audit's own guest path —
+      the one that exists to be run there — is exercised by nothing, so it can rot silently, and its
+      message is now false. Fix by having the gate run `tests/luajit-audit.sh --arm2` IN the guest (one
+      implementation) or by deleting the duplicate and correcting the message. This is the project's
+      "there is often a second thing doing the same job" pattern, caught only by asking who CALLS it.
 - [ ] **Two ungated oracle paths**: the two-origins-one-install-target refusal and the
       `<store>/<hash>-<pkg>/` argv spelling are implemented but have no fixture. Also ungated: the
       64-candidate cap, the shallow-clone SKIP paths, and the in-guest `done→attempt→result` order
@@ -284,9 +295,18 @@ certifies coherence; neither says "improved".
       hash and the in-guest hash disagree; dep-free they agree by
       construction.  **The runner is a plain `#!/bin/sh` script, NOT
       LuaJIT:** MEASURED, the qemu lane's pinned kernel has
-      `CONFIG_IA32_EMULATION` unset and the only LuaJIT artifact is i386 —
-      it cannot exec there at all; `CONFIG_BINFMT_SCRIPT=y` is asserted by
-      the gate.  The LuaJIT shape belongs to a kernel that can exec it.
+      `CONFIG_IA32_EMULATION` unset and the only LuaJIT artifact at the time
+      was i386 — it cannot exec there at all; `CONFIG_BINFMT_SCRIPT=y` is
+      asserted by the gate.  **(CORRECTED 2026-10-10 — an x86_64 LuaJIT now
+      exists, so the ABI is no longer the blocker:** `tools/build-luajit.sh
+      x86_64` builds `build/luajit-x86_64.musl` from the same vendored,
+      pinned tree with the same capability bounds; `tools/stage-guest.sh`
+      stages it as `/usr/fx-agent/bin/luajit` with the i386 one beside it as
+      `luajit.i386`; `tests/qemu-luajit.sh` (`make test-luajit-guest`) proves
+      it EXECUTES in this pinned-kernel guest — durable marker on the disk,
+      JIT compiling traces in-guest — with the i386 artifact as the in-boot
+      ENOEXEC control.  The stub runner stays as built; the Lua shape is no
+      longer waiting on a kernel that can exec it.)
       **The service is NON-console** (`oslot-mcp`, svc_bin resolves to
       `<hash>-oslot/mcp-stub-runner` via the pkg'd-row rule), stays alive
       through the grace window (fx-init pins `failed` for ANY non-console
@@ -342,7 +362,9 @@ certifies coherence; neither says "improved".
           states: *the agent may have a compiler; it may not have the one that GRADES it* — and the
           oracle is host-side precisely so the grading cannot be written by the thing being graded.
         - **WHAT THE SERVICE LOOKS LIKE.** `svc_bin` must resolve to the artifact, run under in-guest
-          LuaJIT (already shipped, JIT gated two-sidedly), speaking newline-framed JSON-RPC on stdio —
+          LuaJIT (the x86_64 artifact `build/luajit-x86_64.musl`, staged at `/usr/fx-agent/bin/luajit` —
+          NOT the repo's i386 artifact, which the pinned guest kernel cannot exec; `make
+          test-luajit-guest` gates exactly this, JIT gated two-sidedly in-guest), speaking newline-framed JSON-RPC on stdio —
           the same shape `tools/fx-verbs-server.c` and `mcp_client.c` already use, so the plumbing
           exists and the language is what changes. A NEW, non-console service is the right shape: it
           may legitimately FAIL, and a boot failure is what the recovery journal and the observation
@@ -359,6 +381,10 @@ certifies coherence; neither says "improved".
           being copied into it.
 - [ ] **LuaJIT JIT on/off in the guest**: shipped ON and gated two-sidedly; the *compiler* and
       agent-authored MCP servers are the long-running workloads that justify it. Measure per lane.
+      (2026-10-10: MEASURED IN-GUEST for the x86_64 artifact — `tests/qemu-luajit.sh`'s disk marker
+      carries `traces=N,0`, traces compiled with the JIT on and none after `jit.off()`, inside the
+      pinned-kernel guest.  The i386 artifact's JIT remains host-measured only: that artifact cannot
+      exec in this guest at all, and the v86 lane is where its in-guest numbers must come from.)
 
 ## 6. Egress (§7.1a) — designed, not built
 

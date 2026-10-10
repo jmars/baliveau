@@ -188,6 +188,18 @@ test-agent-slot:
 
 .PHONY: test-agent-slot
 
+# The GUEST-ABI gate for the LuaJIT runtime (the Osier->Lua backend's
+# premise): the x86_64 artifact build/luajit-x86_64.musl EXECUTES in the
+# pinned-kernel qemu guest — console line + a durable marker on the virtio
+# disk, with the JIT compiling traces in-guest — while the repo's i386
+# artifact (the v86 lane's) cannot exec there at all (no IA32 emulation) and
+# is the in-boot negative control.  Same deps as test-agent-slot, plus the
+# vendored LuaJIT tree (tools/build-luajit.sh builds both artifacts).
+test-luajit-guest:
+	bash tests/qemu-luajit.sh
+
+.PHONY: test-luajit-guest
+
 clean:
 	rm -rf build
 

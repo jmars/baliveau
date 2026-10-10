@@ -213,6 +213,31 @@ zig cc -target x86_64-linux-musl -static -s -std=c11 -O2 -Wall -Wextra \
     || fail "x86_64-linux-musl fx-verbs-server build failed"
 assert_guest_elf "$BINDIR/fx-verbs-server" "x86-64"
 
+# ─── LuaJIT, BOTH ABIs under distinct names (the GUEST ABI note above) ────
+# `luajit`     the x86_64 artifact — the one the QEMU guest can EXEC (the
+#              Osier->Lua backend lane's runtime; proven IN-GUEST by
+#              tests/qemu-luajit.sh, with the i386 one as the in-boot
+#              negative control).
+# `luajit.i386` the v86 lane's artifact (32-bit guest CPU), staged beside it
+#              as the asymmetry control — mirrors fx-agent/fx-agent.i386.
+# Both come from the SAME vendored, pinned tree with the SAME capability
+# bounds (src/vendor/luajit/PIN, CORRECTION section); built by
+# tools/build-luajit.sh, which is invoked here only when an artifact is
+# missing (the freshness CMP belongs to the gate that asserts the bytes,
+# tests/qemu-luajit.sh — staging reuses, it does not verify).
+LJ64="$REPO/build/luajit-x86_64.musl"
+LJ32="$REPO/build/luajit.musl"
+if [ ! -x "$LJ64" ] || [ ! -x "$LJ32" ]; then
+    echo "stage-guest: building the LuaJIT artifacts (tools/build-luajit.sh)"
+    sh "$REPO/tools/build-luajit.sh" >/dev/null \
+        || fail "tools/build-luajit.sh failed"
+fi
+cp "$LJ64" "$BINDIR/luajit"      || fail "cannot stage $LJ64"
+cp "$LJ32" "$BINDIR/luajit.i386" || fail "cannot stage $LJ32"
+chmod 755 "$BINDIR/luajit" "$BINDIR/luajit.i386"
+assert_guest_elf "$BINDIR/luajit"      "x86-64"
+assert_guest_elf "$BINDIR/luajit.i386" "i386"
+
 # ─── the harness's RUNTIME config (agents) ────────────────────────────────
 # The `args = [] : List Text` annotations are MANDATORY: dhall-c cannot infer
 # an unannotated empty list and the whole config fail-opens to empty without
@@ -362,7 +387,19 @@ if [ "$PRECHECK" = 1 ]; then
         *"agent_main: -p <prompt> is required"*) ;;
         *) fail "host pre-check: fx-agent.i386 printed '$out' (rc=$rc)" ;;
     esac
-    echo "stage-guest: host pre-check OK — x86_64 prints the --agent line, i386 prints the -p line"
+    # LuaJIT, BOTH ABIs: each must run its version line HERE.  This is the
+    # asymmetry control's premise (same shape as fx-agent/fx-agent.i386):
+    # this host's kernel has IA32 emulation, so BOTH work here; the pinned
+    # guest kernel separates them, which tests/qemu-luajit.sh asserts.
+    for _lj in "$BINDIR/luajit" "$BINDIR/luajit.i386"; do
+        out=$("$_lj" -v 2>&1); rc=$?
+        [ "$rc" = 0 ] || fail "host pre-check: $_lj -v exited rc=$rc: $out"
+        case "$out" in
+            LuaJIT\ *"-- Copyright (C)"*"Mike Pall."*) ;;
+            *) fail "host pre-check: $_lj -v printed '$out'" ;;
+        esac
+    done
+    echo "stage-guest: host pre-check OK — x86_64 prints the --agent line, i386 prints the -p line, both LuaJIT ABIs print their version"
     PC="$OUT/precheck"
     rm -rf "$PC"; mkdir -p "$PC/cfg" "$PC/data"
     cp "$ROOTDIR/usr/fx-agent/cfg/config.dhall" "$PC/cfg/config.dhall"

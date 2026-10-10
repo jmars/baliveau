@@ -3,4 +3,4 @@ printf '%s\n' '#!/usr/bin/busybox sh' 'd=$(/usr/bin/busybox dirname "$0")' 'echo
 
 *** fxstore: WARNING: bwrap not found — running NON-HERMETIC (unsandboxed): /bin/sh ***
 
-fxstore: built /tmp/qemuslot.YAcUtl/gstore/c7a4b7b7b3d86ebf59a14b753f051a73f5769f91a29862da54a25ae1eff2890d-oslot
+fxstore: built /tmp/qemuslot.qlxsUi/gstore/c7a4b7b7b3d86ebf59a14b753f051a73f5769f91a29862da54a25ae1eff2890d-oslot

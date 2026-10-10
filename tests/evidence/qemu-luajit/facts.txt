@@ -1,0 +1,6 @@
+gate       tests/qemu-luajit.sh
+kernel     51b226c62e0ce48a9720984be71ce7729d7860132cf40767dbde9b3e38193db5  (fx-init pin)
+x86_64-art 2f68bedf7e8450e10dcbbcef7bf3b33486202f14d03799470177612f2b3f5d15  build/luajit-x86_64.musl  (built, staged, in-image, EXECUTED in guest)
+i386-art   a0ec950381aafedb611bca76a984b6bc73d5e4c51e320fed998e260c53a52c08  build/luajit.musl  (built, staged, in-image, REFUSED by guest: ENOEXEC)
+version    v3
+marker     LUAJIT-X64-RAN arch=x64 traces=1,0 sh=false popen=false

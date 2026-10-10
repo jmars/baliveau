@@ -3,7 +3,19 @@
 # (src/vendor/luajit/src/lib_init.c, lj_lib_load[]; built by tools/build-luajit.sh).
 #
 # Usage: tests/luajit-audit.sh [path-to-artifact] [--arm2]
-#   default artifact: build/luajit.musl
+#   default artifact: build/luajit.musl          (i386  -- the v86 lane's)
+#   the qemu lane's:  build/luajit-x86_64.musl   (x86-64)
+#
+# PER-TARGET vs ARCHITECTURE-INDEPENDENT checks: the ONLY arch-dependent
+# checks in this audit are the two static ELF checks at the top of arm 1
+# (the exact `file -b` description and the corroborating readelf machine),
+# which accept EXACTLY the two blessed descriptions -- i386 and x86-64 --
+# and fail on anything else; nothing is skipped for either target.  Every
+# probe below them asserts the Lua-visible surface (the lj_lib_load[] bounds
+# and the FFI compile-out baked into BOTH targets from the same vendored
+# tree), which is architecture-independent by construction -- that is the
+# claim, and it is re-proven per artifact by simply running this audit on
+# both, which the gates do.
 #
 # The audit is split into two arms, and the split is the point:
 #
@@ -80,13 +92,35 @@ check() {
 }
 
 # static checks on the artifact itself: the target must not have drifted.
+# ARCHITECTURE-DEPENDENT (the only such checks in this file): the description
+# must match EXACTLY ONE of the two blessed artifacts -- i386 (v86 lane) or
+# x86-64 (qemu lane) -- and readelf's machine must corroborate the class
+# file(1) announced.  Anything else (wrong class, dynamic, unstripped) fails.
 DESC=$(file -b "$ART")
 TOTAL=$((TOTAL + 1))
+ARCH_DESC=""
 if printf '%s\n' "$DESC" | grep -Eq '^ELF 32-bit LSB executable, Intel i386, (version [0-9]+ \(SYSV\), )?statically linked, stripped$'; then
+    ARCH_DESC=i386
     say "  ok: artifact is i386, statically linked, stripped"
+elif printf '%s\n' "$DESC" | grep -Eq '^ELF 64-bit LSB executable, x86-64, (version [0-9]+ \(SYSV\), )?statically linked, stripped$'; then
+    ARCH_DESC=x86-64
+    say "  ok: artifact is x86-64, statically linked, stripped"
 else
     note_fail "artifact description changed: $DESC"
 fi
+TOTAL=$((TOTAL + 1))
+case "$ARCH_DESC" in
+    i386)
+	readelf -h "$ART" | grep -q 'Machine:.*Intel 80386' \
+	    && say "  ok: readelf machine is Intel 80386" \
+	    || note_fail "file said i386 but readelf machine differs: $(readelf -h "$ART" | grep Machine)" ;;
+    x86-64)
+	readelf -h "$ART" | grep -q 'Machine:.*Advanced Micro Devices X86-64' \
+	    && say "  ok: readelf machine is AMD x86-64" \
+	    || note_fail "file said x86-64 but readelf machine differs: $(readelf -h "$ART" | grep Machine)" ;;
+    *)
+	note_fail "ELF class unrecognized -- the readelf machine check could not run" ;;
+esac
 TOTAL=$((TOTAL + 1))
 if readelf -d "$ART" 2>/dev/null | grep -q '(NEEDED)'; then
     note_fail "artifact has dynamic NEEDED entries -- not a static binary"
