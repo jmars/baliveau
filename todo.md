@@ -259,6 +259,34 @@ certifies coherence; neither says "improved".
 
 ## 4. Design items awaiting a decision
 
+- [ ] **THE BUILD VOCABULARY — designed (§6a of the design record), NOT BUILT. Build in this order,
+      because each element's absence makes the next one decorative:**
+      1. **THE REACH BOUND, IN-GUEST.** On the `bwrap`-absent path the recipe is `execvp`'d UNWRAPPED
+         (`fxstore zig/src/build.zig:711-733`) — stage3's existence is checked but it is not USED. So
+         in the guest an agent-authored `Copy` reaches `/fx/disk/agent-data/attempts.jsonl` as well as
+         a `Shell` would, and the observation loop's guarantee survives only by the tool table. Fix
+         the fallback so it still goes through stage3/landlock.
+      2. **THE ACTIVATION-TIME REFUSAL.** An out-of-subset action is refused BY NAME where the config
+         is validated — the `agentService` pattern (`fx-init 500fc68`), same place, same loudness.
+      3. **THE SUBSET AND THE ABSOLUTE-ARGV RULE.** `Shell` is excluded from the agent-authorable set
+         (host-frozen sets keep it); `Run` requires an absolute `argv[0]`, no PATH search — the
+         discipline the code already applies to itself for `bwrap` (`build.zig:351-354`).
+      4. **INLINE PACKAGES IN THE CONFIG, merged by `fx-activate`** into the package set before the
+         closure is computed, so no new file becomes agent-writable.
+      PREREQUISITE for all of it: `fxstore` must run where the agent does — static, x86_64-linux-musl,
+      against a static libdatalog (it is currently glibc-dynamic with a `.so` dependency).
+- [ ] **The agent's activation BYPASSES PID 1's commit.** It direct-execs `/bin/fx-activate`, which
+      reaches only the child half (config → closure → Dhakefile → facts → snapshot → CURRENT) and
+      skips PID 1's `run_dhake()` HOT-APPLY, the boot-decision re-arm, the service restart and the
+      `rt_effect` (`fx-init zig/src/init.zig:3218-3395`). The route is the control channel —
+      `fxctl --fifo` over `/run/fx/control.in` + `control.out`, which exists as "the in-guest
+      transport" (`fxctl.zig:45-53`) and is a PURE CLIENT (imports only `std`, opens no DB) — and the
+      half-wrong finding that sent the agent direct-exec is already flagged in this file's house
+      rules.
+- [ ] **No in-guest reboot.** The control protocol carries `status|log|activate|rollback|shutdown`
+      and no reboot (`init.zig:3098-3228`); the guest tests pass qemu `-no-reboot` with the HOST
+      restarting the VM. "Activate … (causing a reboot into it)" needs a reboot the machine can
+      perform on its own.
 - [x] **`src_of` closes the store's attribution gap** (`fx-init 9b20161`, read by the oracle
       since `d94ea77`): the store could say *that* a package was built but not *which source*,
       because `srcstore` is append-only while `provides`/`install`/`svc_*` are cleared per
@@ -375,23 +403,27 @@ certifies coherence; neither says "improved".
       except the backend. This is the smallest change that demonstrates self-modification *with
       provenance*. **THE GROUND IT NEEDS — work through this list the moment the backend lands, so the
       task is a step and not a discovery:**
-        - **WHO PUTS THE COMPONENT IN THE CLOSURE — decide this first.** `osier-share` counts
-          components of the ACTIVE GENERATION, and a component reaches the closure as a **package**
-          (`provides(pkg, store_dir)` -> `src_of` -> its `.elm` source artifact). So an agent-authored
-          MCP server is not counted unless the generation's closure contains the package it lives in.
-          Two shapes: (a) the agent writes a **package-set entry** as well as its source — the agent
-          then owns part of the BUILD GRAPH, which is exactly what `FX_AGENT_WRITABLE` (default: one
-          path) was closed against; (b) the deployment pre-declares **a slot** — one placeholder
-          package whose `src.path` is a directory the agent may write — leaving the package set
-          host-frozen and the agent supplying SOURCE ONLY. **(b) is the recommended default**: it keeps
-          the closed write set closed, keeps the build graph out of the agent's reach, and still moves
-          the number. Either way the writable set for that task is a DELIBERATE, NAMED host decision —
-          not a widening of the default.
-        - **THE RECIPE IS HOST-FROZEN, AND IT IS THE GRADER.** The package's build action runs the
-          Osier->Lua compiler over the agent's source and installs the produced Lua. The agent supplies
-          source; the HOST supplies the compiler and the recipe. This is the same line the lane already
-          states: *the agent may have a compiler; it may not have the one that GRADES it* — and the
-          oracle is host-side precisely so the grading cannot be written by the thing being graded.
+        - **WHO PUTS THE COMPONENT IN THE CLOSURE — DECIDED (user, 2026-10-10; §6a of the design
+          record).** `osier-share` counts components of the ACTIVE GENERATION, and a component
+          reaches the closure as a **package** (`provides(pkg, store_dir)` -> `src_of` -> its source
+          artifact), so the agent's work is not counted unless its package is in the generation.
+          **The agent declares packages IN ITS CONFIG** — its existing write surface, so no new file
+          becomes agent-writable and no bridge between the FS timeline and the store timeline is
+          created. The recipe is admitted too, but only as a composition over a **HOST-FROZEN Action
+          subset**: no `Shell` (it is `sh -c <arbitrary text>` and dissolves every other bound),
+          `Run` requires an ABSOLUTE `argv[0]` (it is PATH-resolved and recipes control the
+          environment), and the actions' REACH must be enforced in-guest. **SUPERSEDED by this:** my
+          earlier recommendation of a single pre-declared SLOT as the default — the slot is the
+          DEGENERATE CASE (one package, frozen recipe, agent-writable `src`) and stays as the proven
+          ground. And the load-bearing caveat: **none of it holds until the reach bound is real**,
+          because on the `bwrap`-absent path the recipe runs UNWRAPPED, so in the guest a `Copy`
+          reaches the record as well as a `Shell` would.
+        - **THE RECIPE IS HOST-FROZEN, AND IT IS THE GRADER — AMENDED by §6a.** The package's build
+          action runs the compiler over the agent's source and installs the produced artifact. The
+          GRADER is still host-side and the compiler still host-supplied; what §6a changes is that the
+          recipe may be AGENT-COMPOSED from a host-frozen Action subset. The agent supplies source;
+          the HOST supplies the compiler, the vocabulary and the reach bound. This is the line the
+          lane states: *the agent may have a compiler; it may not have the one that GRADES it.*
         - **WHAT THE SERVICE LOOKS LIKE.** `svc_bin` must resolve to the artifact, run under in-guest
           LuaJIT (the x86_64 artifact `build/luajit-x86_64.musl`, staged at `/usr/fx-agent/bin/luajit` —
           NOT the repo's i386 artifact, which the pinned guest kernel cannot exec; `make

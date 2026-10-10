@@ -268,6 +268,108 @@ and **not recipes** — because a recipe is code the host runs.
 union, arrived at from the opposite direction. Two independent arguments landing on one boundary is
 the strongest evidence available that it is the real one.
 
+### 6a. AMENDMENT (2026-10-10, user decision) — the recipe IS admitted, as a composition over a fixed vocabulary
+
+The conclusion above is right about an **unrestricted** recipe and wrong as a *boundary*. The user
+moved it, in two steps:
+
+> the agent is running in a generation, adds some lua files and updates the dhall config -> commits
+> those changes to a new generation -> activates that generation (causing a reboot into it)
+
+> theres no need for arbitrary shell in the recipes no? … that point is a perfect lever to control
+> capabilities if we make it a fixed set of actions we control
+
+So: **the agent MAY declare packages, a package carries a recipe, and the recipe is a composition
+over a HOST-FROZEN Action subset — the subset IS the capability.** This is the build-time twin of the
+runtime rule settled twice already (`648984f`: the write surface is a closed host-declared set;
+`500fc68`: the agent service is named by a REQUIRED config field). Inside the machine the vocabulary
+is a **fact**, and the substrate **REFUSES** rather than documents.
+
+**WHY THE BOUNDARY MOVES, and what the old argument got right.** §6's reason — "a recipe is code the
+host runs" — is an argument about an *unbounded* recipe: an unrestricted `Shell` genuinely is a
+host-execution grant with nothing behind it. But **our use case needs no shell at all**: the
+Osier→Lua compile step is a pinned argv —
+
+    Run { argv = [ "/usr/fx-agent/bin/luajit", "/usr/fx-agent/bin/osier-lua.lua",
+                   "<src>/Mcp.elm", "-o", "mcp.lua" ] }
+
+— so the restriction costs the first task nothing, and the boundary can be drawn at the vocabulary
+instead of at the agent.
+
+**A. THE VOCABULARY LEVER.** MEASURED, the union is eleven actions (`m3/package-set.dhall:42-54`):
+`Shell | Copy | Mkdir | Rm | Touch | Move | Symlink | Chmod | Echo | Env | Run`. `Shell` is
+implemented as `shell_bin() -c <text>` (`fxstore zig/src/build.zig:810-813`) — **one action that
+dissolves every other bound**, and it is excluded from the agent-authorable subset. Host-frozen sets
+keep it (the m3 sets use it for real `cosmocc` / `cp -a` recipes); the split is the same one the
+runtime table already makes: the vocabulary is a fact for the agent, and the host's own recipes are
+trusted.
+
+**B. `Run` MUST BE ABSOLUTE-ARGV.** MEASURED: `.run` → `run_sandboxed(…, a.argv)` →
+`execvp(argv[0], argv)` (`build.zig:926-931`, `:728`), so `Run` is PATH-RESOLVED — and recipes
+control the environment (`.env` does `setenv` in the build process, `:917-925`; the child prepends to
+`PATH`). `Run` is therefore the remaining exec lever: it can name a binary the agent supplied. **The
+code already applies exactly this discipline to itself** — "execvp('bwrap') searches the CURRENT
+PATH, which recipes control. The child execs this ABSOLUTE path (no PATH search)" (`:351-354`). Apply
+it to `Run`: **absolute `argv[0]`, no PATH search** — then a recipe can only name binaries that
+already exist.
+
+**C. THE REACH MUST BE ENFORCED IN-GUEST, or the lever is decorative.** MEASURED: on `bwrap`-absent
+the child warns loudly, `chdir`s to the workdir and **`execvp`s the recipe UNWRAPPED**
+(`build.zig:711-733`). stage3's *existence* is still checked — stage3-absent is a loud 127 with no
+fallback — **but it is not used on that path**. `bwrap` is a host tool with no guest counterpart, so
+**in the guest an agent-authored `Copy` reaches `/fx/disk/agent-data/attempts.jsonl` just as well as
+a `Shell` would** — i.e. the observation loop's guarantee (the record is out of the agent's reach)
+would hold only by the *tool table*, and a recipe is a different door. Fix the fallback so it still
+goes through stage3/landlock: palisade is *mandatory*, and being the fallback's path is what makes it
+optional, which is an inconsistency rather than a design wall.
+
+**D. THE REFUSAL IS AT ACTIVATION, AND IT IS LOUD.** An out-of-subset action must be **refused by
+name** where the config is validated — the `agentService` pattern (`500fc68`), same place, same
+loudness. "The vocabulary is a fact" means the substrate rejects it; this project has already paid
+twice for a bound that was right in the small and inert beyond a limit.
+
+**E. PACKAGES LIVE IN THE CONFIG — the agent's EXISTING write surface, not a widened one.**
+`fx-activate` merges the config's inline packages into the package set *before* computing the
+closure, so no new file becomes agent-writable and no bridge is created. **Why packages and not
+files:** MEASURED, the config can ALREADY ship arbitrary file content — `extraEtc : List {path,
+content}` → `/etc/<path>` (`activate.zig:1358-1367`) — so "add some lua files" is expressible today.
+But such a file has **no `provides` and no `src_of`**, so it is not a *component* of the generation
+and the oracle cannot attribute it. A **package** gets a source artifact, and `src_of` binds it to
+the generation — that is what makes the agent's work *provable*, which is the entire point of the
+first task. The pre-declared SLOT (`fx-init e825d52`) is the degenerate case of this: one package
+whose `src` is agent-writable and whose recipe is frozen. It stays as the proven ground.
+
+**CONSEQUENCES, and two facts the agent's route currently hides.**
+
+- **NO bridge between the two timelines is needed.** `fx-core`'s `concept.md` is explicit that the
+  FS-mutation log and the store's generation timeline "must not be conflated"; root-diffing would
+  have required a bridge, and inline packages need none — the config is already the unit a generation
+  is derived from. That is why this shape is right and the general one is not.
+- **THE COMMIT EXISTS, AND THE AGENT IS ON THE WRONG SIDE OF IT.** MEASURED (`fx-init
+  zig/src/init.zig:3218-3395`): PID 1's `activate` forks `fx-activate` (config → closure →
+  per-generation Dhakefile → generation facts → snapshot → CURRENT), re-reads the store's facts,
+  re-arms the boot decision, then **`run_dhake()` MATERIALIZES the new generation onto the RUNNING
+  root** — the hot-apply — and records `rt_effect("activate")`. A direct exec of `/bin/fx-activate`
+  reaches **step 1 only**: no commit, no re-arm, no service restart, no runtime record. The harness
+  routes the agent that way on the strength of a half-wrong finding this project already flagged
+  ("the 'fxctl is unusable in-guest' relay was half-wrong"): `fxctl` is a **pure client** (imports
+  only `std`, opens no store or DB) and it has a **fifo transport added as the in-guest transport**
+  (`fxctl.zig:45-53`) over `/run/fx/control.in` + `control.out`. The DB lock that made the relay
+  plausible belongs to `fxstore`, which does open the store DB — a property of a neighbour, applied
+  to the object.
+- **NO IN-GUEST REBOOT.** The control protocol carries `status | log | activate | rollback |
+  shutdown` and **no reboot** (`init.zig:3098-3228`), and the guest tests pass qemu `-no-reboot`
+  (`qemu-agent-observe.sh:648`) with the HOST restarting the VM. So "activate ... (causing a reboot
+  into it)" needs a reboot the machine can perform on its own; today the change becomes live by
+  hot-apply and takes effect at boot only because the next boot reads CURRENT.
+
+**STATUS: DESIGNED, NOT BUILT.** The five elements above, in dependency order: (C) the in-guest
+reach bound — without it nothing else holds; (D) the activation-time refusal; (A)+(B) the subset and
+the absolute-argv rule; (E) the config's inline packages and the merge in `fx-activate`. The rebuild
+of `fxstore` for the guest (static, musl, against a static libdatalog) is a prerequisite of any of
+it, because the builder must be able to run where the agent does.
+
+
 ---
 
 ## 7. What is designed, and what is not
@@ -576,6 +678,14 @@ a **type** (§7.1a). 8. The compiler may live **in the guest** (§5a).
    reboot → verdict → `fxstore verify`.
 2. **THE FIRST SELF-MODIFICATION TASK**: the agent writes an **MCP server in Osier**, activates it as a
    **service**, and the `osier-share` share moves **0% → non-zero** (§7.1c). Every piece exists.
+   **AMENDED 2026-10-10 (§6a):** the change is carried by the **store**, not by building an image —
+   the agent is already inside the machine, so the loop is *make changes → apply → activate a new
+   generation*, with the agent declaring PACKAGES in its config and composing recipes from a
+   host-frozen Action subset (no `Shell`, absolute-argv `Run`, reach enforced in-guest). Two gaps sit
+   between here and it: the agent's activation currently **bypasses PID 1's commit** (`run_dhake`'s
+   hot-apply) because it direct-execs `fx-activate` instead of using the control channel, and there
+   is **no in-guest reboot**. The pre-declared slot (`fx-init e825d52`) is the degenerate case of the
+   inline-package form and stays as the proven ground.
 3. **The Osier→Lua backend** (host-side) — and answer the check-only-typecheck question (§5a).
 4. **The egress primitives**: the closed host-side catalog + the Dhall declaration extension (§7.1a).
 5. **The `osier-share` measurement** itself — host-side, over the generation's relations, plus the
