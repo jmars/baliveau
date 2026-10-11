@@ -38,20 +38,24 @@
 # included" is the restarted machine's OWN agent running fx_store_verify through
 # the same tool server (the fixture b2-verify.sse): its reply text is
 # "exit=<n>\n<the drift report>", read back off the virtio disk.  MEASURED AND
-# PINNED: on this root the report is exit=1 with 5 drifts, ALL of the class
+# PINNED: on this root the report is exit=0, "verify OK", 0 drifts.
+#
+# THE ASYMMETRY THIS PIN CARRIES.  BEFORE the fx-init install-origin fix the
+# same stock root reported exit=1 with 5 drifts, ALL of the class
 # `/bin/X: link_target: symlink points at <store>/<dir>/<binary> != store path
-# <store>/<dir>` — an fx-init bug (its `install` fact records the package DIR
-# for a /bin link while its own buildfile makes the symlink point at the
+# <store>/<dir>` — an fx-init bug (its `install` fact recorded the package DIR
+# for a /bin link while its own buildfile made the symlink point at the
 # BINARY), present in every generation, NOT something the agent's change caused.
-# The test asserts the drift set is EXACTLY those 5 lines (count == 5, exactly
-# those five /bin names, and every line the same <64hex>-<pkg> dir on both sides
-# of the != — a repointed link, a 6th same-class drift, a renamed link, or the
-# same drift on a non-/bin path each FAIL the run;
-# the pin's fireability is demonstrated in-gate against four mutants of the real
+# The fix makes the fact name that exact content path, so the comparison is
+# verbatim and the count is 0 on the same root with no agent action either way.
+# The test asserts the drift set is EXACTLY EMPTY (exit=0, the literal "verify
+# OK", a 0-drift header, 0 drift lines, 0 link_target lines — a link_target
+# drift reappearing, a 6th drift of any class, a renamed link, the same drift
+# on a non-/bin path, or a non-zero exit each FAIL the run;
+# the pin's fireability is demonstrated in-gate against six mutants of the real
 # report) rather than printing a green wash — and the boot verdict stays
 # fx-init's own (boot-ok), because the verifier is an agent whose tool call
-# cannot fail the boot.  See the lane's report: the fix belongs in fx-init, and
-# it was NOT made (no other repo is touched).
+# cannot fail the boot.
 #
 # THE THREE ARMS
 #   ARM 1 (disk1) — THE CHANGE IS COMMITTED LIVE AND SURVIVES THE RESTART
@@ -335,10 +339,10 @@ file -b "$BINDIR_B2/fxstore" | grep -q 'stripped' \
     || skip "the staged fxstore is not stripped (strip(1) did not strip it)"
 echo "qemu-agent-b2: fxstore staged -> $BINDIR_B2/fxstore ($(file -b "$BINDIR_B2/fxstore" | cut -c1-52)),"
 echo "                shipped to the guest as /usr/fx-core/bin/fxstore by mkinitramfs -b"
-# the INSTALL FACT for a /bin link is DIR-granular while the symlink target is
-# the BINARY (the guest execs these links — MEASURED below, both in-guest and
-# here): recorded here as the verdict's baseline, and reported as the
-# cross-repo finding it is.
+# the INSTALL FACT for a /bin link now names the exact store-relative BINARY
+# (the same path the symlink points at — the guest execs these links, MEASURED
+# below, both in-guest and here), so `fxstore verify` reconciles /bin verbatim;
+# the fact is printed here as the verdict's baseline.
 FXWHY=$(LD_LIBRARY_PATH="$DL" "$SIBS/fxstore/zig-out/bin/fxstore" what /bin/fx-activate --store "$STORE" 2>&1 | head -2)
 echo "--- qemu-agent-b2: the install fact for /bin/fx-activate (HOST side, the same facts the image carries) ---"
 printf '%s\n' "$FXWHY" | sed 's/^/    /' 
@@ -1057,170 +1061,119 @@ halt
 cp "$WORK/verify-a2.txt" "$EVID/boot-a2-verify-exit.txt"
 echo "--- A2: the post-restart verdict, from the agent's own tool result (read off the disk) ---"
 sed 's/^/    /' "$WORK/verify-a2.txt"
-grep -q '^exit=1$' "$WORK/verify-a2.txt" \
-    || { halt; fail "A2: the verdict's exit line is not 'exit=1' — expected the pinned, PRE-EXISTING drift set (see the finding); re-derive"; }
+grep -q '^exit=0$' "$WORK/verify-a2.txt" \
+    || { halt; fail "A2: the verdict's exit line is not 'exit=0' — the post-fix install facts must verify CLEAN on a stock root (see the asymmetry note at the head of this file); re-derive"; }
 
-# ── THE DRIFT PIN IS A SET, NOT A CLASS ──────────────────────────────────
-# The pre-fix assertion pinned only a CLASS: the line must match the UNANCHORED
-# `: link_target: symlink points at .* != store path .*$` (any path, any two
-# store dirs), and the count was compared only against the line count — never
-# against 5.  A drift the AGENT caused of that same class therefore passed
-# silently: a REPOINTED /bin link (target left in the old generation dir while
-# the fact names the new one), a 6th same-class drift, or the same drift on any
-# non-/bin path.  The pinned set is the EXACT SHAPE of the 5 pre-existing
-# drifts, MEASURED in boot-a2-verify-exit.txt:
+# ── THE VERDICT IS CLEAN — AND PINNED BY ITS EXACT SHAPE ─────────────────
+# PRE-FIX this arm pinned the OPPOSITE: exit=1 with exactly 5 drifts, all of the
+# class
 #   /bin/<name>: link_target: symlink points at
 #       '<store>/<64hex>-<pkg>/<binary>' != store path '<store>/<64hex>-<pkg>'
-# i.e. a top-level /bin link whose install FACT and symlink TARGET name the
-# SAME <64hex>-<pkg> store dir, the target being that dir's direct child.
-# The pinned set is pinned by NAME too: without that, one of these 5 links
-# ceasing to drift while a DIFFERENT same-class link starts (an agent config
-# swapping a package) would keep count and shape intact.
-DRIFT_PIN_N=5
-DRIFT_PIN_PATHS="/bin/dhake /bin/fakesvc /bin/fx-activate /bin/fxctl /bin/init "
-# drift_pin_ok REPORT -> 0 when EVERY drift line has that shape; the violations
-# go to stdout.  Bounded by hand (POSIX awk has no backreferences), so the two
-# store paths are compared by string prefix rather than by a regex.
-drift_pin_ok() { # $1 = a fxstore-verify report
-    awk '
-    function ishex64(s,   i, c) {
-        if (length(s) != 64) return 0
-        for (i = 1; i <= 64; i++) {
-            c = substr(s, i, 1)
-            if (index("0123456789abcdef", c) == 0) return 0
-        }
-        return 1
-    }
-    function bad(why) { printf "  %s\n    %s\n", why, line; nbad++ }
-    BEGIN { n = 0; nbad = 0; q = sprintf("%c", 39) }   # q = the quote char, portably
-    BEGIN { sep = ": link_target: symlink points at " q; mid = q " != store path " q }
-    /^\// {
-        line = $0; n++
-        i = index(line, sep)
-        if (i == 0) { bad("not a link_target line"); next }
-        path = substr(line, 1, i - 1)
-        rest = substr(line, i + length(sep))
-        j = index(rest, mid)
-        if (j == 0) { bad("no \" != store path \" separator"); next }
-        tgt = substr(rest, 1, j - 1)
-        tail = substr(rest, j + length(mid))
-        if (substr(tail, length(tail), 1) != q) { bad("unterminated store path"); next }
-        store = substr(tail, 1, length(tail) - 1)
-        if (path !~ /^\/bin\/[^\/]+$/) { bad("path is not a top-level /bin/<name> link"); next }
-        k = split(store, seg, "/")
-        pkg = seg[k]
-        if (index(pkg, "-") != 65 || !ishex64(substr(pkg, 1, 64))) {
-            bad("the FACT store path is not <store>/<64hex>-<pkg>"); next
-        }
-        if (index(tgt, store "/") != 1) {
-            bad("the link TARGET is not inside the store dir the FACT names (a repointed link?)"); next
-        }
-        base = substr(tgt, length(store) + 2)
-        if (base == "" || index(base, "/") > 0) { bad("the target is not a direct child of the store dir"); next }
-    }
-    END { if (nbad) exit 1; printf "OK %d drift line(s)\n", n }
-    ' "$1"
-}
-# drift_pinned REPORT -> 0 only for the pinned set: exit=1, count == 5, one
-# line per drift, and every line the exact shape above.
-drift_pinned() { # $1 = a fxstore-verify report
+# on /bin/dhake /bin/fakesvc /bin/fx-activate /bin/fxctl /bin/init — fx-init
+# recorded the package DIR as an install origin while its own buildfile makes
+# the /bin link point at the BINARY inside it.  That was an fx-init bug present
+# in EVERY generation, not something the agent caused.
+#
+# THE ASYMMETRY IS THE POINT: the SAME stock root measures 5 drifts of that one
+# class BEFORE the origin fix and 0 AFTER it (fx-init now records the exact
+# store content path, so the comparison is verbatim), with no agent action
+# either way.  The pre-fix number is the one pinned in this file's history and
+# in tests/evidence/qemu-agent-b2/boot-a2-verify-exit.txt; the post-fix number
+# is what this run measures.
+#
+# The pin is still a SET, not a class — it asserts exit=0, the literal
+# "verify OK", a "0 drift(s)" header, ZERO `link_target:` lines, and ZERO drift
+# lines (`^/`).  A link_target drift REAPPEARING (the regression this fix
+# removes), a drift of any other class, a drift on a non-/bin path, a
+# printed-but-uncounted drift, or a non-zero exit each FAIL the run.  The
+# conjuncts are ordered so that EVERY one of them is the DECIDING conjunct for
+# at least one mutant below (a check no mutant can reach is a check that is not
+# really there): exit -> "verify OK" -> the count header -> link_target lines
+# -> drift lines.
+VERIFY_CLEAN_N=0
+verify_clean() { # $1 = a fxstore-verify report ("exit=<n>" + the report)
     _rep=$1
-    grep -q '^exit=1$' "$_rep" || { echo "  the exit line is not 'exit=1'"; return 1; }
+    grep -q '^exit=0$' "$_rep" || { echo "  the exit line is not 'exit=0'"; return 1; }
+    grep -q '^fxstore: verify OK$' "$_rep" \
+        || { echo "  the report has no literal 'verify OK' line"; return 1; }
     _n=$(sed -n 's/^fxstore: verify .*: \([0-9][0-9]*\) drift(s)$/\1/p' "$_rep" | head -1)
     [ -n "$_n" ] || { echo "  no 'N drift(s)' count in the report header"; return 1; }
+    [ "$_n" = "$VERIFY_CLEAN_N" ] \
+        || { echo "  the report has $_n drift(s); the pinned clean set is $VERIFY_CLEAN_N — a drift (re)appeared"; return 1; }
+    _lt=$(grep -c ': link_target:' "$_rep" | tr -d ' ')
+    [ "$_lt" = "$VERIFY_CLEAN_N" ] \
+        || { echo "  $_lt link_target drift line(s) — the install-origin defect is back"; return 1; }
     _lines=$(grep -c '^/' "$_rep" | tr -d ' ')
-    [ "$_n" = "$_lines" ] || { echo "  $_n drift(s) reported but $_lines drift line(s)"; return 1; }
-    [ "$_n" = "$DRIFT_PIN_N" ] \
-        || { echo "  the report has $_n drift(s); the PINNED pre-existing set is $DRIFT_PIN_N — a NEW drift appeared"; return 1; }
-    _paths=$(grep '^/' "$_rep" | sed 's/^\([^:]*\):.*/\1/' | sort | tr '\n' ' ')
-    [ "$_paths" = "$DRIFT_PIN_PATHS" ] \
-        || { echo "  the drifts are at '$_paths'; the PINNED pre-existing set is at '$DRIFT_PIN_PATHS'"; return 1; }
-    drift_pin_ok "$_rep"
-}
-# THE PRE-FIX ASSERTION, kept ONLY so the self-test below can show what it
-# failed to see.  It is NOT the assertion in force.
-drift_pinned_old() { # $1 = a fxstore-verify report
-    _rep=$1
-    grep -q '^exit=1$' "$_rep" || return 1
-    _n=$(sed -n 's/^fxstore: verify .*: \([0-9][0-9]*\) drift(s)$/\1/p' "$_rep" | head -1)
-    _lines=$(grep -c '^/' "$_rep" | tr -d ' ')
-    _other=$(grep '^/' "$_rep" | grep -vc ': link_target: symlink points at .* != store path .*$' | tr -d ' ')
-    [ "$_other" = "0" ] && [ "$_n" = "$_lines" ]
+    [ "$_lines" = "$VERIFY_CLEAN_N" ] \
+        || { echo "  $_lines drift line(s) under a $_n-drift header"; return 1; }
+    echo "OK: clean rootfs ($VERIFY_CLEAN_N drifts)"
 }
 
-# ── FIREABILITY: the pin is run against four SAME-CLASS mutations of the
-#    REAL report, each reproducing a mask the pre-fix assertion let through.
-#    A tightened assertion that cannot fail is not a fix, so this is a gate
-#    step, not a note: the PRE-FIX predicate must PASS each mutant (the defect)
-#    and the PINNED one must FAIL it (the fix).
-python3 - "$WORK/verify-a2.txt" "$WORK" <<'PYEOF'
+# ── FIREABILITY: the pin is run against six mutants of the REAL report.  A
+#    tightened assertion that cannot fail is not a fix, so this is a gate step,
+#    not a note: every mutant must make the pin FAIL, and the REAL clean report
+#    must PASS it (the positive control asserted below).  Between them the
+#    mutants decide every conjunct — `all` the exit line, `one` the "verify OK"
+#    line, `count` the count header, `lt` and `nonbin` the link_target class,
+#    `lines` the printed-line count.
+python3 - "$WORK/verify-a2.txt" "$WORK" <<'MUTEOF'
 import os, re, sys
 src, work = sys.argv[1], sys.argv[2]
 lines = open(src).read().splitlines()
 hdr = [l for l in lines if l.startswith("fxstore: verify ")][0]
-drifts = [l for l in lines if l.startswith("/")]
-if len(drifts) < 2:
-    sys.exit("mutants: the report has %d drift line(s), need >= 2" % len(drifts))
+m = re.search(r"against store (\S+):", hdr)
+if not m:
+    sys.exit("mutants: cannot read the store root out of %r" % hdr)
+store = m.group(1)
+H = "deadbeef" * 8          # an opaque 64-hex store dir hash, as the facts print it
+OK = "fxstore: verify OK"
 
-def split(l):
-    path, rest = l.split(": link_target: symlink points at '", 1)
-    tgt, store = rest.split("' != store path '", 1)
-    return path, tgt, store[:-1]
+def emit(name, rows, count, exit_line, ok=True):
+    body = [exit_line, re.sub(r"\d+ drift\(s\)", "%d drift(s)" % count, hdr)]
+    if ok:
+        body.append(OK)
+    open(os.path.join(work, name), "w").write("\n".join(body + rows) + "\n")
 
-def join(path, tgt, store):
-    return "%s: link_target: symlink points at '%s' != store path '%s'" % (path, tgt, store)
+# THE PRE-FIX SHAPE, verbatim: the fact names the package DIR, the link points
+# at the BINARY inside it.
+def old_shape(path, pkg, binary):
+    return ("%s: link_target: symlink points at '%s/%s-%s/%s' != store path '%s/%s-%s'"
+            % (path, store, H, pkg, binary, store, H, pkg))
 
-def emit(name, rows, count):
-    out = ["exit=1", re.sub(r"\d+ drift\(s\)", "%d drift(s)" % count, hdr)]
-    open(os.path.join(work, name), "w").write("\n".join(out + rows) + "\n")
+HASH_DRIFT = "/etc/hostname: hash: content hash %s != origin %s" % ("a" * 64, "b" * 64)
+PREFIX5 = [old_shape("/bin/dhake", "dhake", "dhake.com"),
+           old_shape("/bin/fakesvc", "fakesvc", "fakesvc"),
+           old_shape("/bin/fx-activate", "fx-activate", "fx-activate"),
+           old_shape("/bin/fxctl", "fxctl", "fxctl"),
+           old_shape("/bin/init", "fx-init", "fx-init")]
 
-parts = [split(l) for l in drifts]
-p0, t0, s0 = parts[0]
-p1, t1, s1 = parts[1]
-
-# (a) REPOINTED: the fx-activate link's target is moved into the store dir the
-#     NEXT fact names (the "link left at the old generation dir" shape).  Same
-#     class, still 5 drifts.
-m_a = [join(p0, s1 + "/" + t0.rsplit("/", 1)[1], s0)] + [join(*q) for q in parts[1:]]
-# (b) SIXTH: one more drift line of the SAME shape (a package with a /bin link
-#     the agent's config added), header bumped so the count still matches.
-root = s0.rsplit("/", 1)[0]
-hash0 = s0.rsplit("/", 1)[1].split("-", 1)[0]
-newdir = root + "/" + hash0 + "-fxstore"
-m_b = [join(p, t, s) for p, t, s in parts] + [join("/bin/fxstore", newdir + "/fxstore", newdir)]
-# (c) NON-/bin: the same drift class on a path that is not a top-level /bin link
-m_c = [join(*q) for q in parts]
-m_c[1] = join("/usr/lib/dhake", t1, s1)
-# (d) RENAMED: the /bin/fxctl drift is replaced by a /bin/fxstore drift — same
-#     class, same shape, same count, a DIFFERENT link.  (One of the pinned 5
-#     stops drifting while another starts: an agent config swapping a package.)
-m_d = [join(*q) for q in parts]
-renamed = 0
-for _i, (p, t, s) in enumerate(parts):
-    if p != "/bin/fxctl":
-        continue
-    root0 = s.rsplit("/", 1)[0]
-    d0 = s.rsplit("/", 1)[1].replace("-fxctl", "-fxstore")
-    m_d[_i] = join("/bin/fxstore", root0 + "/" + d0 + "/fxstore", root0 + "/" + d0)
-    renamed += 1
-if renamed != 1:
-    sys.exit("mutant (d): found %d /bin/fxctl drift(s) in the report, need exactly 1" % renamed)
-emit("drift-mut-repoint.txt", m_a, 5)
-emit("drift-mut-sixth.txt", m_b, 6)
-emit("drift-mut-nonbin.txt", m_c, 5)
-emit("drift-mut-renamed.txt", m_d, 5)
-PYEOF
-for _m in repoint sixth nonbin renamed; do
+# (a) the FULL PRE-FIX SET — the historical state this fix removes.  Decides the
+#     exit conjunct.
+emit("drift-mut-all.txt", PREFIX5, 5, "exit=1")
+# (b) a drift printed under a 1-drift header with NO "verify OK" line.  Decides
+#     the "verify OK" conjunct.
+emit("drift-mut-one.txt", [PREFIX5[0]], 1, "exit=0", ok=False)
+# (c) a clean-looking body but the header still counts a drift.  Decides the
+#     count conjunct.
+emit("drift-mut-count.txt", [], 1, "exit=0")
+# (d) ONE link_target drift of the pre-fix shape, exit=0, header 0.  Decides the
+#     link_target conjunct — the regression itself.
+emit("drift-mut-lt.txt", [PREFIX5[0]], 0, "exit=0")
+# (e) the same class on a path that is NOT a top-level /bin link: the pin is
+#     path-agnostic.  Also decides the link_target conjunct.
+emit("drift-mut-nonbin.txt", [old_shape("/usr/lib/dhake", "dhake", "dhake.com")], 0, "exit=0")
+# (f) a drift of a DIFFERENT class, exit=0, header 0: passes the link_target
+#     conjunct and must still fail.  Decides the printed-line-count conjunct.
+emit("drift-mut-lines.txt", [HASH_DRIFT], 0, "exit=0")
+MUTEOF
+for _m in all one count lt nonbin lines; do
     _f="$WORK/drift-mut-$_m.txt"
     [ -s "$_f" ] || { halt; fail "the $_m mutant was not built — the pin's fireability check cannot run"; }
-    drift_pinned_old "$_f" && _old=passed || _old=FAILED
-    drift_pinned "$_f" >"$WORK/drift-mut-$_m.out" 2>&1 && _new=passed || _new=FAILED
-    [ "$_old" = "passed" ] \
-        || { cat "$_f"; halt; fail "self-test ($_m): the PRE-FIX assertion already rejects this mutant — it does not reproduce a mask, so it proves nothing"; }
-    [ "$_new" = "FAILED" ] \
-        || { cat "$_f"; halt; fail "self-test ($_m): the PINNED assertion PASSES this mutant — the pin cannot catch this defect"; }
-    echo "qemu-agent-b2: PIN SELF-TEST [$_m] — the pre-fix assertion PASSED this mutant (that was the defect);"
-    echo "                the pinned assertion FAILS it:"
+    if verify_clean "$_f" >"$WORK/drift-mut-$_m.out" 2>&1; then
+        cat "$_f"
+        halt; fail "self-test ($_m): the CLEAN pin PASSES this mutant — the pin cannot catch this divergence"
+    fi
+    echo "qemu-agent-b2: PIN SELF-TEST [$_m] — the clean pin rejects the injected divergence:"
     sed 's/^/      /' "$WORK/drift-mut-$_m.out"
     cp "$_f" "$EVID/pin-mutant-$_m.txt"
     cp "$WORK/drift-mut-$_m.out" "$EVID/pin-mutant-$_m-verdict.txt"
@@ -1228,14 +1181,17 @@ done
 
 DRIFT_N=$(sed -n 's/^fxstore: verify .*: \([0-9][0-9]*\) drift(s)$/\1/p' "$WORK/verify-a2.txt" | head -1)
 [ -n "$DRIFT_N" ] || { halt; fail "A2: cannot parse the drift count from the verdict"; }
-PIN_OUT=$(drift_pinned "$WORK/verify-a2.txt" 2>&1) \
-    || { echo "$PIN_OUT" | sed 's/^/    /'; halt; fail "A2: the verdict is NOT the pinned pre-existing drift set — the agent's change introduced drift (see the lines above)"; }
-echo "qemu-agent-b2: VERDICT EXIT CODE = 1, $DRIFT_N drift(s), the EXACT PINNED pre-existing set"
-echo "                (every line a top-level /bin link whose install FACT and symlink TARGET name the"
-echo "                 SAME <64hex>-<pkg> store dir; anything else — a repointed link, a 6th drift, a"
-echo "                 non-/bin path, a renamed link — FAILS this run; proven fireable by the four"
-echo "                 mutants above, each of which the PRE-FIX assertion passed)."
-echo "                MEASURED on the host: 'fxstore what /bin/fx-activate' -> origin <hash>-fx-activate, no basename."
+PIN_OUT=$(verify_clean "$WORK/verify-a2.txt" 2>&1) \
+    || { echo "$PIN_OUT" | sed 's/^/    /'; halt; fail "A2: the post-restart verdict is NOT the pinned CLEAN verdict — a drift appeared (see the lines above)"; }
+echo "qemu-agent-b2: VERDICT EXIT CODE = 0, $DRIFT_N drift(s) — CLEAN, the pinned POST-FIX verdict"
+echo "                (the install facts name the EXACT store content each /bin link points at, so"
+echo "                 the link comparison is verbatim; anything else — a link_target drift"
+echo "                 reappearing (the PRE-FIX 5-drift set on /bin/dhake /bin/fakesvc"
+echo "                 /bin/fx-activate /bin/fxctl /bin/init was exactly that), a drift of any other"
+echo "                 class, a drift on a non-/bin path, or a non-zero exit — FAILS this run;"
+echo "                 proven fireable by the six mutants above)."
+echo "                ASYMMETRY: this SAME stock root measured 5 drifts of that one class BEFORE the"
+echo "                fx-init install-origin fix and 0 AFTER it — no agent action involved either way."
 echo "                THE VERDICT'S OWN EXIT CODE IS THE FIRST LINE ABOVE; the boot verdict (boot-ok v$V_NEW) is fx-init's,"
 echo "                and it passed because the verifier is an AGENT whose tool call cannot fail the boot."
 read_from_disk "/store/.bootlog" "$WORK/bootlog-a2.txt"
@@ -1419,12 +1375,14 @@ echo "         LIVE — the re-armed window's own boot-ok v$V_NEW and 'heartbeat
 echo "         A1's console, and the config's OWN agent service was EXEMPTED from the activation sweep"
 echo "         (no duplicate instance, no runstore clash, no DRIFT canary); the RESTART persisted it:"
 echo "         current v$V_NEW, boot-ok v$V_NEW, and the restarted machine's own fx_store_verify call"
-echo "         returned exit=1 with EXACTLY $DRIFT_N PINNED"
-echo "         pre-existing /bin-link drifts — set-pinned, not class-pinned: every line must be a top-level /bin"
-echo "         link whose fact and target name the SAME <64hex>-<pkg> store dir, and the FOUR mutants of the"
-echo "         real report (repointed link / 6th drift / non-/bin path / renamed link) were each shown"
-echo "         failing the pin while the pre-fix assertion passed them (see the lane report: an fx-init bug,"
-echo "         not drift the agent caused)."
+echo "         returned exit=0, 'verify OK', $DRIFT_N drifts — CLEAN, and CLEAN IS THE PIN: a link_target"
+echo "         drift reappearing (the PRE-FIX 5-drift /bin-link set was exactly that), a drift of any other"
+echo "         class, a drift on a non-/bin path, or a non-zero exit each FAIL the run, and the SIX mutants"
+echo "         of the real report (the full pre-fix set / a drift under a 1-drift header with no OK line / a"
+echo "         1-drift header with an empty body / one pre-fix link_target drift / the same on a non-/bin"
+echo "         path / another class entirely) were each shown failing the pin — one per conjunct."
+echo "         ASYMMETRY: the same stock root measured 5 drifts of that one class BEFORE the fx-init"
+echo "         install-origin fix and 0 AFTER it — no drift the agent caused, either way."
 echo "  ARM 2: the agent activated a crasher that was HOT-APPLIED and failed IN THE SAME BOOT"
 echo "         (B1: boot-FAILED v$V_BAD + '$V_BAD failed' in the disk .bootlog); the NEXT boot rolled"
 echo "         forward to the bootlog-derived target v$V_TGT -> boot-ok v$V_ROLL with the crasher's"

@@ -1,1 +1,0 @@
-  the report has 6 drift(s); the PINNED pre-existing set is 5 — a NEW drift appeared

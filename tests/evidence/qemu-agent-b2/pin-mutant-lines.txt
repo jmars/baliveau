@@ -1,0 +1,4 @@
+exit=0
+fxstore: verify / against store /fx/disk/store: 0 drift(s)
+fxstore: verify OK
+/etc/hostname: hash: content hash aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa != origin bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb

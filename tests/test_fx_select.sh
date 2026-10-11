@@ -253,7 +253,10 @@ store_hash() {
 # facts name (the rootfs links, the store files they point at, the
 # generation's own files), then prove `fxstore verify` is CLEAN, so an arm
 # that drifts is not blamed on the materialization.
-# (test_fx_audit.sh:381-424, reused verbatim in shape.)
+# The origin is the EXACT installed content, so BOTH modes name a file in
+# the store: mode 0 rows (the /bin links) name `<hash>-<pkg>/<binary>` — the
+# binary the link points at (a link to the package DIR is un-exec-able).
+# (test_fx_audit.sh:386-427, reused verbatim in shape.)
 materialize_rootfs() {
     _st="$1"; _rt="$2"; _v="$3"
     "$FXSTORE" facts install --as-of "$_v" --store "$_st" \
@@ -262,7 +265,8 @@ materialize_rootfs() {
             mkdir -p "$_rt/$(dirname "$tgt")" || exit 1
             rm -f "$_rt$tgt"
             if [ "$mode" = "0" ]; then
-                [ -d "$_st/$org" ] || exit 1
+                mkdir -p "$_st/$(dirname "$org")" || exit 1
+                : > "$_st/$org" || exit 1
                 ln -s "$_st/$org" "$_rt$tgt" || exit 1
             else
                 mkdir -p "$_st/$(dirname "$org")" || exit 1

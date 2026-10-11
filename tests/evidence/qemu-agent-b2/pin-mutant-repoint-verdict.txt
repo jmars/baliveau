@@ -1,2 +1,0 @@
-  the link TARGET is not inside the store dir the FACT names (a repointed link?)
-    /bin/fx-activate: link_target: symlink points at '/fx/disk/store/8ec74aebab6dbe9e02cf90da0e6a6e6d4a0074a32c9587f73733e353a7466e6d-dhake/fx-activate' != store path '/fx/disk/store/ab2a36260543c88ede9c3d869a65c66cd0989e161b8bcd9dbbd660d8b98f3edf-fx-activate'

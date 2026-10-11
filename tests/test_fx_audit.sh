@@ -386,9 +386,11 @@ EOF
 # materialize_rootfs STORE ROOTFS VERSION — create every path the install
 # facts name (the rootfs links, the store files they point at, the
 # generation's buildfile/dhake), so the CLEAN store genuinely reconciles.
-# mode 0 rows (the /bin links) have a PACKAGE DIR as their origin (already
-# provisioned); regular rows (the /etc copies) name a file inside the
-# generation dir, which dhake materializes in-guest and the gate fakes here.
+# The origin is the EXACT installed content, so BOTH modes name a file in
+# the store: mode 0 rows (the /bin links) name `<hash>-<pkg>/<binary>` — the
+# binary the link points at (a link to the package DIR is un-exec-able) —
+# and regular rows (the /etc copies) name a file inside the generation dir,
+# which dhake materializes in-guest and the gate fakes here.
 materialize_rootfs() {
     _st="$1"; _rt="$2"; _v="$3"; _ps="$4"
     FXSTORE_BIN="$FXSTORE" "$FXSTORE" facts install --as-of "$_v" --store "$_st" \
@@ -397,7 +399,8 @@ materialize_rootfs() {
             mkdir -p "$_rt/$(dirname "$tgt")" || exit 1
             rm -f "$_rt$tgt"
             if [ "$mode" = "0" ]; then
-                [ -d "$_st/$org" ] || exit 1
+                mkdir -p "$_st/$(dirname "$org")" || exit 1
+                : > "$_st/$org" || exit 1
                 ln -s "$_st/$org" "$_rt$tgt" || exit 1
             else
                 mkdir -p "$_st/$(dirname "$org")" || exit 1

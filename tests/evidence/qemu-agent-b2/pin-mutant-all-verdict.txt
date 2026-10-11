@@ -1,0 +1,1 @@
+  the exit line is not 'exit=0'

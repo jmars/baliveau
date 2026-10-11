@@ -1,0 +1,3 @@
+exit=0
+fxstore: verify / against store /fx/disk/store: 1 drift(s)
+/bin/dhake: link_target: symlink points at '/fx/disk/store/deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef-dhake/dhake.com' != store path '/fx/disk/store/deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef-dhake'

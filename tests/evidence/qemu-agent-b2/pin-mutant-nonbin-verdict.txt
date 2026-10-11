@@ -1,1 +1,1 @@
-  the drifts are at '/bin/fakesvc /bin/fx-activate /bin/fxctl /bin/init /usr/lib/dhake '; the PINNED pre-existing set is at '/bin/dhake /bin/fakesvc /bin/fx-activate /bin/fxctl /bin/init '
+  1 link_target drift line(s) — the install-origin defect is back

@@ -1,0 +1,1 @@
+  the report has no literal 'verify OK' line

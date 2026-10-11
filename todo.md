@@ -21,8 +21,10 @@ Two repos are in play: **this one** (`fx-harness`) and **`../fx-init`** (PID 1, 
       landed, and the reach that is still unbounded is stated in the code rather than implied.
       **NEXT, in the order I would take them:** (a) the **Osier→Lua backend** — blocked elsewhere, and
       the only thing between here and the first self-modification task; (b) the retention POLICY (§2,
-      `.bootlog`/`.recovery`/`.operator` growth); (c) the residual store defects in §3, of which the
-      **`install`-fact half-right fix** is the one that affects `fxstore verify` on a stock system.
+      `.bootlog`/`.recovery`/`.operator` growth); (c) the residual store defects in §3 — the
+      **`install`-fact fix** that made `fxstore verify` report 5 drifts on a stock system is now CLOSED
+      (below); what remains there is the `fx_read`/`fx_ls` `root_join` reach and the two ungated oracle
+      paths.
 
 - [x] **`fx-harness` committed**: `7de7433` (the observation loop + the B2 pin fix + evidence),
       `648984f` (the write-surface fix — see §4), `e3eb984` (the first oracle — §1).
@@ -386,14 +388,27 @@ regulator** — §6b's audit stance is what makes these records evidentially usa
       hash (version-bound, the older snapshot keeps its own), and the OLD writer's (pinned fx-init
       `2feedf6`, `cmp`-guarded) still refuses, naming both candidates. RESIDUAL, stated: `src_of` rows
       are never gc-reaped (growth is bounded by the rebuild count, not time — fx-init's commit message).
-- [ ] **`fxstore verify` reports 5 drifts on a STOCK system.** fx-init's `install` fact for a `/bin`
-      link records the package **DIR** while its buildfile symlinks the **BINARY** (`activate.zig:616-621`,
-      `:1372-1382`). The B2 test pins that class so it still discriminates — **and a pinned class can
-      mask real drift** (that was the B2 review's first finding).
-- [ ] **The prescribed fix is HALF-RIGHT.** Emitting `<hash>-<pkg>/<basename(from)>` repairs `verify`
-      but **breaks `fxstore why`** (`provenance.zig:475` collects `provides_targets` by exact
-      `origin == store_dir`, while `provides` emits `<hash>-<pkg>`, `activate.zig:1384-1393`). Needs a
-      fix that satisfies both consumers.
+- [x] **`fxstore verify` reports 5 drifts on a STOCK system** — CLOSED. fx-init's `install` fact for a
+      `/bin` link now records the **exact store-relative content path** — the same BINARY its buildfile
+      symlinks (`activate.zig` bin-link install loop; `<hash>-<pkg>/<basename(from)>`, so the first path
+      segment is still the package store dir) — and `prov_verify`'s comparison is therefore verbatim with
+      NO loss of exactness (the fact was made precise; the check was NOT made tolerant). ASYMMETRY,
+      MEASURED: the same stock root reported exit=1 with 5 drifts of that one class before, and exit=0
+      ("verify OK", 0 drifts) after. Gated at three levels: the origin shape end-to-end by the B2 qemu
+      gate (its post-restart verdict is now pinned CLEAN, with six fireable mutants of the real report,
+      one per conjunct), the writer's byte shape by the corrected `activate_diff` goldens (11/11), and
+      the engine's fixtures by `zig build test` (fxstore + fx-core, which share the one
+      `provenance` module).
+- [x] **The prescribed fix was HALF-RIGHT** — COMPLETED, not replaced: emitting
+      `<hash>-<pkg>/<basename(from)>` repaired `verify`, and the readers that want the DIR now resolve it
+      as the origin's **first path segment** — the rule `prov_what` already used. That is `prov_why`
+      (`provenance.zig`'s `provides_targets` collection) and `fx-osier-share.c`'s install-target
+      attribution (`pkg_of_dir` still takes a genuine store dir; the two-origins-one-target alt-check is
+      unchanged and still fires). `prov_verify` keeps its exact comparison. Both fixture families that
+      encoded the buggy DIR shape had to be corrected WITH the writer, which is what makes them
+      regression-catching: the fxstore/fx-core unit fixtures and the harness's `materialize_rootfs`
+      (`test_fx_audit.sh` + `test_fx_select.sh`), whose mode-0 rows previously required
+      `[ -d "$store/$origin" ]` and linked the rootfs path at the package DIR.
 - [x] **The `+64` poll window on an unbounded service set is CLOSED** (`fx-init 4d6a8c2`): `SVC_MAX=64`
       is now shared between the bound and the poll array, and an over-wide config is REFUSED BY NAME
       with the ordinal, the window and the skipped-row count — the loud option, chosen over growing

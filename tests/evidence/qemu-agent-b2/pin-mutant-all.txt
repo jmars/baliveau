@@ -1,0 +1,8 @@
+exit=1
+fxstore: verify / against store /fx/disk/store: 5 drift(s)
+fxstore: verify OK
+/bin/dhake: link_target: symlink points at '/fx/disk/store/deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef-dhake/dhake.com' != store path '/fx/disk/store/deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef-dhake'
+/bin/fakesvc: link_target: symlink points at '/fx/disk/store/deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef-fakesvc/fakesvc' != store path '/fx/disk/store/deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef-fakesvc'
+/bin/fx-activate: link_target: symlink points at '/fx/disk/store/deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef-fx-activate/fx-activate' != store path '/fx/disk/store/deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef-fx-activate'
+/bin/fxctl: link_target: symlink points at '/fx/disk/store/deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef-fxctl/fxctl' != store path '/fx/disk/store/deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef-fxctl'
+/bin/init: link_target: symlink points at '/fx/disk/store/deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef-fx-init/fx-init' != store path '/fx/disk/store/deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef-fx-init'

@@ -18,7 +18,8 @@
  * WHAT COUNTS AS "RUN" (the rule, stated so it cannot be silently
  * redefined): a svc_bin row whose argv[0] is store-relative names its
  * package directly; an ABSOLUTE argv[0] is attributed through the
- * activation's own install facts (target -> the store dir it came from)
+ * activation's own install facts (target -> the exact store-relative content
+ * path it was installed from, whose FIRST path segment is the store dir)
  * or, failing that, through a store-prefixed spelling — because a config
  * can install /bin/<tool> from a C-sourced package and run it with
  * pkg=None, and silently dropping such rows removed those packages' bytes
@@ -697,8 +698,9 @@ int main(int argc, char **argv) {
      * name) — both flipped here so the lookups key on what the oracle
      * actually has in hand (a store_dir prefix from svc_bin; a pkg name).
      * install rows are (target, origin, mode, genhash): the first two name
-     * every rootfs path the activation materialized and the store dir it
-     * came FROM — the classification an absolute argv[0] needs. */
+     * every rootfs path the activation materialized and the exact store
+     * content it came FROM (whose first path segment is the store dir — the
+     * classification an absolute argv[0] needs). */
     rows_t provides = { 0 }, svcbin = { 0 }, srcstore = { 0 }, install = { 0 };
     fxstore_lines("facts provides", &provides, 1, "run set");
     fxstore_lines("facts svc_bin", &svcbin, 0, "run set");
@@ -767,12 +769,23 @@ int main(int argc, char **argv) {
                     if (!strcmp(install.k[j], bin) &&
                         strcmp(install.v[j], org) != 0) { alt = install.v[j]; break; }
                 if (alt)
-                    die("service '%s' runs '%s' but the install facts bind that target to TWO store dirs ('%s' and '%s') — cannot attribute it to one package (as-of %u)",
+                    die("service '%s' runs '%s' but the install facts bind that target to TWO origins ('%s' and '%s') — cannot attribute it to one package (as-of %u)",
                         svc, bin, org, alt, ver);
-                pkg = pkg_of_dir(&provides, org);
+                /* org names the EXACT installed content, not the store dir:
+                 * '<hash>-<pkg>/<binary>' for a /bin link (the same path the
+                 * link points at), '<gen>-system-generation/etc/<path>' for
+                 * an /etc copy.  The provides store dir is its FIRST path
+                 * segment. */
+                char orgbuf[4096];
+                size_t ogl = strcspn(org, "/");
+                if (ogl >= sizeof orgbuf)
+                    die("install origin for '%s' is too long (%zu bytes)", bin, ogl);
+                memcpy(orgbuf, org, ogl);
+                orgbuf[ogl] = 0;
+                pkg = pkg_of_dir(&provides, orgbuf);
                 if (!pkg)
-                    die("service '%s' runs '%s', install names origin '%s', but no provides row carries that store dir — cannot classify (as-of %u)",
-                        svc, bin, org, ver);
+                    die("service '%s' runs '%s', install names origin '%s' (store dir '%s'), but no provides row carries that store dir — cannot classify (as-of %u)",
+                        svc, bin, org, orgbuf, ver);
             } else {
                 size_t sl = strlen(g_store);
                 if (strncmp(bin, g_store, sl) == 0 && bin[sl] == '/') {
