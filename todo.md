@@ -142,6 +142,20 @@ regulator** — §6b's audit stance is what makes these records evidentially usa
 
 ## 3. Known defects, pre-existing, not hidden
 
+- [ ] **`log_probe_diff`'s golden was host-dependent — FIXED, with two residuals NAMED** (`fx-init
+      bb46e77`). The golden had pinned the CAPTURE HOST: the `kernel` hostname column was the real
+      `uname(2)` nodename, the `file` uid/gid were the creating user's, and (suspected in the brief,
+      then MEASURED) the `file` MODE was the capture host's **umask** (0027 there, 0022 here). The mask
+      mechanism already existed and was simply too wide (`file` `0x1F`→`0x07`, `kernel` `0x7C`→`0x78`),
+      the fixture now chmods explicitly, the goldens were re-pinned the sanctioned way, and a mutation
+      in BOTH directions proves the masking is what does the work. THE TWO RESIDUALS, same class one
+      level down — the columns are fixture-derived now, two VALUES/ROWS are not: (1) `process` column 5
+      (`rss_kb`) = the fixture's page count × the REAL `sysconf(_SC_PAGESIZE)` (`probe.zig:197-250`), so
+      a 16 KiB-page host would go red; (2) the `fs` relation's ROW SET needs `statvfs` to succeed on the
+      real `/`, `/run`, `/fx/store` (`:274-289`), so a host without `/run` sees one row. And the C oracle
+      is gone, so "the re-pinned golden still equals verified C behaviour" is no longer checkable — the
+      asymmetry is against the previous golden only.
+
 - [x] **A hot-applied config that REDECLARES the agent service starts a SECOND agent instance
       mid-turn** (measured 2026-10, fx-init `svc_table_free` frees the old table's memory and never
       stops the old processes — the issuer survives, unsupervised, and is reaped anonymously; the
