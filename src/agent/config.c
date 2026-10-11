@@ -6,7 +6,7 @@
  * mirrors src/runner.c's proven pattern — these are small and re-implemented
  * here because runner.c's copies are static; runner.c semantics are untouched.
  *
- * Schema (dhall -> json via dhall-c; see handoff-c-runtime-l2-s9-ctx):
+ * Schema (dhall -> json via dhall-c):
  *   { agents = [ { name, agent_type, model, default_max_turns, mcp_servers } ] }
  * Optional fields may be absent (no json key), None/Some (Optional -> null /
  * inner value), or plain values (Text -> string, Natural -> number).  The walk

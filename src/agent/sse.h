@@ -4,7 +4,7 @@
  * The LLM transport pulls bytes off the chardev (fx_recv_some) and feeds them
  * here; sse.c does NOT touch the transport, HTTP or any socket.
  *
- * Design (see handoff-c-runtime-l2-s2-ctx / -plan).  This is THE
+ * Design (the contract is the bullets below).  This is THE
  * memory-safety hotspot of — the parser is containment discipline:
  *   - NO strcpy/strcat/sprintf on network-origin bytes, ever.
  *   - The parser owns bounded grow buffers.  One LINE is capped at

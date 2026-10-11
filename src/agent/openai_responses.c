@@ -7,7 +7,7 @@
  * parser), through the llm_backend.h interface.  There is no HTTP layer and
  * no TLS: the host proxy owns the endpoint, the headers and the API key.
  *
- * Vocabulary mapped (verified from live captures; see handoff-c-runtime-l2-s3):
+ * Vocabulary mapped (verified from live captures):
  *   response.output_text.delta            -> DELTA_TEXT (delta fragment)
  *   response.reasoning_text.delta         -> DELTA_REASONING (delta fragment)
  *   response.output_item.added            -> start a tool-call accumulator when

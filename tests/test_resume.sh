@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tests/test_resume.sh — THE RESUME ORACLE (handoff-fx-harness-resume).
+# tests/test_resume.sh — THE RESUME ORACLE.
 #
 # FAILS on the pristine tree and PASSES once RESUME is wired: phase 1 asserts a
 # durable transcript exists after a mid-run death (pristine: ckpt_save runs only

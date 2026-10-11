@@ -4,7 +4,7 @@
  * mistral, anthropic) implements, mapping a vendor SSE stream onto a small set
  * of DELTA events consumed by the agent loop.
  *
- * Interface design (see handoff-c-runtime-l2-s3-ctx):
+ * Interface design (the contract is the bullets below):
  *   - chat_stream: build/send a POST to <base_url>/<endpoint>, stream the
  *     read-to-EOF body through the S2 SSE parser, dispatch each event through
  *     parse_event, and forward every non-DELTA_NONE Delta to the sink.

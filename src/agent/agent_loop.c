@@ -52,7 +52,7 @@ static int grow_append(char **buf, size_t *len, size_t *cap,
 
 /* Build the OpenAI RESPONSES request JSON from the message list, mapping each
  * message to Responses ITEMS per the VERIFIED wire format (the S4-reviewer
- * rework — see handoff-c-runtime-l2-s6-ctx):
+ * rework):
  *   { "model": <model>, "stream": true,
  *     "input": [
  *       {role, content}                        // plain user/assistant/system
