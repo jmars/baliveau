@@ -32,6 +32,15 @@
 # this tool's C reimplementation of fxstore's fx_content_hash_dir agrees
 # with the Zig original on that tree (a mismatch would refuse, not accept).
 #
+# Plus the THREE PATHS THAT HAD NO FIXTURE (todo.md §3): A7 two packages
+# installing the SAME /bin basename (one target, two install origins) must
+# make the oracle REFUSE naming both, never pick one; A8 a pkg=None service
+# whose argv[0] is an ABSOLUTE store path must resolve through the store
+# prefix and be COUNTED as the package's bytes (store, not non-store); A9 the
+# 64-candidate srcstore cap must fire on a REAL store at 64 live rows for one
+# name with no src_of attribution (and must NOT fire on an older snapshot of
+# the same store, which is below the cap).
+#
 # The fixture store is provisioned TOOLCHAIN-FREE exactly like
 # tests/qemu-agent-observe.sh:270-300 (activate_paths computes the closure
 # and prints <hash>-<name>; the test pre-creates each dir; the REAL
@@ -176,6 +185,14 @@ mkdir -p "$SRC/osier-svc" "$SRC/c-svc" "$SRC/deadwood" "$SRC/tool"
     echo "   closure share non-degenerate (not every closure byte is elm) */"
     i=0; while [ $i -lt 5 ]; do echo "int tool_line_$i = $i;"; i=$((i+1)); done
 } > "$SRC/tool/tool.c"
+# THE TWINS: two DISTINCT packages whose build TARGET has the same basename
+# ("twins").  Both are in the closure of the A7 config, so the activation
+# writes a /bin link for EACH of them — TWO install facts on ONE target
+# ('/bin/twins') with two different origins.  That is the shape the oracle's
+# alt-check must refuse.
+mkdir -p "$SRC/twin-a" "$SRC/twin-b"
+{ echo "/* twin A: origin 1 of /bin/twins */"; } > "$SRC/twin-a/main.c"
+{ echo "/* twin B: origin 2 of /bin/twins */"; } > "$SRC/twin-b/main.c"
 
 sz() { wc -c < "$1" | tr -d ' '; }
 OSIER_BYTES=$(( $(sz "$SRC/osier-svc/Main.elm") + $(sz "$SRC/osier-svc/Util.elm") ))
@@ -186,7 +203,8 @@ TOOL_BYTES=$(sz "$SRC/tool/tool.c")
 
 # ── the package set (absolute src paths; empty recipes — nothing runs) ──
 PSN=0
-ps_pkg() { # ps_pkg NAME SRCDIR — one package entry (comma only after the first)
+ps_pkg() { # ps_pkg NAME SRCDIR [TARGET] — one package entry (comma only after the first)
+    _t=${3:-$1}
     if [ "$PSN" -eq 0 ]; then
         echo "  { name = \"$1\", version = \"0\""
     else
@@ -201,7 +219,7 @@ ps_pkg() { # ps_pkg NAME SRCDIR — one package entry (comma only after the firs
     , src = < Path = "$2" >
     , deps = [] : List Text
     , excludes = [] : List Text
-    , build = { target = "$1", recipe = [] : List Action } }
+    , build = { target = "$_t", recipe = [] : List Action } }
 EOF
 }
 {
@@ -229,6 +247,9 @@ EOF
     ps_pkg c-svc        "$SRC/c-svc"
     ps_pkg deadwood     "$SRC/deadwood"
     ps_pkg ambig        "$SRC/ambig"
+    # the A7 twins: two names, ONE build-target basename ("twins")
+    ps_pkg alpha        "$SRC/twin-a" twins
+    ps_pkg beta         "$SRC/twin-b" twins
     echo "  ] }"
 } > "$WORK/package-set.dhall" || fail "cannot write the package set"
 PKGSET="$WORK/package-set.dhall"
@@ -622,6 +643,152 @@ grep -q "^run_set_share_fraction " "$WORK/out.AMBpre" \
 echo "test_osier_share: A4 asymmetry: fixed RESOLVES via src_of (and refuses only pre-fact stores); $PRE_ORACLE_REV printed a number (first-wins pick)"
 else
 echo "test_osier_share: A4: pre-fix arm skipped"
+fi
+
+# ── A7 / A8 / A9: the three ungated oracle paths (todo.md §3) ────────────
+# (a) TWO ORIGINS ON ONE INSTALL TARGET, (b) the STORE-PREFIXED ABSOLUTE
+#     argv[0] spelling, (c) the 64-CANDIDATE CAP.  Each is a path the oracle
+#     implements and nothing exercised.
+svc_pkgd() { # svc_pkgd NAME PKG — a pkg'd service (svc_bin = store-relative <hash>-PKG/<target>)
+    echo "{ name = \"$1\", argv = [ \"$2\" ], pkg = Some \"$2\", on = \"all\", restart = Some \"always\", backoffMs = Some 500, probe = None Probe, env = None (List { key : Text, value : Text }), console = None Text }"
+}
+svc_raw() { # svc_raw NAME ARGV0 — a pkg=None service: argv[0] is recorded VERBATIM
+    echo "{ name = \"$1\", argv = [ \"$2\" ], pkg = None Text, on = \"all\", restart = Some \"always\", backoffMs = Some 500, probe = None Probe, env = None (List { key : Text, value : Text }), console = None Text }"
+}
+facts_of() { # facts_of REL ASOF STORE — one relation, version-bound
+    FXSTORE_BIN="$FXSTORE" "$FXSTORE" facts "$1" --as-of "$2" --store "$3"
+}
+
+# ── A7: two packages install the SAME /bin basename ─────────────────────
+# alpha and beta are DISTINCT closure packages whose build target has the same
+# basename ("twins"), so the activation emits one /bin/twins link for EACH —
+# the install facts bind ONE target to TWO origins: '<hashA>-alpha/twins' and
+# '<hashB>-beta/twins'.  A pkg=None service running '/bin/twins' absolutely is
+# then ill-defined, and the oracle must DIE naming BOTH origins rather than
+# silently pick one (a number read through an arbitrary pick is a guess).
+TW_PATHS=$(LD_LIBRARY_PATH="$DL" "$ZB/activate_paths" --store "$STORE" \
+    --package-set "$PKGSET" alpha beta) || fail "activate_paths (twins) failed: $TW_PATHS"
+[ -n "$TW_PATHS" ] || fail "activate_paths (twins) printed no closure"
+for _pd in $TW_PATHS; do mkdir -p "$STORE/$_pd" || fail "cannot create $_pd"; done
+cfg_write "$WORK/TW.dhall" "$TOOLS, \"alpha\", \"beta\"" \
+    "$(svc_sh), $(svc_pkgd twinA alpha), $(svc_pkgd twinB beta), $(svc_raw twinsvc /bin/twins)"
+V_TW=$(activate "$WORK/TW.dhall"); [ -n "$V_TW" ] || fail "no version from TW activation"
+TW_A_DIR=$(facts_of provides "$V_TW" "$STORE" | awk -F'\t' '$1 == "alpha" { print $2; exit }')
+TW_B_DIR=$(facts_of provides "$V_TW" "$STORE" | awk -F'\t' '$1 == "beta" { print $2; exit }')
+[ -n "$TW_A_DIR" ] && [ -n "$TW_B_DIR" ] || fail "A7: no provides dir for alpha/beta as-of $V_TW"
+# the PREMISE: the install facts really bind /bin/twins to TWO origins
+NTW_INST=$(facts_of install "$V_TW" "$STORE" | awk -F'\t' '$1 == "/bin/twins"' | wc -l | tr -d ' ')
+[ "$NTW_INST" = 2 ] \
+    || fail "A7 premise: /bin/twins has $NTW_INST install rows as-of $V_TW (want 2 — the two-origins shape did not reproduce)"
+facts_of install "$V_TW" "$STORE" | awk -F'\t' -v o="$TW_A_DIR/twins" \
+    '$1 == "/bin/twins" && $2 == o { n++ } END { exit !(n == 1) }' \
+    || fail "A7 premise: /bin/twins is not bound to origin $TW_A_DIR/twins: $(facts_of install "$V_TW" "$STORE" | awk -F'\t' '$1 == "/bin/twins"')"
+facts_of install "$V_TW" "$STORE" | awk -F'\t' -v o="$TW_B_DIR/twins" \
+    '$1 == "/bin/twins" && $2 == o { n++ } END { exit !(n == 1) }' \
+    || fail "A7 premise: /bin/twins is not bound to origin $TW_B_DIR/twins: $(facts_of install "$V_TW" "$STORE" | awk -F'\t' '$1 == "/bin/twins"')"
+if run_oracle --as-of "$V_TW" > "$WORK/out.TW" 2>"$WORK/err.TW"; then
+    fail "A7 FAILED: two origins on one install target produced a NUMBER (exit 0) instead of refusing"
+fi
+grep -q 'FAIL' "$WORK/err.TW" || fail "A7: no FAIL on stderr"
+grep -q 'TWO origins' "$WORK/err.TW" \
+    || fail "A7: the refusal does not say TWO origins: $(cat "$WORK/err.TW")"
+grep -q 'twinsvc' "$WORK/err.TW" || fail "A7: the refusal does not name the service"
+grep -q "$TW_A_DIR/twins" "$WORK/err.TW" \
+    || fail "A7: the refusal does not name origin $TW_A_DIR/twins: $(cat "$WORK/err.TW")"
+grep -q "$TW_B_DIR/twins" "$WORK/err.TW" \
+    || fail "A7: the refusal does not name origin $TW_B_DIR/twins: $(cat "$WORK/err.TW")"
+grep -q 'run_set_share_fraction' "$WORK/out.TW" 2>/dev/null \
+    && fail "A7: the refusal printed a share"
+grep -q '^service twinsvc ' "$WORK/out.TW" 2>/dev/null \
+    && fail "A7: the refusal printed a service row"
+echo "test_osier_share: A7 TWO ORIGINS ONE TARGET: REFUSED, naming both $TW_A_DIR/twins and $TW_B_DIR/twins"
+
+# ── A8: the STORE-PREFIXED ABSOLUTE argv[0] spelling ────────────────────
+# A pkg=None service whose argv[0] is an ABSOLUTE store path
+# '<store>/<hash>-<pkg>/<bin>' — not store-relative, and named by NO install
+# fact (which pins WHICH branch: the install-target branch is A5's, and the
+# premise below asserts this fixture does NOT go through it).  The oracle must
+# resolve it to its package THROUGH THE STORE PREFIX and COUNT it in the run
+# set: it is store, not non-store, and must not land in
+# nonstore_run_unattributed.
+OSIER_DIR=$(facts_of provides "$V_A" "$STORE" | awk -F'\t' '$1 == "osier-svc" { print $2; exit }')
+[ -n "$OSIER_DIR" ] || fail "A8: no provides dir for osier-svc as-of $V_A"
+SA_BIN="$STORE/$OSIER_DIR/osier-svc"
+cfg_write "$WORK/SA.dhall" "$TOOLS, \"osier-svc\"" \
+    "$(svc_sh), $(svc_raw storeabs "$SA_BIN")"
+V_SA=$(activate "$WORK/SA.dhall"); [ -n "$V_SA" ] || fail "no version from SA activation"
+# the branch premise: the install facts name no such target
+NSA_INST=$(facts_of install "$V_SA" "$STORE" | awk -F'\t' -v t="$SA_BIN" '$1 == t' | wc -l | tr -d ' ')
+[ "$NSA_INST" = 0 ] \
+    || fail "A8 premise: the install facts DO name $SA_BIN (the fixture would exercise the install-target branch, not the store prefix)"
+facts_of svc_bin "$V_SA" "$STORE" | grep -q "$SA_BIN" \
+    || fail "A8 premise: svc_bin for storeabs is not the absolute store path: $(facts_of svc_bin "$V_SA" "$STORE")"
+run_oracle --as-of "$V_SA" > "$WORK/out.SA" 2>"$WORK/err.SA" \
+    || fail "A8: the oracle refused a store-prefixed absolute argv[0]: $(cat "$WORK/err.SA")"
+grep -qx "service storeabs $SA_BIN osier-svc" "$WORK/out.SA" \
+    || fail "A8: the store-prefixed absolute argv[0] was not resolved to osier-svc via the store prefix: $(grep '^service ' "$WORK/out.SA")"
+grep -q "^service storeabs .*NONSTORE" "$WORK/out.SA" \
+    && fail "A8: the store-prefixed row was counted NONSTORE — it is a STORE path: $(grep '^service storeabs' "$WORK/out.SA")"
+[ "$(nattr "$WORK/out.SA")" = 1 ] \
+    || fail "A8: nonstore_run_unattributed is $(nattr "$WORK/out.SA"), want 1 (only /bin/sh)"
+[ "$(field "$WORK/out.SA" run_set_osier_bytes)" = "$OSIER_BYTES" ] \
+    || fail "A8: run_set_osier_bytes is $(field "$WORK/out.SA" run_set_osier_bytes), want the measured osier bytes $OSIER_BYTES (the store-prefixed component's Osier bytes were not counted)"
+[ "$(field "$WORK/out.SA" run_set_total_bytes)" = "$OSIER_BYTES" ] \
+    || fail "A8: run_set_total_bytes is $(field "$WORK/out.SA" run_set_total_bytes), want $OSIER_BYTES"
+[ "$(field "$WORK/out.SA" run_set_share_fraction)" = "1.000000" ] \
+    || fail "A8: run_set_share_fraction is $(field "$WORK/out.SA" run_set_share_fraction), want 1.000000"
+echo "test_osier_share: A8 STORE-PREFIXED ARGV: $SA_BIN -> osier-svc (run set $OSIER_BYTES bytes, not NONSTORE)"
+
+# ── A9: the 64-CANDIDATE CAP (a REAL store, the OLD writer) ─────────────
+# rows_get_all(&srcstore, pkg, cand, 64) then `if (!attr && ncand == 64) die`.
+# The cap is reached only where the store cannot attribute (no src_of — the
+# PINNED pre-src_of writer) AND one name has 64+ LIVE srcstore rows: each
+# activation of a CHANGED source commits a new srcstore row for the name, so
+# this rebuilds `ambig` repeatedly on the OLD store until the count reaches 64.
+# REAL STORE, no stub: the rows are written by the pinned fx-init's own
+# fx-activate, and the premise (count >= 64, zero src_of rows) is asserted from
+# `fxstore facts` before the oracle is run.
+if [ "$HAVE_OLD_WRITER" = 1 ]; then
+NAMB_OLD=$(facts_of srcstore "$OV2" "$STORE_OLD" | awk -F'\t' '$2 == "ambig"' | wc -l | tr -d ' ')
+_cap_i=0
+while [ "$NAMB_OLD" -lt 64 ] && [ "$_cap_i" -lt 100 ]; do
+    _cap_i=$((_cap_i + 1))
+    echo "-- cap fixture revision $_cap_i (a distinct source state -> a distinct live srcstore row for ambig)" >> "$SRC/ambig/A.elm"
+    old_prov
+    OV_CAP=$(old_act); [ -n "$OV_CAP" ] || fail "A9: no version from old activation $_cap_i"
+    NAMB_OLD=$(facts_of srcstore "$OV_CAP" "$STORE_OLD" | awk -F'\t' '$2 == "ambig"' | wc -l | tr -d ' ')
+done
+[ "$NAMB_OLD" -ge 64 ] \
+    || fail "A9: only $NAMB_OLD live srcstore rows for ambig after $_cap_i rebuilds (want >= 64 — the cap fixture did not reproduce)"
+NAMB_SRCOF=$(facts_of src_of "$OV_CAP" "$STORE_OLD" | awk -F'\t' '$3 == "ambig"' | wc -l | tr -d ' ')
+[ "$NAMB_SRCOF" = 0 ] \
+    || fail "A9 premise: the OLD writer committed $NAMB_SRCOF src_of rows for ambig (the cap only fires where attribution is ABSENT)"
+if FXSTORE_BIN="$FXSTORE" "$OSIER" --store "$STORE_OLD" --package-set "$PKGSET" \
+        > "$WORK/out.CAP" 2>"$WORK/err.CAP"; then
+    fail "A9 FAILED: $NAMB_OLD live srcstore candidates produced a NUMBER (exit 0) instead of the cap refusal"
+fi
+grep -q 'FAIL' "$WORK/err.CAP" || fail "A9: no FAIL on stderr"
+grep -q '64+ live srcstore rows' "$WORK/err.CAP" \
+    || fail "A9: the refusal is not the CAP refusal: $(cat "$WORK/err.CAP")"
+grep -q 'refusing to enumerate' "$WORK/err.CAP" \
+    || fail "A9: the cap refusal does not say it refuses to enumerate: $(cat "$WORK/err.CAP")"
+grep -q 'ambig' "$WORK/err.CAP" || fail "A9: the cap refusal does not name the package"
+grep -q 'run_set_share_fraction' "$WORK/out.CAP" 2>/dev/null \
+    && fail "A9: the cap refusal printed a share"
+# VERSION-BOUND: an OLDER snapshot of the SAME store (2 live candidates, both
+# artifacts verifying) is BELOW the cap and must get the AMBIGUITY refusal
+# instead — the cap is the current snapshot's answer, not a poisoned store.
+if FXSTORE_BIN="$FXSTORE" "$OSIER" --store "$STORE_OLD" --as-of "$OV2" \
+        --package-set "$PKGSET" > "$WORK/out.CAPv" 2>"$WORK/err.CAPv"; then
+    fail "A9: --as-of $OV2 (2 candidates, below the cap) produced a number instead of the ambiguity refusal"
+fi
+grep -q 'cannot attribute' "$WORK/err.CAPv" \
+    || fail "A9: --as-of $OV2 did not get the ambiguity refusal: $(cat "$WORK/err.CAPv")"
+grep -q '64+ live srcstore rows' "$WORK/err.CAPv" \
+    && fail "A9: the CAP fired on the OLDER snapshot $OV2 — the cap is not version-bound"
+echo "test_osier_share: A9 64-CANDIDATE CAP (real store, old writer): REFUSED at $NAMB_OLD live srcstore rows for ambig, no src_of; --as-of $OV2 still gets the ambiguity refusal"
+else
+echo "test_osier_share: A9: old-writer arm skipped (pinned fx-init unavailable)"
 fi
 
 # ── the refusal seat ────────────────────────────────────────────────────

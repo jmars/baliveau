@@ -420,10 +420,31 @@ regulator** — §6b's audit stance is what makes these records evidentially usa
       comment-blind copy in `qemu-agent-b2.sh`) are replaced by an `agent_pin` that runs the REAL
       parser and requires it to refuse the mutants. Nothing left to harden here; the open question it
       raised — whether fx-init needs the identity beyond validation — was answered NO, measured.
-- [ ] **`fx_read`/`fx_ls` still resolve arbitrary paths under `FX_VERB_ROOT`** — including a `..` that
-      climbs *above* a stub root, because `root_join` concatenates strings rather than resolving.
-      Pre-existing, read-only, reported by the 648984f lane and NOT silently fixed there. Adjacent to
-      the closed write set, so it must not be mistaken for closed: the write bound is a *write* bound.
+- [x] **`fx_read`/`fx_ls` could resolve arbitrary paths under `FX_VERB_ROOT` — CLOSED (fx-harness
+      `217c7c7` is the pre-fix pin; gate `tests/verbs-smoke.sh`, run by `bash` — there is no
+      `make test-verbs` target).** The defect as measured: `native_read` and `native_ls` called
+      `root_join(path)` directly, and `root_join` only CONCATENATES under `FX_VERB_ROOT`, so
+      `/../<a file just outside the stub root>` returned the HOST's bytes (and a deeper chain climbed
+      out of `/` and back). Fix: both verbs now take the SAME `canon_root_rel` gate `native_write`
+      has — canonicalize FIRST (refusing, exit 1, naming the path and the root), then open/opendir
+      the CANONICAL spelling, so no `..` reaches `open()`/`opendir()`. THE READ POLICY IS UNCHANGED:
+      reads stay OPEN inside the root, and a `..` that canonicalizes to a point still INSIDE it still
+      reads and lists (arm 13f; the over-refusal direction). Two consequences stated rather than
+      discovered later: (a) a RELATIVE path is now REFUSED like `fx_write`'s non-absolute case (paths
+      are addressed absolutely under the root; the tool descriptions say so now) — `fx_ls`'s empty
+      argument keeps its documented default (the root itself); (b) it is a NO-OP in production —
+      `FX_VERB_ROOT` defaults to `/` and nothing climbs above `/` — so it bites only where a non-`/`
+      root is set (the stub-root tests, a jailed deployment). ASYMMETRY, RUN: arm 13g builds the
+      PINNED pre-fix server (`git show 217c7c7:tools/fx-verbs-server.c`, cat-file guarded, `cmp`-proven
+      to differ from the working tree) and runs the SAME escaping requests against the SAME stub root —
+      pre-fix they SUCCEED and return the planted host secret, post-fix they are REFUSED. SCOPE, stated
+      from the table: the verbs that `root_join` a user-supplied PATH are exactly `fx_read`, `fx_write`
+      (previously gated) and `fx_ls` — the other path-shaped arguments never reach `root_join` here
+      (`fx_activate`'s config is passed VERBATIM to PID1 — `activate <config>` on the fifo, or the
+      fallback exec argv — and `fx_what`/`fx_why` hand their target/package string to fxstore's own
+      argv), so the two named verbs were the whole remaining surface. This read bound and the write
+      bound are DIFFERENT bounds and neither implies the other: `fx_write`'s surface is still the
+      host-declared `FX_AGENT_WRITABLE` set, not "anything readable".
 - [x] **The comment-blind `console_pin` in `tests/qemu-agent-b2.sh` is CLOSED** (`dfb77fa`) — replaced
       with the parser-backed `agent_pin` along with the other two copies. No `strip_comments` needed:
       the pin no longer reads the config as text at all.
@@ -549,10 +570,36 @@ regulator** — §6b's audit stance is what makes these records evidentially usa
       applets the image symlinks), so the audit's repo-root `cd` is now parameter expansion.
       Gated: `make test-luajit-guest` rc=0 by asymmetry — with the audit repointed at a missing
       script the same gate fails at "the audit's arm 2 never ran in the guest".
-- [ ] **Two ungated oracle paths**: the two-origins-one-install-target refusal and the
-      `<store>/<hash>-<pkg>/` argv spelling are implemented but have no fixture. Also ungated: the
-      64-candidate cap, the shallow-clone SKIP paths, and the in-guest `done→attempt→result` order
-      (it needs a qemu resume-crash fixture).
+- [x] **The two ungated oracle paths — and the 64-candidate cap — are GATED (`tests/test_osier_share.sh`
+      A7/A8/A9, all three on a REAL store, no stub).** A7 (two-origins-one-install-target): two closure
+      packages (`alpha`, `beta`) whose build target has the SAME basename `twins` make the activation
+      emit ONE `/bin/twins` link each, so the install facts bind one target to two origins
+      (`<hashA>-alpha/twins` and `<hashB>-beta/twins` — both asserted as the arm's PREMISE from
+      `fxstore facts install`); a `pkg=None` service running `/bin/twins` absolutely must make the
+      oracle DIE naming BOTH, and the arm also asserts it printed no share and no service row — the
+      "never silently picks one" half. A8 (the `<store>/<hash>-<pkg>/` argv spelling): a `pkg=None`
+      service whose `argv[0]` is an ABSOLUTE store path is resolved through the store prefix and
+      COUNTED as osier-svc's bytes (run set = the measured `OSIER_BYTES`, share 1.000000,
+      `nonstore_run_unattributed` still 1 for the `/bin/sh` row alone). WHICH BRANCH, pinned: the arm
+      asserts from `facts install` that NO install fact names that target — so this fixture exercises
+      the store-prefix else-branch, while A5 already exercises the install-target first branch. A9 (the
+      64-candidate cap): 62 further rebuilds of `ambig` on the OLD-writer store (pinned fx-init
+      `2feedf6`) take it to exactly 64 LIVE srcstore rows with ZERO `src_of` rows (both asserted from
+      `fxstore facts` before the oracle runs), and the oracle refuses with its own cap message
+      ("64+ live srcstore rows … refusing to enumerate"); an OLDER snapshot of the same store (2
+      candidates, both artifacts verifying) still gets the AMBIGUITY refusal — the cap is version-bound,
+      not a poisoned store. EVERY arm was shown FIREABLE by sed-mutant of the oracle: neutering the alt
+      check fails A7 ("produced a NUMBER"), neutering the store-prefix branch fails A8 ("not resolved
+      to osier-svc"), and moving the cap to 640 fails A9 (the refusal is no longer the CAP refusal) —
+      a gate that cannot fail is not a gate.
+- [ ] **The oracle gate's two LITERAL skip arms remain ungated, as does the in-guest order.** The
+      `echo "SKIP (old-writer arm): fx-init 2feedf6 unavailable (shallow clone?)"` and the
+      `e3eb984` pinned-oracle variant are plain echoes, NOT the exit-77 skips
+      `tests/test_sibling_paths.sh` already covers (its A1-pre/A1-fix/A2-live arms run
+      `test_osier_share.sh` itself, under a bogus `FX_SIBLINGS` and against the pinned pre-fix copy);
+      reproducing THESE two needs a shallow clone of the SIBLING repos, so they stay open rather than
+      be faked. The in-guest `done→attempt→result` order is still open for its own reason: it needs a
+      qemu resume-crash fixture — a different unit, deliberately not attempted here.
 
 ## 4. Design items awaiting a decision
 

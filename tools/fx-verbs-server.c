@@ -237,7 +237,10 @@ extern char **environ; /* the server's own environment (pass-through source) */
  * could erase its own failed activation and re-issue it blindly (the
  * oscillator the loop exists to stop).  fx_read stays OPEN: the record is
  * not a secret, a read settles and erases nothing, and the loop's input is
- * the harness's own boot-time consume, not the model's.  The closed set is
+ * the harness's own boot-time consume, not the model's.  OPEN, but not
+ * unbounded: fx_read / fx_ls resolve their path through the SAME
+ * canon_root_rel gate fx_write does, so nothing that CLIMBS ABOVE
+ * FX_VERB_ROOT is readable or listable (see native_read).  The closed set is
  * closed because the table has no other file-writing shape: fx_write can
  * only open/create/truncate a regular file (opened O_NOFOLLOW, so a
  * pre-planted symlink at the final path cannot redirect it — the table has
@@ -1042,8 +1045,42 @@ static int native_activate(const char *config, yyjson_val *idv) {
     return sret;
 }
 
+/* THE READ/LIST HALF OF THE ROOT BOUND.  fx_read and fx_ls were the two
+ * native verbs that root_join'd the request WITHOUT canonicalizing it, so a
+ * '..' climbed ABOVE FX_VERB_ROOT and reached the HOST (/../../etc/hostname
+ * under FX_VERB_ROOT=/tmp/stub).  Both now take the SAME canon_root_rel gate
+ * fx_write has, and this is its refusal.  It NAMES the path and the root and
+ * says the verb is a READ/LIST, never a silent no-op.  Reads stay OPEN inside
+ * the root: a '..' that canonicalizes to a point still INSIDE it must still
+ * work — the bound is "cannot climb above FX_VERB_ROOT", NOT "no '..'".
+ * NOT A PRODUCTION CHANGE: FX_VERB_ROOT defaults to "/" and nothing can climb
+ * above "/", so this bites only where a non-/ root is set (the stub-root
+ * tests, a jailed deployment). */
+static void root_bound_refuse(Capture *out, const char *verb, const char *path) {
+    cap_append_str(out, "fx-verbs: ");
+    cap_append_str(out, verb);
+    cap_append_str(out, " REFUSED: ");
+    cap_append_str(out, path ? path : "(null)");
+    cap_append_str(out, " does not name a path inside FX_VERB_ROOT (root=");
+    cap_append_str(out, fx_root());
+    cap_append_str(out, "); a '..' that climbs above the root is not a readable "
+                        "or listable path (the path is addressed absolutely "
+                        "under the root)\n");
+}
+
 static int native_read(const char *path, Capture *out, int *exitcode) {
-    char *full = root_join(path);
+    /* THE ROOT BOUND (see root_bound_refuse): canonicalize FIRST — exactly
+     * what native_write does — so no '..' ever reaches open().  A path that
+     * cannot be canonicalized INSIDE FX_VERB_ROOT (a relative spelling, or a
+     * '..' that climbs above the root) is refused loudly. */
+    char *canon = canon_root_rel(path);
+    if (!canon) {
+        root_bound_refuse(out, "fx_read", path);
+        *exitcode = 1;
+        return 0;
+    }
+    char *full = root_join(canon);
+    free(canon);
     if (!full) { cap_append_str(out, "fx-verbs: path too long\n"); *exitcode = 1; return 0; }
     int fd = open(full, O_RDONLY);
     if (fd < 0) {
@@ -1177,7 +1214,18 @@ static int name_cmp(const void *a, const void *b) {
 }
 
 static int native_ls(const char *path, Capture *out, int *exitcode) {
-    char *full = root_join(path);
+    /* THE ROOT BOUND, exactly as native_read.  The empty path is fx_ls's
+     * DOCUMENTED default — the root itself — and canonicalizes to "" like an
+     * explicit "/". */
+    const char *req = (path && *path) ? path : "/";
+    char *canon = canon_root_rel(req);
+    if (!canon) {
+        root_bound_refuse(out, "fx_ls", path);
+        *exitcode = 1;
+        return 0;
+    }
+    char *full = root_join(canon);
+    free(canon);
     if (!full) { cap_append_str(out, "fx-verbs: path too long\n"); *exitcode = 1; return 0; }
     DIR *d = opendir(full);
     if (!d) {
@@ -1562,8 +1610,9 @@ static const Verb VERBS[] = {
       "'current <N>'. Exit 1 and names the file when it cannot be read (a version "
       "is never guessed). Takes no arguments; store-scoped.", NULL, false },
     { "fx_read", NULL, { NULL, NULL },
-      "Read a file and return its content. Paths resolve under FX_VERB_ROOT. "
-      "Capped at 1 MiB. Argument: path.", NULL, false },
+      "Read a file and return its content. The path is absolute and resolves under "
+      "FX_VERB_ROOT; a '..' that climbs ABOVE the root is REFUSED (exit=1, naming "
+      "the path and the root). Capped at 1 MiB. Argument: path.", NULL, false },
     { "fx_write", NULL, { NULL, NULL },
       "Write a file (create-or-truncate). The write surface is a CLOSED, HOST-DECLARED "
       "SET: only the exact paths listed in FX_AGENT_WRITABLE (colon-separated; each "
@@ -1572,8 +1621,10 @@ static const Verb VERBS[] = {
       "the set, and the model cannot widen the set. Does not follow a symlink at the "
       "final path. Arguments: path, content.", NULL, false },
     { "fx_ls", NULL, { NULL, NULL },
-      "List a directory: one entry per line, directories suffixed '/'. Paths resolve "
-      "under FX_VERB_ROOT. Argument: path (default: the root itself).", NULL, false },
+      "List a directory: one entry per line, directories suffixed '/'. The path is "
+      "absolute and resolves under FX_VERB_ROOT; a '..' that climbs ABOVE the root "
+      "is REFUSED (exit=1, naming the path and the root). Argument: path (default: "
+      "the root itself).", NULL, false },
 };
 
 #define NVERBS (sizeof(VERBS) / sizeof(VERBS[0]))

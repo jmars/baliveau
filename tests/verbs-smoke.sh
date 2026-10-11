@@ -39,6 +39,12 @@
 #   harness's own record attempts.jsonl, a '..' spelling of it, and a symlink
 #   at the final path — while the set's own paths still write; and with the
 #   variable UNSET the default set is exactly /fx/disk/agent-config.dhall),
+#   THE READ/LIST ROOT BOUND (fx_read/fx_ls take the SAME canon_root_rel gate as
+#   fx_write: a '..' that climbs ABOVE the stub root is REFUSED, naming the path
+#   and the root, and a host file planted just outside the root does NOT come
+#   back — while a '..' that stays INSIDE the root still reads and lists; the
+#   escape is shown by ASYMMETRY against the pinned pre-fix server, which
+#   returns the host bytes),
 #   the scrubbed child env (RATTAN_*/LD_* absent from the verb's environment),
 #   and the failure paths (unknown tool -> JSON-RPC error, not a crash;
 #   oversize line -> error and the server survives; verb binary missing ->
@@ -62,7 +68,57 @@ if [ ! -x "$BIN" ]; then
 fi
 
 ROOT=$(mktemp -d /tmp/fxv-smoke.XXXXXX)
-trap 'rm -rf "$ROOT"' EXIT
+# A host directory just OUTSIDE the stub root, planted so the read/ls root
+# bound's pre-fix escape is VISIBLE (pre-fix returns these bytes) — the same
+# discipline as the write-side '..' arms.
+OUTSIDE="$ROOT-escape"
+PRE_DIR=""
+cleanup() {
+    rm -rf "$ROOT"
+    rm -rf "$OUTSIDE"
+    if [ -n "$PRE_DIR" ]; then rm -rf "$PRE_DIR"; fi
+}
+trap cleanup EXIT
+mkdir -p "$OUTSIDE/hostdir"
+printf 'HOST-SECRET-OUTSIDE-ROOT\n' > "$OUTSIDE/secret.txt"
+printf 'outside-dir-entry\n' > "$OUTSIDE/hostdir/marker.txt"
+
+# ── THE PRE-FIX ARTIFACT of the read/ls root bound (the ASYMMETRY arm) ──────
+# native_read / native_ls used to root_join the request WITHOUT canonicalizing
+# it, so a '..' climbed above FX_VERB_ROOT.  This builds the PINNED pre-fix
+# server from the same sources and the driver runs the SAME escaping requests
+# against the SAME stub root through it: pre-fix they SUCCEED, post-fix they
+# are REFUSED.  House discipline: a FIXED revision, a cat-file guard, and a
+# cmp proof that the pinned source DIFFERS from the working tree (identical
+# would compare the code to itself and prove nothing).  No git / no pin => the
+# driver prints a LOUD skip instead of claiming an asymmetry it did not run.
+PRE_VERBS_REV="217c7c7"   # fx-harness at the commit before the root-bound fix
+PRE_BIN=""
+if git cat-file -e "$PRE_VERBS_REV^{commit}" 2>/dev/null; then
+    PRE_DIR=$(mktemp -d /tmp/fxv-prefix.XXXXXX)
+    if git show "$PRE_VERBS_REV:tools/fx-verbs-server.c" > "$PRE_DIR/pre.c" 2>/dev/null; then
+        if cmp -s "$PRE_DIR/pre.c" tools/fx-verbs-server.c; then
+            echo "verbs-smoke: SKIP (root-bound asymmetry): $PRE_VERBS_REV's server source is IDENTICAL to the working tree — the arm would compare the code to itself" >&2
+            rm -rf "$PRE_DIR"; PRE_DIR=""
+        else
+            if cc -std=c11 -O2 -g -Wall -Wextra -Isrc -Isrc/vendor/yyjson \
+                  -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
+                  -o "$PRE_DIR/pre-verbs-server" "$PRE_DIR/pre.c" \
+                  src/agent/outcome.c src/vendor/yyjson/yyjson.c 2>"$PRE_DIR/cc.log"; then
+                PRE_BIN="$PRE_DIR/pre-verbs-server"
+            else
+                echo "verbs-smoke: SKIP (root-bound asymmetry): cannot build the pinned $PRE_VERBS_REV server" >&2
+                cat "$PRE_DIR/cc.log" >&2
+                rm -rf "$PRE_DIR"; PRE_DIR=""
+            fi
+        fi
+    else
+        echo "verbs-smoke: SKIP (root-bound asymmetry): cannot extract $PRE_VERBS_REV:tools/fx-verbs-server.c" >&2
+        rm -rf "$PRE_DIR"; PRE_DIR=""
+    fi
+else
+    echo "verbs-smoke: SKIP (root-bound asymmetry): pre-fix revision $PRE_VERBS_REV unavailable (shallow clone?)" >&2
+fi
 
 # ── the stub root ────────────────────────────────────────────────────────────
 mkdir -p "$ROOT/usr/fx-core/bin" "$ROOT/fx/store/bin" "$ROOT/bin" "$ROOT/fx/disk/store"
@@ -177,11 +233,13 @@ RECOVERY
 printf '%s' "1791556310 10 9 dead" >> "$ROOT/fx/disk/store/.recovery"
 
 # ── the driver ───────────────────────────────────────────────────────────────
-python3 - "$ROOT" "$BIN" <<'DRIVER'
+python3 - "$ROOT" "$BIN" "$PRE_BIN" "$OUTSIDE" <<'DRIVER'
 import json, os, select, shutil, subprocess, sys, time
 
 root = sys.argv[1]
 bin = os.path.abspath(sys.argv[2])
+pre_bin = sys.argv[3]
+outside = sys.argv[4]
 
 env = {
     "PATH": "/usr/bin:/bin",
@@ -245,6 +303,28 @@ def call(name, args, cid):
 
 def tool_text(reply):
     return reply["result"]["content"][0]["text"]
+
+def one_shot_tool_texts(binpath, calls):
+    """Drive a SECOND server binary (the pinned pre-fix artifact) through the
+    same handshake and return one tool reply text per (name, args) call, with
+    the SAME stub root (FX_VERB_ROOT=root) the main server under test uses."""
+    e = dict(env); e["FX_VERB_ROOT"] = root
+    p = subprocess.Popen([binpath], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                         stderr=subprocess.DEVNULL, env=e)
+    def wr(o):
+        p.stdin.write((json.dumps(o) + "\n").encode()); p.stdin.flush()
+        return json.loads(p.stdout.readline())
+    wr({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+    p.stdin.write((json.dumps({"jsonrpc": "2.0",
+                               "method": "notifications/initialized",
+                               "params": {}}) + "\n").encode()); p.stdin.flush()
+    out = []
+    for i, (name, args) in enumerate(calls):
+        r = wr({"jsonrpc": "2.0", "id": 10 + i, "method": "tools/call",
+                "params": {"name": name, "arguments": args}})
+        out.append(r["result"]["content"][0]["text"])
+    p.stdin.close(); p.wait(timeout=5)
+    return out
 
 # 1 — handshake
 r = req({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
@@ -633,6 +713,77 @@ d = call("fx_read", {"path": "/nope"}, 22)
 ok("fx_read of a missing file -> exit=1 + message",
    tool_text(d).startswith("exit=1\n") and "cannot open" in tool_text(d),
    tool_text(d))
+
+# 13e — THE READ/LIST ROOT BOUND: a '..' that CLIMBS ABOVE FX_VERB_ROOT must
+# be REFUSED (exit=1, naming the path and the root) and the host file outside
+# the root must NOT come back.  Before the fix, native_read/native_ls
+# root_join'd the request raw, so these requests returned HOST bytes — the
+# escape is made VISIBLE by planting a known secret just outside $ROOT.
+# THE BOUND IS "cannot climb above the root", NOT "no '..'": the ALLOWED arms
+# below (13f) pin the direction a naive "refuse any '..'" regression fails.
+climb1 = "/" + os.path.relpath(outside, root)                 # ../<outside>
+climb2 = "/" + os.path.relpath("/", root) + os.path.relpath(outside, "/")
+secret = open(os.path.join(outside, "secret.txt")).read()
+d = call("fx_read", {"path": climb1 + "/secret.txt"}, 25)
+txt = tool_text(d)
+ok("fx_read via a '..' above the root -> exit=1, REFUSED, naming the root",
+   txt.startswith("exit=1\n") and "REFUSED" in txt and "FX_VERB_ROOT" in txt
+   and root in txt, txt)
+ok("the refused read returned NO host bytes",
+   "HOST-SECRET" not in txt, txt)
+d = call("fx_read", {"path": climb2 + "/secret.txt"}, 26)
+txt = tool_text(d)
+ok("fx_read via a DEEPER '..' chain (climb out of / and back) -> REFUSED too",
+   txt.startswith("exit=1\n") and "REFUSED" in txt and "HOST-SECRET" not in txt,
+   txt)
+d = call("fx_ls", {"path": climb1}, 27)
+txt = tool_text(d)
+ok("fx_ls via a '..' above the root -> exit=1, REFUSED, naming the root",
+   txt.startswith("exit=1\n") and "REFUSED" in txt and root in txt, txt)
+ok("the refused ls listed nothing outside the root",
+   "secret.txt" not in txt and "hostdir" not in txt, txt)
+# a RELATIVE path is not addressed under the root either (native_write's
+# non-absolute case, mirrored): the bound is a path gate, and a relative
+# spelling is not a path under FX_VERB_ROOT.
+d = call("fx_read", {"path": "note.txt"}, 28)
+txt = tool_text(d)
+ok("fx_read of a RELATIVE path -> REFUSED (paths are absolute under the root)",
+   txt.startswith("exit=1\n") and "REFUSED" in txt, txt)
+d = call("fx_ls", {"path": "fx"}, 29)
+txt = tool_text(d)
+ok("fx_ls of a RELATIVE path -> REFUSED", txt.startswith("exit=1\n")
+   and "REFUSED" in txt, txt)
+
+# 13f — THE ALLOWED '..' DIRECTION (the over-refusal guard, mirroring 13d): a
+# '..' that canonicalizes to a point still INSIDE the root must still READ and
+# LIST.  A regression that refuses any path containing '..' passes every
+# REFUSED arm above and fails exactly here.
+d = call("fx_read", {"path": "/fx/../note.txt"}, 44)
+ok("a '..' spelling INSIDE the root still reads",
+   tool_text(d) == "exit=0\ndotdot allowed\n", repr(tool_text(d)))
+d_dotdot = call("fx_ls", {"path": "/fx/.."}, 45)
+d_root = call("fx_ls", {"path": "/"}, 46)
+ok("a '..' spelling INSIDE the root still lists (the root itself)",
+   tool_text(d_dotdot).startswith("exit=0\n")
+   and tool_text(d_dotdot) == tool_text(d_root)
+   and "note.txt" in tool_text(d_dotdot), repr(tool_text(d_dotdot)))
+
+# 13g — THE ASYMMETRY, RUN: the PINNED PRE-FIX server gets the SAME escaping
+# requests against the SAME stub root, and they SUCCEED there (host bytes
+# returned / the outside dir listed).  A fix proven only post-fix is a fix on
+# trust; this is the fail-before half.
+if pre_bin:
+    pre_read, pre_ls = one_shot_tool_texts(
+        pre_bin, [("fx_read", {"path": climb1 + "/secret.txt"}),
+                  ("fx_ls", {"path": climb1})])
+    ok("ASYMMETRY pre-fix: the same '..' read SUCCEEDED and returned host bytes",
+       pre_read.startswith("exit=0\n") and secret.strip() in pre_read,
+       repr(pre_read))
+    ok("ASYMMETRY pre-fix: the same '..' ls listed the host dir outside the root",
+       pre_ls.startswith("exit=0\n") and "secret.txt" in pre_ls, repr(pre_ls))
+else:
+    sys.stderr.write("verbs-smoke: SKIP (root-bound asymmetry): no pinned pre-fix "
+                     "server was built — the fail-before half did NOT run\n")
 
 # 15/16 — fx_ls, explicit and default
 d = call("fx_ls", {"path": "/"}, 23)
