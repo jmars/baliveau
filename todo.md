@@ -10,6 +10,20 @@ Two repos are in play: **this one** (`fx-harness`) and **`../fx-init`** (PID 1, 
 
 ## 0. Land what is already verified
 
+- [x] **THE PLAN IS COMPLETE — the user-ordered sequence, all committed.** In order: the
+      **config→generation link** (`fx-init 1399dbd` + `fxstore 0341650`), the **§6a vocabulary** —
+      packages in the config, the four activation-time refusals (`fx-init 4c5803d`) — and the
+      **reporter seat**, the third host-side reader (`fx-harness bcf96fd`). Then the two defects the
+      reporter found in OTHER components were fixed: the **gc carve-out** (`fxstore c3da8ca` + the seat's
+      inverted arm `afa861a`) and **durable operator interventions** (`fx-init ca9cb06`), whose read side
+      (`f78d7b5`) made the seat's two weakest classes MEASURED. §6a's element (C) was deliberately NOT
+      built: §6b downgraded it to optional defence-in-depth once the VM-is-the-boundary correction
+      landed, and the reach that is still unbounded is stated in the code rather than implied.
+      **NEXT, in the order I would take them:** (a) the **Osier→Lua backend** — blocked elsewhere, and
+      the only thing between here and the first self-modification task; (b) the retention POLICY (§2,
+      `.bootlog`/`.recovery`/`.operator` growth); (c) the residual store defects in §3, of which the
+      **`install`-fact half-right fix** is the one that affects `fxstore verify` on a stock system.
+
 - [x] **`fx-harness` committed**: `7de7433` (the observation loop + the B2 pin fix + evidence),
       `648984f` (the write-surface fix — see §4), `e3eb984` (the first oracle — §1).
 - [x] **`fxstore` committed**: `c79af4b` — `fxstore facts <relation> [--as-of N]`, the read-only,
@@ -20,7 +34,7 @@ Two repos are in play: **this one** (`fx-harness`) and **`../fx-init`** (PID 1, 
       blockers (an arbitrary `srcstore` pick; a run component silently leaving the denominator) and
       the write-bound's findings (a red gate reading a moving ref; a false RUN; a documented spelling
       that refused everything). Nodes `handoff-osier-share-review`, `handoff-writesurface-review`.
-- [x] **The agent's activation goes THROUGH PID 1** (2026-10, uncommitted — `tools/fx-verbs-server.c`):
+- [x] **The agent's activation goes THROUGH PID 1** (COMMITTED `fx-harness 2818813` + `fx-init f3f60fd`):
       `fx_activate` spoke PID1's fifo line protocol natively (`activate <config>` on
       `<run>/fx/control.in`, the reply off `control.out`) instead of direct-exec'ing `/bin/fx-activate`,
       so the agent's change is COMMITTED (hot-apply of `/etc`+`/bin` on the live root, boot-decision
@@ -77,7 +91,7 @@ distinguishes automatic roll-forwards from deliberate operator action; the runti
 `fx-audit`). **And the two goals reinforce each other: a log the subject can rewrite is not a log for a
 regulator** — §6b's audit stance is what makes these records evidentially usable. The gaps, to be built:
 
-- [x] **THE CONFIG→GENERATION LINK — BUILT (2026-10, uncommitted; `handoff-config-link-result`).**
+- [x] **THE CONFIG→GENERATION LINK — BUILT AND COMMITTED (`fx-init 1399dbd`; `handoff-config-link-result`).**
       `generation_config(genhash, config_sha256, origin)` a3, all-sym, written in fx-activate's
       activation txn (cleared with the other generation facts, so version-bound exactly like
       `install`/`provides`); the input is RETAINED, not merely hashed — `<genhash>-system-generation/
@@ -94,7 +108,7 @@ regulator** — §6b's audit stance is what makes these records evidentially usa
       invocation path — host/cwd-relative, neither relocatable nor durable; the retained copy is the
       readable form of the same claim.
 - [x] **A CHANGE AND INCIDENT RECORD, with a stated taxonomy — FROZEN IN THE REPORTER SEAT
-      (2026-10-13, uncommitted; `handoff-reporter-seat-result`).** `tools/fx-report.c` carries ONE
+      (COMMITTED `fx-harness bcf96fd`; `handoff-reporter-seat-result`).** `tools/fx-report.c` carries ONE
       frozen table (not scattered literals), printed as machine records on EVERY run: each event
       class, the RECORD it is read from, and — the point of the table — what the class's ABSENCE
       means, "none occurred" vs "this is not durably recorded" (a never-booted store prints
@@ -110,7 +124,7 @@ regulator** — §6b's audit stance is what makes these records evidentially usa
       content is now readable, but nothing records the intent behind it; that is a §4 design
       decision, not a reporter gap.
 - [x] **THE OPERATOR-ACTION SUBSTRATE RECORD LANDED — the two weakest rows in the frozen table
-      stop being (2026-10-13, fx-init uncommitted; `handoff-operator-journal-result`).** The
+      stop being (COMMITTED `fx-init ca9cb06`; `handoff-operator-journal-result`).** The
       reporter's `operator-intervention` row was a DERIVED disjunction and `activation-refusal`
       NOT-DURABLY-RECORDED because the only record of a ctrl arm was `rt_control`/`rt_effect` in
       `/run/fx/log.db` — tmpfs post-pivot, dead at every reboot. `fx-init zig/src/init.zig` now
@@ -131,7 +145,7 @@ regulator** — §6b's audit stance is what makes these records evidentially usa
       NOT-DURABLY-RECORDED bound with rows measured from `.operator` — is the follow-up unit and
       belongs to the reporter lane, not this one.
 - [x] **THE REPORTER READS THE OPERATOR JOURNAL — both weak classes are MEASURED now
-      (2026-10-11, uncommitted; `handoff-reporter-operator-result`).** The follow-up named in the
+      (COMMITTED `fx-harness f78d7b5`; `handoff-reporter-operator-result`).** The follow-up named in the
       item above. `tools/fx-report.c` gained a third reader beside `.bootlog`/`.recovery`: it parses
       `<store>/.operator` in the WRITER's shape (the file's own header is the definition), refuses a
       line that is not that shape LOUDLY — including a line of PROSE, which splits into seven
@@ -179,7 +193,7 @@ regulator** — §6b's audit stance is what makes these records evidentially usa
       `gc --retain N`, and gc's generation-dir deletion is presumably a DEFECT to fix rather than
       policy to accept (see §3).
 - [x] **THE gc GENERATION-DIR DEFECT IS FIXED — liveness is derived from the facts (2026-10-11,
-      uncommitted; `handoff-gc-carveout-result`).** `fxstore gc`'s dir sweep now reads the
+      COMMITTED `fxstore c3da8ca`; `handoff-gc-carveout-result`).** `fxstore gc`'s dir sweep now reads the
       `generation` fact as-of EVERY surviving snapshot version (not just the pinned one), takes
       each buildfile_rel's first component (`<genhash>-system-generation`, store-relative —
       fx-activate's own writer), and keeps an entry only on FULL-name match; every keep and every
@@ -191,10 +205,10 @@ regulator** — §6b's audit stance is what makes these records evidentially usa
       (GCKEEP + GREAP: the pair proves the carve-out is precise, not a blanket keep);
       `config-retained-copy-gone` stays reachable only via a GENUINELY missing copy (the FINDINGS
       arm's hand-deleted file — MUT-FINDING now blinds THAT arm). The store.zig pin moved from
-      revision 0341650 to the measured working-tree BLOB (the change is uncommitted; the blob name
+      revision 0341650 to the measured working-tree BLOB (now committed as `fxstore c3da8ca`; the blob name
       is stable across the eventual commit). The POLICY decisions above remain open exactly as
       before.
-- [x] **THE REPORTER AS THE THIRD HOST-SIDE SEAT — BUILT (2026-10-13, uncommitted;
+- [x] **THE REPORTER AS THE THIRD HOST-SIDE SEAT — BUILT AND COMMITTED (`bcf96fd`, extended by `f78d7b5`;
       `handoff-reporter-seat-result`).** `tools/fx-report.c` (`make test-report`), host-side and
       read-only like its siblings: the oracle asks *is it better?*, the audit *is it honest?*, this
       one *is it documented?*.  It READS the substrate's durable records — CURRENT, the timeline,
@@ -249,7 +263,11 @@ regulator** — §6b's audit stance is what makes these records evidentially usa
 - [ ] **`.bootlog` growth**: unbounded, fully rescanned by `bootlog_last`/`bootlog_newest_ok_below` on
       every boot, and `fsync`'d per append. The guardrail bounds growth to real boots, so this is
       lower priority — but state the policy (rotate, cap, or index) rather than leaving it implicit.
-      `.recovery` has the same shape and now the same question; `src_of` inherits it (never reaped).
+      `.recovery` has the same shape and now the same question; **`.operator` (new, one row per
+      intervention) does too**, and it is the one an OPERATOR drives, so its rate is theirs; `src_of`
+      inherits the question from the other side (never reaped at all). **The reporter now STATES the
+      inequality and measures it on every run** — what is durable and what is not — which is §1a gap 4
+      answered as far as it can be without choosing a policy. Choosing one is still open.
 
 ## 3. Known defects, pre-existing, not hidden
 
@@ -1006,6 +1024,29 @@ regulator** — §6b's audit stance is what makes these records evidentially usa
 ---
 
 ## House rules this session earned (each cost something real)
+
+- **A gate that has to be TOLD to re-measure is worth building, and a citation into a file that MOVED
+  is a FINDING, not a renumbering job.** `tests/test_fx_report.sh` pins the working `fx-init
+  zig/src/init.zig` to the revision its frozen tables were measured against, and it only passes while the
+  two are EQUAL — so any change to that file fails the gate with "the citations are STALE; re-measure and
+  update". It fired when the operator journal grew `init.zig` by ~200 lines, and the re-measurement found
+  a citation that was **wrong rather than shifted**: the bound said the runtime log was "opened at
+  `:4523`", and that line *builds* the path — the open is the next line. **A drifted line number that
+  still points at something plausible is a lie that survives proofreading.** If a document cites another
+  file by line, pin the two together so drift is loud.
+
+- **Masking the INSTRUMENT is not masking the ASSERTION — check where else the value is asserted.** The
+  `log_probe` golden was maskable column by column (twice), and the third instance of the same
+  host-dependence was NOT in the golden at all: the driver's inline `CHECK`s pinned the *capture host's*
+  page size as the literals `400`/`1024`, so a 16 KiB-page host would still have failed with every golden
+  masked. When a value is host- or environment-derived, ask **where else it is written down** before
+  believing the fix is complete.
+
+- **A record you introduce is not more authoritative than its writer.** The operator journal's own header
+  says *"Root in-guest can forge or truncate it exactly as it can `.bootlog`; a row is CHECKABLE against
+  the store's version/genhash history, not authoritative over it"* — and the reporter carries that bound
+  INTO the class it feeds rather than upgrading it to a fact. A new durable record is an opportunity to
+  state a fresh bound, not a licence to raise the confidence of everything downstream.
 
 - **Suspect the INSTRUMENT before the phenomenon — and this cost me a wrong report.** I measured
   "the new refusals exit 0" and was one step from telling the user the protection was inert and
