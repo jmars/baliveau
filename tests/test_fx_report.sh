@@ -250,8 +250,14 @@ pin_blob() { # pin_blob REPO BLOB FILE LABEL
         || fail "PIN: $1/$3 differs from the pinned blob $2 this seat's retention table was measured against — the citations in tools/fx-report.c are STALE; re-measure and update the frozen tables"
 }
 pin_guard "$INIT" ca9cb06 zig/src/init.zig "fx-init"
-pin_guard "$FXS_REPO" 0341650 zig/src/provenance.zig "fxstore"
-pin_blob "$FXS_REPO" 30dce7cbb60105348d2ba44fa11d224487351af9 zig/src/store.zig "fxstore"
+# fxstore re-measured at e97758c (the install-origin unit): the FACTS SURFACE
+# this seat reads is unchanged — RELATION_SCHEMAS still defines every name in
+# fx-report.c's FACT_RELS, and the gc carve-out's claim (store.zig) is a
+# comment-only difference. This pin guards the facts surface, not a line
+# citation (fx-report.c cites init.zig by line and store.zig's carve-out; it
+# names provenance.zig nowhere).
+pin_guard "$FXS_REPO" e97758c zig/src/provenance.zig "fxstore"
+pin_blob "$FXS_REPO" 334570c2719d3e5294c1088e33407721c0ae3acf zig/src/store.zig "fxstore"
 
 # ── the fixture store (toolchain-free provisioning, the audit gate's shape)
 SRC="$WORK/src"
