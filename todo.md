@@ -93,20 +93,62 @@ regulator** — §6b's audit stance is what makes these records evidentially usa
       lines added, 0 changed), 8/8. NOT recorded (deliberate): the activation-time `--config`
       invocation path — host/cwd-relative, neither relocatable nor durable; the retained copy is the
       readable form of the same claim.
-- [ ] **A CHANGE AND INCIDENT RECORD, with a stated taxonomy.** The generation chain IS the change
-      record, but nothing states a change's INTENT or SEMANTICS; and the raw events that the Act's
-      risk/incident language cares about (a failed boot, a refused activation, a rolled-back generation,
-      an audit incoherence) are recorded while nothing CLASSIFIES them or links them to an affected
-      generation. Decide the taxonomy explicitly rather than letting a reporter invent one.
-- [ ] **A RETENTION POLICY — and it is currently UNEQUAL, which must be stated rather than assumed.**
-      `.bootlog` / `.recovery` / `src_of` growth has no policy (§2), and the RUNTIME log (`log.db`)
-      lives under `/run/fx`, which is **tmpfs** and does not survive a reboot, while the store's own
-      files do. Art. 19's retention question therefore has a real answer for some records and none for
-      others.
-- [ ] **THE REPORTER AS THE THIRD HOST-SIDE SEAT**, with the oracle's three properties made a property
-      of its seat rather than a convention: host-side, agent-unwritable, a function of observable system
-      state — it READS the substrate and does not become a source of truth. Same family as
-      `osier-share` (is it better?) and `fx-audit` (is it honest?); this one asks "is it documented?".
+- [x] **A CHANGE AND INCIDENT RECORD, with a stated taxonomy — FROZEN IN THE REPORTER SEAT
+      (2026-10-13, uncommitted; `handoff-reporter-seat-result`).** `tools/fx-report.c` carries ONE
+      frozen table (not scattered literals), printed as machine records on EVERY run: each event
+      class, the RECORD it is read from, and — the point of the table — what the class's ABSENCE
+      means, "none occurred" vs "this is not durably recorded" (a never-booted store prints
+      `no-boot-ever-recorded`; `activation-refusal` prints NOT-DURABLY-RECORDED because its only
+      record is rt_effect on tmpfs — "no refusals occurred" CANNOT be concluded).  Classes:
+      activation (snapshots+facts), activation-input (generation_config + the retained copy),
+      boot-verdict/boot-start/shutdown (.bootlog), roll-forward-automatic (.recovery rows),
+      operator-intervention (DERIVED — see the seat's bound), activation-refusal (not durably
+      recorded), content-recurrence (.recovery same-genhash rows).  Each classification links to
+      its affected generation.  MUTATIONS in the gate disable single classes and their arms go
+      blind — the taxonomy is falsifiable, not decoration.  What remains OPEN under this item: a
+      change's INTENT (what was ATTEMPTED and why) is still not a substrate record — the config
+      content is now readable, but nothing records the intent behind it; that is a §4 design
+      decision, not a reporter gap.
+- [x] **RETENTION: the INEQUALITY IS NOW STATED AND MEASURED ON EVERY RUN — the POLICY decision
+      remains open (2026-10-13).** The reporter seat prints a frozen retention table per run (where
+      each record lives, what it survives: reboot / roll-forward-publish / `fxstore gc`, and the
+      policy column — which says "NO policy exists" where none does rather than inventing one).
+      MEASURED, and sharper than §1a's "unpoliced" prediction: **`fxstore gc` DELETES the retained
+      configs** — the dir sweep (store.zig) has no carve-out for `<genhash>-system-generation` dirs
+      and "system-generation" is never a live package name, so one `gc` run removes EVERY
+      generation's config.dhall and the Dhakefile.dhall/etc the install facts point at, silently
+      (the generation_config FACT survives, the copy does not).  The gate re-measures this every
+      run and the frozen row goes stale-loud if gc changes.  Also measured: the runtime log
+      (`rt_effect`/`rt_control`, `/run/fx/log.db`, init.zig:32/:4523) dies at every reboot (tmpfs
+      post-pivot), and `rollback --hard` + a later publish can renumber over the versions between
+      (the `gc --retain` guard's own statement).  STILL OWED under this item — a DECISION, not a
+      measurement: no default retention exists for `.bootlog`/`.recovery` growth, nothing sets
+      `gc --retain N`, and gc's generation-dir deletion is presumably a DEFECT to fix rather than
+      policy to accept (see §3).
+- [x] **THE REPORTER AS THE THIRD HOST-SIDE SEAT — BUILT (2026-10-13, uncommitted;
+      `handoff-reporter-seat-result`).** `tools/fx-report.c` (`make test-report`), host-side and
+      read-only like its siblings: the oracle asks *is it better?*, the audit *is it honest?*, this
+      one *is it documented?*.  It READS the substrate's durable records — CURRENT, the timeline,
+      the version-bound facts via `fxstore facts --as-of`, `.bootlog`, `.recovery`, and the
+      retained config each `generation_config` fact names — and never becomes a source of truth
+      (it never opens attempts.jsonl or any self-report; gated byte-identically absent/present/
+      doctored).  Its output is STABLE and MACHINE-READABLE for the separate reporting tool the
+      goal names: frozen tab-separated records, every line marked MEASURED / DERIVED / ABSENT
+      with the absence's KIND stated, a `#` human summary BESIDE them, byte-deterministic (no
+      wall-clock/locale/HEAD; two runs cmp-identical), and the taxonomy/retention/bound tables
+      printed on every run.  THE RECONSTRUCTION (the Act's actual question) is a GATE, not a
+      claim: `tests/test_fx_report.sh` builds a two-config lifecycle and asserts a reader can
+      answer, from the report alone, "what changed between N and N+1, and from which input?" —
+      both configs' CONTENT readable (sha chain file→copy→fact→report proven), the Myers diff
+      between them, the generation each produced.  The OPERATOR-INTERVENTION derivation, measured
+      from the writers: the ctrl rollback arm and host `fxstore rollback` drive the SAME soft
+      rollback and append NOTHING, so the durable operator record is only the ABSENCE of the
+      `.recovery` row an automatic roll-forward would have written — and the benign
+      publish-of-live pair every fx-activate leaves (MEASURED) is classified apart from a real
+      restore, with the disjunction (operator / re-activation of an older config / removed row)
+      stated inline, never a verdict.  THE BOUND prints on every run: the tmpfs runtime log,
+      operator-absent-by-default, pre-first-snapshot, the gc config loss, renumber-after-hard,
+      retention-unpoliced.
 
 ## 2. Measurements still owed
 

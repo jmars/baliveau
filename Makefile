@@ -201,6 +201,42 @@ $(BIN_AUDIT): tools/fx-audit.c src/vendor/dhall-c/sha256.c src/vendor/dhall-c/dh
 
 .PHONY: test-audit
 
+# The REPORTER SEAT — the third host-side seat (todo.md §1b, design record
+# §1a): the oracle asks IS IT BETTER, the audit asks IS IT HONEST, this one
+# asks IS IT DOCUMENTED.  Same family properties (host-side,
+# agent-unwritable, a function of observable system state); it READS the
+# substrate's durable records (snapshots + version-bound facts via
+# `fxstore facts`, .bootlog, .recovery, the retained config the
+# generation_config fact names — fx-init 1399dbd) and never becomes a source
+# of truth.  Its output is STABLE and MACHINE-READABLE by construction —
+# frozen tab-separated records, a `#`-prefixed human summary BESIDE them,
+# the event taxonomy and retention tables printed on every run, and every
+# record marked MEASURED / DERIVED / ABSENT with the absence's KIND stated
+# ("there were none" vs "this is not durably recorded").  THE BOUND prints
+# in the output, the audit seat's discipline: the runtime datalog is tmpfs
+# and dies at reboot, operator interventions exist only as the ABSENCE of
+# the automatic .recovery row (a DERIVED disjunction, never a verdict), and
+# `fxstore gc` deletes the retained configs (MEASURED).
+#   tools/fx-report.c is the seat; tests/test_fx_report.sh is the
+# acceptance: a fixture store with a real lifecycle must let a reader
+# answer, FROM THE REPORT ALONE, "what changed between N and N+1, and from
+# which input" — both configs readable, the diff, the generation each
+# produced — plus the none-vs-not-recorded absence arms, the
+# operator-intervention derivation (control: the .recovery-attributed
+# republish is NOT an operator event), the gc/config findings, byte-exact
+# determinism, and MUTATIONS of the taxonomy (each sed-mutated class must
+# make its own assertion go blind).
+BIN_REPORT := build/fx-report
+
+test-report: $(BIN_REPORT)
+	bash tests/test_fx_report.sh
+
+$(BIN_REPORT): tools/fx-report.c src/vendor/dhall-c/sha256.c src/vendor/dhall-c/dhall.h
+	@mkdir -p build
+	$(CC) $(CFLAGS) -Isrc/vendor/dhall-c $(LDFLAGS) -o $@ tools/fx-report.c src/vendor/dhall-c/sha256.c
+
+.PHONY: test-report
+
 # The slot ground for the first self-modification task (todo.md §5): the
 # deployment pre-declares ONE package whose src.path is a directory the
 # agent may write; the host-frozen recipe (a STUB — no Osier->Lua compiler
