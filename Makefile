@@ -201,6 +201,45 @@ $(BIN_AUDIT): tools/fx-audit.c src/vendor/dhall-c/sha256.c src/vendor/dhall-c/dh
 
 .PHONY: test-audit
 
+# THE SELECTION STEP — the fourth host-side seat (design record §7.1): the
+# oracle asks IS IT BETTER, the audit asks IS IT HONEST, the reporter asks
+# IS IT DOCUMENTED, and this one ANSWERS THE QUESTION THEY LEAVE OPEN:
+# WHICH GENERATION SHOULD THE SYSTEM BE RUNNING?  It computes the
+# LEXICOGRAPHIC order over the store's published versions — viable
+# (.bootlog) -> coherent (fxstore verify, CURRENT only) -> greatest run-set
+# share (the oracle's own run_set_share_fraction, shell'd, never
+# re-derived) — and ENFORCES it: a candidate that is not viable, or is
+# CURRENT with drift, can NEVER win, whatever its share (before this seat
+# existed the order lived in prose: build/fx-osier-share's number was
+# consumed by tests alone).  Its output is the house shape (frozen
+# tab-separated records with a `#` human summary BESIDE them, the ORDER
+# table printed on every run, byte-deterministic), and `--apply` is the
+# thin trigger: on `revert-to <v>` only it drives the EXISTING `fxstore
+# rollback <v>` SOFT (content returns and the VERSION NUMBER GOES UP — the
+# substrate's own roll-forward semantics; `--hard` is recovery-only).
+#   tools/fx-select.c is the seat; tests/test_fx_select.sh is the
+#   discrimination proof: the highest-share generation FAILS its boot and
+#   must not be named (with a sed-mutant that drops the viability filter
+#   and goes blind on exactly that fixture), a drifting CURRENT loses to a
+#   lower-share viable generation, the max share beats the newest, a tie
+#   never causes a revert (and the tie rule is shown LIVE with CURRENT at
+#   the lower twin), no eligible candidate refuses loudly, an
+#   oracle-refusing candidate is excluded BY NAME rather than counted as
+#   0%, the default never mutates, two runs are cmp-identical, the --apply
+#   trigger both refuses a no-op and lands a real rollback, and a missing
+#   oracle is a tool error.  The fixture is TOOLCHAIN-FREE (fx-init's
+#   activate_paths + the real host-side fx-activate; nothing boots).
+BIN_SELECT := build/fx-select
+
+test-select: $(BIN_SELECT) $(BIN_OSIER)
+	bash tests/test_fx_select.sh
+
+$(BIN_SELECT): tools/fx-select.c
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ tools/fx-select.c
+
+.PHONY: test-select
+
 # The REPORTER SEAT — the third host-side seat (todo.md §1b, design record
 # §1a): the oracle asks IS IT BETTER, the audit asks IS IT HONEST, this one
 # asks IS IT DOCUMENTED.  Same family properties (host-side,
