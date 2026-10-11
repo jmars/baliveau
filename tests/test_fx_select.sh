@@ -90,14 +90,13 @@
 # discipline), with `none` in the nonce field (the writer's placeholder for
 # a boot with no host token).
 #
-# SIBLING RESOLUTION — deliberately NOT the stale `$REPO/..` default the
-# ten older gates use: after the move to ~/futaie/baliveau, `$REPO/..` is
-# ~/futaie, which contains no fx-init/fxstore/datalog-dafsa, so those gates
-# SKIP on this host (MEASURED: `make test-osier-share` skips at "libdatalog.so
-# missing at /home/jaye/futaie/datalog-dafsa/zig-out/lib").  Order here:
-# (1) $FX_INIT_REPO / $FXSTORE_BIN from the env; (2) $REPO/.. IF it really
-# contains fx-init; (3) $FX_SIBLINGS, default $HOME/fixpoint-linux;
-# (4) otherwise SKIP loudly.
+# SIBLING RESOLUTION — the repo's ONE policy (tests/test_sibling_paths.sh,
+# the sibling-path sweep's gate): $FX_SIBLINGS WINS when set, else the
+# historical neighbour $REPO/.. IF it really holds fx-init, else
+# $HOME/fixpoint-linux; and $FX_INIT_REPO / $FXSTORE_BIN override the two
+# binaries individually.  This gate does NOT copy the stale `$REPO/..`
+# default the ten older gates used, under which they SKIPPED (exit 77) about
+# a path that could never be right again, quietly enough to read as a pass.
 #
 # Env: FXSTORE_BIN, FX_INIT_REPO, FX_SIBLINGS, SELECT_BIN, OSIER_BIN,
 #      FXSELECT_KEEP=1 (keep the scratch dirs).
@@ -112,17 +111,14 @@ REPO="$PWD"
 command -v cc >/dev/null 2>&1 || skip "cc not found"
 command -v sha256sum >/dev/null 2>&1 || skip "sha256sum not found"
 
-# ── sibling resolution (see the header) ─────────────────────────────────
-SIBS=""
-if [ -d "$REPO/../fx-init" ]; then
-    SIBS="$(cd "$REPO/.." && pwd)"
-elif [ -n "${FX_SIBLINGS:-}" ] && [ -d "$FX_SIBLINGS/fx-init" ]; then
-    SIBS="$FX_SIBLINGS"
-elif [ -d "$HOME/fixpoint-linux/fx-init" ]; then
-    SIBS="$HOME/fixpoint-linux"
-else
-    skip "no fx-init checkout in \$REPO/.., \$FX_SIBLINGS or \$HOME/fixpoint-linux (set FX_SIBLINGS)"
-fi
+# ── sibling resolution: THE REPO'S ONE POLICY (tests/test_sibling_paths.sh,
+#    landed by the sibling-path sweep while this unit was in review) ──────
+# FX_SIBLINGS is an explicit override and WINS (even a bogus one — then this
+# gate SKIPS loudly naming it); else the historical neighbour $REPO/.. is kept
+# only if it actually holds the stack; else the relocated default.
+SIBS="${FX_SIBLINGS:-$(cd "$REPO/.." && pwd)}"
+[ -d "$SIBS/fx-init" ] || [ -n "${FX_SIBLINGS:-}" ] || SIBS="$HOME/fixpoint-linux"
+[ -d "$SIBS/fx-init" ] || skip "no fx-init checkout at $SIBS (set FX_SIBLINGS)"
 echo "test_fx_select: siblings at $SIBS"
 
 FXSTORE="${FXSTORE_BIN:-$SIBS/fxstore/zig-out/bin/fxstore}"
