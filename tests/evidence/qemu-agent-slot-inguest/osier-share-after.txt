@@ -1,5 +1,5 @@
 metric osier-share
-store /tmp/qemuinguest.WxZDis/rb2-store
+store /tmp/qemuinguest.QI32ZA/rb2-store
 snapshot 7
 osier_extensions .elm
 counted regular source files only (clean-tree exclusion rules apply)
@@ -11,20 +11,20 @@ component fake-service 26658780512e9c498be8bae971d0010374dcddb7502483c1abe9a6757
 component oslot 98a261b9c69758ee2b3c2f94c0f3c795083695473ce58d58236bb5d7ac9197a4 store 480 480 1 1 run src_of
 component datalog-dafsa 902f10477a951b2b57d5e9e7ebe9851533f065a0019d250cb25b147a13ffd205 host-verified 208786 36217507 14 691 closure-only src_of
 component dhall-c ac3ea3174d40507cd9838dc93e7f844bffa75b3f0d358d4b17e0021c8a224c16 host-verified 26226 850505 1 1662 closure-only src_of
-component fxstore ceaef1f138866ed11b7c2989674146873e1da0ab53ccf5bac269630c43a78ee7 host-verified 13551 1293589237 1 509 closure-only src_of
+component fxstore f581012e427f744e668394c7ed8e6458874653ba21417dd0d8f9274360ad0300 host-verified 13551 1611950450 1 599 closure-only src_of
 component dhake cbc832e95729723682f86d7f9d8bafbc0d3141a28a5224a5c8858b55aa8cbb24 host-verified 21775 1128132 1 718 closure-only src_of
-component fx-init ea4022433525426a44c9b70edd7e14bf47a7ba540d5d0c2ef725906cea5df797 host-verified 319096 97909726 29 2830 closure-only src_of
-component fxctl ea4022433525426a44c9b70edd7e14bf47a7ba540d5d0c2ef725906cea5df797 host-verified 319096 97909726 29 2830 closure-only src_of
-component fx-activate ea4022433525426a44c9b70edd7e14bf47a7ba540d5d0c2ef725906cea5df797 host-verified 319096 97909726 29 2830 closure-only src_of
+component fx-init bfae71009676dbef81a3c8500040ea360b0f4e17a1701695b812e9a2c4e10296 host-verified 319131 98050838 30 2880 closure-only src_of
+component fxctl bfae71009676dbef81a3c8500040ea360b0f4e17a1701695b812e9a2c4e10296 host-verified 319131 98050838 30 2880 closure-only src_of
+component fx-activate bfae71009676dbef81a3c8500040ea360b0f4e17a1701695b812e9a2c4e10296 host-verified 319131 98050838 30 2880 closure-only src_of
 attribution src_of 9 srcstore-narrowed 0 (of 9 resolved)
 run_set_osier_bytes 480
 run_set_total_bytes 4782
 run_set_osier_files 1
 run_set_total_files 2
 run_set_share_fraction 0.100376
-closure_osier_bytes 1228106
-closure_total_bytes 1625519341
-closure_osier_files 105
-closure_total_files 12072
-closure_share_fraction 0.000756
+closure_osier_bytes 1228211
+closure_total_bytes 1944303890
+closure_osier_files 108
+closure_total_files 12312
+closure_share_fraction 0.000632
 closure_components_resolved 9 of 9

@@ -130,6 +130,38 @@ regulator** — §6b's audit stance is what makes these records evidentially usa
       killed). The REPORTER's read side — replacing the DERIVED disjunction and the
       NOT-DURABLY-RECORDED bound with rows measured from `.operator` — is the follow-up unit and
       belongs to the reporter lane, not this one.
+- [x] **THE REPORTER READS THE OPERATOR JOURNAL — both weak classes are MEASURED now
+      (2026-10-11, uncommitted; `handoff-reporter-operator-result`).** The follow-up named in the
+      item above. `tools/fx-report.c` gained a third reader beside `.bootlog`/`.recovery`: it parses
+      `<store>/.operator` in the WRITER's shape (the file's own header is the definition), refuses a
+      line that is not that shape LOUDLY — including a line of PROSE, which splits into seven
+      whitespace fields just as happily, so the generation pair is checked against the writer's own
+      vocabulary (a decimal version or `-`) — and treats the file's ABSENCE as its own state (a
+      store predating `ca9cb06`), never as "no interventions". `operator-intervention` is now
+      MEASURED from the rows (action, the operator's VERBATIM arg, outcome, from→to, the boot nonce,
+      file+line, plus a pruned-or-foreign note when a named version is not in the timeline — a row
+      is CHECKABLE against the store's history, not authoritative over it), and `activation-refusal`
+      is MEASURED from the refusal outcomes (`failed:<rc>`, `refused-config`, `refused`) with its
+      absence-meaning restated: "none in the RETAINED journal", not "not durably recorded" — with
+      `unverified` (ambiguous — the store could not be re-opened) and `dhake-failed` (the generation
+      DID land) explicitly NOT the class, so the class never out-claims its record. The DERIVED
+      disjunction is RETAINED, not deleted: it is the fallback for a store with no journal AND for
+      the bypass paths the journal's own header names (host-side `fxstore rollback`, `--hard`, a
+      hand-edited CURRENT), and a journal row that explains a backward move is recorded as an
+      ANNOTATION (`note journal-attributes-a-move-to-this-version`) — it never SUPPRESSES the
+      derivation, because a row can explain a move but cannot prove the journal saw the path that
+      made it. The frozen tables moved with it: two new bounds (`operator-journal-bounds`,
+      `operator-bypass-paths`) replace `operator-absent-by-default`, `rt-log-tmpfs` now says the
+      bound is a property of the STORE rather than of the report, and a `.operator` retention row
+      was added. Gate: the JOURNAL arm (S2J, the writer's rows) is paired with the OLD arm on S2
+      (no file) so the inversion is the pair — with MEASURED, without DERIVED — plus MUT-OPS and
+      MUT-REFUSE blinding exactly the MEASURED arms, and two `.operator` LOUD arms. **Every
+      `init.zig` citation was re-measured against `ca9cb06`** (head + ~200 lines): rt_control ctrl
+      arm 3351→3490, `rt_effect activate failed` 3417→3563, `dhake-failed` 3517→3671, the ctrl
+      rollback arm 3550→3706, `DEFAULT_RUN` still :32. ONE was WRONG rather than moved: the old
+      "opened at :4523" named the `snfmt` line that BUILDS the log.db path — the open was the next
+      line — so the citation now reads "path built :4688, opened :4689". The pin moved
+      `4c5803d`→`ca9cb06` CONSCIOUSLY, after the re-measurement it exists to force.
 - [x] **RETENTION: the INEQUALITY IS NOW STATED AND MEASURED ON EVERY RUN — the POLICY decision
       remains open (2026-10-13).** The reporter seat prints a frozen retention table per run (where
       each record lives, what it survives: reboot / roll-forward-publish / `fxstore gc`, and the

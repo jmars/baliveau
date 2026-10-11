@@ -36,6 +36,18 @@
  *   <store>/.recovery                 fx-init, per AUTOMATIC roll-forward:
  *                                     "#"-header + "<epoch> <published>
  *                                     <from-failed> <genhash|-> <nonce>"
+ *   <store>/.operator                 fx-init, per OPERATOR intervention on
+ *                                     the generation plane (fx-init ca9cb06):
+ *                                     "#"-header + "<epoch> <action> <arg>
+ *                                     <outcome> <from-version|-> <to-version|->
+ *                                     <boot-nonce|none>" — INCLUDING the ones
+ *                                     that failed or were refused (the ctrl
+ *                                     arms, init.zig:3467/:3561/:3601/:3612/
+ *                                     :3669/:3682/:3702/:3711/:3730/:3752).
+ *                                     The header IN THE FILE is the
+ *                                     definition (OPERATOR_HEADER,
+ *                                     init.zig:965) — read from the artifact,
+ *                                     not assumed here.
  *   <store>/<genhash>-system-generation/config.dhall
  *                                     fx-activate, per activation: the
  *                                     RETAINED INPUT (fx-init 1399dbd),
@@ -56,39 +68,57 @@
  * show"; where the records cannot make that distinction, the table says
  * so instead of the output implying more than it knows.
  *
- * ── the one thing this seat CANNOT read, measured and stated, not
- *    discovered later ────────────────────────────────────────────────────
+ * ── what this seat CANNOT read, measured and stated, not discovered
+ *    later ──────────────────────────────────────────────────────────────
  * fx-init's runtime datalog — rt_effect/rt_control: activations
  * (rt_effect "version"), REFUSED activations (rt_effect "activate",
- * "failed", init.zig:3417; "dhake-failed", :3517), rollbacks and
- * shutdowns (rt_control, :3351) — lives at /run/fx/log.db
- * (DEFAULT_RUN "/run/fx", init.zig:32; opened at :4523).  Post-pivot "/"
- * is TMPFS (init.zig's M4 pivot: /proc/mounts' root entry reads "tmpfs"
- * after it), so the log DOES NOT SURVIVE A REBOOT.  The durable record
- * of an OPERATOR INTERVENTION therefore exists only as the ABSENCE of
- * the automatic roll-forward row that fx-init would otherwise have
- * written to .recovery (the ctrl `rollback` arm drives fxstore's SOFT
- * rollback — init.zig:3550 — and appends NOTHING to .recovery or
- * .bootlog).  This seat reports that derivation with its bound; it never
- * silently reports "no interventions".
+ * "failed", init.zig:3563; "dhake-failed", :3671), rollbacks and
+ * shutdowns (rt_control, the shared activate|rollback ctrl arm, :3490) —
+ * lives at /run/fx/log.db (DEFAULT_RUN "/run/fx", init.zig:32; path
+ * built :4688, opened :4689).  Post-pivot "/" is TMPFS (init.zig's M4
+ * pivot: /proc/mounts' root entry reads "tmpfs" after it), so the log
+ * DOES NOT SURVIVE A REBOOT, and this seat never reads it.
+ *
+ * THE OPERATOR PLANE IS DURABLE NOW, and this seat reads it.  fx-init
+ * ca9cb06 added <store>/.operator: one row per control-channel
+ * intervention on the generation plane, INCLUDING the ones that FAILED
+ * or were REFUSED, appended and fsync'd BEFORE the reply is flushed.  So
+ * `operator-intervention` is MEASURED from those rows, and
+ * `activation-refusal` — whose absence-meaning was NOT-DURABLY-RECORDED,
+ * because fx-activate refuses before touching the store and the only
+ * record of it lived in tmpfs — is MEASURED too.  The journal's own
+ * header names what it does NOT cover, and the DERIVED signature is
+ * RETAINED as the fallback for exactly that residue: a store predating
+ * ca9cb06 (no .operator at all), and the paths that bypass PID1's
+ * control handler (a host-side `fxstore rollback`, `rollback --hard`, a
+ * hand-edited store CURRENT).  A class never becomes more authoritative
+ * than its record: the journal is written by PID1's handler alone, root
+ * in-guest can forge or truncate it exactly as it can .bootlog, and a
+ * row is CHECKABLE against the store's version history, not
+ * authoritative over it.
  *
  * ── THE BOUND, printed on every run (the audit seat's discipline) ──────
  * See the frozen BOUNDS[] table at the bottom of the tables below: the
- * runtime log's tmpfs death; operator interventions absent-by-default
- * (and the DERIVED class's disjunction: an unattributed backward move is
- * an operator rollback, OR a same-input re-activation — MEASURED: two
- * genuine activations one second apart produced byte-equal facts — OR a
- * removed .recovery row, which the AUDIT seat's previous-observation
- * comparison, not this seat, is built to catch); nothing before the
- * store's first snapshot; a generation dir whose snapshot was pruned by
- * `gc --retain` (MEASURED on this tree: `fxstore gc` RETAINS every
- * <genhash>-system-generation dir a SURVIVING snapshot's generation fact
- * names — the dir sweep's carve-out — and reaps a dir whose snapshot was
- * pruned, WITH its facts, so a pruned generation's input is unreportable:
- * absence-by-retention, not a missing event); the renumber hazard after
- * `rollback --hard`; and the absent retention policy for .bootlog and
- * .recovery.  A report that implies more than its records support is the
- * failure mode this whole project exists to argue against.
+ * runtime log's tmpfs death; the operator journal's own bounds (PID1's
+ * control handler is its only writer, a store predating ca9cb06 has
+ * none, root in-guest can forge or truncate it exactly as it can
+ * .bootlog); the paths that BYPASS that handler and are therefore
+ * invisible to it (host-side `fxstore rollback`, `rollback --hard`, a
+ * hand-edited CURRENT) with the DERIVED class's retained disjunction for
+ * them — an unattributed backward move is an operator rollback, OR a
+ * same-input re-activation — MEASURED: two genuine activations one
+ * second apart produced byte-equal facts — OR a removed .recovery row,
+ * which the AUDIT seat's previous-observation comparison, not this seat,
+ * is built to catch; nothing before the store's first snapshot; a
+ * generation dir whose snapshot was pruned by `gc --retain` (MEASURED on
+ * this tree: `fxstore gc` RETAINS every <genhash>-system-generation dir
+ * a SURVIVING snapshot's generation fact names — the dir sweep's
+ * carve-out — and reaps a dir whose snapshot was pruned, WITH its facts,
+ * so a pruned generation's input is unreportable: absence-by-retention,
+ * not a missing event); the renumber hazard after `rollback --hard`; and
+ * the absent retention policy for .bootlog, .recovery and .operator.  A
+ * report that implies more than its records support is the failure mode
+ * this whole project exists to argue against.
  *
  * Host tool (like the audit: native, no musl variant).  Links only the
  * vendored sha256.  Usage:
@@ -117,6 +147,11 @@
 #define MAX_VERSIONS 512
 #define MAX_BOOTLOG_LINES 8192
 #define MAX_RECOVERY_ROWS 2048
+#define MAX_OPERATOR_ROWS 4096
+/* fx-init REQ_MAX is 4096: the control channel's request token (the arg)
+ * cannot exceed it, and operator_append's own line buffer is
+ * REQ_MAX + 256.  OP_ARG_MAX is the sscanf field width for that field. */
+#define OP_ARG_MAX 4095
 #define MAX_FACT_ROWS 16384   /* total, across relations and versions */
 #define LINE_MAX_ 8192
 #define MAX_CONFIG_BYTES (8u * 1024 * 1024)
@@ -215,6 +250,27 @@ typedef struct {
 static recrow_t g_rec[MAX_RECOVERY_ROWS];
 static unsigned g_nrec;
 static int g_rec_present;
+
+/* One <store>/.operator row, in the writer's exact shape:
+ *   <epoch-s> <action> <arg> <outcome> <from-version|-> <to-version|-> <nonce>
+ * The arg is a control-channel request token (the ctrl arm tokenizes on
+ * " \t", so it holds no whitespace) and is kept VERBATIM — it is the
+ * operator's own operand, the thing the record exists to preserve. */
+typedef struct {
+    unsigned epoch;
+    char action[32];   /* activate | rollback | shutdown (the writer's set) */
+    char arg[OP_ARG_MAX + 1]; /* verbatim operand; "-" for shutdown */
+    char outcome[64];  /* ok | failed:<rc> | refused | refused-config
+                        * | dhake-failed | unverified */
+    char from_s[16];   /* "-" = unknown / no generation move */
+    char to_s[16];     /* "-" likewise */
+    char nonce[96];    /* "none" = the host issued no nonce (hand-boot) */
+    unsigned lineno;
+} oprow_t;
+
+static oprow_t g_op[MAX_OPERATOR_ROWS];
+static unsigned g_nop;
+static int g_op_present, g_op_empty; /* file existed / existed but had no row */
 
 /* one facts row: relation, version, raw TSV tail (already tab-joined) */
 typedef struct {
@@ -461,6 +517,112 @@ static void read_recovery(void) {
     fclose(f);
 }
 
+/* The writer's generation field: a decimal version, or "-" for unknown /
+ * no move (operator_line's "{d}" / "-"). */
+static int version_field_ok(const char *f) {
+    if (!strcmp(f, "-")) return 1;
+    if (!f[0]) return 0;
+    for (const char *q = f; *q; q++)
+        if (*q < '0' || *q > '9') return 0;
+    return 1;
+}
+
+/* ── <store>/.operator (fx-init ca9cb06): the DURABLE operator journal ───
+ *    The writer's shape is the contract, and this file's header is the
+ *    DEFINITION (OPERATOR_HEADER, init.zig:965): one DATA line per
+ *    control-channel intervention on the generation plane, INCLUDING the
+ *    ones that failed or were refused.  A line that does not match the
+ *    shape is refused LOUDLY — never skipped, exactly as .bootlog/.recovery
+ *    are — and the file's ABSENCE is its own state: a store predating
+ *    ca9cb06 legitimately has none, and this seat must not turn that into
+ *    "no interventions occurred". */
+static void read_operator(void) {
+    char path[4096];
+    snprintf(path, sizeof path, "%s/.operator", g_store);
+    FILE *f = fopen(path, "r");
+    if (!f) {
+        if (errno == ENOENT) { g_op_present = 0; return; }
+        die("cannot read %s: %s (a read error is not an absence)", path, strerror(errno));
+    }
+    g_op_present = 1;
+    char line[LINE_MAX_];
+    unsigned ln = 0;
+    while (fgets(line, sizeof line, f)) {
+        ln++;
+        size_t l = strlen(line);
+        if (l && line[l - 1] != '\n' && !feof(f))
+            die("%s:%u: line longer than %zu bytes — refusing to audit a truncated view",
+                path, ln, sizeof line - 1);
+        while (l && (line[l - 1] == '\n' || line[l - 1] == '\r')) line[--l] = 0;
+        if (!l) continue;
+        if (line[0] == '#') continue; /* the writer's header (the definition) */
+        unsigned ep;
+        char action[32], arg[OP_ARG_MAX + 1], outcome[64], froms[16], tos[16], nonce[96];
+        /* 4095 == OP_ARG_MAX; the writer's arg is a request token (<= REQ_MAX). */
+        int n = sscanf(line, "%u %31s %4095s %63s %15s %15s %95s",
+                       &ep, action, arg, outcome, froms, tos, nonce);
+        if (n != 7)
+            die("%s:%u: not the writer's shape \"<epoch> <action> <arg> <outcome> <from-version|-> <to-version|-> <boot-nonce|none>\" (operator_append, init.zig): \"%s\"",
+                path, ln, line);
+        /* The generation pair is a decimal version or "-" in the writer's
+         * vocabulary (operator_line's "{d}"/"-").  Checked explicitly: a
+         * line of PROSE splits into seven fields just as happily, and a
+         * silently accepted one would invent an operator action out of a
+         * damaged file. */
+        if (!version_field_ok(froms) || !version_field_ok(tos))
+            die("%s:%u: the generation pair is not the writer's vocabulary (a decimal version or \"-\", operator_line, init.zig): \"%s\"",
+                path, ln, line);
+        if (g_nop >= MAX_OPERATOR_ROWS)
+            die("%s: more than %u data rows — raise MAX_OPERATOR_ROWS (a report over a truncated view is a lie)",
+                path, (unsigned)MAX_OPERATOR_ROWS);
+        oprow_t *O = &g_op[g_nop++];
+        O->epoch = ep;
+        snprintf(O->action, sizeof O->action, "%s", action);
+        snprintf(O->arg, sizeof O->arg, "%s", arg);
+        snprintf(O->outcome, sizeof O->outcome, "%s", outcome);
+        snprintf(O->from_s, sizeof O->from_s, "%s", froms);
+        snprintf(O->to_s, sizeof O->to_s, "%s", tos);
+        snprintf(O->nonce, sizeof O->nonce, "%s", nonce);
+        O->lineno = ln;
+    }
+    if (ferror(f)) die("read error on %s: %s", path, strerror(errno));
+    fclose(f);
+    g_op_empty = (g_nop == 0);
+}
+
+/* The writer's refusal vocabulary, read from the record rather than
+ * assumed: an intervention the journal shows did NOT take effect as
+ * asked.  `failed:<rc>` and `refused-config` are the activate arm's
+ * (init.zig:3561/:3612; refused-config is written by the rollback arm
+ * too, :3730 — the writer calls it the same record from the other
+ * direction), `refused` is the rollback arm's when the STORE rejected
+ * the target (:3711).  NOT refusals, and named as such in the taxonomy:
+ * `dhake-failed` (the generation DID land; the live-root reapply failed,
+ * :3669) and `unverified` (the store could not be re-opened to confirm —
+ * the record is AMBIGUOUS, which is not the same as refused), and `ok`. */
+static int outcome_is_refusal(const char *o) {
+    return !strncmp(o, "failed:", 7) || !strcmp(o, "refused") || !strcmp(o, "refused-config");
+}
+
+static int op_count_refusals(void) {
+    unsigned n = 0;
+    for (unsigned i = 0; i < g_nop; i++)
+        if (outcome_is_refusal(g_op[i].outcome)) n++;
+    return (int)n;
+}
+
+/* Does a journal row attribute a generation move TO version v?  Used only
+ * to annotate a DERIVED signature the journal explains — it never
+ * suppresses the derived row: the journal's own header says it cannot see
+ * a host-side `fxstore rollback`, and reporting the journal as complete
+ * would be the exact over-claim this seat refuses. */
+static int op_attributes_to(unsigned v) {
+    for (unsigned i = 0; i < g_nop; i++)
+        if (strcmp(g_op[i].to_s, "-") && (unsigned)strtoul(g_op[i].to_s, NULL, 10) == v)
+            return 1;
+    return 0;
+}
+
 /* ── the retained config (the INPUT, readable — §1a gap 1's fix) ───────── */
 
 static char *slurp_file(const char *path, size_t *len_out) {
@@ -684,11 +846,11 @@ static const struct { const char *cls, *record, *absence; } TAXONOMY[] = {
       "<store>/.recovery data row <epoch> <published> <from-failed> <genhash> <nonce> (fx-init, once per successful roll-forward)",
       "no-file=no-automatic-roll-forward-ever-recorded; no-row-naming-v=v-was-not-published-by-the-automatic-path (within the file's retention)" },
     { "operator-intervention",
-      "DERIVED, two signatures. (restore) version r whose genhash matches a version TWO-OR-MORE back (a duplicate of only the IMMEDIATELY-PRECEDING generation is fx-activate's own publish-of-live — MEASURED: every activation after the first leaves that benign pair — or gc's publish-first, and is NOT this class) and no .recovery row publishes r — the ctrl rollback arm (init.zig:3550) and host `fxstore rollback` drive the SAME soft rollback and append NOTHING to .recovery; (current-repoint) CURRENT != newest — `rollback --hard` (store.zig write_current) is the only intended writer, a torn publish the other candidate",
-      "absence-is-NOT-evidence-of-none: the operator paths write nothing durable, the signatures are only a backward move or a stale CURRENT, and gc/renumber can destroy both; the class is a DISJUNCTION (an operator rollback OR a deliberate re-activation of an older config — either way content moved back without the automatic record — OR a removed .recovery row, which the AUDIT seat's previous-observation comparison, not this seat, is built to catch)" },
+      "MEASURED — <store>/.operator rows: one line per control-channel intervention on the generation plane, written by PID1's handler (fx-init ca9cb06; the file's own OPERATOR_HEADER, init.zig:965, IS the definition): <epoch> <action> <arg> <outcome> <from-version|-> <to-version|-> <boot-nonce|none>, appended + fsync'd BEFORE the reply is flushed (operator_append: shutdown :3467, activate-failed :3561, unverified :3601, refused-config :3612, dhake-failed :3669, ok :3682, rollback unverified :3702, refused :3711, refused-config :3730, ok :3752).  action = the ctrl arm that wrote it, arg = the operator's operand VERBATIM, outcome = ok | failed:<rc> | refused | refused-config | dhake-failed | unverified.  The journal records the GENERATION PLANE ONLY — its header names what it does NOT record (the reads, file transfers, the shell, per-service commands, probe) and what it cannot record AND cannot DETECT: the paths that bypass PID1's handler (host-side `fxstore rollback`, `rollback --hard`, a hand-edited CURRENT).  DERIVED — the RETAINED FALLBACK, for a store with NO .operator and for exactly those bypass paths: two signatures. (restore) version r whose genhash matches a version TWO-OR-MORE back (a duplicate of only the IMMEDIATELY-PRECEDING generation is fx-activate's own publish-of-live — MEASURED: every activation after the first leaves that benign pair — or gc's publish-first, and is NOT this class) and no .recovery row publishes r — the ctrl rollback arm (init.zig:3706) and host `fxstore rollback` drive the SAME soft rollback and append NOTHING to .recovery; (current-repoint) CURRENT != newest. Both are DERIVED, never a verdict.",
+      "TWO DIFFERENT STATES, never conflated: (i) .operator PRESENT with zero rows = no generation-plane intervention in the retained journal — a MEASUREMENT, not a gap; (ii) .operator ABSENT = a store PREDATING ca9cb06 (or one never booted under it) — NOT 'none occurred' (see absence/.operator).  For (ii), and for the bypass paths the journal's own header lists as NOT-RECORDED-AND-NOT-DETECTABLE, the DERIVED signature is the fallback and it is a DISJUNCTION: an operator rollback OR a deliberate re-activation of an older config — either way content moved back without the automatic .recovery row — OR a removed .recovery row, which the AUDIT seat's previous-observation comparison, not this seat, is built to catch.  The derived signature is only a backward move or a stale CURRENT, and gc/renumber can destroy both.  A journal row does NOT suppress the derived row: it can EXPLAIN a backward move but cannot prove the journal saw every path that produced one." },
     { "activation-refusal",
-      "rt_effect(activate,failed|dhake-failed) @ /run/fx/log.db (fx-init init.zig:3417/:3517) — NOT read by this seat",
-      "absence=NOT-DURABLY-RECORDED (the runtime log is tmpfs post-pivot and dies at every reboot; a refused activation leaves NOTHING in the store — fx-activate refuses before touching it): 'no refusals occurred' CANNOT be concluded from any durable record" },
+      "MEASURED — <store>/.operator rows whose outcome is a refusal (fx-init ca9cb06): failed:<rc> (the activate executor exited rc; nothing landed — init.zig:3561), refused-config (the generation DID land in the store but PID1's service table REFUSED the configuration — :3612 from the activate arm, :3730 from the rollback arm, the writer's own 'same durable record from the other direction'), refused (the STORE rejected a rollback target — :3711).  Recorded in the SAME journal and NOT this class: dhake-failed (:3669 — the generation DID land, the live-root reapply failed) and unverified (:3601 — the store could not be re-opened to confirm, i.e. AMBIGUOUS, which is not the same as refused).  The tmpfs runtime log that held these (rt_effect activate failed|dhake-failed, init.zig:3563/:3671, DEFAULT_RUN :32) still dies at every reboot and is NOT read by this seat.",
+      "no-row-with-a-refusal-outcome-in-the-retained-journal = no RECORDED refusal within the journal (a count of RECORDED refusals, never of attempts).  This absence-meaning WAS 'NOT-DURABLY-RECORDED' before ca9cb06 — a refused activation left NOTHING in the store (fx-activate refuses before touching it) and PID1's record of it lived in /run's tmpfs — and it is that again EXACTLY WHEN .operator IS ABSENT: a store predating the journal CANNOT answer this class, and the report says so via absence/.operator instead of printing a zero.  Bounds carried INTO the class: PID1's control handler is the journal's only writer, so an fx-activate refused outside it is invisible; `unverified` rows are ambiguity, not refusals; and root in-guest can forge or truncate the file exactly as it can .bootlog — a row is CHECKABLE against the store's version/genhash history, not authoritative over it." },
     { "content-recurrence",
       "DERIVED: .recovery data rows whose trailing genhash is IDENTICAL (the .recovery header's own semantics: the same content re-failing)",
       "no-repeated-genhash=no-recurrence-within-the-surviving-rows" },
@@ -715,11 +877,15 @@ static const struct {
       "survives (disk)", "survives (each activation writes its own gen dir)",
       "RETAINED-WHILE-NAMED (MEASURED on this tree, store.zig pinned blob 30dce7cb: `fxstore gc <root>` keeps every <genhash>-system-generation dir named by a SURVIVING snapshot's generation fact — the dir sweep's carve-out, logged per dir on stderr; a dir whose snapshot was pruned by `gc --retain N` IS reaped, with its facts)",
       "no policy for how LONG: the copy is exactly as durable as the snapshot that names it (`gc --retain N` prunes version and dir together); a GENUINELY missing copy (hand-deleted, or a dir a surviving fact names that is gone) still fires config-retained-copy-gone" },
-    { "runtime datalog rt_effect/rt_control", "/run/fx/log.db (fx-init init.zig:32 DEFAULT_RUN, opened :4523)",
+    { ".operator", "<store>/.operator (fx-init ca9cb06, '#'-header + one data row per control-channel intervention on the generation plane, INCLUDING the ones that FAILED or were REFUSED; append+fsync per request, BEFORE the reply is flushed)",
+      "survives (disk)", "survives (append — one row per ctrl request, whatever its outcome)",
+      "survives (fxstore does not know the file; it outlives pruned versions AND keeps rows naming versions gc has since pruned — a row records the move the operator asked for, it is not a promise the version is still there)",
+      "NO growth policy exists (§1a gap 4).  NOT tamper-proof: PID1's control handler is its only writer, but root in-guest can forge or truncate it exactly as it can .bootlog (the file's own header says so)" },
+    { "runtime datalog rt_effect/rt_control", "/run/fx/log.db (fx-init init.zig:32 DEFAULT_RUN; path built :4688, opened :4689 by fx_log_open) — read by NOBODY here",
       "DOES NOT SURVIVE (post-pivot '/' is tmpfs, init.zig M4 pivot — the log dies at every reboot)",
       "n/a (dies with the boot that wrote it)",
       "n/a",
-      "death-by-construction: no reboot-surviving record of activations, refused activations, rollbacks or shutdowns exists outside .bootlog/.recovery/snapshots" },
+      "death-by-construction for the RUNTIME view only: the tmpfs log holds the live ctrl/effect stream, but every operator intervention it carried (activate, refused activate, dhake-failed, rollback, shutdown) is durably recorded SINCE fx-init ca9cb06 in <store>/.operator — and this seat reads THAT, never /run. What survives is what .bootlog/.recovery/.operator/snapshots hold/snapshots" },
     { "CURRENT", "<store>/.db/snapshots/CURRENT (atomic tmp+rename per publish/rollback)",
       "survives (disk)", "rewritten per publish (the roll-forward's own CURRENT)",
       "kept (gc --retain REFUSES a non-newest CURRENT rather than prune it)",
@@ -729,17 +895,19 @@ static const struct {
 
 static const struct { const char *id, *text; } BOUNDS[] = {
     { "rt-log-tmpfs",
-      "activations/rollbacks/shutdowns/refusals that fx-init logged to /run/fx/log.db are GONE at every reboot (tmpfs post-pivot); this report reads only the durable store and CANNOT say whether any activation was refused or any in-guest rollback was issued beyond what .recovery/.bootlog/snapshots show" },
-    { "operator-absent-by-default",
-      "an operator rollback is durably visible ONLY as the absence of the .recovery row an automatic roll-forward would have written; the derived operator-intervention class is a DISJUNCTION — operator rollback, a deliberate re-activation of an older config, or a REMOVED .recovery row (which the AUDIT seat's previous-observation comparison, not this seat, is built to catch).  A rollback to the content that is ALREADY current moves nothing and is invisible in this class by construction" },
+      "the runtime datalog's live ctrl/effect stream (activations, refused activations, rollbacks, shutdowns) lived at /run/fx/log.db and is GONE at every reboot (tmpfs post-pivot) — this report never reads it.  Since fx-init ca9cb06 those same interventions are ALSO written durably to <store>/.operator, and THIS seat reads that file instead (operator_append is called BEFORE the reply is flushed, so the row outlives a machine killed right after the answer).  The bound is therefore now a property of the STORE, not of the report: without .operator (a store predating the journal) nothing durable can say whether an activation was refused." },
     { "pre-first-snapshot",
       "nothing before the store's first snapshot is representable; a .bootlog line naming a version not in the timeline is reported as such (pruned by gc, or written by a store history this disk no longer holds)" },
+    { "operator-journal-bounds",
+      "<store>/.operator is the durable operator record SINCE fx-init ca9cb06, and it is bounded on every side: it holds the GENERATION PLANE only, and only what PID1's control handler saw.  The file's own header (OPERATOR_HEADER, init.zig:965) names what it does NOT record — the reads (status/q/grep/search), file transfers (put/rm), the interactive shell, per-service commands (start/stop/restart), probe, and a malformed request no arm executed — and what is NOT recorded AND NOT DETECTABLE: a host-side `fxstore rollback`, `rollback --hard`, a hand-edited store CURRENT.  Its only writer is that handler, and root in-guest can forge or truncate it exactly as it can .bootlog: a row is CHECKABLE against the store's version/genhash history, not authoritative over it.  A store predating the journal has NO file at all — absence of the FILE is a state of the store, never 'no interventions occurred'." },
+    { "operator-bypass-paths",
+      "the paths that bypass PID1's control handler have NO record: host-side `fxstore rollback`, `rollback --hard`, and a hand-edited store CURRENT.  Their only durable trace is a generation move the automatic .recovery row does not attribute, so the DERIVED operator-intervention signature is RETAINED as the fallback for them — and it is a DISJUNCTION: an operator rollback, a deliberate re-activation of an older config, or a REMOVED .recovery row (which the AUDIT seat's previous-observation comparison, not this seat, is built to catch).  A rollback to the content that is ALREADY current moves nothing and is invisible in this class by construction.  A journal row can EXPLAIN a derived backward move; it never suppresses the derived row, because the journal cannot prove it saw every path that produced one." },
     { "gc-config-loss",
       "MEASURED on this tree: `fxstore gc <root>` RETAINS every <genhash>-system-generation dir a SURVIVING snapshot's generation fact names (the dir sweep's carve-out) and REAPS a dir whose snapshot was pruned by `gc --retain N` — with its facts, so the pruned generation's input is not reportable at all (the version is gone from the timeline: absence-by-retention, not a finding). config-retained-copy-gone therefore requires a GENUINELY missing copy (a hand-deleted file, or a dir a surviving fact names that is gone) — the post-gc store itself is COHERENT" },
     { "renumber-after-hard",
       "after `rollback --hard` (CURRENT < newest), a later publish renumbers from CURRENT+1 and can destroy the versions between (stated by the gc --retain guard, store.zig; not reproduced here) — the CURRENT!=newest signature is therefore TRANSIENT, visible only until that next publish" },
     { "retention-unpoliced",
-      ".bootlog and .recovery grow without bound and no policy exists for them (§1a gap 4); the snapshots have a knob (gc --retain N) that nothing sets by default" },
+      ".bootlog, .recovery and .operator grow without bound and no policy exists for them (§1a gap 4); the snapshots have a knob (gc --retain N) that nothing sets by default" },
     { "same-store-only",
       "this report is a function of ONE store directory; anything recorded elsewhere (the runtime log, the harness's own transcript, the audit's observation file) is out of domain, and the report never guesses at it" },
 };
@@ -793,6 +961,7 @@ int main(int argc, char **argv) {
     read_facts();
     read_bootlog();
     read_recovery();
+    read_operator();
     read_configs();
 
     /* ── the human header ─────────────────────────────────────────────── */
@@ -827,6 +996,14 @@ int main(int argc, char **argv) {
         printf("absence\t.bootlog\tpresent-but-empty\tABSENT\n");
     if (!g_rec_present)
         printf("absence\t.recovery\tno-automatic-roll-forward-recorded\tABSENT\n");
+    /* .operator's absence is its OWN state, not "no interventions": the
+     * writer's header is ensured on every store at boot (operator_ensure,
+     * init.zig:1038), so a file that is not there is a store that never
+     * booted under ca9cb06 — the derived fallback's domain. */
+    if (!g_op_present)
+        printf("absence\t.operator\tno-operator-journal-this-store-predates-fx-init-ca9cb06-or-never-booted-under-it\tABSENT\n");
+    else if (g_op_empty)
+        printf("absence\t.operator\tpresent-but-empty-no-intervention-recorded\tABSENT\n");
     printf("absence\trt-log\t/run/fx/log.db-not-durably-recorded-tmpfs\tABSENT\n");
 
     /* versions, in chain order */
@@ -946,10 +1123,55 @@ int main(int argc, char **argv) {
                 printf("event\tcontent-recurrence\tDERIVED\tgenhash\t%s\trows\t%u,%u\tsame-content-refailing (the .recovery header's own semantics)\n",
                        g_rec[i].genhash, i + 1, j + 1);
 
+    /* operator intervention — MEASURED from <store>/.operator, the DURABLE
+     * journal fx-init ca9cb06 writes from PID1's control handler: one row
+     * per generation-plane intervention, INCLUDING the ones that failed or
+     * were refused, fsync'd BEFORE the reply is flushed.  Each row carries
+     * its own vault: action, the operator's VERBATIM operand, the outcome,
+     * the generation pair and the boot nonce.  This is the record the
+     * class was missing; the DERIVED fallback below is RETAINED for what
+     * the journal CANNOT see — a store predating it, and the bypass paths
+     * its own header names. */
+    for (unsigned i = 0; i < g_nop; i++) {
+        oprow_t *O = &g_op[i];
+        int from_in = 1, to_in = 1;
+        if (strcmp(O->from_s, "-")) {
+            from_in = 0;
+            for (unsigned j = 0; j < g_nvers; j++)
+                if (g_vers[j].v == (unsigned)strtoul(O->from_s, NULL, 10)) from_in = 1;
+        }
+        if (strcmp(O->to_s, "-")) {
+            to_in = 0;
+            for (unsigned j = 0; j < g_nvers; j++)
+                if (g_vers[j].v == (unsigned)strtoul(O->to_s, NULL, 10)) to_in = 1;
+        }
+        printf("event\toperator-intervention\tMEASURED\tfile\t.operator\tline\t%u\tepoch\t%u\taction\t%s\targ\t%s\toutcome\t%s\tfrom-version\t%s\tto-version\t%s\tnonce\t%s%s%s\n",
+               O->lineno, O->epoch, O->action, O->arg, O->outcome, O->from_s, O->to_s, O->nonce,
+               from_in ? "" : "\tnote\tfrom-version-not-in-timeline-pruned-or-foreign",
+               to_in ? "" : "\tnote\tto-version-not-in-timeline-pruned-or-foreign");
+    }
+
+    /* activation refusal — MEASURED from the SAME rows.  The class whose
+     * absence-meaning was NOT-DURABLY-RECORDED: fx-activate refuses before
+     * touching the store, so the only durable trace is PID1's own row for
+     * the request it could not carry out.  `failed:<rc>`, `refused` and
+     * `refused-config` are refusals; `dhake-failed` (the generation DID
+     * land) and `unverified` (ambiguous — the store could not be
+     * re-opened) are recorded in the same file and are NOT this class. */
+    for (unsigned i = 0; i < g_nop; i++) {
+        oprow_t *O = &g_op[i];
+        if (!outcome_is_refusal(O->outcome)) continue;
+        printf("event\tactivation-refusal\tMEASURED\tfile\t.operator\tline\t%u\tepoch\t%u\taction\t%s\targ\t%s\toutcome\t%s\tfrom-version\t%s\tto-version\t%s\tnonce\t%s\n",
+               O->lineno, O->epoch, O->action, O->arg, O->outcome, O->from_s, O->to_s, O->nonce);
+    }
+
     /* operator intervention — the DERIVED class, with its bound inline.
      * RESTORE-kind versions only: the nearest earlier generation with a
      * genhash must DIFFER (a dup of the immediately-preceding generation
-     * is the benign publish-of-live pair, kind republish-live). */
+     * is the benign publish-of-live pair, kind republish-live).  A journal
+     * row that names this version ANNOTATES the derivation; it never
+     * suppresses it — the journal cannot prove it saw the path that moved
+     * the content. */
     for (unsigned i = 0; i < g_nvers; i++) {
         version_t *V = &g_vers[i];
         if (!strcmp(V->genhash, "-")) continue;
@@ -957,8 +1179,9 @@ int main(int argc, char **argv) {
         dup_targets(i, &nearest, &match);
         if (match < 0 || match == nearest) continue; /* new content / benign pair */
         if (recrow_names(V->v)) continue; /* the automatic path recorded it */
-        printf("event\toperator-intervention\tDERIVED\tshape\trestore\tversion\t%u\tgenhash\t%s\trepresents\t%u\tbound\tdisjunction: operator-rollback-OR-re-activation-of-older-config-OR-removed-recovery-row (bound/operator-absent-by-default)\n",
-               V->v, V->genhash, g_vers[match].v);
+        printf("event\toperator-intervention\tDERIVED\tshape\trestore\tversion\t%u\tgenhash\t%s\trepresents\t%u\tbound\tdisjunction: operator-rollback-OR-re-activation-of-older-config-OR-removed-recovery-row (bound/operator-bypass-paths)%s\n",
+               V->v, V->genhash, g_vers[match].v,
+               op_attributes_to(V->v) ? "\tnote\tjournal-attributes-a-move-to-this-version" : "");
     }
     if (cur_v != newest)
         printf("event\toperator-intervention\tDERIVED\tshape\tcurrent-repoint\tcurrent\t%u\tnewest\t%u\tbound\tdisjunction: rollback-hard-OR-torn-publish (bound/renumber-after-hard; the signature is transient)\n",
@@ -1015,9 +1238,17 @@ int main(int argc, char **argv) {
             if (match >= 0 && match != nearest && !recrow_names(V->v)) n_op++;
         }
         if (cur_v != newest) n_op++;
-        h("operator interventions: %u DERIVED (backward moves / stale CURRENT the records do not attribute — the disjunction is the bound, never a verdict).", n_op);
+        if (!g_op_present)
+            h("operator interventions: %u DERIVED (a backward move or a stale CURRENT the records do not attribute).  NO .operator journal exists for this store: it predates fx-init ca9cb06, so a generation-plane intervention here is NOT durably recorded at all — the disjunction is the bound, never a verdict.", n_op);
+        else
+            h("operator interventions: %u MEASURED from the .operator journal (%u row(s); %u of them a refusal — see event/activation-refusal), plus %u DERIVED for what the journal CANNOT see (a bypass path or a store-side history it has no row for: backward moves / stale CURRENT it does not attribute — the disjunction is the bound, never a verdict).",
+              g_nop, g_nop, (unsigned)op_count_refusals(), n_op);
     }
-    h("activation refusals: THIS REPORT CANNOT SAY (rt_effect at /run/fx/log.db is tmpfs; see bound/rt-log-tmpfs).");
+    if (!g_op_present)
+        h("activation refusals: THIS REPORT CANNOT SAY (no .operator journal — this store predates fx-init ca9cb06 — and rt_effect at /run/fx/log.db is tmpfs; see bound/rt-log-tmpfs).  The class's absence-meaning is NOT-DURABLY-RECORDED again exactly here.");
+    else
+        h("activation refusals: %u MEASURED in the .operator journal (outcome failed:<rc> | refused | refused-config, out of %u row(s)) — a count of RECORDED refusals, never of attempts.  Absence in the retained journal means NONE-IN-THE-JOURNAL, not 'none occurred': PID1's control handler is the journal's only writer (an fx-activate refused outside it is invisible), `unverified` rows are AMBIGUITY not refusal, and root in-guest can forge or truncate the file exactly as it can .bootlog (bound/operator-journal-bounds).",
+          (unsigned)op_count_refusals(), g_nop);
     h("the reconstruction question — 'what changed between N and N+1, and from");
     h("which input?' — is answered by the config/config-line/config-diff records");
     h("above; pairs whose input is absent say which kind of absence.");

@@ -43,16 +43,46 @@
 #              FAIL: the signature missed (the class is decoration) — the
 #              MUT-CLASS mutation below must make exactly this arm go
 #              blind, and MUT-ATTRIB must make the AUTO control fire.
+#              S2 carries NO .operator, so this is ALSO the fallback's own
+#              domain: the derived class is what a store predating the
+#              journal can say, and nothing else.
 #   ABSENT      the none-vs-not-recorded distinction, both directions:
 #              S3 (never booted) says `absence .bootlog
 #              no-boot-ever-recorded` and emits NO boot event; the rt-log
-#              absence says NOT-durably-recorded (tmpfs) and the taxonomy's
-#              activation-refusal row says the same — "no refusals
-#              occurred" CANNOT be concluded.  FAIL: an absence printed as
-#              a zero, or a not-recorded printed as none.
+#              absence says NOT-durably-recorded (tmpfs); the .operator
+#              absence says the store predates the journal — and THAT is
+#              the one case where the activation-refusal row's OLD
+#              absence-meaning (NOT-DURABLY-RECORDED) is still the right
+#              answer.  With a journal that class is MEASURED and its
+#              absence-meaning is "none in the retained journal" (JOURNAL).
+#              FAIL: an absence printed as a zero, or a not-recorded
+#              printed as none — in either direction.
 #   FOREIGN     a .bootlog line naming a version not in the timeline is
 #              reported with the pruned-or-foreign note (the
 #              pre-first-snapshot bound, visible in-band).  FAIL: dropped.
+#   JOURNAL     the DURABLE operator journal (<store>/.operator, fx-init
+#              ca9cb06, written by PID1's control handler) is READ as the
+#              record it is: S2J — a copy of S2 carrying the writer's own
+#              rows — reports each intervention as `event
+#              operator-intervention MEASURED file .operator ...` with
+#              action / arg / outcome / from-version / to-version / nonce
+#              VERBATIM, and each refusal outcome ALSO as `event
+#              activation-refusal MEASURED ...`; the summary counts them.
+#              THE INVERSION IS THE PAIR: S2 (no file) reports the DERIVED
+#              fallback and says the journal does not exist, while S2J
+#              reports the MEASURED rows AND STILL RETAINS the derived
+#              signature — annotated `journal-attributes-a-move-to-this-
+#              version` — because the journal's own header names paths it
+#              cannot see (a host-side `fxstore rollback`, `rollback
+#              --hard`, a hand-edited CURRENT).  A row can EXPLAIN a
+#              backward move; it can never prove it saw the path that
+#              produced one, so it never suppresses the derivation.
+#              FAIL: the file ignored (the class reverts to a derivation
+#              over nothing), a recorded refusal counted as none, the
+#              AMBIGUOUS outcome (`unverified`) or the LANDED one
+#              (`dhake-failed`) counted as refusals, or the derived
+#              fallback dropped wherever the journal exists.  MUT-OPS and
+#              MUT-REFUSE must blind exactly the MEASURED arms.
 #   FINDINGS    corrupting the retained copy fires config-sha-mismatch;
 #              deleting it fires config-retained-copy-gone; exit 1 and
 #              `verdict documented-with-findings`.  FAIL: a broken input
@@ -84,29 +114,38 @@
 #              FAIL: wall-clock, locale or order leaking into records.
 #   LOUD        an over-long .bootlog is exit 2 NAMING the cap (a report
 #              over a truncated view is a lie); an unreadable .bootlog is
-#              exit 2 (a read error is not an absence).  FAIL: exit 0.
+#              exit 2 (a read error is not an absence); a .operator line
+#              that is NOT the writer's shape is exit 2 NAMING the shape
+#              (a skipped row would silently delete an operator action
+#              from the account).  FAIL: exit 0.
 #   MUTATIONS   each sed-mutated copy of the seat, with ONE taxonomy piece
 #              disabled, must make its own arm's assertion go blind:
-#              MUT-CLASS (the operator-intervention emission tag) ->
-#              OPERATOR arm fails on the mutant; MUT-ATTRIB (delete the
-#              .recovery attribution line) -> the AUTO control fails on
-#              the mutant; MUT-FINDING (the copy-gone finding tag) -> the
-#              FINDINGS arm fails on the mutant.  A taxonomy nobody can
-#              falsify is decoration.
+#              MUT-CLASS (the DERIVED operator-intervention emission tag)
+#              -> the OPERATOR arm fails on the mutant; MUT-ATTRIB (delete
+#              the .recovery attribution line) -> the AUTO control fails
+#              on the mutant; MUT-FINDING (the copy-gone finding tag) ->
+#              the FINDINGS arm fails on the mutant; MUT-OPS (the MEASURED
+#              journal emission tag) -> the JOURNAL arm fails on the
+#              mutant; MUT-REFUSE (the activation-refusal emission tag) ->
+#              the JOURNAL arm's refusal assertion fails on the mutant.  A
+#              taxonomy nobody can falsify is decoration.
 #   PINS        nothing depends on the position of HEAD: the citations in
 #              the tool's frozen retention table are pinned to FIXED
-#              revisions (fx-init 4c5803d, fxstore 0341650 — the trees the
+#              revisions (fx-init ca9cb06, fxstore 0341650 — the trees the
 #              table was measured against), guarded by git cat-file -e and
 #              cmp-proven EQUAL to the working tree, so a moved sibling
 #              fails the gate LOUDLY instead of leaving the table citing
 #              line numbers that no longer exist.
 #
-# FIXTURE HONESTY: .bootlog/.recovery are fx-init's files and fx-init does
-# not run host-side; the gate writes them in the writers' exact formats
-# (bootlog_append's "%u %s %u %s\n" — in-progress at boot start plus the
-# verdict per boot; recovery's "#"-header + "<epoch> <published>
-# <from-failed> <genhash|-> <nonce>" row) and DECLARES that here, exactly
-# as tests/test_fx_audit.sh does.  Everything else is written by the real
+# FIXTURE HONESTY: .bootlog/.recovery/.operator are fx-init's files and
+# fx-init does not run host-side; the gate writes them in the writers'
+# exact formats (bootlog_append's "%u %s %u %s\n" — in-progress at boot
+# start plus the verdict per boot; recovery's "#"-header + "<epoch>
+# <published> <from-failed> <genhash|-> <nonce>" row; and the operator
+# journal's OWN header (copied from OPERATOR_HEADER, init.zig:965, because
+# that header IS the definition) plus operator_line's "<epoch> <action>
+# <arg> <outcome> <from-version|-> <to-version|-> <nonce>" rows) and
+# DECLARES that here, exactly as tests/test_fx_audit.sh does.  Everything else is written by the real
 # writers: fx-activate (host-built, the audit gate's provisioning shape)
 # and fxstore itself (the soft rollback fx-init's roll-forward drives
 # in-guest).
@@ -165,8 +204,10 @@ grep -aq "a report over a truncated view is a lie" "$REPORT" \
     || fail "STALE BINARY: $REPORT does not contain this source's bootlog-cap refusal message"
 grep -aq "republish-live" "$REPORT" \
     || fail "STALE BINARY: $REPORT does not contain this source's publish-of-live classification"
-grep -aq "CANNOT be concluded from any durable record" "$REPORT" \
-    || fail "STALE BINARY: $REPORT does not contain this source's refusal-taxonomy row"
+grep -aq "no-operator-journal-this-store-predates-fx-init-ca9cb06" "$REPORT" \
+    || fail "STALE BINARY: $REPORT does not contain this source's operator-journal absence record"
+grep -aq "not the writer's shape \"<epoch> <action> <arg> <outcome>" "$REPORT" \
+    || fail "STALE BINARY: $REPORT does not contain this source's operator-journal shape refusal"
 
 TAB="$(printf '\t')"
 
@@ -203,7 +244,7 @@ pin_blob() { # pin_blob REPO BLOB FILE LABEL
     git -C "$1" cat-file blob "$2" | cmp -s - "$1/$3" \
         || fail "PIN: $1/$3 differs from the pinned blob $2 this seat's retention table was measured against — the citations in tools/fx-report.c are STALE; re-measure and update the frozen tables"
 }
-pin_guard "$INIT" 4c5803d zig/src/init.zig "fx-init"
+pin_guard "$INIT" ca9cb06 zig/src/init.zig "fx-init"
 pin_guard "$FXS_REPO" 0341650 zig/src/provenance.zig "fxstore"
 pin_blob "$FXS_REPO" 30dce7cbb60105348d2ba44fa11d224487351af9 zig/src/store.zig "fxstore"
 
@@ -421,6 +462,84 @@ grep -q "^event${TAB}roll-forward-automatic" "$WORK/out-s2" \
     && fail "OPERATOR: a roll-forward-automatic event with NO .recovery — fabricated"
 grep -q "^# operator interventions: 1 DERIVED" "$WORK/out-s2" \
     || fail "OPERATOR: the summary count is wrong"
+grep -q "^# operator interventions: 1 DERIVED (a backward move or a stale CURRENT the records do not attribute).  NO .operator journal exists for this store: it predates fx-init ca9cb06" "$WORK/out-s2" \
+    || fail "OPERATOR: the summary must say the journal does not exist for this store (the derived class's OWN domain, not a verdict)"
+grep -q "^absence${TAB}.operator${TAB}no-operator-journal-this-store-predates-fx-init-ca9cb06" "$WORK/out-s2" \
+    || fail "OPERATOR: the absent .operator must be its OWN state, never silently read as no-interventions"
+grep -q "^event${TAB}operator-intervention${TAB}MEASURED" "$WORK/out-s2" \
+    && fail "OPERATOR: a MEASURED operator row with NO .operator — fabricated"
+
+# ══ JOURNAL: the DURABLE operator journal is the RECORD, and the derived
+#    fallback is RETAINED beside it (the pair that proves the move is real:
+#    S2 has no file and reports the derivation; S2J has the rows and reports
+#    them MEASURED while STILL deriving what the journal cannot see) ══════
+cp -a "$WORK/s2" "$WORK/s2j" || fail cp
+# the writer's header, abridged but verbatim where it defines the SHAPE —
+# every "#" line is the writer's header and the reader skips them all.  A
+# QUOTED heredoc: the real header contains backticks (command substitution
+# in an unquoted one).
+cat > "$WORK/s2j/.operator" <<'OPHDR'
+# fx-init operator journal. One DATA line per OPERATOR intervention
+# on the generation plane, i.e. per control-channel `activate`,
+# `rollback` or `shutdown` — INCLUDING the ones that FAILED or were
+# REFUSED: an intervention that did not take effect is still an
+# intervention.  The count of interventions is the number of lines
+# starting with a digit.
+# line: <epoch-s> <action> <arg> <outcome> <from-version|-> <to-version|-> <boot-nonce|none>
+# (the rest of OPERATOR_HEADER, init.zig:965, is abridged here: every "#"
+# line is the writer's header and the reader skips them ALL.)
+OPHDR
+# the data rows: five shapes of intervention, three of them refusals, one
+# naming a version the store does not hold (the row is CHECKABLE against
+# the store's history, not authoritative over it).
+cat >> "$WORK/s2j/.operator" <<EOF
+190 activate /fx/src/cfgB.dhall ok $VA $VB gateboot02
+201 activate /fx/src/bad.dhall failed:1 $VA - gateboot02
+202 activate /fx/src/big.dhall refused-config $VA $VCUR gateboot02
+203 rollback 9 refused $VCUR - gateboot03
+204 activate /fx/src/x.dhall unverified $VCUR - gateboot03
+205 activate /fx/src/y.dhall dhake-failed $VCUR 5 gateboot03
+300 rollback $VA ok $VB $VCUR gateboot03
+301 activate /fx/src/gone.dhall ok $VCUR 999 gateboot03
+EOF
+NOPROWS=8
+NOPSREF=3
+report "$WORK/s2j" "$WORK/out-s2j"
+[ $? -eq 0 ] || fail "JOURNAL: a store WITH an operator journal must report cleanly (exit 0), got $?"
+grep -q "^absence${TAB}.operator" "$WORK/out-s2j" \
+    && fail "JOURNAL: an absence record for a .operator that IS there — fabricated"
+# MEASURED, carrying the row VERBATIM: epoch, action, the operator's own
+# operand, the outcome, the generation pair, the boot nonce, the file+line.
+grep -q "^event${TAB}operator-intervention${TAB}MEASURED${TAB}file${TAB}.operator${TAB}line${TAB}[0-9]*${TAB}epoch${TAB}190${TAB}action${TAB}activate${TAB}arg${TAB}/fx/src/cfgB.dhall${TAB}outcome${TAB}ok${TAB}from-version${TAB}$VA${TAB}to-version${TAB}$VB${TAB}nonce${TAB}gateboot02" "$WORK/out-s2j" \
+    || fail "JOURNAL: no MEASURED operator row for the journal's own first data line (the file is being ignored)"
+grep -q "^event${TAB}operator-intervention${TAB}MEASURED${TAB}file${TAB}.operator${TAB}line${TAB}[0-9]*${TAB}epoch${TAB}300${TAB}action${TAB}rollback${TAB}arg${TAB}$VA${TAB}outcome${TAB}ok" "$WORK/out-s2j" \
+    || fail "JOURNAL: the operator ROLLBACK row (action+verbatim arg) is not reported"
+# the row naming a version the store does not hold is CHECKED, not trusted
+grep -q "^event${TAB}operator-intervention${TAB}MEASURED.*to-version${TAB}999.*note${TAB}to-version-not-in-timeline-pruned-or-foreign" "$WORK/out-s2j" \
+    || fail "JOURNAL: a journal row naming a version not in the timeline must carry the pruned-or-foreign note (the row is checkable, not authoritative)"
+# REFUSALS: MEASURED, and the class that could not answer before
+grep -q "^event${TAB}activation-refusal${TAB}MEASURED${TAB}file${TAB}.operator${TAB}line${TAB}[0-9]*${TAB}epoch${TAB}201${TAB}action${TAB}activate${TAB}arg${TAB}/fx/src/bad.dhall${TAB}outcome${TAB}failed:1" "$WORK/out-s2j" \
+    || fail "JOURNAL: the failed activation (outcome failed:<rc>) is not reported as an activation-refusal"
+grep -q "^event${TAB}activation-refusal${TAB}MEASURED.*epoch${TAB}202.*outcome${TAB}refused-config" "$WORK/out-s2j" \
+    || fail "JOURNAL: the REFUSED-CONFIG activation is not reported as an activation-refusal"
+grep -q "^event${TAB}activation-refusal${TAB}MEASURED.*epoch${TAB}203.*action${TAB}rollback.*outcome${TAB}refused" "$WORK/out-s2j" \
+    || fail "JOURNAL: a rollback the STORE refused is an intervention that did not take effect and must be reported"
+grep -q "^event${TAB}activation-refusal${TAB}MEASURED.*outcome${TAB}unverified" "$WORK/out-s2j" \
+    && fail "JOURNAL: \`unverified\` is AMBIGUOUS (the store could not be re-opened), not a refusal — a class must not be more authoritative than its record"
+grep -q "^event${TAB}activation-refusal${TAB}MEASURED.*outcome${TAB}dhake-failed" "$WORK/out-s2j" \
+    && fail "JOURNAL: \`dhake-failed\` means the generation LANDED (only the live-root reapply failed) — it is not a refusal"
+grep -q "^# operator interventions: $NOPROWS MEASURED from the .operator journal ($NOPROWS row(s); $NOPSREF of them a refusal" "$WORK/out-s2j" \
+    || fail "JOURNAL: the summary must count the MEASURED rows and the refusals among them"
+grep -q "^# activation refusals: $NOPSREF MEASURED in the .operator journal" "$WORK/out-s2j" \
+    || fail "JOURNAL: the refusal summary must say MEASURED with its count"
+grep -q "^# activation refusals: THIS REPORT CANNOT SAY" "$WORK/out-s2j" \
+    && fail "JOURNAL: the pre-ca9cb06 'cannot say' must NOT be printed for a store that HAS the journal"
+# THE RETAINED DERIVATION: a journal row EXPLAINS the backward move; it
+# must not SUPPRESS it (the journal cannot prove it saw every path).
+grep -q "^event${TAB}operator-intervention${TAB}DERIVED${TAB}shape${TAB}restore${TAB}version${TAB}$VCUR.*journal-attributes-a-move-to-this-version" "$WORK/out-s2j" \
+    || fail "JOURNAL: the DERIVED fallback was DROPPED for a store that has the journal — a row explains a move, it cannot prove the journal saw the path"
+grep -q "^taxonomy${TAB}activation-refusal${TAB}MEASURED.*outcome is a refusal" "$WORK/out-s2j" \
+    || fail "JOURNAL: the taxonomy row still describes the pre-ca9cb06 record (the frozen table did not move)"
 
 # ══ ABSENT: none-occurred vs not-durably-recorded ════════════════════════
 report "$WORK/s3" "$WORK/out-s3"
@@ -433,6 +552,10 @@ grep -q "^absence${TAB}rt-log${TAB}/run/fx/log.db-not-durably-recorded-tmpfs" "$
     || fail "ABSENT: the rt-log absence (tmpfs, not 'none') is not stated"
 grep -q "^taxonomy${TAB}activation-refusal${TAB}.*NOT-DURABLY-RECORDED" "$WORK/out-s3" \
     || fail "ABSENT: the refusal class's not-durably-recorded row is not in the taxonomy"
+grep -q "^absence${TAB}.operator${TAB}no-operator-journal-this-store-predates-fx-init-ca9cb06" "$WORK/out-s3" \
+    || fail "ABSENT: a store with no .operator must say it predates the journal — the absence of the FILE is a state, not an absence of interventions"
+grep -q "^event${TAB}activation-refusal" "$WORK/out-s3" \
+    && fail "ABSENT: a refusal event fabricated with NO .operator"
 grep -q "^# activation refusals: THIS REPORT CANNOT SAY" "$WORK/out-s3" \
     || fail "ABSENT: the summary must refuse to say whether any activation was refused"
 
@@ -514,6 +637,32 @@ report "$WORK/loud2" "$WORK/out-loud2"
 [ $? -eq 2 ] || fail "LOUD: an unreadable .bootlog must be exit 2 (a read error is not an absence), got $?"
 chmod 644 "$WORK/loud2/.bootlog"
 
+# LOUD: a .operator line that is not the writer's shape is exit 2 NAMING
+# the shape — a silently skipped row would DELETE an operator action from
+# the account, which is the whole reason the journal exists.
+cp -a "$WORK/s1" "$WORK/loud3" || fail cp
+printf '99 activate /fx/src/cfgA.dhall ok\n' > "$WORK/loud3/.operator"
+report "$WORK/loud3" "$WORK/out-loud3"
+[ $? -eq 2 ] || fail "LOUD: a TRUNCATED .operator line (the realistic corruption) must be exit 2 (never skipped silently), got $?"
+grep -q "not the writer's shape" "$WORK/out-loud3.err" \
+    || fail "LOUD: the .operator shape refusal does not name the shape"
+# ... and a line of PROSE also splits into seven whitespace fields, so the
+# SHAPE alone is not enough: the generation pair must be the writer's
+# vocabulary (a decimal version or "-"), or a damaged file would invent an
+# operator action.  FAIL: exit 0 (the prose accepted as a row).
+printf '99 this is not the writer shape at all\n' > "$WORK/loud3/.operator"
+report "$WORK/loud3" "$WORK/out-loud3b"
+[ $? -eq 2 ] || fail "LOUD: a prose line was accepted as a journal row (seven fields is not the writer's shape), got $?"
+grep -q "not the writer's vocabulary" "$WORK/out-loud3b.err" \
+    || fail "LOUD: the prose refusal does not name the generation-pair check"
+# LOUD: an unreadable .operator is exit 2 (a read error is not an absence)
+cp -a "$WORK/s1" "$WORK/loud4" || fail cp
+printf '190 activate /fx/src/cfgA.dhall ok 1 2 none\n' > "$WORK/loud4/.operator"
+chmod 000 "$WORK/loud4/.operator"
+report "$WORK/loud4" "$WORK/out-loud4"
+[ $? -eq 2 ] || fail "LOUD: an unreadable .operator must be exit 2 (a read error is not an absence), got $?"
+chmod 644 "$WORK/loud4/.operator"
+
 # ══ MUTATIONS: disable one taxonomy piece at a time; the arm that asserts
 #    it must GO BLIND on the mutant, or the taxonomy is decoration ══════
 mutbuild() { # mutbuild NAME SED-EXPR -> builds build/fx-report-<name>
@@ -549,8 +698,23 @@ FXSTORE_BIN="$FXSTORE" "$REPO/build/fx-report-finding" --store "$WORK/s2" > "$WO
 grep -q "^finding${TAB}config-retained-copy-gone${TAB}version${TAB}$VA" "$WORK/out-mutfind" \
     && fail "MUT-FINDING: the copy-gone arm still passes with the finding disabled — the assertion is not load-bearing"
 
+# MUT-OPS: the MEASURED journal emission is disabled — the JOURNAL arm's
+# MEASURED assertion must go blind on exactly the S2J fixture.
+mutbuild ops 's/event\\toperator-intervention\\tMEASURED/disabled\\toperator-intervention\\tMEASURED/'
+FXSTORE_BIN="$FXSTORE" "$REPO/build/fx-report-ops" --store "$WORK/s2j" > "$WORK/out-mutops" 2>/dev/null
+grep -q "^event${TAB}operator-intervention${TAB}MEASURED" "$WORK/out-mutops" \
+    && fail "MUT-OPS: the JOURNAL arm still passes with the MEASURED emission disabled — the assertion is not load-bearing"
+
+# MUT-REFUSE: the activation-refusal emission is disabled — the JOURNAL
+# arm's refusal assertion must go blind on the same fixture.
+mutbuild refuse 's/event\\tactivation-refusal\\tMEASURED/disabled\\tactivation-refusal\\tMEASURED/'
+FXSTORE_BIN="$FXSTORE" "$REPO/build/fx-report-refuse" --store "$WORK/s2j" > "$WORK/out-mutrefuse" 2>/dev/null
+grep -q "^event${TAB}activation-refusal${TAB}MEASURED" "$WORK/out-mutrefuse" \
+    && fail "MUT-REFUSE: the JOURNAL arm's refusal assertion still passes with the refusal emission disabled"
+
 # the mutants are gate artifacts, not seats — remove them so no stale
 # binary can later answer for the seat
-rm -f "$REPO/build/fx-report-class" "$REPO/build/fx-report-attrib" "$REPO/build/fx-report-finding"
+rm -f "$REPO/build/fx-report-class" "$REPO/build/fx-report-attrib" "$REPO/build/fx-report-finding" \
+    "$REPO/build/fx-report-ops" "$REPO/build/fx-report-refuse"
 
-echo "test_fx_report: PASS — the reconstruction is answerable from the report alone (both inputs readable, the diff, the generation each produced), the taxonomy separates none-occurred from not-durably-recorded (a never-booted store says so; refusals cannot be counted), the operator class is DERIVED only where the .recovery row does not attribute the restore (and the mutations blind exactly their own arms), the gc retention carve-out is re-measured every run (a surviving snapshot's dir is retained, a pruned one's is reaped), and the output is byte-deterministic and independent of any self-report."
+echo "test_fx_report: PASS — the reconstruction is answerable from the report alone (both inputs readable, the diff, the generation each produced), the taxonomy separates none-occurred from not-durably-recorded (a never-booted store says so; refusals cannot be counted), the operator class is MEASURED from the .operator journal where the journal exists and DERIVED only where it does not (the .recovery row, or the missing file) with the derivation RETAINED beside the journal for its own blind spots (and the mutations blind exactly their own arms), the gc retention carve-out is re-measured every run (a surviving snapshot's dir is retained, a pruned one's is reaped), and the output is byte-deterministic and independent of any self-report."
