@@ -80,9 +80,12 @@
  * genuine activations one second apart produced byte-equal facts — OR a
  * removed .recovery row, which the AUDIT seat's previous-observation
  * comparison, not this seat, is built to catch); nothing before the
- * store's first snapshot; `fxstore gc` deleting the retained configs
- * (MEASURED on this tree: the dir sweep has no carve-out for
- * <genhash>-system-generation dirs); the renumber hazard after
+ * store's first snapshot; a generation dir whose snapshot was pruned by
+ * `gc --retain` (MEASURED on this tree: `fxstore gc` RETAINS every
+ * <genhash>-system-generation dir a SURVIVING snapshot's generation fact
+ * names — the dir sweep's carve-out — and reaps a dir whose snapshot was
+ * pruned, WITH its facts, so a pruned generation's input is unreportable:
+ * absence-by-retention, not a missing event); the renumber hazard after
  * `rollback --hard`; and the absent retention policy for .bootlog and
  * .recovery.  A report that implies more than its records support is the
  * failure mode this whole project exists to argue against.
@@ -710,8 +713,8 @@ static const struct {
       "NO growth policy exists (§1a gap 4)" },
     { "retained config (the INPUT)", "<store>/<genhash>-system-generation/config.dhall (fx-activate, per activation)",
       "survives (disk)", "survives (each activation writes its own gen dir)",
-      "NOT-SURVIVING (MEASURED on this tree, fxstore 0341650: `fxstore gc <root>` removed every <genhash>-system-generation dir — the dir sweep store.zig has no carve-out and 'system-generation' is never a live package name)",
-      "no policy; the loss is silent (the generation_config FACT survives, the copy does not)" },
+      "RETAINED-WHILE-NAMED (MEASURED on this tree, store.zig pinned blob 30dce7cb: `fxstore gc <root>` keeps every <genhash>-system-generation dir named by a SURVIVING snapshot's generation fact — the dir sweep's carve-out, logged per dir on stderr; a dir whose snapshot was pruned by `gc --retain N` IS reaped, with its facts)",
+      "no policy for how LONG: the copy is exactly as durable as the snapshot that names it (`gc --retain N` prunes version and dir together); a GENUINELY missing copy (hand-deleted, or a dir a surviving fact names that is gone) still fires config-retained-copy-gone" },
     { "runtime datalog rt_effect/rt_control", "/run/fx/log.db (fx-init init.zig:32 DEFAULT_RUN, opened :4523)",
       "DOES NOT SURVIVE (post-pivot '/' is tmpfs, init.zig M4 pivot — the log dies at every reboot)",
       "n/a (dies with the boot that wrote it)",
@@ -732,7 +735,7 @@ static const struct { const char *id, *text; } BOUNDS[] = {
     { "pre-first-snapshot",
       "nothing before the store's first snapshot is representable; a .bootlog line naming a version not in the timeline is reported as such (pruned by gc, or written by a store history this disk no longer holds)" },
     { "gc-config-loss",
-      "MEASURED on this tree: `fxstore gc <root>` deletes every <genhash>-system-generation directory — the retained configs and the Dhakefile.dhall/etc the install facts point at; after a gc, the inputs of every past generation are UNREADABLE (finding config-retained-copy-gone) and the machine's own /etc files are gone from the store" },
+      "MEASURED on this tree: `fxstore gc <root>` RETAINS every <genhash>-system-generation dir a SURVIVING snapshot's generation fact names (the dir sweep's carve-out) and REAPS a dir whose snapshot was pruned by `gc --retain N` — with its facts, so the pruned generation's input is not reportable at all (the version is gone from the timeline: absence-by-retention, not a finding). config-retained-copy-gone therefore requires a GENUINELY missing copy (a hand-deleted file, or a dir a surviving fact names that is gone) — the post-gc store itself is COHERENT" },
     { "renumber-after-hard",
       "after `rollback --hard` (CURRENT < newest), a later publish renumbers from CURRENT+1 and can destroy the versions between (stated by the gc --retain guard, store.zig; not reproduced here) — the CURRENT!=newest signature is therefore TRANSIENT, visible only until that next publish" },
     { "retention-unpoliced",

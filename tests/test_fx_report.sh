@@ -57,12 +57,21 @@
 #              deleting it fires config-retained-copy-gone; exit 1 and
 #              `verdict documented-with-findings`.  FAIL: a broken input
 #              reported as documented.  MUT-FINDING must blind this arm.
-#   GCLOSS      the retention table's MEASURED gc claim, re-proven every
-#              run: `fxstore gc` on S3 removes every
-#              <genhash>-system-generation dir (asserted on the DISK), and
-#              the report then carries config-retained-copy-gone with
-#              exit 1.  FAIL: gc stops deleting them (the frozen retention
-#              row is stale — update it), or the report misses the loss.
+#   GCKEEP/GREAP the retention table's MEASURED gc claim, re-proven every
+#              run, BOTH directions of the carve-out: `fxstore gc` on S3
+#              RETAINS every <genhash>-system-generation dir named by a
+#              surviving snapshot (asserted on the DISK, plus gc's own
+#              LOUD keep log) and the post-gc report is COHERENT (exit 0,
+#              no fabricated finding); then `gc --retain 1` on a copy
+#              prunes the older snapshot and its generation dir IS reaped
+#              (plus the LOUD reap log) — the carve-out is precise, not a
+#              blanket keep.  FAIL: a surviving snapshot's dir is deleted
+#              (the carve-out regressed — re-measure and update the
+#              frozen retention row), a pruned snapshot's dir survives,
+#              or the report flags a store whose inputs are all readable.
+#              (The copy-gone FINDING itself stays reachable only via a
+#              GENUINELY missing copy — the FINDINGS arm's hand-deleted
+#              file; MUT-FINDING blinds THAT arm.)
 #   REPOINT     `rollback --hard` (CURRENT moves, NO new version) surfaces
 #              as `event operator-intervention ... shape current-repoint`,
 #              and `current` != newest.  FAIL: the stale-CURRENT signature
@@ -120,6 +129,8 @@ FXSTORE="${FXSTORE_BIN:-$SIBS/fxstore/zig-out/bin/fxstore}"
 [ -x "$FXSTORE" ] || skip "fxstore binary missing at $FXSTORE (build the sibling)"
 "$FXSTORE" --help 2>&1 | grep -q 'fxstore facts' || skip "fxstore at $FXSTORE predates 'facts' (rebuild the sibling)"
 grep -aq generation_config "$FXSTORE" || skip "fxstore at $FXSTORE predates the generation_config schema row (rebuild the sibling)"
+grep -aq "keeping generation dir" "$FXSTORE" \
+    || skip "fxstore at $FXSTORE predates the gc generation-dir carve-out (rebuild the sibling)"
 
 INIT="${FX_INIT_REPO:-$SIBS/fx-init}"
 [ -d "$INIT" ] || skip "fx-init checkout not found at $INIT (set FX_INIT_REPO)"
@@ -167,8 +178,10 @@ else
 fi
 
 # ── the PINS: the tool's frozen retention table cites fx-init init.zig and
-#    fxstore store.zig/provenance.zig line-level facts measured against
-#    FIXED revisions.  Guard the object, then cmp the pinned blob against
+#    fxstore store.zig/provenance.zig facts measured against FIXED objects
+#    (commits for the unchanged siblings; store.zig's carve-out was measured
+#    against its working-tree BLOB — the gc retention row — pinned by object
+#    name).  Guard the object, then cmp the pinned blob against
 #    the working tree: a sibling that moved fails the gate LOUDLY (the
 #    table's citations are stale — re-measure) instead of silently
 #    citing a file that no longer says what the table claims.
@@ -180,9 +193,19 @@ pin_guard() { # pin_guard REPO REV FILE LABEL
     git -C "$1" show "$2:$3" 2>/dev/null | cmp -s - "$1/$3" \
         || fail "PIN: $1/$3 differs from the pinned $2 this seat's retention table was measured against — the citations in tools/fx-report.c are STALE; re-measure and update the frozen tables"
 }
+# pin_blob: the same guard for a file measured against an UNCOMMITTED tree —
+# the pin is the file's BLOB object name (stable across the later commit:
+# the committed tree stores the same blob), not a revision.  The object must
+# already be in the odb (git hash-object -w, or the commit that lands it).
+pin_blob() { # pin_blob REPO BLOB FILE LABEL
+    git -C "$1" cat-file -e "$2" 2>/dev/null \
+        || fail "PIN: $4 blob $2 not present in $1's object db — the pin is a fixed object name; hash-object -w the measured file or update the pin consciously"
+    git -C "$1" cat-file blob "$2" | cmp -s - "$1/$3" \
+        || fail "PIN: $1/$3 differs from the pinned blob $2 this seat's retention table was measured against — the citations in tools/fx-report.c are STALE; re-measure and update the frozen tables"
+}
 pin_guard "$INIT" 4c5803d zig/src/init.zig "fx-init"
-pin_guard "$FXS_REPO" 0341650 zig/src/store.zig "fxstore"
 pin_guard "$FXS_REPO" 0341650 zig/src/provenance.zig "fxstore"
+pin_blob "$FXS_REPO" 30dce7cbb60105348d2ba44fa11d224487351af9 zig/src/store.zig "fxstore"
 
 # ── the fixture store (toolchain-free provisioning, the audit gate's shape)
 SRC="$WORK/src"
@@ -413,17 +436,39 @@ grep -q "^taxonomy${TAB}activation-refusal${TAB}.*NOT-DURABLY-RECORDED" "$WORK/o
 grep -q "^# activation refusals: THIS REPORT CANNOT SAY" "$WORK/out-s3" \
     || fail "ABSENT: the summary must refuse to say whether any activation was refused"
 
-# GCLOSS: the MEASURED gc behaviour, re-proven every run, on S3
-[ -d "$WORK/s3/$GHA-system-generation" ] || fail "GCLOSS precondition: no retained config dir before gc"
-"$FXSTORE" gc dhake --store "$WORK/s3" >/dev/null 2>&1 || fail "fxstore gc failed"
+# GCKEEP/GREAP: the MEASURED gc behaviour, re-proven every run, on S3 —
+# BOTH directions of the generation-dir carve-out.  Keep the old evidence
+# VISIBLE as the inverted pair rather than deleting it: a dir a surviving
+# snapshot names is retained, AND a dir whose snapshot was pruned IS reaped.
+[ -d "$WORK/s3/$GHA-system-generation" ] || fail "GCKEEP precondition: no retained config dir before gc"
+[ -d "$WORK/s3/$GHB-system-generation" ] || fail "GCKEEP precondition: no second generation dir before gc"
+"$FXSTORE" gc dhake --store "$WORK/s3" >/dev/null 2>"$WORK/gc-s3.err" || fail "fxstore gc failed"
 [ -d "$WORK/s3/$GHA-system-generation" ] \
-    && fail "GCLOSS: the retained config dir SURVIVED gc — the frozen retention row in tools/fx-report.c is STALE (gc no longer deletes them); re-measure and update it"
+    || fail "GCKEEP: the retained config dir DID NOT SURVIVE gc — the frozen retention row in tools/fx-report.c is STALE (gc regressed; re-measure and update it)"
+[ -d "$WORK/s3/$GHB-system-generation" ] \
+    || fail "GCKEEP: v$VB's generation dir did not survive gc — a surviving snapshot's generation fact names it"
+grep -q "keeping generation dir '$GHA-system-generation'" "$WORK/gc-s3.err" \
+    || fail "GCKEEP: gc did not LOUDLY log keeping $GHA-system-generation (a silent store-policy decision is the defect class)"
 report "$WORK/s3" "$WORK/out-s3gc"
-[ $? -eq 1 ] || fail "GCLOSS: the post-gc store must exit 1 (the inputs are no longer readable), got $?"
-grep -q "^finding${TAB}config-retained-copy-gone${TAB}version${TAB}$VA" "$WORK/out-s3gc" \
-    || fail "GCLOSS: no config-retained-copy-gone finding after gc"
-grep -q "^verdict${TAB}documented-with-findings$" "$WORK/out-s3gc" \
-    || fail "GCLOSS: verdict must say documented-with-findings"
+[ $? -eq 0 ] || fail "GCKEEP: the post-gc store must be COHERENT (exit 0 — every surviving copy is readable), got $?"
+grep -q "^verdict${TAB}documented$" "$WORK/out-s3gc" \
+    || fail "GCKEEP: verdict must be documented for a store whose inputs survived gc"
+grep -q "^finding${TAB}config-retained-copy-gone" "$WORK/out-s3gc" \
+    && fail "GCKEEP: a config-retained-copy-gone finding on a store gc did NOT prune — fabricated (the class now needs a GENUINELY missing copy; see FINDINGS)"
+# the REAP direction: gc --retain 1 prunes every snapshot but the newest,
+# whose generation fact names $GHA — so $GHB's dir is reaped WITH v$VB.
+# The report over the pruned store stays COHERENT: the pruned version is
+# gone from the timeline entirely (absence-by-retention), never a finding.
+cp -a "$WORK/s3" "$WORK/s3r" || fail cp
+"$FXSTORE" gc --retain 1 dhake --store "$WORK/s3r" >/dev/null 2>"$WORK/gc-s3r.err" || fail "fxstore gc --retain 1 failed"
+[ -d "$WORK/s3r/$GHA-system-generation" ] \
+    || fail "GREAP: the NEWEST snapshot's generation dir must survive gc --retain 1"
+[ -d "$WORK/s3r/$GHB-system-generation" ] \
+    && fail "GREAP: the pruned snapshot's generation dir $GHB survived — the carve-out is a blanket keep, not the fact-derived rule the retention row states"
+grep -q "reaping generation dir '$GHB-system-generation'" "$WORK/gc-s3r.err" \
+    || fail "GREAP: gc did not LOUDLY log reaping $GHB-system-generation"
+report "$WORK/s3r" "$WORK/out-s3rgc"
+[ $? -eq 0 ] || fail "GREAP: the pruned store must report COHERENTLY (exit 0 — absence-by-retention is not a finding), got $?"
 
 # FOREIGN: a bootlog line naming a version the store no longer holds
 echo "999 in-progress 900 gateboot99" >> "$WORK/s2/.bootlog"
@@ -494,15 +539,18 @@ FXSTORE_BIN="$FXSTORE" "$REPO/build/fx-report-attrib" --store "$WORK/s1" > "$WOR
 grep -q "^event${TAB}operator-intervention" "$WORK/out-mutattr" \
     || fail "MUT-ATTRIB: the AUTO control still passes with the attribution deleted — the .recovery row is not load-bearing"
 
-# MUT-FINDING: the copy-gone finding is disabled — the GCLOSS arm must go
-# blind on the post-gc store.
+# MUT-FINDING: the copy-gone finding is disabled — the FINDINGS arm must go
+# blind on S2's GENUINELY missing copy (hand-deleted in the FINDINGS arm;
+# the post-gc store can no longer produce the class — gc now RETAINS every
+# surviving snapshot's copy, so the class's reachable shape is the hand-
+# deleted file).
 mutbuild finding 's/finding\\tconfig-retained-copy-gone/finding\\tconfig-retained-copy-DISABLED/'
-FXSTORE_BIN="$FXSTORE" "$REPO/build/fx-report-finding" --store "$WORK/s3" > "$WORK/out-mutfind" 2>/dev/null
+FXSTORE_BIN="$FXSTORE" "$REPO/build/fx-report-finding" --store "$WORK/s2" > "$WORK/out-mutfind" 2>/dev/null
 grep -q "^finding${TAB}config-retained-copy-gone${TAB}version${TAB}$VA" "$WORK/out-mutfind" \
-    && fail "MUT-FINDING: the gc-loss arm still passes with the finding disabled — the assertion is not load-bearing"
+    && fail "MUT-FINDING: the copy-gone arm still passes with the finding disabled — the assertion is not load-bearing"
 
 # the mutants are gate artifacts, not seats — remove them so no stale
 # binary can later answer for the seat
 rm -f "$REPO/build/fx-report-class" "$REPO/build/fx-report-attrib" "$REPO/build/fx-report-finding"
 
-echo "test_fx_report: PASS — the reconstruction is answerable from the report alone (both inputs readable, the diff, the generation each produced), the taxonomy separates none-occurred from not-durably-recorded (a never-booted store says so; refusals cannot be counted), the operator class is DERIVED only where the .recovery row does not attribute the restore (and the mutations blind exactly their own arms), the gc retention loss is re-measured every run, and the output is byte-deterministic and independent of any self-report."
+echo "test_fx_report: PASS — the reconstruction is answerable from the report alone (both inputs readable, the diff, the generation each produced), the taxonomy separates none-occurred from not-durably-recorded (a never-booted store says so; refusals cannot be counted), the operator class is DERIVED only where the .recovery row does not attribute the restore (and the mutations blind exactly their own arms), the gc retention carve-out is re-measured every run (a surviving snapshot's dir is retained, a pruned one's is reaped), and the output is byte-deterministic and independent of any self-report."

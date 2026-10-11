@@ -109,6 +109,27 @@ regulator** — §6b's audit stance is what makes these records evidentially usa
       change's INTENT (what was ATTEMPTED and why) is still not a substrate record — the config
       content is now readable, but nothing records the intent behind it; that is a §4 design
       decision, not a reporter gap.
+- [x] **THE OPERATOR-ACTION SUBSTRATE RECORD LANDED — the two weakest rows in the frozen table
+      stop being (2026-10-13, fx-init uncommitted; `handoff-operator-journal-result`).** The
+      reporter's `operator-intervention` row was a DERIVED disjunction and `activation-refusal`
+      NOT-DURABLY-RECORDED because the only record of a ctrl arm was `rt_control`/`rt_effect` in
+      `/run/fx/log.db` — tmpfs post-pivot, dead at every reboot. `fx-init zig/src/init.zig` now
+      writes `<store>/.operator`, an append-only journal beside `.bootlog`/`.recovery` (their
+      append shape: header once, `fflush`+`fsync`+`fclose`+`syncfs_store()` per row, before the
+      channel reply is flushed): one DATA line per generation-plane intervention
+      (`<epoch> <action> <arg> <outcome> <from|-> <to|-> <boot-nonce>`), covering EVERY exit of
+      the `activate`/`rollback`/`shutdown` ctrl arms — including the refused activation/rollback
+      (`refused-config`), the store-refused rollback (`refused`), the failed activate executor
+      (`failed:<rc>`), and `shutdown` — and carrying the same latched `fx.bootnonce=` as
+      `.bootlog`, so rows are boot-attributable with the audit's EXISTING nonce discipline.
+      `.recovery`'s semantics are untouched (still AUTOMATIC roll-forwards only; the new file's
+      header says so). The header also names the paths that can NEVER reach it (host-side
+      `fxstore rollback`, `--hard`, a hand-edited CURRENT) so a reader knows what its absence
+      means there. Gated by `tests/qemu_operator_journal.sh` (2 arms, 3 boots each, pinned
+      pre-fix control `4c5803d`; rows read OFF the raw disk with debugfs after the machine is
+      killed). The REPORTER's read side — replacing the DERIVED disjunction and the
+      NOT-DURABLY-RECORDED bound with rows measured from `.operator` — is the follow-up unit and
+      belongs to the reporter lane, not this one.
 - [x] **RETENTION: the INEQUALITY IS NOW STATED AND MEASURED ON EVERY RUN — the POLICY decision
       remains open (2026-10-13).** The reporter seat prints a frozen retention table per run (where
       each record lives, what it survives: reboot / roll-forward-publish / `fxstore gc`, and the
@@ -125,6 +146,22 @@ regulator** — §6b's audit stance is what makes these records evidentially usa
       measurement: no default retention exists for `.bootlog`/`.recovery` growth, nothing sets
       `gc --retain N`, and gc's generation-dir deletion is presumably a DEFECT to fix rather than
       policy to accept (see §3).
+- [x] **THE gc GENERATION-DIR DEFECT IS FIXED — liveness is derived from the facts (2026-10-11,
+      uncommitted; `handoff-gc-carveout-result`).** `fxstore gc`'s dir sweep now reads the
+      `generation` fact as-of EVERY surviving snapshot version (not just the pinned one), takes
+      each buildfile_rel's first component (`<genhash>-system-generation`, store-relative —
+      fx-activate's own writer), and keeps an entry only on FULL-name match; every keep and every
+      reap is logged on stderr. MEASURED, both directions: a surviving snapshot's dir is retained
+      across `gc` (the reporter's post-gc store is now COHERENT, exit 0) and a dir whose snapshot
+      was pruned by `gc --retain 1` IS reaped, with its facts — so a pruned generation's input is
+      unreportable (absence-by-retention), never a dangling fact. The reporter's frozen retention
+      row, its gc-config-loss bound and the gate's GCLOSS arm were all inverted to this truth
+      (GCKEEP + GREAP: the pair proves the carve-out is precise, not a blanket keep);
+      `config-retained-copy-gone` stays reachable only via a GENUINELY missing copy (the FINDINGS
+      arm's hand-deleted file — MUT-FINDING now blinds THAT arm). The store.zig pin moved from
+      revision 0341650 to the measured working-tree BLOB (the change is uncommitted; the blob name
+      is stable across the eventual commit). The POLICY decisions above remain open exactly as
+      before.
 - [x] **THE REPORTER AS THE THIRD HOST-SIDE SEAT — BUILT (2026-10-13, uncommitted;
       `handoff-reporter-seat-result`).** `tools/fx-report.c` (`make test-report`), host-side and
       read-only like its siblings: the oracle asks *is it better?*, the audit *is it honest?*, this
