@@ -1,4 +1,4 @@
-/* src/llm2/agent_loop.c — LAYER-2 tool-call TURN loop (Slice S4).
+/* src/agent/agent_loop.c — tool-call TURN loop.
  *
  * Single-turn iteration over the llm_backend.h interface: build the request
  * JSON from a message list (format-aware per b->format — OpenAI Responses,

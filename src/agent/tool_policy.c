@@ -1,4 +1,4 @@
-/* src/llm2/tool_policy.c — LAYER-2 tool allowlist policy (Slice S6).
+/* src/agent/tool_policy.c — tool allowlist policy.
  *
  * Custom glob matcher supporting '*' only (everything else literal) and
  * ToolPolicy-based allowlist semantics.

@@ -1,4 +1,4 @@
-/* src/llm2/agent_loop.h — LAYER-2 tool-call TURN loop (Slice S4).
+/* src/agent/agent_loop.h — tool-call TURN loop.
  *
  * The single-turn tool-call iteration over the llm_backend.h interface:
  * send a message list -> stream -> detect tool_calls -> accumulate them into a
@@ -108,7 +108,7 @@ void agent_loop_free_turn(TurnResult *out);
  * agent_loop_free_turn).
  *
  * max_turns must be > 0 (<= 0 -> replaced by runner_max_turns(), the
- * VIBE_MAX_TURNS default of 1000).  tool_srv may be NULL (no tool dispatch).
+ * FX_MAX_TURNS default of 1000).  tool_srv may be NULL (no tool dispatch).
  * Returns 0 on success, -1 on backend error / OOM / unsupported dispatch.  On
  * error, *out_final is left zeroed.  On a tool dispatch failure the failing call
  * is recorded as a role=tool message with an error text and the loop continues
@@ -199,7 +199,7 @@ int agent_loop_run_delta(const Backend *b, const char *model,
  *      dispatch into, or a backend error with rc != 0).
  *
  * It exists because "rc == 0" is not "the task is complete": the end-of-run
- * `done` marker (src/llm2/outcome.c) must not be written for a turn-limited run,
+ * `done` marker (src/agent/outcome.c) must not be written for a turn-limited run,
  * or an unfinished task is permanently recorded complete. */
 int agent_loop_run_delta_ex(const Backend *b, const char *model,
                             const McpToolServer *tool_srv, const ToolPolicy *policy,

@@ -11,7 +11,7 @@
 # judged the new generation (the re-arm writes NO .bootlog line), so the
 # ordinary verdict would be RUN and the successor would RE-ISSUE the
 # activation — an unbounded in-boot oscillator.  The guard in
-# src/llm2/agent_main.c stops a run whose own recorded activation IS the
+# src/agent/agent_main.c stops a run whose own recorded activation IS the
 # store's CURRENT while the bootlog says this boot STARTED on an older
 # generation (the store moved mid-boot — only PID1's activate/rollback
 # handlers do that).
@@ -97,7 +97,7 @@ CFG=/fx/disk/agent-config.dhall
 SA="$WORK/store-a"; DA="$WORK/data-a"
 mkstore "$SA" 7 "5 in-progress 1790000001 4e0001" "5 ok 1790000010 4e0001"
 mkrecord "$DA" "$TASK" 7 "$CFG"
-OUT_A=$(VIBE_RUNTIME_DIR="$DA" "$BIN" --agent "$AGENT" -p "$PROMPT" \
+OUT_A=$(FX_AGENT_DATA="$DA" "$BIN" --agent "$AGENT" -p "$PROMPT" \
              --store "$SA" --output text 2>"$DA/err"); RC_A=$?
 echo "$OUT_A" | grep -q "SAME-BOOT ACTIVATION ON RECORD" \
     || { echo "--- case A stdout:"; echo "$OUT_A"; echo "--- case A stderr:";
@@ -114,7 +114,7 @@ grep -q "config_load\|not found in runtime config" "$DA/err" \
 SB="$WORK/store-b"; DB="$WORK/data-b"
 mkstore "$SB" 7 "7 in-progress 1790000001 4e0002"
 mkrecord "$DB" "$TASK" 7 "$CFG"
-OUT_B=$(VIBE_RUNTIME_DIR="$DB" "$BIN" --agent "$AGENT" -p "$PROMPT" \
+OUT_B=$(FX_AGENT_DATA="$DB" "$BIN" --agent "$AGENT" -p "$PROMPT" \
              --store "$SB" --output text 2>"$DB/err"); RC_B=$?
 echo "$OUT_B" | grep -q "SAME-BOOT ACTIVATION ON RECORD" \
     && fail "case B: the guard FIRED on a fresh boot (boot entry == CURRENT — no mid-boot move)"
@@ -165,7 +165,7 @@ time.sleep(120)
 PYEOF
 LOCKPID=$!
 sleep 0.3  # the helper must hold the lock BEFORE the binary runs
-OUT_C=$(VIBE_RUNTIME_CONFIG_DIR="$CFGDIR_C" VIBE_RUNTIME_DIR="$DC" "$BIN" \
+OUT_C=$(FX_AGENT_CONFIG_DIR="$CFGDIR_C" FX_AGENT_DATA="$DC" "$BIN" \
              --agent "$AGENT" -p "$PROMPT" --store "$SC" --output text \
              2>"$DC/err"); RC_C=$?
 kill "$LOCKPID" 2>/dev/null; wait "$LOCKPID" 2>/dev/null
@@ -189,7 +189,7 @@ mkstore "$SD" 7 "7 in-progress 1790000001 4e0004"
 mkrecord "$DD" "$TASK" 7 "$CFG"
 CFGDIR_D="$WORK/cfg-d"; mkdir -p "$CFGDIR_D" || fail "cannot mkdir $CFGDIR_D"
 cp "$CFGDIR_C/config.dhall" "$CFGDIR_D/config.dhall" || fail "cannot copy the case-D config"
-OUT_D=$(VIBE_RUNTIME_CONFIG_DIR="$CFGDIR_D" VIBE_RUNTIME_DIR="$DD" "$BIN" \
+OUT_D=$(FX_AGENT_CONFIG_DIR="$CFGDIR_D" FX_AGENT_DATA="$DD" "$BIN" \
              --agent "$AGENT" -p "$PROMPT" --store "$SD" --output text \
              2>"$DD/err"); RC_D=$?
 echo "$OUT_D" | grep -q "RUNSTORE HELD BY ANOTHER WRITER" \

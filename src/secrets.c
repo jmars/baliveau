@@ -1,7 +1,7 @@
 /* src/secrets.c — scoped secret injection (scrub-and-inject) — SECURITY CRITICAL.
  *
- * See src/secrets.h for the design rationale.  Faithful port of
- * vibe_runtime/secrets.py.  TOML parsing is via the vendored tomlc99
+ * See src/secrets.h for the design rationale.  TOML parsing is via the
+ * vendored tomlc99
  * (src/vendor/tomlc99/) — never hand-rolled.
  */
 #ifndef _POSIX_C_SOURCE
@@ -72,11 +72,11 @@ int secrets_validate_scope(const char *scope, char *err, size_t errcap) {
 /* ── Default secrets file resolution ─────────────────────────────────────── */
 
 static void secrets_file_path(char *out, size_t cap) {
-    const char *env = getenv("VIBE_SECRETS_FILE");
+    const char *env = getenv("FX_SECRETS_FILE");
     if (env && *env) { snprintf(out, cap, "%s", env); return; }
     const char *home = getenv("HOME");
-    if (home && *home) snprintf(out, cap, "%s/.vibe/secrets.toml", home);
-    else snprintf(out, cap, ".vibe/secrets.toml");
+    if (home && *home) snprintf(out, cap, "%s/.fx-agent/secrets.toml", home);
+    else snprintf(out, cap, ".fx-agent/secrets.toml");
 }
 
 /* ── Store loader (port of load_secrets_store) ──────────────────────────── */

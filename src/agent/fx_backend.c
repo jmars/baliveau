@@ -1,4 +1,4 @@
-/* src/llm2/fx_backend.c — the ONE-backend factory (replaces backend_select.c).
+/* src/agent/fx_backend.c — the ONE-backend factory (replaces backend_select.c).
  *
  * Upstream's backend_build() routes across four adapters (openai_responses,
  * generic, mistral, anthropic); each drags in its own tcp_connect copy plus

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # tests/test_outcome.sh — THE OBSERVATION-LOOP ORACLE (handoff-fx-harness-observe).
 #
-# THE RULE UNDER TEST (src/llm2/outcome.h):
+# THE RULE UNDER TEST (src/agent/outcome.h):
 #   "if the generation I am running in is not the one I activated, my activation
 #    failed — do not repeat it", made precise against the store's own .bootlog:
 #     A failed in the bootlog        -> ACTIVATION_FAILED (report, do not re-run)
@@ -78,7 +78,7 @@
 # WHAT IS REAL HERE, and what is planted:
 #   REAL      the harness binary, the REAL tool server (build/fx-verbs-server) as
 #             the agent's mcp_servers[0], the recorded SSE stream (no model, no
-#             network), the DURABLE RECORD it writes under VIBE_RUNTIME_DIR, and
+#             network), the DURABLE RECORD it writes under FX_AGENT_DATA, and
 #             the fact that a refused task dispatches NOTHING (asserted by the
 #             absence of a new session dir and by an unchanged record file).
 #   PLANTED   the store's two outcome files (<store>/.db/snapshots/CURRENT and
@@ -99,7 +99,7 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 BIN="$ROOT/build/fx-agent"
 BLIND="$ROOT/build/fx-agent-blind"
 VS="$ROOT/build/fx-verbs-server"
-FIX="${VIBE_FIXTURE_DIR:-/var/lib/workspace/vibe-runtime/tests/fixtures}"
+FIX="${FX_FIXTURE_DIR:-$ROOT/tests/fixtures}"
 
 fail() { echo "FAIL outcome: $*" >&2; exit 1; }
 note() { echo "   $*"; }
@@ -217,8 +217,8 @@ record()  { printf '%s\n' "$*" >> "$TMP/data/attempts.jsonl"; }
 # THE probe: run the harness with a specific chardev + prompt, report rc + stdout.
 runx() { # runx BIN PROMPT CHARDEV [extra argv...]
     _bin=$1 _p=$2 _dev=$3; shift 3
-    FX_CHARDEV="$_dev" VIBE_RUNTIME_CONFIG_DIR="$TMP/cfg" \
-    VIBE_RUNTIME_DIR="$TMP/data" HOME="$TMP" \
+    FX_CHARDEV="$_dev" FX_AGENT_CONFIG_DIR="$TMP/cfg" \
+    FX_AGENT_DATA="$TMP/data" HOME="$TMP" \
         "$_bin" -p "$_p" --agent fx --max-turns 2 --output text "$@" 2> "$TMP/err"
 }
 run() { # run [binary] [extra argv...]
@@ -677,9 +677,9 @@ int main(int argc, char **argv) {
     return 0;
 }
 CEOF
-cc -std=c11 -O2 -Wall -Wextra -I"$ROOT/src" -I"$ROOT/src/llm2" \
+cc -std=c11 -O2 -Wall -Wextra -I"$ROOT/src" -I"$ROOT/src/agent" \
    -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
-   -o "$TMP/probe" "$TMP/probe.c" "$ROOT/src/llm2/outcome.c" \
+   -o "$TMP/probe" "$TMP/probe.c" "$ROOT/src/agent/outcome.c" \
    || fail "phase 5e: cannot build the record-size probe"
 rm -rf "$TMP/probe-data"
 "$TMP/probe" "$TMP/probe-data" || fail "phase 5e: the record does not survive its own field caps"
@@ -760,6 +760,11 @@ note "$("$TMP/probe" "$TMP/probe-data.2" | sed 's/^/   /')"
 # passing vacuously).
 PIN_STICKY="648984f^"   # the sticky-done loader (the bug 648984f fixed)
 PIN_FALSE="648984f"     # the loader whose done->attempt->result returned RUN
+# NOTE: the `git show $PIN:src/llm2/...` paths below are HISTORY paths — the
+# pinned revisions predate the src/llm2 -> src/agent rename, and the pins are
+# exactly those old bytes.  The extraction landing dirs are this test's own
+# scratch names (renamed with the tree); only the rev:path operand keeps the
+# old spelling, because that is where those revisions store the file.
 PRE86=""
 MID86=""
 git -C "$ROOT" cat-file -e "$PIN_STICKY^{commit}" 2>/dev/null \
@@ -769,19 +774,19 @@ git -C "$ROOT" cat-file -e "$PIN_FALSE^{commit}" 2>/dev/null \
 mkdir -p "$TMP/prefix/llm2" || fail "phase 5g: cannot create the pre-fix source dir"
 if [ -z "$PRE86" ]; then
     git -C "$ROOT" show "$PIN_STICKY:src/llm2/outcome.c" > "$TMP/prefix/llm2/outcome.c" 2>/dev/null \
-        || PRE86="cannot extract src/llm2/outcome.c at $PIN_STICKY"
+        || PRE86="cannot extract src/agent/outcome.c at $PIN_STICKY"
     git -C "$ROOT" show "$PIN_STICKY:src/llm2/outcome.h" > "$TMP/prefix/llm2/outcome.h" 2>/dev/null \
-        || PRE86="cannot extract src/llm2/outcome.h at $PIN_STICKY"
-    [ -z "$PRE86" ] && cmp -s "$TMP/prefix/llm2/outcome.c" "$ROOT/src/llm2/outcome.c" \
+        || PRE86="cannot extract src/agent/outcome.h at $PIN_STICKY"
+    [ -z "$PRE86" ] && cmp -s "$TMP/prefix/llm2/outcome.c" "$ROOT/src/agent/outcome.c" \
         && PRE86="the pinned pre-fix outcome.c is IDENTICAL to the working tree — the asymmetry arm would compare the code to itself (was the fix reverted?)"
 fi
 mkdir -p "$TMP/midfix/llm2" || fail "phase 5g: cannot create the mid-fix source dir"
 if [ -z "$MID86" ]; then
     git -C "$ROOT" show "$PIN_FALSE:src/llm2/outcome.c" > "$TMP/midfix/llm2/outcome.c" 2>/dev/null \
-        || MID86="cannot extract src/llm2/outcome.c at $PIN_FALSE"
+        || MID86="cannot extract src/agent/outcome.c at $PIN_FALSE"
     git -C "$ROOT" show "$PIN_FALSE:src/llm2/outcome.h" > "$TMP/midfix/llm2/outcome.h" 2>/dev/null \
-        || MID86="cannot extract src/llm2/outcome.h at $PIN_FALSE"
-    [ -z "$MID86" ] && cmp -s "$TMP/midfix/llm2/outcome.c" "$ROOT/src/llm2/outcome.c" \
+        || MID86="cannot extract src/agent/outcome.h at $PIN_FALSE"
+    [ -z "$MID86" ] && cmp -s "$TMP/midfix/llm2/outcome.c" "$ROOT/src/agent/outcome.c" \
         && MID86="the $PIN_FALSE outcome.c is IDENTICAL to the working tree — the false-run arm would compare the code to itself"
 fi
 # the DAMAGE-RULE pin: 014ebb7 is the committed outcome.c where a torn
@@ -796,10 +801,10 @@ git -C "$ROOT" cat-file -e "$PIN_ORPHAN^{commit}" 2>/dev/null \
 mkdir -p "$TMP/orphfix/llm2" || fail "phase 5g: cannot create the damage-rule source dir"
 if [ -z "$ORPH86" ]; then
     git -C "$ROOT" show "$PIN_ORPHAN:src/llm2/outcome.c" > "$TMP/orphfix/llm2/outcome.c" 2>/dev/null \
-        || ORPH86="cannot extract src/llm2/outcome.c at $PIN_ORPHAN"
+        || ORPH86="cannot extract src/agent/outcome.c at $PIN_ORPHAN"
     git -C "$ROOT" show "$PIN_ORPHAN:src/llm2/outcome.h" > "$TMP/orphfix/llm2/outcome.h" 2>/dev/null \
-        || ORPH86="cannot extract src/llm2/outcome.h at $PIN_ORPHAN"
-    [ -z "$ORPH86" ] && cmp -s "$TMP/orphfix/llm2/outcome.c" "$ROOT/src/llm2/outcome.c" \
+        || ORPH86="cannot extract src/agent/outcome.h at $PIN_ORPHAN"
+    [ -z "$ORPH86" ] && cmp -s "$TMP/orphfix/llm2/outcome.c" "$ROOT/src/agent/outcome.c" \
         && ORPH86="the $PIN_ORPHAN outcome.c is IDENTICAL to the working tree — the damage-rule arm would compare the code to itself (was the rule reverted?)"
 fi
 echo "== phase 5g: done ordering + torn-tail repair — unit asymmetry vs pinned pre-fix sources"
@@ -1040,9 +1045,9 @@ int main(int argc, char **argv) {
 }
 CEOF
 PFXV="$TMP/ordprobe-prefix"; FIXV="$TMP/ordprobe-fixed"; MIDV="$TMP/ordprobe-midfix"
-cc -std=c11 -O2 -Wall -Wextra -I"$ROOT/src" -I"$ROOT/src/llm2" \
+cc -std=c11 -O2 -Wall -Wextra -I"$ROOT/src" -I"$ROOT/src/agent" \
    -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
-   -o "$FIXV" "$TMP/ordprobe.c" "$ROOT/src/llm2/outcome.c" \
+   -o "$FIXV" "$TMP/ordprobe.c" "$ROOT/src/agent/outcome.c" \
    || fail "phase 5g: cannot build the order probe against this tree"
 if [ -z "$PRE86" ]; then
     cc -std=c11 -O2 -Wall -Wextra -I"$TMP/prefix/llm2" \
@@ -1129,9 +1134,9 @@ int main(int argc, char **argv) {
     return 0;
 }
 CEOF
-cc -std=c11 -O2 -Wall -Wextra -I"$ROOT/src" -I"$ROOT/src/llm2" \
+cc -std=c11 -O2 -Wall -Wextra -I"$ROOT/src" -I"$ROOT/src/agent" \
    -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
-   -o "$TMP/suspprobe" "$TMP/suspprobe.c" "$ROOT/src/llm2/outcome.c" \
+   -o "$TMP/suspprobe" "$TMP/suspprobe.c" "$ROOT/src/agent/outcome.c" \
    || fail "phase 5g: cannot build the suspension probe"
 W=$("$TMP/suspprobe" "$TMP/od-susp2" "$TMP/od-susp2-store") \
     || fail "phase 5g: suspension probe failed"
@@ -1574,17 +1579,19 @@ git -C "$ROOT" cat-file -e "$PIN_NOREC^{commit}" 2>/dev/null \
     || NOREC86="revision $PIN_NOREC unavailable (shallow clone or rewritten history)"
 mkdir -p "$TMP/norec/tools" "$TMP/norec/llm2" || fail "phase 9f: cannot create the pinned source dir"
 if [ -z "$NOREC86" ]; then
-    # the include is "llm2/outcome.h", so src/llm2/* lands at $TMP/norec/llm2/*
+    # the probe includes "agent/outcome.h": the pinned revisions predate the
+    # src/llm2 -> src/agent rename, so the HISTORY path is src/llm2/* while the
+    # extraction lands at this test's own $TMP/norec/llm2/* scratch name
     git -C "$ROOT" show "$PIN_NOREC:tools/fx-verbs-server.c" > "$TMP/norec/tools/fx-verbs-server.c" 2>/dev/null \
         || NOREC86="cannot extract tools/fx-verbs-server.c at $PIN_NOREC"
     git -C "$ROOT" show "$PIN_NOREC:src/llm2/outcome.c" > "$TMP/norec/llm2/outcome.c" 2>/dev/null \
-        || NOREC86="cannot extract src/llm2/outcome.c at $PIN_NOREC"
+        || NOREC86="cannot extract src/agent/outcome.c at $PIN_NOREC"
     git -C "$ROOT" show "$PIN_NOREC:src/llm2/outcome.h" > "$TMP/norec/llm2/outcome.h" 2>/dev/null \
-        || NOREC86="cannot extract src/llm2/outcome.h at $PIN_NOREC"
+        || NOREC86="cannot extract src/agent/outcome.h at $PIN_NOREC"
     # DOMAIN PROOF: the pin must differ from the working tree in the file that
     # carries the read (identical outcome.c would mean the arm compiles the
     # fix against the old server, or the fix was reverted).
-    [ -z "$NOREC86" ] && cmp -s "$TMP/norec/llm2/outcome.c" "$ROOT/src/llm2/outcome.c" \
+    [ -z "$NOREC86" ] && cmp -s "$TMP/norec/llm2/outcome.c" "$ROOT/src/agent/outcome.c" \
         && NOREC86="the pinned $PIN_NOREC outcome.c is IDENTICAL to the working tree — the pre-read arm would compare the code to itself"
     [ -z "$NOREC86" ] && cmp -s "$TMP/norec/tools/fx-verbs-server.c" "$ROOT/tools/fx-verbs-server.c" \
         && NOREC86="the pinned $PIN_NOREC fx-verbs-server.c is IDENTICAL to the working tree"
@@ -1618,7 +1625,7 @@ cat > "$TMP/recprobe9.c" <<'CEOF'
 #define _POSIX_C_SOURCE 200809L
 #include <stdio.h>
 #include <string.h>
-#include "llm2/outcome.h"
+#include "outcome.h"
 int main(int argc, char **argv) {
     if (argc < 3) return 2;
     FxOutcome o;
@@ -1630,13 +1637,13 @@ int main(int argc, char **argv) {
     return 0;
 }
 CEOF
-cc -std=c11 -O2 -Wall -Wextra -I"$TMP/norec" \
+cc -std=c11 -O2 -Wall -Wextra -I"$TMP/norec/llm2" \
    -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
    -o "$TMP/recprobe9-pin" "$TMP/recprobe9.c" "$TMP/norec/llm2/outcome.c" \
    || fail "phase 9f: cannot build the report probe against the pinned $PIN_NOREC outcome.c"
-cc -std=c11 -O2 -Wall -Wextra -I"$ROOT/src" -I"$ROOT/src/llm2" \
+cc -std=c11 -O2 -Wall -Wextra -I"$ROOT/src" -I"$ROOT/src/agent" \
    -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
-   -o "$TMP/recprobe9-fix" "$TMP/recprobe9.c" "$ROOT/src/llm2/outcome.c" \
+   -o "$TMP/recprobe9-fix" "$TMP/recprobe9.c" "$ROOT/src/agent/outcome.c" \
    || fail "phase 9f: cannot build the report probe against this tree"
 mkdir -p "$TMP/pin-data" || fail "phase 9f: cannot create the probe data dir"
 printf '1700000000 %s attempt - - 0 /fx/disk/agent-config.dhall\n' "$TASK" > "$TMP/pin-data/attempts.jsonl"
@@ -1763,12 +1770,12 @@ record "$MAXU $TASK result $LS $LR $MAXU $LC"
 cat > "$TMP/capprobe.c" <<'CEOF'
 /* The report's OWN worst case, straight at the API.  Three buffer sizes:
  * 8x the cap (the UNDISTORTED length), exactly the cap (what the harness's own
- * caller, src/llm2/agent_main.c, hands it) and 512 (a cap nothing in the tree
+ * caller, src/agent/agent_main.c, hands it) and 512 (a cap nothing in the tree
  * uses — the marker must fire for ANY cap that cuts, not just this one). */
 #define _POSIX_C_SOURCE 200809L
 #include <stdio.h>
 #include <string.h>
-#include "llm2/outcome.h"
+#include "outcome.h"
 
 static char big[FX_OUTCOME_MSG_CAP * 8], prod[FX_OUTCOME_MSG_CAP], smallbuf[512];
 
@@ -1817,9 +1824,9 @@ int main(int argc, char **argv) {
     return 0;
 }
 CEOF
-cc -std=c11 -O2 -Wall -Wextra -I"$ROOT/src" -I"$ROOT/src/llm2" \
+cc -std=c11 -O2 -Wall -Wextra -I"$ROOT/src" -I"$ROOT/src/agent" \
    -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
-   -o "$TMP/capprobe" "$TMP/capprobe.c" "$ROOT/src/llm2/outcome.c" \
+   -o "$TMP/capprobe" "$TMP/capprobe.c" "$ROOT/src/agent/outcome.c" \
    || fail "phase 10: cannot build the cap probe"
 MINDIR="$TMP/data"
 MINSTORE="$STORE"
@@ -1850,7 +1857,7 @@ WANT_TAIL="... TRUNCATED at $LEN bytes — the escape clause may be missing; rai
 [ "$(gv len_cap)" = "$LEN" ] \
     || fail "phase 10: the report built into the cap is $(gv len_cap) bytes but the undistorted report is $LEN — the field-cap worst case does NOT fit FX_OUTCOME_MSG_CAP"
 # 10c — WHERE THE NEXT TRUNCATION COMES FROM: an input with NO field cap.  A
-# path ~267 bytes longer than $TMP (a deep VIBE_RUNTIME_DIR / store) is counted
+# path ~267 bytes longer than $TMP (a deep FX_AGENT_DATA / store) is counted
 # TWICE in the report (its own line, and the escape clause), and it takes the
 # whole ESCAPE CLAUSE out — the marker is then the only thing standing between
 # the reader and a wedge.
@@ -1877,11 +1884,11 @@ note "over cap: data dir $(( $(gp shape_data) )) B + store $(( $(gp shape_store)
 # same way and says NOTHING, so 10b could have failed before this change.  The
 # pin is a FIXED revision, cat-file guarded, and cmp-proven to differ.
 if [ -z "$NOREC86" ]; then
-    cc -std=c11 -O2 -Wall -Wextra -I"$TMP/norec" \
+    cc -std=c11 -O2 -Wall -Wextra -I"$TMP/norec/llm2" \
        -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
        -o "$TMP/capprobe-pin" "$TMP/capprobe.c" "$TMP/norec/llm2/outcome.c" \
        || fail "phase 10: cannot build the cap probe against the pinned $PIN_NOREC outcome.c"
-    cmp -s "$TMP/norec/llm2/outcome.c" "$ROOT/src/llm2/outcome.c" \
+    cmp -s "$TMP/norec/llm2/outcome.c" "$ROOT/src/agent/outcome.c" \
         && fail "phase 10: the pinned $PIN_NOREC outcome.c is IDENTICAL to the working tree — the arm would compare the fix to itself"
     PP=$("$TMP/capprobe-pin" "$MINDIR" "$MINSTORE" "$TASK" fx) \
         || fail "phase 10: the pinned cap probe failed (arm is vacuous)"
@@ -1926,7 +1933,7 @@ cat > "$TMP/escprobe.c" <<'CEOF'
 #define _POSIX_C_SOURCE 200809L
 #include <stdio.h>
 #include <string.h>
-#include "llm2/outcome.h"
+#include "outcome.h"
 static char rep[FX_OUTCOME_MSG_CAP * 8];
 int main(int argc, char **argv) {
     if (argc < 3) return 2;
@@ -1939,9 +1946,9 @@ int main(int argc, char **argv) {
     return 0;
 }
 CEOF
-cc -std=c11 -O2 -Wall -Wextra -I"$ROOT/src" -I"$ROOT/src/llm2" \
+cc -std=c11 -O2 -Wall -Wextra -I"$ROOT/src" -I"$ROOT/src/agent" \
    -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
-   -o "$TMP/escprobe" "$TMP/escprobe.c" "$ROOT/src/llm2/outcome.c" \
+   -o "$TMP/escprobe" "$TMP/escprobe.c" "$ROOT/src/agent/outcome.c" \
    || fail "phase 10e: cannot build the escape-clause probe"
 D2LEN=${#D2}
 [ "$D2LEN" -gt 600 ] || fail "phase 10e: the deep data dir is only $D2LEN characters — it would not have cut the pre-fix clause, so the arm proves nothing"
@@ -1957,7 +1964,7 @@ note "escape clause intact at a $D2LEN-character data dir inside a $(ge len)-byt
 # the asymmetry, so this arm could have failed: the PINNED tree builds the same
 # clause into its own 832-byte buffer and loses the tail.
 if [ -z "$NOREC86" ]; then
-    cc -std=c11 -O2 -Wall -Wextra -I"$TMP/norec" \
+    cc -std=c11 -O2 -Wall -Wextra -I"$TMP/norec/llm2" \
        -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
        -o "$TMP/escprobe-pin" "$TMP/escprobe.c" "$TMP/norec/llm2/outcome.c" \
        || fail "phase 10e: cannot build the escape-clause probe against the pinned $PIN_NOREC outcome.c"
@@ -2183,10 +2190,10 @@ git -C "$ROOT" cat-file -e "$PIN_UNREADABLE^{commit}" 2>/dev/null \
 mkdir -p "$TMP/unreadpin/llm2" || fail "phase 11j: cannot create the pinned source dir"
 if [ -z "$UNREAD_PIN" ]; then
     git -C "$ROOT" show "$PIN_UNREADABLE:src/llm2/outcome.c" > "$TMP/unreadpin/llm2/outcome.c" 2>/dev/null \
-        || UNREAD_PIN="cannot extract src/llm2/outcome.c at $PIN_UNREADABLE"
+        || UNREAD_PIN="cannot extract src/agent/outcome.c at $PIN_UNREADABLE"
     git -C "$ROOT" show "$PIN_UNREADABLE:src/llm2/outcome.h" > "$TMP/unreadpin/llm2/outcome.h" 2>/dev/null \
-        || UNREAD_PIN="cannot extract src/llm2/outcome.h at $PIN_UNREADABLE"
-    [ -z "$UNREAD_PIN" ] && cmp -s "$TMP/unreadpin/llm2/outcome.c" "$ROOT/src/llm2/outcome.c" \
+        || UNREAD_PIN="cannot extract src/agent/outcome.h at $PIN_UNREADABLE"
+    [ -z "$UNREAD_PIN" ] && cmp -s "$TMP/unreadpin/llm2/outcome.c" "$ROOT/src/agent/outcome.c" \
         && UNREAD_PIN="the pinned $PIN_UNREADABLE outcome.c is IDENTICAL to the working tree — the arm would compare the code to itself"
 fi
 if [ -n "$UNREAD_PIN" ]; then
@@ -2195,7 +2202,7 @@ else
     cat > "$TMP/unreadprobe.c" <<'CEOF'
 #define _POSIX_C_SOURCE 200809L
 #include <stdio.h>
-#include "llm2/outcome.h"
+#include "outcome.h"
 int main(int argc, char **argv) {
     if (argc < 4) return 2;
     FxOutcome o;
@@ -2207,13 +2214,13 @@ int main(int argc, char **argv) {
     return 0;
 }
 CEOF
-    cc -std=c11 -O2 -Wall -Wextra -I"$TMP/unreadpin" \
+    cc -std=c11 -O2 -Wall -Wextra -I"$TMP/unreadpin/llm2" \
        -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
        -o "$TMP/unreadprobe-pin" "$TMP/unreadprobe.c" "$TMP/unreadpin/llm2/outcome.c" \
        || fail "phase 11j: cannot build the probe against the pinned $PIN_UNREADABLE outcome.c"
-    cc -std=c11 -O2 -Wall -Wextra -I"$ROOT/src" -I"$ROOT/src/llm2" \
+    cc -std=c11 -O2 -Wall -Wextra -I"$ROOT/src" -I"$ROOT/src/agent" \
        -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
-       -o "$TMP/unreadprobe-fix" "$TMP/unreadprobe.c" "$ROOT/src/llm2/outcome.c" \
+       -o "$TMP/unreadprobe-fix" "$TMP/unreadprobe.c" "$ROOT/src/agent/outcome.c" \
        || fail "phase 11j: cannot build the probe against this tree"
     newdata
     mkdir -p "$TMP/unreadstore/.db/snapshots"

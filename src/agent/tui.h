@@ -1,4 +1,4 @@
-/* src/llm2/tui.h — LAYER-2 S12 terminal UI (self-contained, NO ncurses).
+/* src/agent/tui.h — terminal UI (self-contained, NO ncurses).
  *
  * A minimal live-streaming terminal UI built directly on raw termios + ANSI
  * escape sequences.  The agent loop is single-threaded/synchronous (chat_stream
@@ -19,8 +19,8 @@
  * end_stream per delta; statusf paints the inverse-video status bar; poll_key
  * reads stdin NON-BLOCKING (poll 0 timeout) and decodes ANSI escapes.
  */
-#ifndef LLM2_TUI_H
-#define LLM2_TUI_H
+#ifndef AGENT_TUI_H
+#define AGENT_TUI_H
 
 #include <stddef.h>
 #include <stdio.h>
@@ -98,4 +98,4 @@ void tui_redraw(Tui *t);
 }
 #endif
 
-#endif /* LLM2_TUI_H */
+#endif /* AGENT_TUI_H */

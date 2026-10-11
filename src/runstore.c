@@ -1,6 +1,6 @@
-/* src/runstore.c — DAFSA-backed RunStore (Slice 2).
+/* src/runstore.c — DAFSA-backed RunStore.
  *
- * Port of vibe_runtime/jobs.py RunStore onto the datalog-dafsa fact store —
+ * The RunStore on the datalog-dafsa fact store —
  * the fx stack's OWN Zig engine (sibling ../datalog-dafsa), linked as
  * libdatalog.  The legacy C copy this tree used to vendor was removed in the
  * engine swap; runstore.h's "vendor/datalog-dafsa/src/dl.h" include is resolved
@@ -13,7 +13,7 @@
  *   instr(run_id, chunk_idx, chunk_sym)      arity 3 — chunked instructions
  *   amend(run_id, seq, ts, text, applied)    arity 5 — append-only amends
  *
- * Durability rules baked into every mutator (see the Slice-2 plan):
+ * Durability rules baked into every mutator (see the design record, docs/baliveau-self-plan.md):
  *   - ADD the new fact FIRST, then DELETE the old; a crash between them
  *     leaves a duplicate that the next transition self-heals (attr reads
  *     take the max-seq row; an amend seq counts as applied iff any row for
@@ -709,8 +709,8 @@ int runstore_open(RunStore *rs, const char *dir, char *err, size_t errcap) {
         }
     }
 
-    rs->max_runs = rs_env_int("VIBE_MAX_RUNS", 50, 1);
-    rs->max_instr_chars = rs_env_int("VIBE_MAX_INSTRUCTIONS_CHARS", 32768, 0);
+    rs->max_runs = rs_env_int("FX_MAX_RUNS", 50, 1);
+    rs->max_instr_chars = rs_env_int("FX_MAX_INSTRUCTIONS_CHARS", 32768, 0);
     return 0;
 }
 

@@ -11,7 +11,7 @@
 #   BOOT A (arm 2 + arm 3 — the healthy boot)
 #     /usr/fx-agent/bin/fx-agent, the OFFLINE LOOP, in-guest: a canned SSE
 #     stream staged at /usr/fx-agent/chardev.sse, FX_CHARDEV pointed at it,
-#     VIBE_RUNTIME_DIR on the virtio disk.  Its assistant text is a UNIQUE
+#     FX_AGENT_DATA on the virtio disk.  Its assistant text is a UNIQUE
 #     marker (the recorded fixture's "hello", substituted by stage-guest.sh),
 #     so the console line cannot come from anywhere else in the image.
 #     Plus fx-verbs-server (the MCP tool server) as a console service: the
@@ -444,7 +444,7 @@ grep -q 'agent_main' "$WORK/console-a.log" \
     && fail "boot A: an agent_main line appeared in the healthy boot (a stray fx-agent service?)"
 
 # ─── BELT (reported, never gated): the loop's transcript ON THE DISK ──────
-# VIBE_RUNTIME_DIR is on the virtio disk, so the guest's own messages.jsonl is
+# FX_AGENT_DATA is on the virtio disk, so the guest's own messages.jsonl is
 # in the image we can read from the host with debugfs.  Whether it is readable
 # depends on the guest's writeback having reached the platter before the kill,
 # so a missing read-back is NOT evidence the loop did not run (the console
@@ -457,7 +457,7 @@ if [ -n "$DBGFS" ]; then
     echo "--- qemu-agent: disk read-back (belt) ---"
     # debugfs `ls -p` rows are <inode>/<mode>/<uid>/<gid>/<name>/ — the session
     # DIRECTORY's presence in the image is already evidence the guest created
-    # VIBE_RUNTIME_DIR there (fx-agent's own mkdirs()); the transcript file only
+    # FX_AGENT_DATA there (fx-agent's own mkdirs()); the transcript file only
     # reads back if its data reached the platter before the kill.
     SESS=$("$DBGFS" -R "ls -p /agent-data/sessions" "$DISK_A" 2>/dev/null)
     # NOTE the row shape: `.../0/0/<name>//` (debugfs -p appends TWO slashes),

@@ -1,4 +1,4 @@
-/* src/llm2/config.h — LAYER-2 S9 runtime config loader.
+/* src/agent/config.h — runtime config loader.
  *
  * Loads the runtime's OWN config.dhall via the vendored dhall-c (in-process
  * eval, same machinery src/runner.c's validate_agent_profile uses) and exposes:
@@ -17,8 +17,8 @@
  * RuntimeConfig and freed by config_free.  Borrowed pointers remain valid until
  * the matching config_free.
  */
-#ifndef LLM2_CONFIG_H
-#define LLM2_CONFIG_H
+#ifndef AGENT_CONFIG_H
+#define AGENT_CONFIG_H
 
 #include <stddef.h>
 
@@ -99,7 +99,7 @@ typedef struct RuntimeConfig {
     size_t cap_models;
 } RuntimeConfig;
 
-/* Load config.dhall from VIBE_RUNTIME_CONFIG_DIR (default ~/.config/vibe-runtime).
+/* Load config.dhall from FX_AGENT_CONFIG_DIR (default ~/.config/fx-agent).
  * Returns 0 on success — `out` is zeroed and is EMPTY (no agents) when the
  * config is missing / unparseable / has an empty or absent agents list.  Returns
  * -1 only on a hard error (OOM) and fills `err` (may be NULL/0).  On -1, `out`
@@ -125,4 +125,4 @@ const ConfigModel *config_find_model(const RuntimeConfig *cfg, const char *name)
 }
 #endif
 
-#endif /* LLM2_CONFIG_H */
+#endif /* AGENT_CONFIG_H */

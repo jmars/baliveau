@@ -12,12 +12,12 @@
 # cannot run until the assistant message is durable.
 #
 # Env knobs: KEEP_TMP=1 keeps the mktemp dir (for evidence);
-# VIBE_FIXTURE_DIR overrides the recorded SSE fixtures' location.
+# FX_FIXTURE_DIR overrides the recorded SSE fixtures' location.
 set -uo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 BIN="$ROOT/build/fx-agent"
-FIX="${VIBE_FIXTURE_DIR:-/var/lib/workspace/vibe-runtime/tests/fixtures}"
+FIX="${FX_FIXTURE_DIR:-$ROOT/tests/fixtures}"
 KILLER="$ROOT/tests/fixtures/kill_parent.sh"
 SENTINEL=resume-probe-alpha
 
@@ -55,8 +55,8 @@ cp "$FIX/responses_simple.sse" "$TMP/dev2.sse"
 # evidence of what the request carried.
 run() {
   local dev="$1"; shift
-  FX_CHARDEV="$dev" VIBE_RUNTIME_CONFIG_DIR="$TMP/cfg" \
-  VIBE_RUNTIME_DIR="$TMP/data" HOME="$TMP" \
+  FX_CHARDEV="$dev" FX_AGENT_CONFIG_DIR="$TMP/cfg" \
+  FX_AGENT_DATA="$TMP/data" HOME="$TMP" \
     "$BIN" -p "$SENTINEL" --agent fx --max-turns 3 --output text "$@"
 }
 

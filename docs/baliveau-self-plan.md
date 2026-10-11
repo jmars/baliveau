@@ -32,9 +32,9 @@ grow — survives unaccented and is a good name for the *selection* step, i.e. t
 for the project.)
 
 **This is a NEW design.** The name `setpoint` is reused, and the VLHA-era design record
-(`~/setpoint/design/architecture.md`: the substrate-heterogeneous triple network, the currency,
+(that abandoned line's `architecture.md`: the substrate-heterogeneous triple network, the currency,
 C1–C27) **is not this design** — that line did not work out. Nothing here should be read as
-continuing it. This file is deliberately kept OUTSIDE `~/setpoint/` so the two records cannot be
+continuing it. This file is deliberately kept OUTSIDE that earlier tree so the two records cannot be
 conflated.
 
 Markers: **MEASURED** (a number or behaviour I observed, with the artifact named) ·
@@ -130,7 +130,7 @@ agent's self-report.**
 
 ## 2. What already exists (the substrate)
 
-Sibling checkouts: `/var/data/workspace/fixpoint-linux/{fx-init,fxstore,fx-core,dhake,dhall-c,datalog-dafsa}`.
+Sibling checkouts — separate repositories in the same workspace: `{fx-init,fxstore,fx-core,dhake,dhall-c,datalog-dafsa}`.
 
 **MEASURED — the generation lifecycle is built and tested.**
 - A generation IS a store path: `fx/store/<hex64>-system-generation/{Dhakefile.dhall,etc/…}`
@@ -194,15 +194,15 @@ agent (inside)                system (same machine)
 
 ## 4. The harness — `fx-harness` (BUILT, GREEN)
 
-`/var/data/workspace/fixpoint-linux/fx-harness` — derived from `vibe-runtime`'s LAYER 2
-(`/var/lib/workspace/vibe-runtime/src/llm2`), reduced to what the guest can run.
+This tree (`src/agent/`) — a reduced port of the host-side agent runtime, cut to what the
+guest can run.
 
 **MEASURED — it builds and the loop runs end-to-end offline:**
 ```
-$ FX_CHARDEV=<recorded SSE stream> VIBE_RUNTIME_CONFIG_DIR=$PWD/config \
+$ FX_CHARDEV=<recorded SSE stream> FX_AGENT_CONFIG_DIR=$PWD/config \
     ./build/fx-agent -p "say hi" --agent fx --max-turns 1 --output text
 hello                        # rc=0; 21 SSE events; 7,523 bytes read to EOF
-$ cat ~/.local/share/vibe-runtime/runs/<id>/messages.jsonl
+$ cat ~/.local/share/fx-agent/runs/<id>/messages.jsonl
 {"role":"user","content":"say hi"}
 {"role":"assistant","content":"hello"}
 ```
@@ -881,10 +881,10 @@ a **type** (§7.1a). 8. The compiler may live **in the guest** (§5a).
 
 | what | where |
 |---|---|
-| this design's accumulated findings, corrections, and decisions | memory node `fixpoint-agent-selfmod-idea` (rev ≥45) |
-| the resume unit | memory `handoff-fx-harness-resume-*`, bus `fx-harness-resume` |
-| the tool-server unit | memory `handoff-fx-harness-tools-*`, bus `fx-harness-tools` |
-| the harness + deviations from upstream | `/var/data/workspace/fixpoint-linux/fx-harness/README.md` |
+| this design's accumulated findings, corrections, and decisions | the design's own agent-memory record (rev ≥45) |
+| the resume unit | the resume unit's own design record and live work channel |
+| the tool-server unit | the tool-server unit's own design record and live work channel |
+| the harness + deviations from upstream | this tree's `README.md` |
 | the guest image's real contents | `fx-demo/evidence/image-contents.txt` |
 | the loop's rollback proof | `fx-init/tests/qemu_ctrl.sh` |
 | fxstore's audit surface | `fxstore/zig/src/main.zig` usage; `provenance.zig` (verify's two passes) |

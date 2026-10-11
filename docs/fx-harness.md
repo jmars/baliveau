@@ -1,7 +1,7 @@
 # fx-harness — a minimal agent harness for the fx-linux guest
 
-Derived from **vibe-runtime's LAYER 2** (`src/llm2/`), reduced to what the guest
-can actually run.  One binary, one backend, one transport: a character device.
+A reduced port of the host-side agent runtime (`src/agent/`), cut down to what the
+guest can actually run.  One binary, one backend, one transport: a character device.
 
 ## Status (MEASURED)
 
@@ -10,7 +10,7 @@ Builds clean natively and runs the loop end-to-end **offline**:
 ```
 $ make
 $ cp <a recorded SSE stream> /tmp/fxch-sse
-$ FX_CHARDEV=/tmp/fxch-sse VIBE_RUNTIME_CONFIG_DIR=$PWD/config \
+$ FX_CHARDEV=/tmp/fxch-sse FX_AGENT_CONFIG_DIR=$PWD/config \
     ./build/fx-agent -p "say hi" --agent fx --max-turns 1 --output text
 hello
 $ echo $?
@@ -20,7 +20,7 @@ $ echo $?
 and the checkpoint recorded the whole turn:
 
 ```
-$ cat $VIBE_RUNTIME_DIR/sessions/<sid>/messages.jsonl
+$ cat $FX_AGENT_DATA/sessions/<sid>/messages.jsonl
 {"role":"user","content":"say hi"}
 {"role":"assistant","content":"hello"}
 ```
@@ -55,7 +55,7 @@ that work, and neither needs `agent_loop.c` to change:
   also the self-heal for a torn tail line (`ckpt_load` skips such a line
   fail-open, so the worst case is losing the newest message and re-answering).
 * **The transcript is the resume seed.** `--resume <sid>` resolves a session
-  directory under `$VIBE_RUNTIME_DIR/sessions/` (exact name, else a *unique*
+  directory under `$FX_AGENT_DATA/sessions/` (exact name, else a *unique*
   prefix — ambiguous or missing is a fail-closed error), `ckpt_load`s
   `messages.jsonl`, and passes those messages to the loop as its seed array
   instead of `-p` (still required by the CLI, ignored here — the loaded
@@ -78,18 +78,18 @@ Three details that are easy to get wrong, and are what the oracle tests:
 
 ### Where it lives (durability)
 
-`$VIBE_RUNTIME_DIR` (default `~/.local/share/vibe-runtime`) holds both the
+`$FX_AGENT_DATA` (default `~/.local/share/fx-agent`) holds both the
 runstore and `sessions/<sid>/`.  In the guest, the root is tmpfs: point
-`VIBE_RUNTIME_DIR` at the persistent disk (e.g. `/fx/disk/vibe-runtime`) or the
-transcript is lost exactly when the reboot happens.  `VIBE_MAX_RUNS` eviction
+`FX_AGENT_DATA` at the persistent disk (e.g. `/fx/disk/agent-data`) or the
+transcript is lost exactly when the reboot happens.  `FX_MAX_RUNS` eviction
 applies to runstore *run records*; `sessions/` is never evicted, so the
 transcript outlives the run record that pointed at it.
 
 ## Why this tree exists
 
-vibe-runtime targets *hosts*: it reaches the model over a TCP socket, optionally
-wrapped in mbedTLS, and it carries four provider backends plus a socket-RPC
-supervisor.  The fx-linux guest has none of that available:
+The full host-side runtime this tree is reduced from targets *hosts*: it reaches the
+model over a TCP socket, optionally wrapped in mbedTLS, and it carries four provider
+backends plus a socket-RPC supervisor.  The fx-linux guest has none of that available:
 
 | upstream dependency | why it cannot be used in the guest |
 |---|---|
@@ -97,7 +97,7 @@ supervisor.  The fx-linux guest has none of that available:
 | `recv(2)` / `send(2)` (the socket BIO) | MEASURED: return `ENOTSOCK` on a chardev, so `http_request` wrote ZERO bytes and the loop reported `backend/loop error` |
 | mbedTLS (16 MB vendored) | no TLS: there is no socket to wrap, and the guest must not hold a credential |
 | `http_client.c` (HTTP/1.1 framing + chunked/CL body parsing) | an envelope with nothing to carry — the host proxy speaks HTTP to the provider, the guest speaks SSE to the host |
-| `daemon.c` (LAYER 1, 6.3 kLOC) | Unix-socket RPC; the guest has no sockets. Already dropped upstream |
+| `daemon.c` (the host-side supervisor, 6.3 kLOC) | Unix-socket RPC; the guest has no sockets. Already dropped upstream |
 
 ## The transport
 
@@ -108,7 +108,7 @@ guest -> host   "<byte-count>\n" then exactly that many bytes of request JSON
 host  -> guest  the provider's raw SSE body, verbatim
 ```
 
-* `src/llm2/fx_transport.c` — the whole transport (open, frame, read).
+* `src/agent/fx_transport.c` — the whole transport (open, frame, read).
 * The **host owns the endpoint, the headers and the API key**.  `fx_backend.c`
   never transmits a key, and the adapter leaves `b->api_key` unused: no
   credential crosses the channel.
@@ -132,13 +132,13 @@ a real EOF.  No proxy, no network, deterministic.
 
 | change | file |
 |---|---|
-| TCP connect → chardev open | `src/llm2/fx_transport.c` (+ `openai_responses.c` call site) |
-| socket BIO + TLS BIO → direct `read(2)`/`write(2)` | `src/llm2/fx_transport.c` |
-| HTTP envelope removed; SSE read raw | `src/llm2/openai_responses.c` |
-| four backends → one | `src/llm2/fx_backend.c` (replaces `backend_select.c`) |
+| TCP connect → chardev open | `src/agent/fx_transport.c` (+ `openai_responses.c` call site) |
+| socket BIO + TLS BIO → direct `read(2)`/`write(2)` | `src/agent/fx_transport.c` |
+| HTTP envelope removed; SSE read raw | `src/agent/openai_responses.c` |
+| four backends → one | `src/agent/fx_backend.c` (replaces `backend_select.c`) |
 | `tls.h`, `http_client.{c,h}` deleted | — |
-| TLS default-verify block + `file_readable` deleted | `src/llm2/agent_main.c` |
-| `tcgetwinsize(3)` → `ioctl(TIOCGWINSZ)` | `src/llm2/tui.c` — `tcgetwinsize` is glibc≥2.36/POSIX-2024 and **absent from musl**, the libc every fx guest binary uses |
+| TLS default-verify block + `file_readable` deleted | `src/agent/agent_main.c` |
+| `tcgetwinsize(3)` → `ioctl(TIOCGWINSZ)` | `src/agent/tui.c` — `tcgetwinsize` is glibc≥2.36/POSIX-2024 and **absent from musl**, the libc every fx guest binary uses |
 
 Vendored in-tree: `dhall-c` (config evaluated **in-process**, so a config can be
 typechecked before it is activated), `yyjson`, `tomlc99`.  The `datalog-dafsa`
@@ -157,8 +157,8 @@ the sibling's own `zig/build.zig` for `x86-linux-musl` into
 
 ## Running it
 
-Config: Dhall, at `$VIBE_RUNTIME_CONFIG_DIR/config.dhall` (default
-`~/.config/vibe-runtime/`).  The minimum is an agent:
+Config: Dhall, at `$FX_AGENT_CONFIG_DIR/config.dhall` (default
+`~/.config/fx-agent/`).  The minimum is an agent:
 
 ```dhall
 { agents = [ { name = "fx", agent_type = "agent" } ] }
@@ -200,7 +200,7 @@ MEASURED properties worth keeping in mind:
 
 * **"Reboot" = restart the VM on the same disk.** fx-init has no `reboot(2)`:
   `do_shutdown()` returns and PID 1 exits — a halt.  The persistence the test
-  asserts lives in the store (`/fx/disk/store`) and in `VIBE_RUNTIME_DIR`
+  asserts lives in the store (`/fx/disk/store`) and in `FX_AGENT_DATA`
   (`/fx/disk/agent-data`), both on the virtio disk.
 * **An agent-driven activation is durable but NOT hot-applied.** `fx_activate`
   execs the running root's `/bin/fx-activate` directly, which publishes the
@@ -241,7 +241,7 @@ wrong and not do it again.  This unit **mechanises that step**, so the machinery
 cannot re-act blindly even when what drives it is a canned fixture (a model can
 supply judgement later; the mechanism must not need one).
 
-**THE RULE** (`src/llm2/outcome.h`), applied at the start of every run — an
+**THE RULE** (`src/agent/outcome.h`), applied at the start of every run — an
 explicit `--resume` excepted, because that is the operator saying "continue":
 
 > *if the generation I am running in is not the one I activated, my activation
@@ -302,7 +302,7 @@ agent-driven activation execs `/bin/fx-activate` directly: it writes **no**
 The harness's own durable record is the only link, and it is on the **disk**:
 
 ```
-$VIBE_RUNTIME_DIR/attempts.jsonl          # in the guest: /fx/disk/agent-data/…
+$FX_AGENT_DATA/attempts.jsonl            # in the guest: /fx/disk/agent-data/…
 <epoch> <task> <step> <session> <run> <version> <config>
 ```
 
@@ -339,7 +339,7 @@ the record, so re-notifying it would write a duplicate attempt stamped with the
 read the same two files: `fx_outcome` prints `current <N>`, `last <v> ok|failed`,
 `boots <n>` and then every `<store>/.bootlog` line; `fx_generation` prints the
 current generation alone.  Both go through the **same reader** as the harness's
-boot-time consume (`src/llm2/outcome.c`, linked into both binaries), so the two
+boot-time consume (`src/agent/outcome.c`, linked into both binaries), so the two
 cannot drift; an unreadable `CURRENT` is reported as `current UNREADABLE:` with
 `exit=1`, never as a guess.
 
@@ -382,7 +382,7 @@ here.
    run is currently started from a supervisor that would re-`exec` it.
 2. **The checkpoint must live on the persistent disk**, not the guest's tmpfs
    root, or it is lost exactly when the reboot happens.  It is a single env knob
-   now (`VIBE_RUNTIME_DIR`, see *Where it lives*); setting it is the deployer's
+   now (`FX_AGENT_DATA`, see *Where it lives*); setting it is the deployer's
    job, and nothing yet *enforces* that the path is not tmpfs.
 3. **The datalog engine comes from the SIBLING checkout.** The legacy C copy
    this tree vendored is removed (MEASURED — its

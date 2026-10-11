@@ -87,7 +87,7 @@ while [ $# -gt 0 ]; do
     esac
 done
 DATALOG_DIR="${DATALOG_DIR:-$(cd "$REPO/.." && pwd)/datalog-dafsa}"
-FIXTURE="${FX_SSE_FIXTURE:-/var/lib/workspace/vibe-runtime/tests/fixtures/responses_simple.sse}"
+FIXTURE="${FX_SSE_FIXTURE:-$REPO/tests/fixtures/responses_simple.sse}"
 
 command -v zig >/dev/null 2>&1 || skip "zig not found (the guest toolchain)"
 command -v python3 >/dev/null 2>&1 || skip "python3 not found (Makefile extraction)"
@@ -123,13 +123,13 @@ def var(name):
             out.append(cur[:-1]); continue
         out.append(cur); break
     return " ".join(out).strip()
-want = ["CFLAGS", "L2_SRC", "L1_SRC", "DHALL_SRC", "YYJSON_SRC", "TOMLC99_SRC"]
+want = ["CFLAGS", "AGENT_SRC", "HARNESS_SRC", "DHALL_SRC", "YYJSON_SRC", "TOMLC99_SRC"]
 vals = {k: var(k) for k in want}
 missing = [k for k, v in vals.items() if not v]
 if missing:
     sys.stderr.write("stage-guest: FAIL: Makefile variables empty/missing: %s\n" % ",".join(missing))
     sys.exit(1)
-if "agent_main_main.c" not in vals["L2_SRC"] and not True:
+if "agent_main_main.c" not in vals["AGENT_SRC"] and not True:
     pass
 for k, v in vals.items():
     print("%s=%s" % (k, shlex.quote(v)))
@@ -141,8 +141,8 @@ PYEOF
 # cosmetic and are dropped (they are the only $(CURDIR) users).
 GFLAGS=$(printf '%s' "$CFLAGS" | sed -e "s|\\\$(CURDIR)|$REPO|g" \
     -e 's/-ffile-prefix-map=[^ ]*//g' -e 's/-fdebug-prefix-map=[^ ]*//g')
-SRC="${L2_SRC:-} ${L1_SRC:-} ${DHALL_SRC:-} ${YYJSON_SRC:-} ${TOMLC99_SRC:-}"
-MAIN=src/llm2/agent_main_main.c
+SRC="${AGENT_SRC:-} ${HARNESS_SRC:-} ${DHALL_SRC:-} ${YYJSON_SRC:-} ${TOMLC99_SRC:-}"
+MAIN=src/agent/agent_main_main.c
 [ -f "$MAIN" ] || fail "$MAIN missing (the Makefile's link input)"
 
 # ─── the datalog engine for the guest targets (sibling's own build.zig) ───
@@ -215,12 +215,12 @@ assert_guest_elf "$BINDIR/fx-agent.i386" "i386"
 # ─── fx-verbs-server, x86_64-linux-musl (the tool server) ─────────────────
 # tools/build.sh owns the repo's build/ output paths; this compiles the same
 # source into the payload directory instead (the shared source is read-only).
-# src/llm2/outcome.c is linked in too: it is the ONE reader of the store's
+# src/agent/outcome.c is linked in too: it is the ONE reader of the store's
 # outcome files (<store>/.bootlog, <store>/.db/snapshots/CURRENT), shared with
 # the harness's own boot-time consume of its activation record.
-VS_SRC="tools/fx-verbs-server.c src/llm2/outcome.c src/vendor/yyjson/yyjson.c"
+VS_SRC="tools/fx-verbs-server.c src/agent/outcome.c src/vendor/yyjson/yyjson.c"
 [ -f tools/fx-verbs-server.c ] || fail "tools/fx-verbs-server.c missing"
-[ -f src/llm2/outcome.c ] || fail "src/llm2/outcome.c missing (the outcome reader)"
+[ -f src/agent/outcome.c ] || fail "src/agent/outcome.c missing (the outcome reader)"
 echo "stage-guest: compiling fx-verbs-server for x86_64-linux-musl"
 zig cc -target x86_64-linux-musl -static -s -std=c11 -O2 -Wall -Wextra \
     -Isrc -Isrc/vendor/yyjson -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
@@ -374,8 +374,8 @@ HEALTHY_SVCS="$HEARTBEAT
             on = \"all\", restart = Some \"never\", backoffMs = None Natural,
             probe = None Probe,
             env = Some [ { key = \"FX_CHARDEV\", value = \"/usr/fx-agent/chardev.sse\" },
-                         { key = \"VIBE_RUNTIME_CONFIG_DIR\", value = \"/usr/fx-agent/cfg\" },
-                         { key = \"VIBE_RUNTIME_DIR\", value = \"/fx/disk/agent-data\" },
+                         { key = \"FX_AGENT_CONFIG_DIR\", value = \"/usr/fx-agent/cfg\" },
+                         { key = \"FX_AGENT_DATA\", value = \"/fx/disk/agent-data\" },
                          { key = \"HOME\", value = \"/tmp\" }
                        ] : Optional (List { key : Text, value : Text }),
             console = Some \"console\" }
@@ -492,8 +492,8 @@ if [ "$PRECHECK" = 1 ]; then
     rm -rf "$PC"; mkdir -p "$PC/cfg" "$PC/data"
     cp "$ROOTDIR/usr/fx-agent/cfg/config.dhall" "$PC/cfg/config.dhall"
     cp "$ROOTDIR/usr/fx-agent/chardev.sse" "$PC/dev.sse"
-    out=$(FX_CHARDEV="$PC/dev.sse" VIBE_RUNTIME_CONFIG_DIR="$PC/cfg" \
-          VIBE_RUNTIME_DIR="$PC/data" HOME="$PC" \
+    out=$(FX_CHARDEV="$PC/dev.sse" FX_AGENT_CONFIG_DIR="$PC/cfg" \
+          FX_AGENT_DATA="$PC/data" HOME="$PC" \
           "$BINDIR/fx-agent" -p "$SENTINEL" --agent fx --max-turns 3 --output text 2>&1); rc=$?
     [ "$rc" = 0 ] || fail "host pre-check: the offline loop exited rc=$rc: $out"
     [ "$out" = "$MARKER" ] \

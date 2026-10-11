@@ -1,4 +1,4 @@
-/* src/llm2/mcp_client.c — MCP stdio CLIENT for arbitrary tool servers (LAYER-2 S5).
+/* src/agent/mcp_client.c — MCP stdio CLIENT for arbitrary tool servers (S5).
  *
  * Generalizes session.c's session_jing_memory_tool_call into a general MCP
  * stdio client.  The idioms (fork+execvpe spawn with scrubbed env, bounded
@@ -96,7 +96,7 @@ typedef struct {
 } MCPProc;
 
 static double mcp_timeout_s(void) {
-    const char *e = getenv("VIBE_MCP_TIMEOUT_S");
+    const char *e = getenv("FX_MCP_TIMEOUT_S");
     if (e && *e) {
         char *end = NULL;
         double v = strtod(e, &end);
@@ -106,7 +106,7 @@ static double mcp_timeout_s(void) {
 }
 
 /* Return the effective timeout: the per-server value if > 0, else the global
- * default (env VIBE_MCP_TIMEOUT_S / MCP_CLIENT_RPC_TIMEOUT_S). */
+ * default (env FX_MCP_TIMEOUT_S / MCP_CLIENT_RPC_TIMEOUT_S). */
 static double mcp_eff_timeout(double specific) {
     return specific > 0 ? specific : mcp_timeout_s();
 }
@@ -358,7 +358,7 @@ static int do_handshake(MCPProc *p, ReadBuf *b, double timeout_s) {
     const char *init =
         "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{"
         "\"protocolVersion\":\"" MCP_PROTOCOL_VERSION "\",\"capabilities\":{},"
-        "\"clientInfo\":{\"name\":\"vibe-runtime\",\"version\":\"0.1.0\"}}}\n";
+        "\"clientInfo\":{\"name\":\"fx-agent\",\"version\":\"0.1.0\"}}}\n";
     if (send_all(p->in_fd, init, strlen(init)) != 0) return -1;
     yyjson_doc *init_doc = NULL;
     if (read_response(p, b, 1, now_mono() + timeout_s, &init_doc) != 0) return -1;

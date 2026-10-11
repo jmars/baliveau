@@ -1,4 +1,4 @@
-/* src/llm2/checkpoint.h — LAYER-2 S7 per-turn messages.jsonl checkpoint.
+/* src/agent/checkpoint.h — per-turn messages.jsonl checkpoint.
  *
  * Durable transcript + run state for the agent loop.  The transcript lives in a
  * messages.jsonl file (one chat message per line, JSON) — the SAME format

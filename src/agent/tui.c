@@ -1,4 +1,4 @@
-/* src/llm2/tui.c — LAYER-2 S12 terminal UI (self-contained, NO ncurses).
+/* src/agent/tui.c — terminal UI (self-contained, NO ncurses).
  *
  * A minimal live-streaming terminal UI built directly on raw termios + ANSI
  * escape sequences (cosmocc ships <termios.h> with tcgetattr/tcsetattr/
@@ -12,7 +12,7 @@
  *     so the retention logic is exercised uniformly (and testable without a
  *     tty).  tui_poll_key still decodes keys (testable from a regular FILE*).
  *   - ACTIVE (active != 0, stdout AND stdin are a tty, or the test seam
- *     VIBE_TUI_FORCE_ACTIVE is set): raw termios on stdin, enter the alt-screen,
+ *     FX_TUI_FORCE_ACTIVE is set): raw termios on stdin, enter the alt-screen,
  *     hide the cursor, redraw a visible window (clear + reprint the tail of the
  *     bounded scrollback + the current streaming line + an inverse-video status
  *     bar) on every change.  Scroll with Up/Down/PgUp/PgDn/Home/End, Ctrl-L
@@ -291,7 +291,7 @@ int tui_init(Tui **out, FILE *in, FILE *outf) {
     /* Active when both streams are a tty (or the test seam is set). */
     int is_tty = (t->fd_in >= 0 && t->fd_out >= 0 &&
                   isatty(t->fd_in) && isatty(t->fd_out));
-    const char *force = getenv("VIBE_TUI_FORCE_ACTIVE");
+    const char *force = getenv("FX_TUI_FORCE_ACTIVE");
     t->active = is_tty || (force && *force);
 
     if (t->active) {

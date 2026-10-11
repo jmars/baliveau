@@ -77,11 +77,22 @@ distinguishes automatic roll-forwards from deliberate operator action; the runti
 `fx-audit`). **And the two goals reinforce each other: a log the subject can rewrite is not a log for a
 regulator** — §6b's audit stance is what makes these records evidentially usable. The gaps, to be built:
 
-- [ ] **THE CONFIG→GENERATION LINK.** `generation(genhash, buildfile, dhake, epoch)` and `genhash` is
-      the canonical serialization of the FACTS, so a generation CANNOT answer "which config produced
-      me" (§8.3). This is the direct gap for Annex IV's "changes made through the lifecycle": the chain
-      of generations exists, but each step's INPUT is not recorded with it. Adding the config's store
-      path as a term is the missing link.
+- [x] **THE CONFIG→GENERATION LINK — BUILT (2026-10, uncommitted; `handoff-config-link-result`).**
+      `generation_config(genhash, config_sha256, origin)` a3, all-sym, written in fx-activate's
+      activation txn (cleared with the other generation facts, so version-bound exactly like
+      `install`/`provides`); the input is RETAINED, not merely hashed — `<genhash>-system-generation/
+      config.dhall`, store-relative like `install`'s origins, written in the scratch dir before the
+      rename so it publishes atomically, from bytes read BEFORE evaluation and verified UNCHANGED by a
+      re-read after it (a config edited mid-activation fails loudly; A→B→A inside the window is the
+      stated residual — tamper-evident, not tamper-proof, §6b). `genhash` provably UNMOVED: raw
+      64-hex byte-identical pre/post change under a fixed store root (both corpus success cases,
+      2 runs each), the link rides OUTSIDE `serializeGeneration`. Dumpable: `fxstore facts
+      generation_config [--as-of N]` (schema row added to `RELATION_SCHEMAS`); a reporter holding a
+      generation resolves WHICH config produced it and READS the input — `--as-of` walks the whole
+      lifecycle chain, which is Annex IV's "changes made" question. activate_diff re-pinned (5 golden
+      lines added, 0 changed), 8/8. NOT recorded (deliberate): the activation-time `--config`
+      invocation path — host/cwd-relative, neither relocatable nor durable; the retained copy is the
+      readable form of the same claim.
 - [ ] **A CHANGE AND INCIDENT RECORD, with a stated taxonomy.** The generation chain IS the change
       record, but nothing states a change's INTENT or SEMANTICS; and the raw events that the Act's
       risk/incident language cares about (a failed boot, a refused activation, a rolled-back generation,

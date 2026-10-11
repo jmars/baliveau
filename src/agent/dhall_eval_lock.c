@@ -1,4 +1,4 @@
-/* src/llm2/dhall_eval_lock.c — the ONLY definition of g_dhall_eval_lock.
+/* src/agent/dhall_eval_lock.c — the ONLY definition of g_dhall_eval_lock.
  *
  * Serializes ALL in-process dhall-c evaluation (the arena + normalize-error
  * globals are process-global and NOT thread-safe).  runner.c and config.c

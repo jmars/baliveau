@@ -1,8 +1,8 @@
-/* src/runner.c — SECURITY KEYSTONE: locked `vibe -p` argv builder.
+/* src/runner.c — SECURITY KEYSTONE: locked headless-agent argv builder.
  *
- * Port of vibe_runtime/runner.py into C. Every string that can reach a child
- * subprocess argv is validated here; the prompt is always a plain argv element
- * and never a shell string; only caller-approved flags are ever emitted.
+ * Every string that can reach a child subprocess argv is validated here; the
+ * prompt is always a plain argv element and never a shell string; only
+ * caller-approved flags are ever emitted.
  * See src/runner.h for the config decision (runtime's OWN Dhall config).
  */
 #define _GNU_SOURCE
@@ -19,20 +19,20 @@
 #include "runner.h"
 #include "dhall.h"
 #include "yyjson.h"
-#include "llm2/dhall_eval_lock.h"
+#include "agent/dhall_eval_lock.h"
 
 /* Serializes dhall_eval_to_json (its process-global arena is NOT thread-safe;
  * the daemon is thread-per-conn and calls validate_agent_profile from multiple
  * conn_threads concurrently). This is the process-wide lock SHARED with
- * config.c (src/llm2) — a per-TU mutex would let two threads touch the same
+ * config.c (src/agent) — a per-TU mutex would let two threads touch the same
  * arena concurrently. Statically initialized, ready before main. */
 
 /* ------------------------------------------------------------------ */
-/* MAX_TURNS bound (env VIBE_MAX_TURNS, default 1000)                 */
+/* MAX_TURNS bound (env FX_MAX_TURNS, default 1000)                 */
 /* ------------------------------------------------------------------ */
 
 int runner_max_turns(void) {
-    const char *s = getenv("VIBE_MAX_TURNS");
+    const char *s = getenv("FX_MAX_TURNS");
     if (!s || !*s) return RUNNER_MAX_TURNS_DEFAULT;
     char *end = NULL;
     long v = strtol(s, &end, 10);
@@ -87,7 +87,7 @@ int validate_cwd(const char *cwd, RunnerError *err) {
 }
 
 static void projects_root(char *out, size_t cap) {
-    const char *env = getenv("VIBE_PROJECTS_ROOT");
+    const char *env = getenv("FX_PROJECTS_ROOT");
     if (env && *env) {
         snprintf(out, cap, "%s", env);
         return;
@@ -130,16 +130,16 @@ int validate_cwd_confinement(const char *cwd, RunnerError *err) {
 /* ------------------------------------------------------------------ */
 
 static void runtime_config_dir(char *out, size_t cap) {
-    const char *env = getenv("VIBE_RUNTIME_CONFIG_DIR");
+    const char *env = getenv("FX_AGENT_CONFIG_DIR");
     if (env && *env) {
         snprintf(out, cap, "%s", env);
         return;
     }
     const char *home = getenv("HOME");
     if (home && *home) {
-        snprintf(out, cap, "%s/.config/vibe-runtime", home);
+        snprintf(out, cap, "%s/.config/fx-agent", home);
     } else {
-        snprintf(out, cap, ".config/vibe-runtime");
+        snprintf(out, cap, ".config/fx-agent");
     }
 }
 
@@ -292,7 +292,7 @@ int validate_agent_profile(const char *agent, RunnerError *err) {
 }
 
 /* ------------------------------------------------------------------ */
-/* build_vibe_cmd — locked argv builder                               */
+/* build_agent_cmd — locked argv builder                               */
 /* ------------------------------------------------------------------ */
 
 static int cmd_append(RunnerCmd *cmd, const char *s) {
@@ -315,15 +315,15 @@ void runner_cmd_free(RunnerCmd *cmd) {
 }
 
 void runner_agent_main_path(char *out, size_t cap) {
-    const char *env = getenv("VIBE_AGENT_MAIN");
+    const char *env = getenv("FX_AGENT_MAIN");
     if (env && *env) { snprintf(out, cap, "%s", env); return; }
-    /* No legacy `vibe` fallback: the Python reference was removed, so a
-     * missing native binary must fail loudly (exec fails -> child 127 ->
-     * reaped as FAILED) rather than silently re-invoking an interpreter. */
+    /* No interpreter fallback: a missing native binary must fail loudly
+     * (exec fails -> child 127 -> reaped as FAILED) rather than silently
+     * re-invoking an interpreter. */
     snprintf(out, cap, "build/agent_main");
 }
 
-int build_vibe_cmd(const char *agent, const char *prompt,
+int build_agent_cmd(const char *agent, const char *prompt,
                    const char *session_id, int max_turns,
                    const char *cwd, const char *output, bool auto_approve,
                    RunnerError *err, RunnerCmd *out) {

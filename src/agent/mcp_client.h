@@ -1,4 +1,4 @@
-/* src/llm2/mcp_client.h — MCP stdio CLIENT for arbitrary tool servers (LAYER-2 S5).
+/* src/agent/mcp_client.h — MCP stdio CLIENT for arbitrary tool servers (S5).
  *
  * Generalizes session.c's session_jing_memory_tool_call (which is hardwired to
  * the jing-memory graph server) into a general MCP stdio client: spawn an
@@ -38,7 +38,7 @@
 /* Cap on a single read line (1 MiB); an oversize line aborts the exchange. */
 #define MCP_MAX_LINE (1024u * 1024u)
 
-/* Per-read timeout in seconds (default; overridable via VIBE_MCP_TIMEOUT_S). */
+/* Per-read timeout in seconds (default; overridable via FX_MCP_TIMEOUT_S). */
 #define MCP_CLIENT_RPC_TIMEOUT_S 10.0
 
 /* One advertised tool (from a tools/list reply). name/description are owned by

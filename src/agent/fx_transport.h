@@ -1,4 +1,4 @@
-/* src/llm2/fx_transport.h — the fx-harness model transport.
+/* src/agent/fx_transport.h — the fx-harness model transport.
  *
  * NO HTTP, NO sockets, NO TLS.  The chardev is the whole interface:
  *
@@ -11,11 +11,10 @@
  * and every response is a byte stream on the one device the host owns, so the
  * transcript is recorded by the host rather than self-reported by the harness.
  *
- * Upstream llm2 reached the model through http_client.c (HTTP/1.1 framing +
- * chunked/content-length body parsing) over a socket, optionally wrapped in
- * mbedTLS.  All of that is gone: with no socket layer in the guest
- * (CONFIG_NET unset, socket(2) -> ENOSYS) and no HTTP in the channel, the
- * adapter reads SSE bytes directly and feeds sse.c.
+ * There is no HTTP client and no TLS in this tree: with no socket layer in
+ * the guest (CONFIG_NET unset, socket(2) -> ENOSYS) and no HTTP in the
+ * channel, the adapter reads SSE bytes directly off the chardev and feeds
+ * sse.c.
  */
 #ifndef FX_TRANSPORT_H
 #define FX_TRANSPORT_H

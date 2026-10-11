@@ -1,4 +1,4 @@
-/* src/llm2/fx_transport.c — the chardev transport (no HTTP, no sockets, no TLS).
+/* src/agent/fx_transport.c — the chardev transport (no HTTP, no sockets, no TLS).
  *
  * WHAT THIS REPLACES, and why each had to go:
  *

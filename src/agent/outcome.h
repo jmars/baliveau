@@ -1,4 +1,4 @@
-/* src/llm2/outcome.h — THE OBSERVATION LOOP: the durable activation-attempt
+/* src/agent/outcome.h — THE OBSERVATION LOOP: the durable activation-attempt
  * record, the store's own outcome files, and the RULE the boot path applies.
  *
  * WHY THIS EXISTS.  A never-settling OSCILLATOR was measured on B2's arm 2:
@@ -27,7 +27,7 @@
  *      activation writes NO rt_effect("activate") and updates no runtime
  *      relation, so the correlation "the thing that broke was the thing I just
  *      did" CANNOT come from the system — the harness's own durable state is
- *      the ONLY causal link.  It lives under VIBE_RUNTIME_DIR (B1 proved that
+ *      the ONLY causal link.  It lives under FX_AGENT_DATA (B1 proved that
  *      is /fx/disk/agent-data on the virtio disk), so it outlives the reboot:
  *        <data-dir>/attempts.jsonl      append-only, one record per line:
  *          "<epoch> <task> <step> <session> <run> <version> <config>"
@@ -251,12 +251,12 @@ extern "C" {
  * that got cut names the task's ONLY way out — a refusal whose escape is
  * silently missing is a permanent wedge.  3072 was raised against a stated
  * estimate; the DERIVATION below replaces it, and every report now ends in an
- * explicit TRUNCATION MARKER when it did not fit (src/llm2/outcome.c, report()),
+ * explicit TRUNCATION MARKER when it did not fit (src/agent/outcome.c, report()),
  * so a cut can never be mistaken for a complete report again.
  *
  * THE DERIVATION (byte counts at a 64-bit `unsigned long`, i.e. 20 decimal
  * digits).  The largest of the nine reports is ACTIVATION_FAILED
- * (src/llm2/outcome.c, the report() call above "running"), and its parts are:
+ * (src/agent/outcome.c, the report() call above "running"), and its parts are:
  *
  *   fixed prose                              868
  *   task id (FX_OUTCOME_TASK_CAP-1)           16
@@ -396,7 +396,7 @@ typedef struct {
  * The task's identity across boots.  NULL/empty parts are allowed. */
 void fx_outcome_task_id(const char *agent, const char *prompt, char *out, size_t cap);
 
-/* ── the durable record (VIBE_RUNTIME_DIR) ───────────────────────────────── */
+/* ── the durable record (FX_AGENT_DATA) ───────────────────────────────── */
 
 /* Append ONE record line to <data_dir>/attempts.jsonl and fsync it.  `step` is
  * "attempt" | "result" | "done"; `config` may be NULL/"" (written as "-").

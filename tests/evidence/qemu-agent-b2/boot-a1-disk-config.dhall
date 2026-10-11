@@ -23,8 +23,8 @@ in  { hostname = "b2-agent-9f3c"
             on = "all", restart = Some "never", backoffMs = None Natural,
             probe = None Probe,
             env = Some [ { key = "FX_CHARDEV", value = "/usr/fx-agent/b2-verify.sse" },
-                         { key = "VIBE_RUNTIME_CONFIG_DIR", value = "/usr/fx-agent/cfg-b2" },
-                         { key = "VIBE_RUNTIME_DIR", value = "/fx/disk/agent-data" },
+                         { key = "FX_AGENT_CONFIG_DIR", value = "/usr/fx-agent/cfg-b2" },
+                         { key = "FX_AGENT_DATA", value = "/fx/disk/agent-data" },
                          { key = "HOME", value = "/tmp" }
                        ] : Optional (List { key : Text, value : Text }),
             console = Some "console" }

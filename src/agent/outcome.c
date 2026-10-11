@@ -1,4 +1,4 @@
-/* src/llm2/outcome.c — THE OBSERVATION LOOP (see outcome.h for the why).
+/* src/agent/outcome.c — THE OBSERVATION LOOP (see outcome.h for the why).
  *
  * Plain C + POSIX only: no yyjson, no config engine, no agent loop types.  The
  * record is a line-oriented text file, so the SAME reader (this file) can be
@@ -730,7 +730,7 @@ int fx_outcome_recovery(const char *store, FxRecovery *out, char *err,
  * sites in this file (the tenth is the bootlog-torn refusal in the C==A row),
  * and no report is built anywhere else.  The buffer belongs
  * to the CALLER, and the only production caller whose buffer can truncate is
- * src/llm2/agent_main.c:642 — `char rep[FX_OUTCOME_MSG_CAP]`, printed with
+ * src/agent/agent_main.c:677 — `char rep[FX_OUTCOME_MSG_CAP]`, printed with
  * fputs to the refusing run's stdout and to the console.  The oracle
  * (tests/test_outcome.sh) passes 2x the cap so its greps see the whole text,
  * and phase 10 drives a DELIBERATELY small cap to prove the marker is reached.

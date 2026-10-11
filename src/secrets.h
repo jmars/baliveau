@@ -1,19 +1,18 @@
 /* src/secrets.h — scoped secret injection (scrub-and-inject) — SECURITY CRITICAL.
  *
- * Port of vibe_runtime/secrets.py (Slice 4 fold-in, per the Slice-4 plan's
- * GAP-3 decision).  The daemon must NEVER let a detached `vibe` child inherit
- * the orchestrator/daemon process environment.  Instead it builds the child
+ * The caller must NEVER let a detached agent child inherit the orchestrator
+ * process environment.  Instead it builds the child
  * env from a small explicit whitelist base plus ONLY the keys the run's
  * ``secrets_scope`` (minimal | default | full) is allowed to see.
  *
  * This is scrub-and-inject, not inherit-and-strip: the child env is
- * constructed allowlist-positive, so a secret added to the daemon's own env
+ * constructed allowlist-positive, so a secret added to the caller's own env
  * later is structurally unable to leak into a detached child.  build_child_env
  * never reads ``environ`` for secret content — the base whitelist only
  * carries PATH/HOME (re-derived, never wholesale-copied) and a handful of
  * locale/terminal vars that are safe to forward.
  *
- * Store layout (~/.vibe/secrets.toml, override VIBE_SECRETS_FILE):
+ * Store layout (~/.fx-agent/secrets.toml, override FX_SECRETS_FILE):
  *
  *     [secrets]
  *     SOME_API_KEY = "value"       # env var name == secret name
@@ -23,7 +22,7 @@
  *     default = ["SOME_API_KEY"]
  *     full    = ["SOME_API_KEY", "OTHER_TOKEN"]
  *
- * An ABSENT or malformed file yields an empty store (no crash); the daemon
+ * An ABSENT or malformed file yields an empty store (no crash); the caller
  * then still injects the whitelist base for `minimal` (no secrets), so a
  * missing file degrades to the most-constrained scope, never to full
  * inheritance.
@@ -50,7 +49,7 @@ int secrets_validate_scope(const char *scope, char *err, size_t errcap);
  * NUL-terminated array of freshly malloc'd "KEY=VALUE" strings (caller frees
  * via secrets_envp_free).  On an unknown scope, returns NULL and fills err.
  *
- * The store is loaded fresh from VIBE_SECRETS_FILE (default ~/.vibe/secrets.toml).
+ * The store is loaded fresh from FX_SECRETS_FILE (default ~/.fx-agent/secrets.toml).
  * An absent or malformed file yields an empty store (most-constrained).  The
  * whitelist base (PATH/HOME re-derived + LANG/LC_ALL/TZ/TERM/XDG_RUNTIME_DIR
  * forwarded only when present) is always injected; only the scope's secret
@@ -61,9 +60,9 @@ char **secrets_build_child_env(const char *scope, char *err, size_t errcap);
 void secrets_envp_free(char **envp);
 
 /* ── Test/embedding hooks ───────────────────────────────────────────────────
- * The default secrets file is VIBE_SECRETS_FILE or ~/.vibe/secrets.toml, read
+ * The default secrets file is FX_SECRETS_FILE or ~/.fx-agent/secrets.toml, read
  * fresh on every build_child_env call.  Tests that want hermetic, in-memory
- * stores set VIBE_SECRETS_FILE to a tmp file they wrote. */
+ * stores set FX_SECRETS_FILE to a tmp file they wrote. */
 
 /* Pure loader exposed for direct testing (port of secrets.load_secrets_store):
  * writes the parsed secrets/scopes into out_ arrays (caller frees).  Returns

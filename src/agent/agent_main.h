@@ -1,8 +1,8 @@
-/* src/llm2/agent_main.h — LAYER-2 S11 agent entrypoint (see agent_main.c).
+/* src/agent/agent_main.h — the agent entrypoint (see agent_main.c).
  *
- * The native in-process replacement for the L1 daemon's shell-out to
- * `vibe -p`.  Exposes agent_main_entry (NO main()) so the hermetic test links
- * agent_main.c with its own main(); src/llm2/agent_main_main.c provides the
+ * Runs the agent loop in-process instead of building a subprocess argv.
+ * Exposes agent_main_entry (NO main()) so the hermetic test links
+ * agent_main.c with its own main(); src/agent/agent_main_main.c provides the
  * binary's main().
  */
 #ifndef AGENT_MAIN_H

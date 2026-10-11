@@ -1,4 +1,4 @@
-/* src/llm2/config.c — LAYER-2 S9 runtime config loader.
+/* src/agent/config.c — runtime config loader.
  *
  * Evaluates the runtime's OWN config.dhall in-process via the vendored dhall-c
  * and walks the resulting JSON (yyjson) into a RuntimeConfig.  The dhall-c eval
@@ -47,16 +47,16 @@
 /* ------------------------------------------------------------------ */
 
 static void runtime_config_dir(char *out, size_t cap) {
-    const char *env = getenv("VIBE_RUNTIME_CONFIG_DIR");
+    const char *env = getenv("FX_AGENT_CONFIG_DIR");
     if (env && *env) {
         snprintf(out, cap, "%s", env);
         return;
     }
     const char *home = getenv("HOME");
     if (home && *home) {
-        snprintf(out, cap, "%s/.config/vibe-runtime", home);
+        snprintf(out, cap, "%s/.config/fx-agent", home);
     } else {
-        snprintf(out, cap, ".config/vibe-runtime");
+        snprintf(out, cap, ".config/fx-agent");
     }
 }
 

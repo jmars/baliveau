@@ -117,7 +117,7 @@ PIN="$INIT/scripts/kernel-pin.txt"
 SLOTSET="$INIT/m3/package-set-slot.dhall"
 [ -f "$SLOTSET" ] || skip "m3/package-set-slot.dhall missing at $SLOTSET (the slot package set)"
 MARKER="${SLOT_MARKER:-slot-agent-5f31}"
-VIBE_DIR="/fx/disk/agent-data"
+AGENT_DATA="/fx/disk/agent-data"
 AGENT_CONFIG="/fx/disk/agent-config.dhall"
 SLOT_SRC_DIR="/fx/disk/agent-src/oslot"       # the in-guest slot src.path
 SLOT_SRC_FILE="$SLOT_SRC_DIR/Mcp.elm"         # THE one writable source path
@@ -340,8 +340,8 @@ agent_svc() { # agent_svc CHARDEV -> the console agent service row
             on = "all", restart = Some "never", backoffMs = None Natural,
             probe = None Probe,
             env = Some [ { key = "FX_CHARDEV", value = "$1" },
-                         { key = "VIBE_RUNTIME_CONFIG_DIR", value = "/usr/fx-agent/cfg" },
-                         { key = "VIBE_RUNTIME_DIR", value = "$VIBE_DIR" },
+                         { key = "FX_AGENT_CONFIG_DIR", value = "/usr/fx-agent/cfg" },
+                         { key = "FX_AGENT_DATA", value = "$AGENT_DATA" },
                          { key = "HOME", value = "/tmp" }
                        ] : Optional (List { key : Text, value : Text }),
             console = Some "console" }
@@ -1037,11 +1037,18 @@ git -C "$REPO" cat-file blob "$PIN_REV:tools/fx-verbs-server.c" \
 if cmp -s "$WORK/before-fx-verbs-server.c" "$REPO/tools/fx-verbs-server.c"; then
     fail "the pinned extract is IDENTICAL to the working tree — the BEFORE arm would re-test the fixed server (vacuous asymmetry)"
 fi
+# The pinned server's own `#include "llm2/outcome.h"` predates the src/llm2 ->
+# src/agent rename: resolve it onto the CURRENT reader via a scratch include
+# dir that carries the historical spelling (copies, so the pin stays verbatim).
+BINC="$WORK/inc/llm2"
+mkdir -p "$BINC" || fail "cannot create the pin include dir"
+cp "$REPO/src/agent/outcome.c" "$REPO/src/agent/outcome.h" "$BINC/" \
+    || fail "cannot stage the current outcome reader for the pinned server"
 echo "=== qemu-agent-slot-inguest: phase B0 — building the PRE-FIX server ($PIN_REV, cmp-proven to differ) ==="
 ( cd "$REPO" && zig cc -target x86_64-linux-musl -static -s -std=c11 -O2 -Wall -Wextra \
-    -Isrc -Isrc/vendor/yyjson -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
+    -I"$WORK/inc" -Isrc -Isrc/vendor/yyjson -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
     -o "$WORK/fx-verbs-server.before" \
-    "$WORK/before-fx-verbs-server.c" src/llm2/outcome.c src/vendor/yyjson/yyjson.c ) \
+    "$WORK/before-fx-verbs-server.c" src/agent/outcome.c src/vendor/yyjson/yyjson.c ) \
     || fail "cannot build the pre-fix server"
 assert_guest_elf "$WORK/fx-verbs-server.before" "x86-64"
 strings_cap "$WORK/fx-verbs-server.before" "fx_build" \

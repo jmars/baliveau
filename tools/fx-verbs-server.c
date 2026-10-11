@@ -1,10 +1,10 @@
 /* tools/fx-verbs-server.c — the fx-linux system verbs as an MCP stdio tool
  * server.
  *
- * A newline-delimited JSON-RPC 2.0 MCP server in the shape of vibe-runtime's
- * tests/mcp_echo_server.c (initialize -> notifications/initialized ->
- * tools/list -> tools/call, plus ping), driven by fx-harness's
- * src/llm2/mcp_client.c: fork+execvpe'd over stdio, id-matched replies,
+ * A newline-delimited JSON-RPC 2.0 MCP server (initialize ->
+ * notifications/initialized -> tools/list -> tools/call, plus ping), driven
+ * by fx-harness's
+ * src/agent/mcp_client.c: fork+execvpe'd over stdio, id-matched replies,
  * bounded newline frames.  The whole verb surface is ONE table of rows
  * {name, argv template, description}:
  *
@@ -85,7 +85,7 @@
  * answer to "has this happened BEFORE?", without which every recovery looks
  * like a first offence.  They are the READ side; the MECHANISED side is the
  * harness's own boot-time consume of its durable activation record
- * (src/llm2/outcome.h) — a model can be given judgement later, the machinery
+ * (src/agent/outcome.h) — a model can be given judgement later, the machinery
  * must not re-act blindly.  BOTH verbs are STORE-SCOPED with NO store
  * argument: they read FX_STORE_PATH (or none at all), never a store a caller
  * names, so a model cannot be talked
@@ -158,7 +158,7 @@
  *
  * BOUNDS — request lines and captured verb output are capped at FXV_MAX_LINE,
  * the same 1 MiB cap the client enforces (MCP_MAX_LINE,
- * src/llm2/mcp_client.h).  Every JSON frame is parsed AND built with the
+ * src/agent/mcp_client.h).  Every JSON frame is parsed AND built with the
  * vendored yyjson — no sprintf'd JSON anywhere.
  *
  * Exit code: 0 on clean EOF on stdin; -1 on a stdin read error.
@@ -185,7 +185,7 @@
 #include <unistd.h>
 
 #include "yyjson.h"
-#include "llm2/outcome.h"   /* the store's outcome files — ONE reader, shared
+#include "agent/outcome.h"   /* the store's outcome files — ONE reader, shared
                              * with the harness's own boot-time consume */
 
 extern char **environ; /* the server's own environment (pass-through source) */
@@ -197,7 +197,7 @@ extern char **environ; /* the server's own environment (pass-through source) */
 #define FXV_SERVER_VERSION   "0.1.0"
 
 /* Line/output cap — SAME value the client enforces (MCP_MAX_LINE,
- * src/llm2/mcp_client.h). */
+ * src/agent/mcp_client.h). */
 #define FXV_MAX_LINE (1024u * 1024u)
 
 /* ── the store path the STORE-SCOPED verbs carry ───────────────────────────── */
@@ -232,7 +232,7 @@ extern char **environ; /* the server's own environment (pass-through source) */
  * spelling names and nothing wider), and a write outside the set is REFUSED
  * loudly (exit 1, naming the path AND the set).
  * See FX_DEFAULT_WRITABLE below for the unset case.  WHY THE SET EXISTS: the
- * harness's observation loop rests on <VIBE_RUNTIME_DIR>/attempts.jsonl being
+ * harness's observation loop rests on <FX_AGENT_DATA>/attempts.jsonl being
  * beyond the model's WRITE reach — a model that could rewrite the record
  * could erase its own failed activation and re-issue it blindly (the
  * oscillator the loop exists to stop).  fx_read stays OPEN: the record is
@@ -276,7 +276,7 @@ static char *root_join(const char *rel) {
  * harness's own deployment contract tells the agent to write — the task
  * config the guest prompt names (/fx/disk/agent-config.dhall).  The default
  * is never "unrestricted" and never a directory: the harness's durable
- * record (<VIBE_RUNTIME_DIR>/attempts.jsonl), the store, the bootlog and
+ * record (<FX_AGENT_DATA>/attempts.jsonl), the store, the bootlog and
  * CURRENT are in NO default set, so a deployment that never sets the
  * variable cannot have its observation loop defeated by an fx_write.  A
  * SET-BUT-EMPTY FX_AGENT_WRITABLE means the host declares nothing writable

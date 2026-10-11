@@ -1,7 +1,7 @@
-/* src/llm2/agent_main.c — LAYER-2 S11 native agent entrypoint.
+/* src/agent/agent_main.c — the native agent entrypoint.
  *
- * Consumes the SAME LOCKED flag set runner.c's build_vibe_cmd emits, but runs
- * the native agent loop IN-PROCESS (no subprocess, no `vibe -p`):
+ * Consumes the SAME LOCKED flag set runner.c's build_agent_cmd emits, but runs
+ * the native agent loop IN-PROCESS (no subprocess):
  *
  *   -p <prompt> --agent <agent> --max-turns N [--resume <short8>]
  *   [--workdir <cwd>] --output text [--auto-approve]
@@ -19,9 +19,9 @@
  * text).
  *
  * This file exposes agent_main_entry (NO main()) so the hermetic test links it
- * with its own main(); src/llm2/agent_main_main.c provides the binary's main().
+ * with its own main(); src/agent/agent_main_main.c provides the binary's main().
  *
- * Memory-safety (L2 rules, carried over): all config/CLI bytes are
+ * Memory-safety (carried over from the loop's rules): all config/CLI bytes are
  * length-checked or validated (runner.h) before use; no strcpy/strcat/sprintf
  * on network bytes; the transcript callback deep-copies each message via
  * ckpt_append (which length-caps at CKPT_FIELD_CAP / AGENT_ARGS_CAP); every
@@ -129,8 +129,8 @@ static char *expand_tilde(const char *path) {
     if (!home || !*home) return strdup(path);
     size_t home_len = strlen(home);
     /* Skip just the `~`: keep a following `/` so the expansion stays
-     * "<home>/<rest>".  (Taking path+2 on "~/.vibe" would drop the slash and
-     * yield "<home>.vibe/..." — wrong.) */
+     * "<home>/<rest>".  (Taking path+2 on "~/.fx-agent" would drop the slash
+     * and yield "<home>.fx-agent/..." — wrong.) */
     const char *rest = path + 1;
     size_t rest_len = strlen(rest);
     char *expanded = malloc(home_len + rest_len + 1);
@@ -161,14 +161,14 @@ static char *read_prompt_file(const char *path) {
     return buf;
 }
 
-/* Data dir for the runstore + transcript: env VIBE_RUNTIME_DIR, else the same
- * default the daemon uses (~/.local/share/vibe-runtime). */
+/* Data dir for the runstore + transcript: env FX_AGENT_DATA, else
+ * ~/.local/share/fx-agent. */
 static void runtime_data_dir(char *out, size_t cap) {
-    const char *env = getenv("VIBE_RUNTIME_DIR");
+    const char *env = getenv("FX_AGENT_DATA");
     if (env && *env) { snprintf(out, cap, "%s", env); return; }
     const char *home = getenv("HOME");
-    if (home && *home) snprintf(out, cap, "%s/.local/share/vibe-runtime", home);
-    else snprintf(out, cap, ".local/share/vibe-runtime");
+    if (home && *home) snprintf(out, cap, "%s/.local/share/fx-agent", home);
+    else snprintf(out, cap, ".local/share/fx-agent");
 }
 
 /* 12-hex run_id (validates as a runner identifier).  Mirrors daemon.c's
@@ -264,7 +264,7 @@ typedef struct {
     int           dir_synced; /* one-time: the file's DIRECTORY ENTRY is durable */
 
     /* THE CAUSAL LINK (outcome.h): where the durable activation-attempt record
-     * lives (VIBE_RUNTIME_DIR, on the virtio disk), this run's task id, and the
+     * lives (FX_AGENT_DATA, on the virtio disk), this run's task id, and the
      * activations in flight.  NULL data_dir/task = recording disabled. */
     const char   *data_dir;
     const char   *task;
@@ -626,7 +626,7 @@ int agent_main_entry(int argc, char **argv) {
         }
     }
 
-    /* The data dir (VIBE_RUNTIME_DIR): the durable transcript AND the durable
+    /* The data dir (FX_AGENT_DATA): the durable transcript AND the durable
      * activation record.  On the guest this is the virtio disk, which is what
      * makes the record survive the very reboot an activation causes. */
     char data[PATH_MAX];

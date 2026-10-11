@@ -1,4 +1,4 @@
-/* src/llm2/llm_backend.h — LAYER-2 backend interface (Slice S3).
+/* src/agent/llm_backend.h — backend interface.
  *
  * The uniform contract every LLM backend adapter (openai_responses, generic,
  * mistral, anthropic) implements, mapping a vendor SSE stream onto a small set

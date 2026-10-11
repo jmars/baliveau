@@ -1,4 +1,4 @@
-/* src/llm2/sse.c — LAYER-2 SSE (Server-Sent Events) streaming parser (Slice S2).
+/* src/agent/sse.c — SSE (Server-Sent Events) streaming parser.
  *
  * Pure byte-stream state machine.  See sse.h for the design + wire semantics.
  *

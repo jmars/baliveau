@@ -1,11 +1,11 @@
-/* src/llm2/sse.h — LAYER-2 SSE (Server-Sent Events) streaming parser (Slice S2).
+/* src/agent/sse.h — SSE (Server-Sent Events) streaming parser.
  *
  * A PURE byte-stream state machine over an untrusted byte stream.
  * The LLM transport pulls bytes off the chardev (fx_recv_some) and feeds them
  * here; sse.c does NOT touch the transport, HTTP or any socket.
  *
  * Design (see handoff-c-runtime-l2-s2-ctx / -plan).  This is THE
- * memory-safety hotspot of LAYER-2 — the parser is containment discipline:
+ * memory-safety hotspot of — the parser is containment discipline:
  *   - NO strcpy/strcat/sprintf on network-origin bytes, ever.
  *   - The parser owns bounded grow buffers.  One LINE is capped at
  *     SSE_MAX_LINE_BYTES (16 KiB); the accumulated EVENT (event+data) is

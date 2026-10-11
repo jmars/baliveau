@@ -9,7 +9,7 @@
 # and RE-CREATES the failure.  Versions ratchet ~+2/cycle and <store>/.bootlog
 # gains a failed line per cycle, forever.  The agent is supposed to LOOK AT THE
 # ROLL-FORWARD AND NOT DO IT AGAIN; the harness now MECHANISES that step
-# (src/llm2/outcome.h), because the machinery must not re-act blindly even when
+# (src/agent/outcome.h), because the machinery must not re-act blindly even when
 # the thing driving it is a canned fixture.
 #
 # THE RULE (outcome.h), applied at the START of every run:
@@ -27,7 +27,7 @@
 #                                     of the task COMPLETED: complete wins)
 # Every stop NAMES ITS WAY OUT in the report (--reconsider, or removing this
 # task's lines from the record) — a stop with no escape is a permanent wedge.
-# The record (<VIBE_RUNTIME_DIR>/attempts.jsonl, /fx/disk/agent-data on the
+# The record (<FX_AGENT_DATA>/attempts.jsonl, /fx/disk/agent-data on the
 # virtio disk) is the ONLY causal link: an agent-driven /bin/fx-activate writes
 # no rt_effect and no runtime relation, so the system cannot supply it.
 #
@@ -128,7 +128,7 @@ SETTLE="${QEMU_AGENT_SETTLE:-12}"
 PIN="$INIT/scripts/kernel-pin.txt"
 [ -f "$PIN" ] || skip "scripts/kernel-pin.txt missing"
 MARKER="${OBS_MARKER:-obs-agent-4d17}"
-VIBE_DIR="/fx/disk/agent-data"
+AGENT_DATA="/fx/disk/agent-data"
 AGENT_CONFIG="/fx/disk/agent-config.dhall"
 OBS_PROMPT="apply the config change to this machine"
 OBS_REPORT="OBSERVED OUTCOME"
@@ -208,7 +208,7 @@ def var(name):
             out.append(cur[:-1]); continue
         out.append(cur); break
     return " ".join(out).strip()
-want = ["CFLAGS", "L2_SRC", "L1_SRC", "DHALL_SRC", "YYJSON_SRC", "TOMLC99_SRC"]
+want = ["CFLAGS", "AGENT_SRC", "HARNESS_SRC", "DHALL_SRC", "YYJSON_SRC", "TOMLC99_SRC"]
 vals = {k: var(k) for k in want}
 missing = [k for k, v in vals.items() if not v]
 if missing:
@@ -221,11 +221,11 @@ PYEOF
 [ -n "${CFLAGS:-}" ] || fail "CFLAGS extraction produced nothing"
 GFLAGS=$(printf '%s' "$CFLAGS" | sed -e "s|\\\$(CURDIR)|$REPO|g" \
     -e 's/-ffile-prefix-map=[^ ]*//g' -e 's/-fdebug-prefix-map=[^ ]*//g')
-BLIND_SRC="${L2_SRC:-} ${L1_SRC:-} ${DHALL_SRC:-} ${YYJSON_SRC:-} ${TOMLC99_SRC:-}"
+BLIND_SRC="${AGENT_SRC:-} ${HARNESS_SRC:-} ${DHALL_SRC:-} ${YYJSON_SRC:-} ${TOMLC99_SRC:-}"
 BLIND="$WORK/fx-agent-blind"
 # shellcheck disable=SC2086
 zig cc -target x86_64-linux-musl $GFLAGS -DFX_HARNESS_NO_OBSERVE -static -s \
-    -o "$BLIND" src/llm2/agent_main_main.c $BLIND_SRC -L"$DL64/lib" -ldatalog \
+    -o "$BLIND" src/agent/agent_main_main.c $BLIND_SRC -L"$DL64/lib" -ldatalog \
     || fail "the blind fx-agent (x86_64-linux-musl) build failed"
 assert_guest_elf "$BLIND" "x86-64"
 echo "qemu-agent-observe: blind artifact -> $(file -b "$BLIND" | cut -c1-60)"
@@ -472,8 +472,8 @@ agent_svc() { # agent_svc FIXTURE -> the obsagent service row (Dhall)
             on = "all", restart = Some "never", backoffMs = None Natural,
             probe = None Probe,
             env = Some [ { key = "FX_CHARDEV", value = "$1" },
-                         { key = "VIBE_RUNTIME_CONFIG_DIR", value = "/usr/fx-agent/cfg" },
-                         { key = "VIBE_RUNTIME_DIR", value = "$VIBE_DIR" },
+                         { key = "FX_AGENT_CONFIG_DIR", value = "/usr/fx-agent/cfg" },
+                         { key = "FX_AGENT_DATA", value = "$AGENT_DATA" },
                          { key = "HOME", value = "/tmp" }
                        ] : Optional (List { key : Text, value : Text }),
             console = Some "console" }

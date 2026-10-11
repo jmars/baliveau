@@ -119,7 +119,7 @@ PIN="$INIT/scripts/kernel-pin.txt"
 SLOTSET="$INIT/m3/package-set-slot.dhall"
 [ -f "$SLOTSET" ] || skip "m3/package-set-slot.dhall missing at $SLOTSET (the slot package set)"
 MARKER="${SLOT_MARKER:-slot-agent-5f31}"
-VIBE_DIR="/fx/disk/agent-data"
+AGENT_DATA="/fx/disk/agent-data"
 AGENT_CONFIG="/fx/disk/agent-config.dhall"
 SLOT_SRC_DIR="/fx/disk/agent-src/oslot"       # the in-guest slot src.path
 SLOT_SRC_FILE="$SLOT_SRC_DIR/Mcp.elm"         # THE one writable source path
@@ -323,8 +323,8 @@ agent_svc() { # agent_svc CHARDEV -> the console agent service row
             on = "all", restart = Some "never", backoffMs = None Natural,
             probe = None Probe,
             env = Some [ { key = "FX_CHARDEV", value = "$1" },
-                         { key = "VIBE_RUNTIME_CONFIG_DIR", value = "/usr/fx-agent/cfg" },
-                         { key = "VIBE_RUNTIME_DIR", value = "$VIBE_DIR" },
+                         { key = "FX_AGENT_CONFIG_DIR", value = "/usr/fx-agent/cfg" },
+                         { key = "FX_AGENT_DATA", value = "$AGENT_DATA" },
                          { key = "HOME", value = "/tmp" }
                        ] : Optional (List { key : Text, value : Text }),
             console = Some "console" }

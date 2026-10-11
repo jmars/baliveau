@@ -29,7 +29,7 @@
 # do_shutdown() returns and PID 1 exits, i.e. a halt.  So each "restart" here is
 # a fresh qemu against the same disk image, exactly as qemu_ctrl.sh does — and
 # THE PERSISTENCE IS THE POINT: the store lives on the virtio disk
-# (/fx/disk/store, fx-init's DISK_STORE) and VIBE_RUNTIME_DIR is on that disk
+# (/fx/disk/store, fx-init's DISK_STORE) and FX_AGENT_DATA is on that disk
 # (/fx/disk/agent-data), so the new generation and the agent's transcript both
 # outlive the machine.  (The missing reboot(2) is reported as a finding, not
 # patched here.)
@@ -174,7 +174,7 @@ PIN="$INIT/scripts/kernel-pin.txt"
 MARKER="${B2_MARKER:-b2-agent-9f3c}"
 SVC_PROOF="b2proof-$MARKER"
 CONFIG_GUEST_PATH="/fx/disk/agent-config.dhall"
-VIBE_DIR="/fx/disk/agent-data"
+AGENT_DATA="/fx/disk/agent-data"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/qemub2.XXXXXX")" || fail mktemp
 if [ "${QEMU_KEEP:-0}" = "1" ]; then
@@ -401,8 +401,8 @@ in  { hostname = "$MARKER"
             on = "all", restart = Some "never", backoffMs = None Natural,
             probe = None Probe,
             env = Some [ { key = "FX_CHARDEV", value = "/usr/fx-agent/b2-verify.sse" },
-                         { key = "VIBE_RUNTIME_CONFIG_DIR", value = "/usr/fx-agent/cfg-b2" },
-                         { key = "VIBE_RUNTIME_DIR", value = "$VIBE_DIR" },
+                         { key = "FX_AGENT_CONFIG_DIR", value = "/usr/fx-agent/cfg-b2" },
+                         { key = "FX_AGENT_DATA", value = "$AGENT_DATA" },
                          { key = "HOME", value = "/tmp" }
                        ] : Optional (List { key : Text, value : Text }),
             console = Some "console" }
@@ -560,8 +560,8 @@ agent_svc() { # agent_svc FIXTURE -> the fxagent service row (Dhall)
             on = "all", restart = Some "never", backoffMs = None Natural,
             probe = None Probe,
             env = Some [ { key = "FX_CHARDEV", value = "$1" },
-                         { key = "VIBE_RUNTIME_CONFIG_DIR", value = "/usr/fx-agent/cfg-b2" },
-                         { key = "VIBE_RUNTIME_DIR", value = "$VIBE_DIR" },
+                         { key = "FX_AGENT_CONFIG_DIR", value = "/usr/fx-agent/cfg-b2" },
+                         { key = "FX_AGENT_DATA", value = "$AGENT_DATA" },
                          { key = "HOME", value = "/tmp" }
                        ] : Optional (List { key : Text, value : Text }),
             console = Some "console" }
@@ -713,7 +713,7 @@ DHALL
     # no `done`).  Keep them apart — asserting on the merged stream would make
     # every future diagnostic a gate failure.
     PCOUT=$(FX_CHARDEV="$ROOT_B2/usr/fx-agent/b2-arm1.sse" \
-            VIBE_RUNTIME_CONFIG_DIR="$PC/cfg" VIBE_RUNTIME_DIR="$PC/data" HOME="$PC" \
+            FX_AGENT_CONFIG_DIR="$PC/cfg" FX_AGENT_DATA="$PC/data" HOME="$PC" \
             "$REPO/build/fx-agent" -p "inspect the system, rewrite the config, apply it" \
             --agent fx --max-turns 2 --output text 2>"$PC/precheck.err"); PCRC=$?
     [ "$PCRC" = 0 ] || { cat "$PC/precheck.err" >&2; fail "host pre-check: the loop exited rc=$PCRC"; }

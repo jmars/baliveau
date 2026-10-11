@@ -1,26 +1,22 @@
-/* src/mcp_stdio.h — MCP stdio server + daemon RPC client (Slice 5).
+/* src/mcp_stdio.h — shared MCP wire constants + the stdio-server interface.
  *
- * Port of vibe_runtime/mcp_server.py: a newline-delimited JSON-RPC 2.0 MCP
- * server ("vibe-agent") that Vibe spawns over stdio to drive the long-lived
- * runtime daemon through its agent_* tools.  This server NEVER touches the
- * runstore directly — every state mutation forwards to the daemon over its
- * Unix socket via mcp_client().
+ * The protocol version every speaker in this tree uses: the agent's tool
+ * client (src/agent/mcp_client.c) and the fx-verbs tool server
+ * (tools/fx-verbs-server.c) both carry it in the initialize handshake, and
+ * the client rejects a failed/absent initialize result outright.
  *
- * Wire protocol (mirrors daemon.c): the client sends one JSON-lines request
- *   {"cmd":"start","args":{...}}\n
- * and reads one reply line back:
- *   {"ok":true,"result":{...}}\n   or   {"ok":false,"error":"..."}\n
- *
- * The MCP server side speaks the standard MCP stdio handshake:
- *   initialize (protocolVersion 2025-06-18) -> notifications/initialized ->
- *   tools/list -> tools/call, plus ping.  Each tools/call is a thin forward to
- *   mcp_client().  Scope validation is done locally via secrets_is_known_scope
- *   / secrets_validate_scope BEFORE forwarding (the daemon stays authoritative).
+ * The declarations below describe the stdio-server interface: a
+ * newline-delimited JSON-RPC 2.0 MCP server serving the agent_* tools over
+ * stdin/stdout (initialize -> notifications/initialized -> tools/list ->
+ * tools/call, plus ping; scope validation locally via secrets_is_known_scope
+ * / secrets_validate_scope before any dispatch).  This tree links the
+ * client side; the server side is the shape tools/fx-verbs-server.c
+ * implements directly.
  *
  * Env knobs (read at call time so tests can set them):
- *   VIBE_RUNTIME_SOCKET    Unix socket path override (default ~/.local/share/
- *                          vibe-runtime/agent.sock, "~" expanded via HOME)
- *   VIBE_MAX_REQUEST_BYTES reply/request read cap in bytes (default 256 KB)
+ *   FX_MCP_SOCKET           Unix socket path override (default ~/.local/share/
+ *                          fx-agent/agent.sock, "~" expanded via HOME)
+ *   FX_MAX_REQUEST_BYTES    reply/request read cap in bytes (default 256 KB)
  */
 #ifndef MCP_STDIO_H
 #define MCP_STDIO_H
@@ -28,7 +24,7 @@
 #include <stddef.h>
 
 #define MCP_PROTOCOL_VERSION "2025-06-18"
-#define MCP_SERVER_NAME      "vibe-agent"
+#define MCP_SERVER_NAME      "fx-agent"
 #define MCP_SERVER_VERSION   "0.1.0"
 
 #define MCP_RPC_TIMEOUT_S    30.0
@@ -54,7 +50,7 @@ typedef char *(*mcp_client_fn)(const char *cmd, const char *args_json);
 void mcp_set_client_hook(mcp_client_fn fn);
 
 /* Test/embedding hook: override the Unix socket path (used verbatim after "~"
- * expansion).  Pass NULL to reset to VIBE_RUNTIME_SOCKET / the default. */
+ * expansion).  Pass NULL to reset to FX_MCP_SOCKET / the default. */
 void mcp_set_socket_path(const char *path);
 
 /* ── MCP stdio server ────────────────────────────────────────────────────── */
@@ -65,7 +61,7 @@ void mcp_set_socket_path(const char *path);
  * ping).  Returns 0 on clean EOF, -1 on a fatal write error. */
 int mcp_stdio_serve(int in_fd, int out_fd);
 
-/* Entry point for the vibe-agent binary: serve(stdin, stdout).  Returns the
+/* Entry point for the fx-agent binary: serve(stdin, stdout).  Returns the
  * process exit code. */
 int mcp_stdio_main(void);
 

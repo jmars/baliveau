@@ -1,17 +1,16 @@
-/* src/runner.h — SECURITY KEYSTONE: locked `vibe -p` argv builder.
+/* src/runner.h — SECURITY KEYSTONE: locked headless-agent argv builder.
  *
- * Port of vibe_runtime/runner.py into C. Builds the exact, immutable argv
- * array for a headless agent invocation. The `agent` and `session_id`
- * parameters are validated against a safe charset so they can NEVER inject
- * flags or shell metacharacters into a subprocess argv; the prompt is always a
- * plain argv element; only caller-approved flags are ever emitted.
- * argv[0] is the resolved agent-main path (env VIBE_AGENT_MAIN, default
- * build/agent_main). No legacy `vibe` fallback.
+ * Builds the exact, immutable argv array for a headless agent invocation.
+ * The `agent` and `session_id` parameters are validated against a safe
+ * charset so they can NEVER inject flags or shell metacharacters into a
+ * subprocess argv; the prompt is always a plain argv element; only
+ * caller-approved flags are ever emitted. argv[0] is the resolved
+ * agent-main path (env FX_AGENT_MAIN, default build/agent_main).
  *
- * Config decision (Slice 1): validate_agent_profile reads the RUNTIME'S OWN
- * Dhall config (env VIBE_RUNTIME_CONFIG_DIR, default ~/.config/vibe-runtime/,
- * file config.dhall), evaluated IN-PROCESS via the vendored dhall-c, and looks
- * up the {name, agent_type} agents list entry. It NEVER reads ~/.vibe/agents.
+ * Config decision: validate_agent_profile reads the RUNTIME'S OWN Dhall
+ * config (env FX_AGENT_CONFIG_DIR, default ~/.config/fx-agent/, file
+ * config.dhall), evaluated IN-PROCESS via the vendored dhall-c, and looks
+ * up the {name, agent_type} agents list entry.
  */
 #ifndef RUNNER_H
 #define RUNNER_H
@@ -39,7 +38,7 @@ typedef struct {
     int argc;
 } RunnerCmd;
 
-/* MAX_TURNS bound — read from env VIBE_MAX_TURNS at call time (default 1000). */
+/* MAX_TURNS bound — read from env FX_MAX_TURNS at call time (default 1000). */
 int runner_max_turns(void);
 
 /* Validate an identifier against ^[A-Za-z0-9._-]+$ (non-empty, no leading '-'). */
@@ -48,7 +47,7 @@ int validate_identifier(const char *value, const char *field, RunnerError *err);
 /* cwd must be an absolute, existing directory. */
 int validate_cwd(const char *cwd, RunnerError *err);
 
-/* cwd must resolve under VIBE_PROJECTS_ROOT (default ~/projects). */
+/* cwd must resolve under FX_PROJECTS_ROOT (default ~/projects). */
 int validate_cwd_confinement(const char *cwd, RunnerError *err);
 
 /* Validate the agent against the runtime's OWN Dhall config. Rejects a
@@ -61,16 +60,16 @@ int validate_agent_profile(const char *agent, RunnerError *err);
  *        [--resume <session_id>] [--workdir <cwd>] --output <output>
  *        [--auto-approve]
  * session_id/cwd are only emitted when non-NULL and non-empty. output defaults
- * to "text". argv[0] is the resolved agent-main path (env VIBE_AGENT_MAIN,
- * default build/agent_main; no legacy `vibe` fallback). Returns 0 on success and fills *out
+ * to "text". argv[0] is the resolved agent-main path (env FX_AGENT_MAIN,
+ * default build/agent_main). Returns 0 on success and fills *out
  * (caller frees via runner_cmd_free); non-zero on validation failure. */
-int build_vibe_cmd(const char *agent, const char *prompt,
+int build_agent_cmd(const char *agent, const char *prompt,
                    const char *session_id, int max_turns,
                    const char *cwd, const char *output, bool auto_approve,
                    RunnerError *err, RunnerCmd *out);
 
-/* Resolve the agent-main binary path: env VIBE_AGENT_MAIN, default
- * build/agent_main. No legacy `vibe` fallback. */
+/* Resolve the agent-main binary path: env FX_AGENT_MAIN, default
+ * build/agent_main; a missing native binary fails loudly at exec. */
 void runner_agent_main_path(char *out, size_t cap);
 
 void runner_cmd_free(RunnerCmd *cmd);

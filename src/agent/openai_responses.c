@@ -1,4 +1,4 @@
-/* src/llm2/openai_responses.c — LAYER-2 OpenAI RESPONSES backend (Slice S3).
+/* src/agent/openai_responses.c — OpenAI RESPONSES backend.
  *
  * fx-harness: THE ONLY BACKEND.  Upstream shipped four (openai_responses,
  * generic, mistral, anthropic); the other three are deleted with the rest of

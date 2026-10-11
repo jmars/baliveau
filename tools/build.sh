@@ -19,11 +19,11 @@ cd "$(dirname "$0")/.."
 CC=${CC:-cc}
 CFLAGS="-std=c11 -O2 -g -Wall -Wextra -Isrc -Isrc/vendor/yyjson \
         -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE"
-# src/llm2/outcome.c is the ONE reader of the store's outcome files
+# src/agent/outcome.c is the ONE reader of the store's outcome files
 # (<store>/.bootlog, <store>/.db/snapshots/CURRENT): the harness's boot-time
 # consume and the fx_outcome/fx_generation verbs read them the same way, so the
 # two cannot drift apart.  It is plain C with no yyjson/dhall dependency.
-SRC="tools/fx-verbs-server.c src/llm2/outcome.c src/vendor/yyjson/yyjson.c"
+SRC="tools/fx-verbs-server.c src/agent/outcome.c src/vendor/yyjson/yyjson.c"
 
 mkdir -p build
 

@@ -1,12 +1,12 @@
 #ifndef RUNSTORE_H
 #define RUNSTORE_H
 
-/* src/runstore.h — DAFSA-backed RunStore (Slice 2).
+/* src/runstore.h — DAFSA-backed RunStore.
  *
- * Ports vibe_runtime/jobs.py RunStore onto the user's datalog-dafsa fact
- * store.  All mutable per-run state is represented as fixed-width u32 facts;
- * strings are interned to 1-based sym_ids (0 = null sentinel).  See the
- * Slice-2 plan for the full durability/schema rationale.
+ * A RunStore on the user's datalog-dafsa fact store.  All mutable per-run state is represented as fixed-width u32 facts;
+ * strings are interned to 1-based sym_ids (0 = null sentinel).  See the design
+ * record (docs/baliveau-self-plan.md) for the full durability/schema
+ * rationale.
  *
  * The single load-bearing rule, baked into every mutator:
  *   ADD the new fact FIRST, then DELETE the old.  A crash between them
@@ -118,8 +118,8 @@ typedef struct RunStore {
     pthread_mutex_t lock;  /* in-process serialization (== RunStore._lock) */
     char          *dir;    /* db directory (owned) */
     uint32_t       attr_syms[RS_ATTR_COUNT]; /* interned attr-name sym_ids */
-    int            max_runs;          /* VIBE_MAX_RUNS (default 50) */
-    int            max_instr_chars;   /* VIBE_MAX_INSTRUCTIONS_CHARS (default 32768) */
+    int            max_runs;          /* FX_MAX_RUNS (default 50) */
+    int            max_instr_chars;   /* FX_MAX_INSTRUCTIONS_CHARS (default 32768) */
 } RunStore;
 
 /* ── Public API (mirrors jobs.py RunStore) ────────────────────────────── */

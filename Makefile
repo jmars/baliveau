@@ -1,24 +1,22 @@
 # fx-harness — a minimal, native agent harness for the fx-linux guest.
 #
-# Derived from vibe-runtime's LAYER-2 (src/llm2/) with TWO structural changes:
+# TWO structural decisions shape the tree:
 #
-#   1. NO TLS / NO mbedTLS.  The guest has no socket layer at all (CONFIG_NET
-#      unset => socket(2) is ENOSYS), so the model transport is a character
-#      device bridged by a host-side proxy that holds the API key.  The
-#      vendored mbedTLS tree (16 MB upstream) is not present; src/llm2/tls.h +
-#      fx_transport.c supply the three symbols the stack references.
+#   1. NO TLS.  The guest has no socket layer at all (CONFIG_NET unset =>
+#      socket(2) is ENOSYS), so the model transport is a character device
+#      bridged by a host-side proxy that holds the API key — src/agent/
+#      fx_transport.c is the whole transport, and no TLS stack is built.
 #
-#   2. ONE backend.  backend_select.c's four-adapter factory is replaced by
-#      fx_backend.c, which accepts "openai_responses" and returns -1 otherwise
-#      (agent_main fail-opens to the same adapter).
+#   2. ONE backend.  fx_backend.c accepts "openai_responses" and returns -1
+#      otherwise (agent_main fail-opens to the same adapter).
 #
-# Explicit file lists, never shell globs (the upstream convention): the tree
-# must build in sandboxes whose shells mangle '*' and multi-command pipelines.
+# Explicit file lists, never shell globs: the tree must build in sandboxes
+# whose shells mangle '*' and multi-command pipelines.
 
 CC      ?= cc
 CFLAGS  := -std=c11 -O2 -g -Wall -Wextra \
            -ffile-prefix-map=$(CURDIR)=. -fdebug-prefix-map=$(CURDIR)=. \
-           -Isrc -Isrc/llm2 -Isrc/vendor/dhall-c -Isrc/vendor/yyjson \
+           -Isrc -Isrc/agent -Isrc/vendor/dhall-c -Isrc/vendor/yyjson \
            -Ibuild/include \
            -Isrc/vendor/tomlc99 \
            -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE
@@ -73,25 +71,25 @@ DHALL_SRC := src/vendor/dhall-c/arena.c \
 YYJSON_SRC  := src/vendor/yyjson/yyjson.c
 TOMLC99_SRC := src/vendor/tomlc99/toml.c
 
-# ─── LAYER 2: the agent loop ───────────────────────────────────────────────
-L2_SRC := src/llm2/agent_main.c \
-          src/llm2/agent_loop.c \
-          src/llm2/checkpoint.c \
-          src/llm2/config.c \
-          src/llm2/dhall_eval_lock.c \
-          src/llm2/mcp_client.c \
-          src/llm2/outcome.c \
-          src/llm2/tool_policy.c \
-          src/llm2/tui.c \
-          src/llm2/sse.c \
-          src/llm2/openai_responses.c \
-          src/llm2/fx_transport.c \
-          src/llm2/fx_backend.c
+# ─── the agent loop ───────────────────────────────────────────────
+AGENT_SRC := src/agent/agent_main.c \
+          src/agent/agent_loop.c \
+          src/agent/checkpoint.c \
+          src/agent/config.c \
+          src/agent/dhall_eval_lock.c \
+          src/agent/mcp_client.c \
+          src/agent/outcome.c \
+          src/agent/tool_policy.c \
+          src/agent/tui.c \
+          src/agent/sse.c \
+          src/agent/openai_responses.c \
+          src/agent/fx_transport.c \
+          src/agent/fx_backend.c
 
-# ─── LAYER 1 sources the loop reuses ──────────────────────────────────────
-L1_SRC := src/runner.c src/runstore.c src/secrets.c
+# ─── harness sources the loop reuses ──────────────────────────────────────
+HARNESS_SRC := src/runner.c src/runstore.c src/secrets.c
 
-ALL_SRC := $(L2_SRC) $(L1_SRC) $(DHALL_SRC) $(YYJSON_SRC) $(TOMLC99_SRC)
+ALL_SRC := $(AGENT_SRC) $(HARNESS_SRC) $(DHALL_SRC) $(YYJSON_SRC) $(TOMLC99_SRC)
 
 BIN      := build/fx-agent
 BIN_MUSL := build/fx-agent.musl
@@ -118,10 +116,10 @@ $(DATALOG_MUSL_A):
 	    -p "$(CURDIR)/build/datalog-musl" --build-file zig/build.zig || true
 	@test -f $@ || { echo "ERROR: $(DATALOG_MUSL_A) missing — the sibling's zig build for x86-linux-musl did not produce libdatalog.a" >&2; exit 1; }
 
-$(BIN): src/llm2/agent_main_main.c $(ALL_SRC) \
+$(BIN): src/agent/agent_main_main.c $(ALL_SRC) \
         $(DATALOG_DIR)/zig-out/lib/libdatalog.so | $(DATALOG_SHIM)
 	@mkdir -p build
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ src/llm2/agent_main_main.c $(ALL_SRC) \
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ src/agent/agent_main_main.c $(ALL_SRC) \
 	    -L$(DATALOG_DIR)/zig-out/lib \
 	    -Wl,-rpath,$(abspath $(DATALOG_DIR)/zig-out/lib) -ldatalog
 
@@ -130,12 +128,12 @@ $(BIN): src/llm2/agent_main_main.c $(ALL_SRC) \
 # ship stripped).
 musl: $(BIN_MUSL)
 
-$(BIN_MUSL): src/llm2/agent_main_main.c $(ALL_SRC) $(DATALOG_MUSL_A) | $(DATALOG_SHIM)
+$(BIN_MUSL): src/agent/agent_main_main.c $(ALL_SRC) $(DATALOG_MUSL_A) | $(DATALOG_SHIM)
 	@mkdir -p build
-	$(MUSL_CC) $(MUSL_CFLAGS) $(LDFLAGS) -o $@ src/llm2/agent_main_main.c $(ALL_SRC) \
+	$(MUSL_CC) $(MUSL_CFLAGS) $(LDFLAGS) -o $@ src/agent/agent_main_main.c $(ALL_SRC) \
 	    -L$(DATALOG_MUSL_LIB) -ldatalog -s
 
-# THE PRE-FIX ARTIFACT of the observation loop (src/llm2/outcome.h): the SAME
+# THE PRE-FIX ARTIFACT of the observation loop (src/agent/outcome.h): the SAME
 # sources, with the boot-time consume of the harness's own durable activation
 # record compiled out (-DFX_HARNESS_NO_OBSERVE).  It is not a feature and not a
 # runtime switch — it exists so the observation loop's central assertion ("a
@@ -147,9 +145,9 @@ $(BIN_MUSL): src/llm2/agent_main_main.c $(ALL_SRC) $(DATALOG_MUSL_A) | $(DATALOG
 BIN_BLIND := build/fx-agent-blind
 blind: $(BIN_BLIND)
 
-$(BIN_BLIND): src/llm2/agent_main_main.c $(ALL_SRC) $(DATALOG_DIR)/zig-out/lib/libdatalog.so | $(DATALOG_SHIM)
+$(BIN_BLIND): src/agent/agent_main_main.c $(ALL_SRC) $(DATALOG_DIR)/zig-out/lib/libdatalog.so | $(DATALOG_SHIM)
 	@mkdir -p build
-	$(CC) $(CFLAGS) -DFX_HARNESS_NO_OBSERVE $(LDFLAGS) -o $@ src/llm2/agent_main_main.c $(ALL_SRC) \
+	$(CC) $(CFLAGS) -DFX_HARNESS_NO_OBSERVE $(LDFLAGS) -o $@ src/agent/agent_main_main.c $(ALL_SRC) \
 	    -L$(DATALOG_DIR)/zig-out/lib \
 	    -Wl,-rpath,$(abspath $(DATALOG_DIR)/zig-out/lib) -ldatalog
 
@@ -259,8 +257,8 @@ clean:
 #                     record line, a resume seed and an unreadable store each get
 #                     their own verdict; and the pre-fix artifact (make blind)
 #                     re-runs the very task the real build refuses.  Both need
-#                     upstream's recorded SSE fixtures: override their directory
-#                     with VIBE_FIXTURE_DIR.
+#                     the recorded SSE fixtures (tests/fixtures/): override
+#                     their directory with FX_FIXTURE_DIR.
 #   test_sameboot.sh — THE SAME-BOOT GUARD (the control-channel activation's
 #                     self-interaction): PID1's hot-apply starts a SECOND agent
 #                     instance for a config that redeclares the agent service,

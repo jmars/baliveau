@@ -1,4 +1,4 @@
-/* src/llm2/checkpoint.c — LAYER-2 S7 messages.jsonl checkpoint (see .h).
+/* src/agent/checkpoint.c — messages.jsonl checkpoint (see .h).
  *
  * Self-contained: uses ONLY the LlmMsg/LlmToolCall types from agent_loop.h
  * (never agent_loop.c internals), the runstore accessors, and yyjson.  JSON is
