@@ -477,6 +477,27 @@ config's inline packages and the merge in `fx-activate`. The rebuild of `fxstore
 be able to run where the agent does — **and that prerequisite is now DONE** (`fx-harness 3b7dacc` +
 `fxstore 23a293f`: the loop runs in-guest, one image and one disk, run-set share 0.000000 → 0.100376).
 
+**CORRECTION (appended 2026-10-13, MEASURED from the source, not from the text above): THE STATUS
+PARAGRAPH IS STALE — ELEMENTS (A), (B), (D) AND (E) ARE BUILT.** `fx-init 4c5803d` landed
+`inlinePackages` as a real config field and the four activation-time refusals, refused BY NAME:
+`Shell` (`zig/src/config.zig:965-966`, *"one action that dissolves every other bound"*), a relative
+`Run` argv[0] (`:980`, `execvp` with a recipe-controlled PATH), `Fetch` as a src, and non-empty
+`deps` — gated by corpus fixtures (`zig/corpus/inline-good.dhall`, `inline-reject-shell.dhall`,
+`inline-reject-fetch.dhall`, `activate/inline-closure|collide|inert.dhall`) and a zig test at
+`config.zig:1437`. The config's packages are merged by `fx-activate` (`activate.zig:1930`), so (E)'s
+"no new file becomes agent-writable" holds as designed. **What actually remains is element (C) ONLY**
+— the userspace reach bound in `fxstore`'s action runner (`zig/src/build.zig:167-174`: `resolve_path`
+concatenates and refuses nothing outside the workdir + install target) — and §6b downgraded it to
+optional defence-in-depth, so the paragraph's stated build ORDER is no longer the live queue. The one
+place it still bites is the in-guest build path, which falls back to PLAIN EXEC in the workdir
+(`build.zig:700-760`, the sanctioned LOUD bwrap-absent fallback): an agent-authored recipe's `Copy`
+can therefore reach the harness's own record (`/fx/disk/agent-data/attempts.jsonl`). That is bounded,
+not closed, and the bound is the one §6b already states — the record is a SELF-REPORT and never
+evidence, the substrate's guardrail is fx-init's, and the host-side seats are unreachable from
+in-guest. Two other §6a-adjacent items stay open and are DECISIONS as much as builds: there is **no
+in-guest reboot**, and the agent's direct-exec activation writes **no `rt_effect`** (the runtime-record
+gap).
+
 
 ---
 
@@ -617,6 +638,47 @@ with an AOT recipe) — which kills the wrapper loophole, because a wrapper's de
 (`fxstore verify`) → *then* maximise the Osier share. Alone, the metric is satisfiable by shipping
 Osier that breaks the system; as the last term of a lexicographic order over viable, coherent
 candidates, it is a real gradient.
+
+**BUILT (2026-10-13, orchestrator-verified): THE ORDER IS EXECUTED, NOT DESCRIBED — `fx-select`.** The
+paragraph above was prose with nothing enforcing it: MEASURED this session, `fx-osier-share` was
+invoked by TESTS ONLY (`tests/test_osier_share.sh`, the two slot gates) — no loop and no seat consumed
+its number, which is this project's own named defect (*a seat that is never called is
+indistinguishable from an absent seat*) applied to its most load-bearing seat. `tools/fx-select.c` is
+a fourth host-side seat that computes the order over a store's published versions and can ACT on it:
+**viability** from `<store>/.bootlog` (the LAST non-`shutdown` line naming the version; `failed`,
+`in-progress`, `damaged`, `never-judged`, and a torn tail naming it, are each NOT viable and NAMED) →
+**coherence** via `fxstore verify`, judged for CURRENT ONLY — every other candidate prints `not-live`
+WITH its reason and is NOT disqualified, because the live rootfs corresponds to exactly one generation
+and the seat refuses to claim a verification it did not run → *then* the **share**, the oracle's own
+`run_set_share_fraction` shelled by subprocess (never re-derived; a candidate the oracle refuses is
+EXCLUDED BY NAME, never counted as 0 %). Frozen TSV records with a `#` summary beside them, the
+eight-step order and its bounds printed on every run, byte-deterministic. Decision `keep` | `revert-to`
+| a named refusal; `--apply` drives the EXISTING **soft** `fxstore rollback` (the content returns and
+the VERSION NUMBER GOES UP — the substrate's own roll-forward semantics, which keeps the timeline
+append-only), and refuses with no mutation whenever the decision is not actionable (exit 3 = WITHHOLD,
+ONE predicate shared by the record and the trigger). Gate `make test-select`: 22 arms, three
+sed-mutants each shown blind on exactly its fixture (viability filter, coherence filter, tie clause).
+
+**THE CANDIDATE SET IS BOUNDED, AND THAT IS THE DESIGN DECISION THIS SECTION OWES.** The seat
+maximises over `{CURRENT} ∪ {the NEWEST published version below CURRENT whose `generation` fact
+genhash differs}`, tie → CURRENT. Unbounded — over every version the store has ever published — the
+third term stops being a tie-breaker and becomes a **global objective**: any strictly-lower-share
+change is reverted forever (a non-Osier task could never be *kept*, which makes every task but this
+one impossible), and each revert republishes the attractor at a higher version (MEASURED: 7 → 9), so
+the store grows while the system oscillates between two states. That is precisely what "a tie-breaker,
+not an objective" forbids, and "is the change worth keeping?" is a question about the change just made
+against the generation it replaced. The bound also settles a measured property of the substrate: an
+activation or a rollback publishes TWO snapshots, and the INTERMEDIATE one carries its PREDECESSOR's
+system facts (`install`/`generation`/`svc_bin`/`svc_argv`/`provides` md5-identical) with a higher
+version number — so an unbounded "greatest share, then highest version" rule prefers a HALF-PUBLISHED
+snapshot. The bound makes it `not-candidate`, with its reason printed.
+
+**AND ONE MEASURED HAZARD WORTH KEEPING, FOUND WHILE FIXING IT:** `--apply` rolled CURRENT 7 → 9, and
+the very next run reverted back to 7 — **the seat undid its own rollback**, because a freshly
+republished incumbent has no boot verdict yet and read as "not viable". It is now `current-not-judged`,
+a withhold state (exit 3) alongside `current-unmeasured` and `current-verdict-unknown`, gated by arms
+S8c/S8d. The general form, which outlives this seat: **an instrument that can undo its own action has
+no settled point** — and a boot verdict arrives one boot LATER than the state it judges.
 
 **ONE DECISION LEFT TO THE USER, because it changes the metric:** does "amount" mean **code share**
 (binaries/files, gameable as above and needing the derivation test) or **behaviour share** (weighted by
@@ -853,7 +915,14 @@ from these inputs does denote the same bytes here.
 the wrong engine**; `80222c2` links the stack's own Zig `libdatalog` and deletes it (47 files) with
 **zero source edits**. 3. ~~The tool server~~ → done. 4. Guest artifacts must be **stripped**. 5. The
 LuaJIT capability bound is **enforced** (§5a). 6. `osier-share` is the first oracle (§7.1). 7. Egress is
-a **type** (§7.1a). 8. The compiler may live **in the guest** (§5a).
+a **type** (§7.1a). 8. The compiler may live **in the guest** (§5a). 9. **THE ORDER IS EXECUTED, not
+described** — `fx-select` computes §7.1's lexicographic order over a store's versions and can act on it
+(§7.1; gate `make test-select`, 22 arms). 10. **THE GATES THAT SKIPPED NOW RUN** — the tree moved out
+of the fx stack's workspace and every gate still resolved its siblings as `$REPO/..`, so they SKIPped
+(or died at the Makefile's `DATALOG_DIR $(error)`) on a path that could never be right again; one
+resolution policy now covers 14 sites in 11 files plus the Makefile's default, and
+`test-osier-share` / `test-report` / `test-audit` / `test-sibling-paths` are all **0 with no env
+override** (`8d7d8b9`, MEASURED by the orchestrator).
 
 **QUEUED:**
 1. **B2 — the full loop in the guest.** B1's boot has **no control channel by design** (fx-init says so:
@@ -871,10 +940,19 @@ a **type** (§7.1a). 8. The compiler may live **in the guest** (§5a).
    hot-apply) because it direct-execs `fx-activate` instead of using the control channel, and there
    is **no in-guest reboot**. The pre-declared slot (`fx-init e825d52`) is the degenerate case of the
    inline-package form and stays as the proven ground.
+   **UPDATED 2026-10-13: the first gap is CLOSED** (`fx-harness 2818813` + `fx-init f3f60fd` — the
+   agent's activation now speaks PID 1's fifo line protocol natively, so the change is COMMITTED and
+   hot-applied, and the service-table exemption stops the duplicate agent instance it exposed). The
+   blocking item is no longer in this record: it is **the Osier→Lua backend (item 3 below)**, which is
+   LATER in the OSIER repo's own sequence (its `plan.md` Phase 5, behind S5 monomorphisation, then
+   positional records and a fresh non-moving collector) — so "every piece exists" above is true of
+   everything EXCEPT the language backend, and nothing in THIS repo unblocks it.
 3. **The Osier→Lua backend** (host-side) — and answer the check-only-typecheck question (§5a).
 4. **The egress primitives**: the closed host-side catalog + the Dhall declaration extension (§7.1a).
-5. **The `osier-share` measurement** itself — host-side, over the generation's relations, plus the
-   declared-reach query.
+5. ~~**The `osier-share` measurement** itself — host-side, over the generation's relations~~ → **DONE**
+   (`tools/fx-osier-share.c`; gate `make test-osier-share`, exit 0 with no env override as of
+   `8d7d8b9`; the closed host-owned catalog + a Dhall declaration extension, i.e. the DECLARED-REACH
+   query, remain open under item 4).
 6. **The v86 disk** (§7.4) — unchanged; the browser lane still needs a purpose-built i386 kernel.
 
 ## 10. Where the evidence lives

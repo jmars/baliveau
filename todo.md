@@ -47,6 +47,26 @@ Two repos are in play: **this one** (`fx-harness`) and **`../fx-init`** (PID 1, 
       fall back to the old direct exec behind a LOUD reduced-semantics banner. See
       `handoff-activate-route-result`.
 
+- [x] **THE GATES THAT SKIPPED NOW RUN — one sibling-resolution policy (`8d7d8b9` + the `Makefile` line;
+      `handoff-path-sweep-ctx`/`-result`).** MEASURED, and the silence was the point: the tree MOVED out of the fx stack's
+      workspace (`/var/data/workspace/fixpoint-linux/fx-harness` → `~/futaie/baliveau`), so every gate resolving its
+      siblings as `$REPO/..` was looking in `~/futaie` for `fx-init`/`fxstore`/`datalog-dafsa` —
+      `make test-osier-share` exited 2 at the Makefile's `DATALOG_DIR $(error)`, and with that supplied it **SKIPped** at a
+      path that could never be right again. A skip is quiet enough to read as a pass, which is the failure mode this repo
+      exists to argue against. ONE policy now at 14 sites in 11 files — `$FX_SIBLINGS` wins, else `$REPO/..` IF it really
+      holds `fx-init`, else `$HOME/fixpoint-linux`, else a LOUD skip naming `FX_SIBLINGS` — plus the Makefile's own
+      `DATALOG_DIR` default (`$(wildcard …)` on the real `.so`, else the relocated default) and every stale `Env:` comment
+      corrected. **PROOF, mine, with NO env override:** `make test-osier-share` **0**, `make test-report` **0**,
+      `make test-audit` **0**, `make test-sibling-paths` **0** (29 arms, ~9 min) — the first three previously skipped or
+      died. The new gate runs EVERY site BOTH ways (a bogus `$FX_SIBLINGS` must skip loudly naming it, which proves the
+      resolution line is LIVE on that script; with no override each script must get PAST resolution) under a stated bound
+      (30s per qemu arm, so no guest is booted to completion), and pins the pre-fix revision (`0f2c902`, `cmp`-proven to
+      differ) to show it SKIPPED. **The sweep touched NO assertion**: every deleted line in `8d7d8b9` is a resolution
+      line, an `Env:` comment or a skip message (I read the whole deletion set). ONE deliberate deviation from my brief,
+      ADOPTED: `$FX_SIBLINGS` is made to win even when set to a BOGUS path (`[ -n "${FX_SIBLINGS:-}" ]`), because the
+      literal two lines I specified would have silently discarded an explicit override — and the arm that proves a
+      resolution line is live is unsatisfiable without it.
+
 ## 1. The oracle — the one thing that decides whether any of this is worth having
 
 Everything below this line makes the substrate *observable, terminating and self-aware*. **Nothing
@@ -72,8 +92,27 @@ certifies coherence; neither says "improved".
       lower (1.000000 → 0.582965). Refusals fire instead of returning 0 (empty store, bad `--as-of`,
       mutated host tree). **Asymmetry**: against the pre-fix fxstore the seat does not exist and the
       oracle refuses to measure at all.
-- [ ] **Make it a tie-breaker, not an objective**: `boots ok` → `no drift` → *then* maximise.
-      Nothing yet enforces that order — today the number is reported, not gated.
+- [x] **The oracle IS a tie-breaker now — the order is EXECUTED, not described** (`fx-select`: `0f2c902` + the review's fix
+      round `cebcdda`/`9f6cd17`; `handoff-fx-select-ctx`/`-result`/`-review`). A new host-side seat sweeps the store's
+      published versions in §7.1's order: **viability** from `<store>/.bootlog` (the LAST non-`shutdown` line naming the
+      version; `failed`/`in-progress`/`damaged`/`never-judged`, and a torn tail naming it, are each NOT viable and NAMED) →
+      **coherence** via `fxstore verify`, judged for CURRENT ONLY (every other candidate prints `not-live` WITH its reason
+      and is not disqualified, because the live rootfs corresponds to exactly one generation — the honesty rule) → *then*
+      the **share**, the oracle's own `run_set_share_fraction` shelled (never re-derived; a candidate the oracle refuses is
+      EXCLUDED BY NAME, never counted as 0). Frozen TSV records + a `#` summary, the 8-step order + its bounds printed on
+      every run, byte-deterministic; decision `keep` | `revert-to` | a named refusal, and `--apply` drives the EXISTING
+      **soft** `fxstore rollback` (content back, version UP) and refuses — no mutation — whenever the decision is not
+      actionable. **THE CANDIDATE SET IS BOUNDED, which is a design decision taken here**: `{CURRENT} ∪ {newest version
+      below CURRENT whose `generation` fact genhash differs}`, tie → CURRENT. Unbounded, the third term becomes a GLOBAL
+      OBJECTIVE — every strictly-lower-share change is reverted forever (a non-Osier task could never be kept) and each
+      revert republishes the attractor higher — which §7.1's own *"a tie-breaker, not an objective"* forbids; the bound is
+      also what keeps the two-snapshot publish honest (MEASURED: an activation/rollback publishes an INTERMEDIATE whose
+      system facts are identical to its predecessor's, so "highest version" preferred a half-published snapshot). Exit
+      3 = WITHHOLD, ONE predicate shared by the record and the trigger. Gate `make test-select` (22 arms, exit 0 — MY OWN
+      RUN, no env override), three sed-mutants each blind on exactly its fixture (viability filter, coherence filter, tie
+      clause). **MEASURED while fixing, and kept:** the fixer's `--apply` rolled 7→9 and the NEXT run reverted back to 7 —
+      the seat undid its own rollback (`current-not-judged`), now a withhold state gated by S8c/S8d. STILL OPEN under this
+      heading: §1's second item below (an oracle must SEE capability changes), and the intent record (§1b).
 - [ ] **Every oracle must be able to SEE capability changes.** A code-only oracle is blind to an
       agent quietly widening its own egress — and, per §7.1c, blind to *activity without progress*
       (the oscillator is the measured instance). `osier-share` is a static property of the store and
@@ -737,8 +776,25 @@ regulator** — §6b's audit stance is what makes these records evidentially usa
       ran to read it), stated here so nobody mistakes the timing argument for a
       mechanism.
 
-- [ ] **THE BUILD VOCABULARY — designed (§6a of the design record), NOT BUILT. Build in this order,
-      because each element's absence makes the next one decorative:**
+- [ ] **THE BUILD VOCABULARY — LARGELY BUILT (§6a; CORRECTED 2026-10-13, MEASURED from the source).**
+      The four elements below were listed as NOT BUILT and in dependency order; elements **2, 3 and 4
+      LANDED in `fx-init 4c5803d`**, together with the recipe admission itself, so the order below is no
+      longer the live queue — **only element 1 remains**, and §6b deliberately downgraded it from
+      load-bearing to optional defence-in-depth (§6b's stance: audit, do not proof; the VM is the
+      boundary). The landing evidence: `inlinePackages` is a real config field (`zig/src/config.zig:672-905`,
+      an eleven-action mirror of fxstore's Action union at `:124-160`) merged by `fx-activate`
+      (`activate.zig:1930`); the four refusals are enforced BY NAME at `config.zig:965-983` — `Shell`
+      (*"one action that dissolves every other bound"*), a relative `Run` argv[0] (`execvp` with a
+      recipe-controlled PATH), `Fetch` as a src, and non-empty `deps` — gated by corpus fixtures
+      (`zig/corpus/inline-{good,reject-shell,reject-fetch}.dhall`, `activate/inline-{closure,collide,inert}.dhall`)
+      and a zig test at `config.zig:1437`. The commit also closed a gate that had been failing OPEN
+      (`activate_diff.sh`'s per-case `n.genhash.empty` marker living in the SHARED scratch dir — see the
+      house rule at the foot of this file). **What the remaining element 1 still costs, stated rather
+      than implied:** the in-guest build path falls back to PLAIN EXEC in the workdir
+      (`fxstore zig/src/build.zig:700-760`, the sanctioned LOUD bwrap-absent fallback), so an
+      agent-authored recipe's `Copy` can reach the harness's own record
+      (`/fx/disk/agent-data/attempts.jsonl`) — bounded, because that record is a SELF-REPORT and never
+      evidence, and because fx-init's guardrail and the host-side seats are unreachable from in-guest.
       1. **THE REACH BOUND — IN USERSPACE, NOT A SANDBOX (corrected 2026-10-10: the VM is the
          boundary).** The pinned guest kernel has `# CONFIG_SECURITY is not set` (no LSM ⇒ no
          landlock), `# CONFIG_SECCOMP is not set` (palisade's `n` IS seccomp), and
@@ -751,15 +807,20 @@ regulator** — §6b's audit stance is what makes these records evidentially usa
          MALICIOUS recipe the answer is to make the record tamper-EVIDENT (content-addressed /
          hash-chained) rather than tamper-proof — and the layers above it are fx-init's own guardrail
          and the HOST-side oracle, neither of which in-guest tampering can reach.
-      2. **THE ACTIVATION-TIME REFUSAL.** An out-of-subset action is refused BY NAME where the config
-         is validated — the `agentService` pattern (`fx-init 500fc68`), same place, same loudness.
-      3. **THE SUBSET AND THE ABSOLUTE-ARGV RULE.** `Shell` is excluded from the agent-authorable set
-         (host-frozen sets keep it); `Run` requires an absolute `argv[0]`, no PATH search — the
-         discipline the code already applies to itself for `bwrap` (`build.zig:351-354`).
-      4. **INLINE PACKAGES IN THE CONFIG, merged by `fx-activate`** into the package set before the
-         closure is computed, so no new file becomes agent-writable.
+      2. **[x] THE ACTIVATION-TIME REFUSAL — BUILT (`fx-init 4c5803d`).** An out-of-subset action is
+         refused BY NAME where the config is validated — the `agentService` pattern (`fx-init
+         500fc68`), same place, same loudness.
+      3. **[x] THE SUBSET AND THE ABSOLUTE-ARGV RULE — BUILT (`fx-init 4c5803d`).** `Shell` is
+         excluded from the agent-authorable set (host-frozen sets keep it); `Run` requires an absolute
+         `argv[0]`, no PATH search — the discipline the code already applies to itself for `bwrap`
+         (`build.zig:351-354`).
+      4. **[x] INLINE PACKAGES IN THE CONFIG, merged by `fx-activate` — BUILT (`fx-init 4c5803d`,
+         `activate.zig:1930`)** into the package set before the closure is computed, so no new file
+         becomes agent-writable.
       PREREQUISITE for all of it: `fxstore` must run where the agent does — static, x86_64-linux-musl,
       against a static libdatalog (it is currently glibc-dynamic with a `.so` dependency).
+      **DONE** (`fx-harness 3b7dacc` + `fxstore 23a293f`, `tests/qemu-agent-slot-inguest.sh`): the builder
+      ships in the guest payload, static and stripped.
 - [x] **The agent's activation goes THROUGH PID 1 — the change is COMMITTED, not merely published**
       (`fx-harness 2818813` + `fx-init f3f60fd`). It speaks PID 1's fifo protocol NATIVELY (one atomic
       `activate <config>\n`, ≤4096 = PIPE_BUF, reply classified as `fxctl.classifyLine`, 600 s budget) —
