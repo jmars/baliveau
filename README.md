@@ -152,7 +152,7 @@ The system separates **doing** from **judging**, and the judging happens outside
 |---|---|---|---|
 | the oracle (`osier-share`) | *is it better?* — how much of the running system is written in the project's own language, measured over the components the generation actually runs | host, over the store's own provenance | **built**, and proven to move |
 | the audit | *is it honest?* — does the record agree with itself and with what the host observed before? | host, reading records written by different writers at different times | **built**, with its own bound printed in its output |
-| the reporter | *is it documented?* — can a third party reconstruct the lifecycle for a regulator? | host (designed) | **not built** |
+| the reporter | *is it documented?* — can a third party reconstruct the lifecycle for a regulator? | host, over the substrate's own durable records | **built**, with its taxonomy, retention and bound tables printed on every run |
 
 Each seat is a **frozen seat**: host-side, unwritable by the agent, and a function of observable system
 state. A seat that measured the agent's own claims would measure nothing.
@@ -196,9 +196,11 @@ own checkpoint proven able to vanish without changing a verdict.
 
 - the language backend that lets the agent author components in the project's own language — the target
   of the first self-modification task; every other piece is in place and proven without it;
-- the **reporter** seat, and two of the three records it needs: a **change/incident taxonomy**, and a
-  **retention policy** (the store's files are durable; the runtime log is not — the difference is
-  currently unequal, and stated rather than assumed);
+- the **reporter** seat's two remaining inputs, both *decisions* rather than instruments: a **retention
+  policy** (the store's files are durable and the runtime log is not — the seat states and re-measures
+  that inequality on every run, but chooses no policy), and a change's **intent** (the config each
+  generation was built from is readable now; what was *attempted*, and why, is not recorded anywhere).
+  The **change/incident taxonomy** is not among them — it is frozen in the seat;
 - network access as a **typed capability** rather than raw sockets (designed, not implemented);
 - a second target: a browser-hosted machine, which needs a purpose-built kernel.
 
