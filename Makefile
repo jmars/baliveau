@@ -36,7 +36,16 @@ LDFLAGS :=
 #                   defeat the static goal — same pattern as fxstore).
 #
 # The tree therefore cannot build standalone; see README (Build deps).
-DATALOG_DIR ?= ../datalog-dafsa
+#
+# SIBLING RESOLUTION — the repo's ONE policy, shared with every gate
+# (tests/test_sibling_paths.sh): an explicit DATALOG_DIR wins; else the
+# historical neighbour ../datalog-dafsa IF it really holds the engine; else
+# the relocated default $HOME/fixpoint-linux/datalog-dafsa.  MEASURED
+# 2026-10-13: this tree MOVED out of the fx stack's workspace (it was
+# /var/data/workspace/fixpoint-linux/fx-harness), so the bare `../datalog-dafsa`
+# default made $(error) below fire on EVERY invocation in the new layout —
+# `make test-osier-share` exited 2 at this line before any test ran.
+DATALOG_DIR ?= $(if $(wildcard ../datalog-dafsa/zig-out/lib/libdatalog.so),../datalog-dafsa,$(HOME)/fixpoint-linux/datalog-dafsa)
 DATALOG_SHIM     := build/include/vendor/datalog-dafsa/src
 DATALOG_MUSL_LIB := build/datalog-musl/lib
 DATALOG_MUSL_A   := $(DATALOG_MUSL_LIB)/libdatalog.a
@@ -239,6 +248,22 @@ $(BIN_SELECT): tools/fx-select.c
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ tools/fx-select.c
 
 .PHONY: test-select
+
+# THE SIBLING-PATH GATE (unit `path-sweep`).  Every gate that reads a sibling
+# checkout (fx-init, fxstore, datalog-dafsa) resolves it with ONE policy —
+# $FX_SIBLINGS wins, else the historical neighbour $REPO/.. IF it really holds
+# fx-init, else $HOME/fixpoint-linux, else a LOUD skip.  MEASURED 2026-10-13:
+# the tree moved out of the fx stack's workspace and the old `$REPO/..` default
+# made ten gates SKIP (or die at the DATALOG_DIR $(error)) quietly enough to
+# read as a pass.  This gate executes every site BOTH ways — a bogus
+# $FX_SIBLINGS must skip loudly naming it (proving the resolution line is LIVE
+# on that script), and with no override each script must get PAST resolution —
+# and pins the pre-fix revision (cmp-proven to differ) to show it SKIPPED.
+# Slow (~9 min): it runs the gate scripts under a stated bound.
+test-sibling-paths:
+	bash tests/test_sibling_paths.sh
+
+.PHONY: test-sibling-paths
 
 # The REPORTER SEAT — the third host-side seat (todo.md §1b, design record
 # §1a): the oracle asks IS IT BETTER, the audit asks IS IT HONEST, this one
