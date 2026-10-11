@@ -70,7 +70,12 @@
 #   S17 THE BOUND: candidates = {CURRENT, the generation it replaced}; the
 #       intermediate snapshot a two-snapshot publish leaves behind (same
 #       generation genhash as its own predecessor) is NOT a candidate and
-#       cannot tie-break into the winner.
+#       cannot tie-break into the winner.  S9 also asserts the two bounds the
+#       seat STATES rather than polices: a gc-REAPED predecessor is crossed
+#       silently (bound/predecessor-gap-after-gc), and a below-predecessor
+#       version's content identity is claimed only where the walk read its
+#       genhash (bound/predecessor-content-not-compared) — S8c gates both
+#       labels on the live soft-rollback shape.
 #
 # THE FIXTURE is TOOLCHAIN-FREE, exactly like tests/test_osier_share.sh:
 # fx-init's activate_paths computes the closure and prints <hash>-<name>,
@@ -459,6 +464,10 @@ done
 grep -q '^order	1	candidates	' "$F1/o.s9" || fail "S9: the frozen order table is not in the output"
 grep -q '^order	8	apply	' "$F1/o.s9" || fail "S9: the apply step of the order is not printed"
 grep -q '^bound	candidate-set-is-a-pair	' "$F1/o.s9" || fail "S9: no bound states what the candidate bound cannot see"
+grep -q '^bound	predecessor-gap-after-gc	' "$F1/o.s9" \
+    || fail "S9: the gc-pruned-predecessor bound is not printed"
+grep -q '^bound	predecessor-content-not-compared	' "$F1/o.s9" \
+    || fail "S9: the content-identity bound is not printed"
 grep -q '^bound	share-of-a-partial-snapshot	' "$F1/o.s9" || fail "S9: the bounds table is not printed"
 echo "test_fx_select: S9 the order table (8 steps) + bounds print on every run"
 
@@ -686,6 +695,21 @@ rc=$(run_select "$F1/o.s8c" $SEL)
 grep -q "^decision	withhold	-	current-not-judged	" "$F1/o.s8c" \
     || fail "S8c: the withholding state is not the named one: $(grep -m1 '^decision' "$F1/o.s8c")"
 grep -q '^decision	revert-to' "$F1/o.s8c" && fail "S8c: the seat undid its own rollback"
+# The record must say what it KNOWS about content: the rollback republished
+# the incumbent's own generation, so the predecessor's twin (whose genhash the
+# walk read) IS the incumbent's content and may not be labelled by position
+# alone.  FAILING DIRECTION: a seat labelling purely by position says
+# older-than-the-predecessor, hiding that v$post_current IS that content.
+case "$(nc_reason "$F1/o.s8c" "$F1_C_FIRST")" in
+    same-content-as-current*) ;;
+    *) fail "S8c: the version that IS the incumbent's content is labelled only by position: $(nc_reason "$F1/o.s8c" "$F1_C_FIRST")";;
+esac
+# and where the walk did NOT read a version's genhash, the label says so
+# rather than implying a comparison that was never made
+case "$(nc_reason "$F1/o.s8c" "$F1_O_LAST")" in
+    *"not compared with"*) ;;
+    *) fail "S8c: an uncompared version does not say so: $(nc_reason "$F1/o.s8c" "$F1_O_LAST")";;
+esac
 # ── S8d: the next boot judges the rolled-back generation -> stable keep ─
 # A real next boot writes the line PAIR for the new version and materializes
 # its generation; the seat must then keep it and refuse to act.
@@ -875,7 +899,16 @@ grep -q "^caveat	excluded-candidates	$nex	" "$F4/o.s5a" \
     || fail "S5a: the excluded count is not printed as its own caveat line (rows=$nex): $(grep '^caveat.excluded' "$F4/o.s5a")"
 grep -q "^candidate	$F4_C_LAST	1	.*share	-	share-state	oracle-refused" "$F4/o.s5a" \
     || fail "S5a: the refused incumbent does not read as UNMEASURED: $(grep "^candidate	$F4_C_LAST	1" "$F4/o.s5a")"
-grep -q 'NEVER as `revert-to`' "$F4/o.s5a" || true
+# Two LIVE assertions where a dead one stood (a grep whose result was
+# discarded asserted nothing while occupying an assertion's place).  (i) the
+# plain run issued NO apply record — nothing was even attempted.  FAILING
+# DIRECTION: a seat that starts the trigger machinery during a read-only run
+# prints one.  (ii) the withhold is ATTRIBUTED: its reason names the
+# incumbent it could not measure.  FAILING DIRECTION: a seat that withholds
+# generically, or for the wrong cause, does not name it.
+grep -q '^apply' "$F4/o.s5a" && fail "S5a: the plain run printed an apply record"
+grep -q 'INCUMBENT v' "$F4/o.s5a" \
+    || fail "S5a: the withhold does not name the incumbent it could not measure: $(grep -m1 '^decision' "$F4/o.s5a")"
 # and the trigger reads the SAME value: no mutation, same exit
 rc=$(run_select "$F4/o.s5aa" $SEL4 --apply)
 [ "$rc" = "3" ] || fail "S5a: --apply on a withheld decision must exit 3, got $rc"

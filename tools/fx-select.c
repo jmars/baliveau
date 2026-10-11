@@ -43,7 +43,13 @@
  *                  with its reason and stays in the table as an audit
  *                  record.  When CURRENT has no generation fact the
  *                  predecessor cannot be identified at all: the set is
- *                  {CURRENT} and the state is NAMED.
+ *                  {CURRENT} and the state is NAMED.  A PREDECESSOR REAPED
+ *                  BY `fxstore gc` IS CROSSED SILENTLY — the walk sees only
+ *                  the versions the store still lists — so the bound is
+ *                  printed (bound/predecessor-gap-after-gc) rather than
+ *                  policed, and the same goes for a below-predecessor
+ *                  version's CONTENT identity
+ *                  (bound/predecessor-content-not-compared).
  *   2. VIABILITY   from <store>/.bootlog ONLY: the LAST non-shutdown line
  *                  naming the version.  ok -> viable.  failed -> not.
  *                  in-progress -> not (no verdict was reached; fx-init's
@@ -312,7 +318,7 @@ static const struct {
     const char *name, *record, *rule;
 } ORDER[] = {
  { 1, "candidates", "fxstore timeline --store <store> + fxstore facts generation --as-of <v> --store <store>",
-   "THE BOUNDED SET: {CURRENT} + {the NEWEST published version BELOW CURRENT whose generation fact's GENHASH differs from CURRENT's and which is NOT a republication of its immediate predecessor (the same genhash - the intermediate snapshot a two-snapshot activation or soft rollback publishes, which carries its PREDECESSOR's system facts)}. The seat asks IS THE CHANGE WORTH KEEPING? against the incumbent it replaced, not is ANY historical generation better: the share is a TIE-BREAKER (design record 7.1), and a global maximum would make every strictly lower-share change permanently unshippable and every high-water generation a permanent attractor republished at a rising version number. Every other published version prints as not-candidate with its reason and stays as an audit record; a CURRENT with no generation fact leaves the set {CURRENT} and is NAMED" },
+   "THE BOUNDED SET: {CURRENT} + {the NEWEST published version BELOW CURRENT whose generation fact's GENHASH differs from CURRENT's and which is NOT a republication of its immediate predecessor (the same genhash - the intermediate snapshot a two-snapshot activation or soft rollback publishes, which carries its PREDECESSOR's system facts)}. The seat asks IS THE CHANGE WORTH KEEPING? against the incumbent it replaced, not is ANY historical generation better: the share is a TIE-BREAKER (design record 7.1), and a global maximum would make every strictly lower-share change permanently unshippable and every high-water generation a permanent attractor republished at a rising version number. Every other published version prints as not-candidate with its reason and stays as an audit record; a CURRENT with no generation fact leaves the set {CURRENT} and is NAMED; a predecessor REAPED BY `fxstore gc` is crossed silently (bound/predecessor-gap-after-gc) and a below-predecessor version's content identity is only stated where the walk read its genhash (bound/predecessor-content-not-compared)" },
  { 2, "viability", "<store>/.bootlog",
    "the LAST non-shutdown line naming the version: ok=viable; failed|in-progress|unknown-status=NOT viable (reason named); no line=NOT viable (never-judged). TWO DAMAGE POISONS override a clean verdict, both preferring the false stop: a TORN (unterminated) last line whose first token names the version (the file was mid-write ABOUT it; outcome.c:1032-1035, test_outcome.sh phase 11), and a TERMINATED line that is not the writer's 3-or-4-field shape and whose first token NAMES the version (the writer never emits it, so its verdict is unreadable - this also closes the torn-then-append MERGE that fx-init's un-repaired append produces, init.zig:764-780). Torn wins the tie between the two" },
  { 3, "share", "fx-osier-share --store <store> --as-of <v>",
@@ -332,6 +338,10 @@ static const struct {
 static const struct { const char *id, *text; } BOUNDS[] = {
  { "coherence-not-live",
    "every non-CURRENT candidate's coherence is not-live: this seat measured ONE rootfs, the live one, and reports not-live for the rest rather than implying a verification it did not run. Consequence, stated rather than left to be discovered: the no-drift term is a veto on the INCUMBENT only, so a revert can name a generation that would itself drift once materialized - the seat sees that on its NEXT run, as the new CURRENT drifting, and would then revert again. In the deployment the next boot materializes the rolled-back generation before the seat runs again; a loop that drives --apply WITHOUT a boot in between can oscillate once" },
+ { "predecessor-gap-after-gc",
+   "the candidate walk runs over the versions the store LISTS. A predecessor reaped by `fxstore gc --retain N` is therefore crossed with NO record that a version was ever there, and the version this seat names as 'the generation CURRENT replaced' can then be OLDER than the one CURRENT actually replaced - a revert can rest on that. Retention is unpoliced (design record 1a gap 4), and this seat STATES the bound rather than policing it, which is why the gap is worth naming: version numbers are assigned SEQUENTIALLY by the publisher, so a missing number between the incumbent's and the predecessor's is a REAPED version (a number that was never published cannot be missing), and the printed per-version table therefore lets a reader see the gap even though nothing here ACTS on it" },
+ { "predecessor-content-not-compared",
+   "the walk reads a generation fact only where it must: for each version it crosses, and for the duplicate test on the one below. Versions BELOW the predecessor are labelled from the genhash only when the walk happened to read them; otherwise their label says so and their genhash column reads not-read. The alternative - reading every listed version's generation fact so the whole table carries content identity - was MEASURED at ~22ms per fxstore call on the gate's fixture (20 calls in 0.44s), i.e. one call per historical version for a label NO RULE ACTS ON, so the deliberate choice is the lazy walk plus this stated limit rather than an O(history) subprocess pass" },
  { "candidate-set-is-a-pair",
    "the bound is CURRENT + the ONE generation it replaced. A better generation OLDER than that predecessor is not a candidate and this seat cannot select it: the bound trades that reach for the property that makes the metric a tie-breaker rather than a permanent objective (rule 1). The full version table is still printed, so the reader can see what the bound excludes and why" },
  { "share-of-a-partial-snapshot",
@@ -922,16 +932,31 @@ static void compute_bound(void) {
         g_ncand++;
         break;
     }
-    /* every version the walk never reached still gets a NAMED reason */
+    /* Every version the walk never reached still gets a NAMED reason — and a
+     * version whose generation fact the walk DID read is labelled by what
+     * that fact says, not by its position: a soft rollback republishes the
+     * incumbent's own content under a later number, so versions BELOW the
+     * predecessor can BE the incumbent (MEASURED, the gate's S8c: v6 holds
+     * CURRENT v9's genhash).  Calling those merely "older" understated what
+     * the record knows; calling the ones whose genhash was NOT read "older"
+     * is deliberate and bounded — see bound/predecessor-content-not-compared. */
     for (unsigned i = 0; i < g_nvers; i++) {
         if (g_candb[i].is_cand) continue;
         if (strcmp(g_candb[i].ncr, "outside-the-bound") != 0) continue;
         if (g_vers[i].v > g_current)
             snprintf(g_candb[i].ncr, sizeof g_candb[i].ncr,
                      "above-current: the bound spans the incumbent and the change it replaced (a `fxstore rollback --hard` can leave versions above CURRENT; they are not candidates here)");
+        else if (g_gh[i].read && g_gh[i].present && g_gh[curi].present &&
+                 strcmp(g_gh[i].gh, g_gh[curi].gh) == 0)
+            snprintf(g_candb[i].ncr, sizeof g_candb[i].ncr,
+                     "same-content-as-current: its generation genhash %s EQUALS CURRENT v%u's — this version holds the incumbent's OWN generation, published under a different version number (a soft rollback does exactly that), so it is not a distinct change and cannot be a candidate", g_gh[i].gh, g_current);
         else if (g_pred >= 0)
             snprintf(g_candb[i].ncr, sizeof g_candb[i].ncr,
-                     "older-than-the-predecessor v%u: outside the bound, which compares ONLY the incumbent with the change it replaced (the full table is printed as an audit record, and this seat cannot select a generation older than the one the change replaced)", g_vers[g_pred].v);
+                     "older-than-the-predecessor v%u: outside the bound, which compares ONLY the incumbent with the change it replaced (the full table is printed as an audit record). Its generation content was %s with the incumbent's",
+                     g_vers[g_pred].v,
+                     (g_gh[i].read && g_gh[i].present)
+                         ? "read and DIFFERS from (so it is not the incumbent's)"
+                         : "not compared with (its genhash was not read — see bound/predecessor-content-not-compared)");
         else
             snprintf(g_candb[i].ncr, sizeof g_candb[i].ncr,
                      "older-than-CURRENT-with-no-predecessor-identified: outside the bound");
@@ -1258,8 +1283,7 @@ int main(int argc, char **argv) {
                coh_state, coh_reason, eligible ? "yes" : "no", mark,
                c->is_cand ? "yes" : "no",
                g_gh[i].present ? g_gh[i].gh
-                               : (g_gh[i].read ? "none"
-                                               : "not-read-the-walk-stopped-above-it"));
+                               : (g_gh[i].read ? "none" : "not-read"));
         if (c->is_cand && !s->measured)
             printf("excluded\t%u\toracle-refused\texit=%d\t%s\tMEASURED\n", g_vers[i].v, s->rc,
                    s->refusal[0] ? s->refusal : "(the oracle printed nothing)");
