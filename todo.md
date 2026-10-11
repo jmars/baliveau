@@ -931,3 +931,12 @@ regulator** — §6b's audit stance is what makes these records evidentially usa
   `obs(E,C) :- observation(E,C)`.
 - **Memory writes need a retry** under concurrent lanes (the CLI reports a lock failure rather than
   waiting).
+- **A per-case marker file in a shared scratch dir leaks across cases.** `activate_diff.sh`'s
+  `n.genhash.empty` was never cleared between cases, so after the first failing case every LATER
+  case — including succeeding ones — took the no-generation branch: the genhash golden and the
+  raw-hash idempotency check silently no-opped for every case after the first failure (the
+  `idempotency` case included, since `svc-no-closure` ran before it). Found while adding the
+  inlinePackages cases: my succeeding fixtures pinned `genhash.empty` goldens. Fixed by clearing
+  the marker at the top of `run_side`; the fix UNMASKED the idempotency case's assertions (it had
+  been green with them inert). Same shape as the "budget compared after charging" class: a seat
+  that exists and is never read on the deciding path.
