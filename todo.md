@@ -155,6 +155,16 @@ regulator** — §6b's audit stance is what makes these records evidentially usa
       real `/`, `/run`, `/fx/store` (`:274-289`), so a host without `/run` sees one row. And the C oracle
       is gone, so "the re-pinned golden still equals verified C behaviour" is no longer checkable — the
       asymmetry is against the previous golden only.
+      **(2026-10-11: BOTH RESIDUALS CLOSED — `fx-init fed72fb`.)** `process.rss_kb` and the `fs` row set
+      are now masked (`0x3F`->`0x1F`, `0x01`->`0x00`), and a THIRD instance of the class was found that
+      masking alone would have missed: the driver's inline CHECKs pinned the literals `400`/`1024`, i.e.
+      the fixture's page counts times the CAPTURE HOST's page size — `fixture_rss_kb()` now applies the
+      same sysconf, so those checks are self-consistent by construction. All 39 dumped tokens are
+      attributed to a fixture file with file:line (0 unattributed), and a fixture-perturbation run left
+      both goldens byte-identical while reddening only the rewritten CHECKs. **Coverage given up, stated:
+      the `fs` port now has NO harness coverage at all** (statvfs needs real mounts and cannot be pointed
+      at a fixture; making the probe fixture-aware there is a different unit), and the golden no longer
+      pins the rss arithmetic, which now lives in those in-process CHECKs.
 
 - [x] **A hot-applied config that REDECLARES the agent service starts a SECOND agent instance
       mid-turn** (measured 2026-10, fx-init `svc_table_free` frees the old table's memory and never
