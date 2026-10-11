@@ -39,8 +39,9 @@
 # provides/svc_bin/install AND the srcstore rows activate_paths never
 # writes).  Nothing boots; nothing compiles; the recipes never run.
 #
-# Env: FXSTORE_BIN (default ../fxstore/zig-out/bin/fxstore), FX_INIT_REPO,
-#      OSIER_KEEP=1.
+# Env: FX_SIBLINGS (default $HOME/fixpoint-linux unless $REPO/.. holds the
+#      stack), FXSTORE_BIN (default $FX_SIBLINGS/fxstore/zig-out/bin/fxstore),
+#      FX_INIT_REPO, OSIER_KEEP=1.
 set -u
 
 fail() { echo "test_osier_share: FAIL: $*" >&2; exit 1; }
@@ -48,19 +49,23 @@ skip() { echo "test_osier_share: SKIP ($*)"; exit 77; }
 
 cd "$(dirname "$0")/.." || fail "cannot cd to repo root"
 REPO="$PWD"
-SIBS="$(cd "$REPO/.." && pwd)"
+# Sibling root: an explicit FX_SIBLINGS wins; else the historical neighbour
+# $REPO/.. only if it actually holds the stack (fx-init present); else the
+# relocated default $HOME/fixpoint-linux.
+SIBS="${FX_SIBLINGS:-$(cd "$REPO/.." && pwd)}"
+[ -d "$SIBS/fx-init" ] || [ -n "${FX_SIBLINGS:-}" ] || SIBS="$HOME/fixpoint-linux"
 
 command -v cc >/dev/null 2>&1 || skip "cc not found"
 command -v wc >/dev/null 2>&1 || skip "wc not found"
 
 FXSTORE="${FXSTORE_BIN:-$SIBS/fxstore/zig-out/bin/fxstore}"
-[ -x "$FXSTORE" ] || skip "fxstore binary missing at $FXSTORE (build the sibling)"
+[ -x "$FXSTORE" ] || skip "fxstore binary missing at $FXSTORE (set FX_SIBLINGS or FXSTORE_BIN, or build the sibling)"
 "$FXSTORE" --help 2>&1 | grep -q 'fxstore facts' || skip "fxstore at $FXSTORE predates 'facts' (rebuild the sibling)"
 
 INIT="${FX_INIT_REPO:-$SIBS/fx-init}"
-[ -d "$INIT" ] || skip "fx-init checkout not found at $INIT (set FX_INIT_REPO)"
+[ -d "$INIT" ] || skip "fx-init checkout not found at $INIT (set FX_SIBLINGS or FX_INIT_REPO)"
 DL="$SIBS/datalog-dafsa/zig-out/lib"
-[ -f "$DL/libdatalog.so" ] || skip "libdatalog.so missing at $DL"
+[ -f "$DL/libdatalog.so" ] || skip "libdatalog.so missing at $DL (set FX_SIBLINGS)"
 
 # fx-init's x86_64 binaries: activate_paths + fx-activate, host-runnable
 # (the qemu-agent-observe.sh guest-payload build, reused verbatim).

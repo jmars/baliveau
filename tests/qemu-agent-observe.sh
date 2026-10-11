@@ -89,7 +89,9 @@
 # reads the journal through the model's own tool).  An agent that has just been
 # refused must SEE that this has happened before, not merely that it happened.
 #
-# Env: QEMU_BOOT_TIMEOUT (default 120)  QEMU_KEEP=1  FX_INIT_REPO
+# Env: QEMU_BOOT_TIMEOUT (default 120)  QEMU_KEEP=1
+#      FX_SIBLINGS (default $HOME/fixpoint-linux unless $REPO/.. holds the
+#      stack)  FX_INIT_REPO (default $FX_SIBLINGS/fx-init)
 #      FX_KERNEL_CACHE  OBS_MARKER  OBS_SKIP_BOOT=1 (stage + images only)
 set -u
 
@@ -121,10 +123,15 @@ done
 
 cd "$(dirname "$0")/.." || fail "cannot cd to repo root"
 REPO="$PWD"
-INIT="${FX_INIT_REPO:-$(cd "$REPO/.." && pwd)/fx-init}"
+# Sibling root: an explicit FX_SIBLINGS wins; else the historical neighbour
+# $REPO/.. only if it actually holds the stack (fx-init present); else the
+# relocated default $HOME/fixpoint-linux.
+SIBS="${FX_SIBLINGS:-$(cd "$REPO/.." && pwd)}"
+[ -d "$SIBS/fx-init" ] || [ -n "${FX_SIBLINGS:-}" ] || SIBS="$HOME/fixpoint-linux"
+INIT="${FX_INIT_REPO:-$SIBS/fx-init}"
 BOOT_TIMEOUT="${QEMU_BOOT_TIMEOUT:-120}"
 SETTLE="${QEMU_AGENT_SETTLE:-12}"
-[ -d "$INIT" ] || skip "fx-init checkout not found at $INIT (set FX_INIT_REPO)"
+[ -d "$INIT" ] || skip "fx-init checkout not found at $INIT (set FX_SIBLINGS or FX_INIT_REPO)"
 PIN="$INIT/scripts/kernel-pin.txt"
 [ -f "$PIN" ] || skip "scripts/kernel-pin.txt missing"
 MARKER="${OBS_MARKER:-obs-agent-4d17}"

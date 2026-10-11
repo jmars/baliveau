@@ -69,7 +69,9 @@
 # NO CONTROL CHANNEL: every assertion is the console or a read-only debugfs
 # read-back off the virtio disk.
 #
-# Env: QEMU_BOOT_TIMEOUT (default 120)  QEMU_KEEP=1  FX_INIT_REPO
+# Env: QEMU_BOOT_TIMEOUT (default 120)  QEMU_KEEP=1
+#      FX_SIBLINGS (default $HOME/fixpoint-linux unless $REPO/.. holds the
+#      stack)  FX_INIT_REPO (default $FX_SIBLINGS/fx-init)
 #      FX_KERNEL_CACHE  FXSTORE_BIN (host binary, read-only facts only)
 #      INGUEST_SKIP_BOOT=1 (stage + images only)
 set -u
@@ -108,10 +110,15 @@ done
 
 cd "$(dirname "$0")/.." || fail "cannot cd to repo root"
 REPO="$PWD"
-INIT="${FX_INIT_REPO:-$(cd "$REPO/.." && pwd)/fx-init}"
+# Sibling root: an explicit FX_SIBLINGS wins; else the historical neighbour
+# $REPO/.. only if it actually holds the stack (fx-init present); else the
+# relocated default $HOME/fixpoint-linux.
+SIBS="${FX_SIBLINGS:-$(cd "$REPO/.." && pwd)}"
+[ -d "$SIBS/fx-init" ] || [ -n "${FX_SIBLINGS:-}" ] || SIBS="$HOME/fixpoint-linux"
+INIT="${FX_INIT_REPO:-$SIBS/fx-init}"
 BOOT_TIMEOUT="${QEMU_BOOT_TIMEOUT:-120}"
 SETTLE="${QEMU_AGENT_SETTLE:-12}"
-[ -d "$INIT" ] || skip "fx-init checkout not found at $INIT (set FX_INIT_REPO)"
+[ -d "$INIT" ] || skip "fx-init checkout not found at $INIT (set FX_SIBLINGS or FX_INIT_REPO)"
 PIN="$INIT/scripts/kernel-pin.txt"
 [ -f "$PIN" ] || skip "scripts/kernel-pin.txt missing"
 SLOTSET="$INIT/m3/package-set-slot.dhall"
@@ -126,8 +133,8 @@ SLOT_SRC_FILE="$SLOT_SRC_DIR/Mcp.elm"         # THE one writable source path
 # (never for building — that is the point of this gate).  The BUILDER is the
 # payload's static musl artifact, staged by tools/stage-guest.sh and asserted
 # below.
-FXSTORE="${FXSTORE_BIN:-$REPO/../fxstore/zig-out/bin/fxstore}"
-[ -x "$FXSTORE" ] || skip "fxstore binary missing at $FXSTORE (build the sibling)"
+FXSTORE="${FXSTORE_BIN:-$SIBS/fxstore/zig-out/bin/fxstore}"
+[ -x "$FXSTORE" ] || skip "fxstore binary missing at $FXSTORE (set FX_SIBLINGS or FXSTORE_BIN, or build the sibling)"
 "$FXSTORE" --help 2>&1 | grep -q 'fxstore facts' || skip "fxstore at $FXSTORE predates 'facts' (rebuild the sibling)"
 OSIER="${OSIER_BIN:-$REPO/build/fx-osier-share}"
 [ -x "$OSIER" ] || fail "no oracle binary at $OSIER (make test-osier-share builds it)"

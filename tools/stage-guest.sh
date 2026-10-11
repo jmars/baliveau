@@ -61,7 +61,9 @@
 #   -f  force the sibling datalog rebuild (cache under OUTDIR)
 #   -N  skip the host pre-checks (the binaries are checked by default)
 # Env: FX_SSE_FIXTURE (default the recorded responses_simple.sse),
-#      DATALOG_DIR (default ../datalog-dafsa)
+#      FX_SIBLINGS (default $HOME/fixpoint-linux unless $REPO/.. holds the
+#      stack)  DATALOG_DIR (default $FX_SIBLINGS/datalog-dafsa)
+#      FXSTORE_REPO (default $FX_SIBLINGS/fxstore)  FX_INIT_REPO
 set -u
 
 fail() { echo "stage-guest: FAIL: $*" >&2; exit 1; }
@@ -86,7 +88,12 @@ while [ $# -gt 0 ]; do
         *) fail "unknown arg '$1' (usage: stage-guest.sh [-o OUTDIR] [-m MARKER] [-s SENTINEL] [-f] [-N])" ;;
     esac
 done
-DATALOG_DIR="${DATALOG_DIR:-$(cd "$REPO/.." && pwd)/datalog-dafsa}"
+# Sibling root: an explicit FX_SIBLINGS wins; else the historical neighbour
+# $REPO/.. only if it actually holds the stack (fx-init present); else the
+# relocated default $HOME/fixpoint-linux.
+SIBS="${FX_SIBLINGS:-$(cd "$REPO/.." && pwd)}"
+[ -d "$SIBS/fx-init" ] || [ -n "${FX_SIBLINGS:-}" ] || SIBS="$HOME/fixpoint-linux"
+DATALOG_DIR="${DATALOG_DIR:-$SIBS/datalog-dafsa}"
 FIXTURE="${FX_SSE_FIXTURE:-$REPO/tests/fixtures/responses_simple.sse}"
 
 command -v zig >/dev/null 2>&1 || skip "zig not found (the guest toolchain)"
@@ -272,9 +279,9 @@ assert_guest_elf "$BINDIR/luajit.i386" "i386"
 # so the deployment stages the interpreter + the recipe's own words here and
 # fx-verbs-server points fxstore at them via FXSTORE_SH (the applets resolve
 # on the verb PATH, which carries this dir).
-FXSTORE_REPO="${FXSTORE_REPO:-$(cd "$REPO/.." && pwd)/fxstore}"
+FXSTORE_REPO="${FXSTORE_REPO:-$SIBS/fxstore}"
 [ -f "$FXSTORE_REPO/build.zig" ] \
-    || skip "fxstore checkout not found at $FXSTORE_REPO (set FXSTORE_REPO; the in-guest builder)"
+    || skip "fxstore checkout not found at $FXSTORE_REPO (set FXSTORE_REPO or FX_SIBLINGS; the in-guest builder)"
 STAGE3_SRC="$FXSTORE_REPO/vendor/palisade/bin/stage3"
 [ -x "$STAGE3_SRC" ] \
     || fail "palisade stage3 not executable at $STAGE3_SRC (fxstore refuses every Shell recipe without it)"
@@ -427,7 +434,7 @@ write_cfg "$OUT/fx-agent-service-gate.dhall"    "$GATE_SVCS"    "fxagent-usage"
 # the configs must TYPE-CHECK and parse as fx-init reads them — validated with
 # fx-init's OWN parser (zig-out/bin/config_check) before any boot, so a red
 # guest cannot be blamed on a malformed service list.
-CCHK="${FX_INIT_REPO:-$(cd "$REPO/.." && pwd)/fx-init}/zig/zig-out/bin/config_check"
+CCHK="${FX_INIT_REPO:-$SIBS/fx-init}/zig/zig-out/bin/config_check"
 if [ -x "$CCHK" ]; then
     for c in "$OUT/fx-agent-service-healthy.dhall" "$OUT/fx-agent-service-gate.dhall"; do
         out=$("$CCHK" "$c" 2>&1) || { echo "$out" >&2; fail "config_check rejected $c"; }
