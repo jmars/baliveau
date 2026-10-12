@@ -112,6 +112,16 @@
 #              output.  FAIL: any dependence.
 #   DETERMINISM two runs over the same store are byte-identical (cmp).
 #              FAIL: wall-clock, locale or order leaking into records.
+#   POLICY      the retention policy is DECIDED (UNBOUNDED, user,
+#              2026-10-12), and it PRINTS — so the frozen table and the
+#              bound are pinned where they print, on every run: all five
+#              retention rows state the decision, the `.bootlog` row
+#              names its COST, the bound id is
+#              `retention-unbounded-by-decision` printing NOTHING MAY BE
+#              DROPPED, and the OLD text ("NO growth policy exists", the
+#              id `retention-unpoliced`) is asserted ABSENT.  FAIL: the
+#              table drifts back to the open gap and nobody notices —
+#              which only a grep for the old claim's ABSENCE can catch.
 #   LOUD        an over-long .bootlog is exit 2 NAMING the cap (a report
 #              over a truncated view is a lie); an unreadable .bootlog is
 #              exit 2 (a read error is not an absence); a .operator line
@@ -475,6 +485,28 @@ cmp -s "$WORK/out-sr0" "$WORK/out-sr3" || fail "SELFREPORT: output changed after
 report "$WORK/s1" "$WORK/out-s1b"
 cmp -s "$WORK/out-s1" "$WORK/out-s1b" || fail "DETERMINISM: two runs over the same store differ"
 
+# POLICY: the retention policy is a DECISION now (UNBOUNDED, user,
+# 2026-10-12), and it prints — so it is PINNED where it prints, in the
+# seat's frozen retention table and its bound, on every run.  FAIL: the
+# tables revert to the open gap ("NO policy exists"), a row loses the
+# decision, the date drifts silently, the .bootlog row stops naming its
+# COST (the full rescan per boot — a policy without its cost is not the
+# decision), or the OLD bound id `retention-unpoliced` is still printed —
+# which is false now that the policy IS stated, and only a grep for its
+# absence catches that.
+NRETROWS=$(grep -c "^retention${TAB}" "$WORK/out-s1")
+[ "$NRETROWS" = "7" ] || fail "POLICY: expected the seat's 7 retention rows on every run, got $NRETROWS (a row was silently dropped)"
+DECIDED=$(grep -c "^retention${TAB}.*${TAB}DECIDED (user, 2026-10-12): UNBOUNDED" "$WORK/out-s1")
+[ "$DECIDED" = "5" ] || fail "POLICY: the five frozen retention rows must state the DECISION (UNBOUNDED, user, 2026-10-12) in the policy column; $DECIDED of 5 do"
+grep -q "^retention${TAB}\.bootlog${TAB}.*STATED COST" "$WORK/out-s1" \
+    || fail "POLICY: the .bootlog row must name its COST (the full .bootlog rescan per boot)"
+grep -q "^bound${TAB}retention-unbounded-by-decision${TAB}.*NOTHING MAY BE DROPPED" "$WORK/out-s1" \
+    || fail "POLICY: the retention bound must print the decision (id retention-unbounded-by-decision, NOTHING MAY BE DROPPED)"
+grep -q "^bound${TAB}retention-unpoliced" "$WORK/out-s1" \
+    && fail "POLICY: the OLD bound id 'retention-unpoliced' still prints — the policy IS stated, so that id is a false claim"
+grep -q "NO growth policy exists" "$WORK/out-s1" \
+    && fail "POLICY: a frozen retention row still says no growth policy exists — §1a gap 4 was DECIDED, not left open"
+
 # ══ OPERATOR: the derived class on the unattributed store ═══════════════
 report "$WORK/s2" "$WORK/out-s2"
 [ $? -eq 0 ] || fail "OPERATOR: the DERIVED intervention must NOT be a finding (exit 0), got $?"
@@ -743,4 +775,4 @@ grep -q "^event${TAB}activation-refusal${TAB}MEASURED" "$WORK/out-mutrefuse" \
 rm -f "$REPO/build/fx-report-class" "$REPO/build/fx-report-attrib" "$REPO/build/fx-report-finding" \
     "$REPO/build/fx-report-ops" "$REPO/build/fx-report-refuse"
 
-echo "test_fx_report: PASS — the reconstruction is answerable from the report alone (both inputs readable, the diff, the generation each produced), the taxonomy separates none-occurred from not-durably-recorded (a never-booted store says so; refusals cannot be counted), the operator class is MEASURED from the .operator journal where the journal exists and DERIVED only where it does not (the .recovery row, or the missing file) with the derivation RETAINED beside the journal for its own blind spots (and the mutations blind exactly their own arms), the gc retention carve-out is re-measured every run (a surviving snapshot's dir is retained, a pruned one's is reaped), and the output is byte-deterministic and independent of any self-report."
+echo "test_fx_report: PASS — the reconstruction is answerable from the report alone (both inputs readable, the diff, the generation each produced), the taxonomy separates none-occurred from not-durably-recorded (a never-booted store says so; refusals cannot be counted), the operator class is MEASURED from the .operator journal where the journal exists and DERIVED only where it does not (the .recovery row, or the missing file) with the derivation RETAINED beside the journal for its own blind spots (and the mutations blind exactly their own arms), the gc retention carve-out is re-measured every run (a surviving snapshot's dir is retained, a pruned one's is reaped), the retention policy is the user's DECISION (UNBOUNDED, 2026-10-12) pinned where it prints — every row, its named cost, and the old 'NO policy exists' claim asserted ABSENT, and the output is byte-deterministic and independent of any self-report."

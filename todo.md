@@ -20,8 +20,9 @@ Two repos are in play: **this one** (`fx-harness`) and **`../fx-init`** (PID 1, 
       built: §6b downgraded it to optional defence-in-depth once the VM-is-the-boundary correction
       landed, and the reach that is still unbounded is stated in the code rather than implied.
       **NEXT, in the order I would take them:** (a) the **Osier→Lua backend** — blocked elsewhere, and
-      the only thing between here and the first self-modification task; (b) the retention POLICY (§2,
-      `.bootlog`/`.recovery`/`.operator` growth); (c) the residual store defects in §3 — the
+      the only thing between here and the first self-modification task; (b) the retention POLICY — **CLOSED
+      2026-10-12: DECIDED UNBOUNDED**, stated in the reporter's frozen tables (§2), so there is nothing to
+      build; (c) the residual store defects in §3 — the
       **`install`-fact fix** that made `fxstore verify` report 5 drifts on a stock system is now CLOSED
       (below); what remains there is the `fx_read`/`fx_ls` `root_join` reach and the two ungated oracle
       paths.
@@ -217,10 +218,12 @@ regulator** — §6b's audit stance is what makes these records evidentially usa
       "opened at :4523" named the `snfmt` line that BUILDS the log.db path — the open was the next
       line — so the citation now reads "path built :4688, opened :4689". The pin moved
       `4c5803d`→`ca9cb06` CONSCIOUSLY, after the re-measurement it exists to force.
-- [x] **RETENTION: the INEQUALITY IS NOW STATED AND MEASURED ON EVERY RUN — the POLICY decision
-      remains open (2026-10-13).** The reporter seat prints a frozen retention table per run (where
+- [x] **RETENTION: the INEQUALITY IS NOW STATED AND MEASURED ON EVERY RUN — and the POLICY decision is
+      now MADE: DECIDED UNBOUNDED (user, 2026-10-12; see §1a gap 4 and the §2 item).** The reporter
+      seat prints a frozen retention table per run (where
       each record lives, what it survives: reboot / roll-forward-publish / `fxstore gc`, and the
-      policy column — which says "NO policy exists" where none does rather than inventing one).
+      policy column — a DECISION since 2026-10-12: UNBOUNDED, with its rationale and named cost, where
+      it used to say "NO policy exists").
       MEASURED, and sharper than §1a's "unpoliced" prediction: **`fxstore gc` DELETES the retained
       configs** — the dir sweep (store.zig) has no carve-out for `<genhash>-system-generation` dirs
       and "system-generation" is never a live package name, so one `gc` run removes EVERY
@@ -229,10 +232,10 @@ regulator** — §6b's audit stance is what makes these records evidentially usa
       run and the frozen row goes stale-loud if gc changes.  Also measured: the runtime log
       (`rt_effect`/`rt_control`, `/run/fx/log.db`, init.zig:32/:4523) dies at every reboot (tmpfs
       post-pivot), and `rollback --hard` + a later publish can renumber over the versions between
-      (the `gc --retain` guard's own statement).  STILL OWED under this item — a DECISION, not a
-      measurement: no default retention exists for `.bootlog`/`.recovery` growth, nothing sets
-      `gc --retain N`, and gc's generation-dir deletion is presumably a DEFECT to fix rather than
-      policy to accept (see §3).
+      (the `gc --retain` guard's own statement).  OWED THEN, DECIDED NOW (2026-10-12) — a DECISION, not a
+      measurement: retention for `.bootlog`/`.recovery`/`.operator` growth is UNBOUNDED BY DECISION and
+      nothing sets `gc --retain N`, stated in the seat's frozen tables (§2); gc's generation-dir deletion
+      is presumably a DEFECT to fix rather than policy to accept (see §3).
 - [x] **THE gc GENERATION-DIR DEFECT IS FIXED — liveness is derived from the facts (2026-10-11,
       COMMITTED `fxstore c3da8ca`; `handoff-gc-carveout-result`).** `fxstore gc`'s dir sweep now reads the
       `generation` fact as-of EVERY surviving snapshot version (not just the pinned one), takes
@@ -247,8 +250,8 @@ regulator** — §6b's audit stance is what makes these records evidentially usa
       `config-retained-copy-gone` stays reachable only via a GENUINELY missing copy (the FINDINGS
       arm's hand-deleted file — MUT-FINDING now blinds THAT arm). The store.zig pin moved from
       revision 0341650 to the measured working-tree BLOB (now committed as `fxstore c3da8ca`; the blob name
-      is stable across the eventual commit). The POLICY decisions above remain open exactly as
-      before.
+      is stable across the eventual commit). The POLICY decision above is now MADE — DECIDED UNBOUNDED
+      (user, 2026-10-12; §1a gap 4, §2).
 - [x] **THE REPORTER AS THE THIRD HOST-SIDE SEAT — BUILT AND COMMITTED (`bcf96fd`, extended by `f78d7b5`;
       `handoff-reporter-seat-result`).** `tools/fx-report.c` (`make test-report`), host-side and
       read-only like its siblings: the oracle asks *is it better?*, the audit *is it honest?*, this
@@ -272,7 +275,7 @@ regulator** — §6b's audit stance is what makes these records evidentially usa
       restore, with the disjunction (operator / re-activation of an older config / removed row)
       stated inline, never a verdict.  THE BOUND prints on every run: the tmpfs runtime log,
       operator-absent-by-default, pre-first-snapshot, the gc config loss, renumber-after-hard,
-      retention-unpoliced.
+      retention-unbounded-by-decision.
 
 ## 2. Measurements still owed
 
@@ -301,14 +304,21 @@ regulator** — §6b's audit stance is what makes these records evidentially usa
       the fx_outcome transcript; boot 3 exactly one line `published v_C from v_A` + the report
       line on the console; boot 4 unchanged; the BLIND arm's disk counts its own roll-forward
       too — the substrate half is arm-independent).
-- [ ] **`.bootlog` growth**: unbounded, fully rescanned by `bootlog_last`/`bootlog_newest_ok_below` on
-      every boot, and `fsync`'d per append. The guardrail bounds growth to real boots, so this is
-      lower priority — but state the policy (rotate, cap, or index) rather than leaving it implicit.
-      `.recovery` has the same shape and now the same question; **`.operator` (new, one row per
-      intervention) does too**, and it is the one an OPERATOR drives, so its rate is theirs; `src_of`
-      inherits the question from the other side (never reaped at all). **The reporter now STATES the
-      inequality and measures it on every run** — what is durable and what is not — which is §1a gap 4
-      answered as far as it can be without choosing a policy. Choosing one is still open.
+- [x] **`.bootlog` growth — POLICY DECIDED: UNBOUNDED (user, 2026-10-12). THE ITEM IS CLOSED.** Growth
+      is unbounded, fully rescanned by `bootlog_last`/`bootlog_newest_ok_below` on every boot, and
+      `fsync`'d per append. The guardrail bounds growth to real boots, so the rate is events that really
+      happened, and **NOTHING MAY BE DROPPED**: `bootlog_last`/`bootlog_newest_ok_below` need the newest
+      `ok` below CURRENT — that IS the roll-forward TARGET — and `fx-audit`'s append accounting plus its
+      previous-observation comparison need the record INTACT (a rotation reads as a REWRITE of a
+      previously observed record and fires on a HEALTHY machine). So no rotate/cap/index was added: the
+      DECISION is the policy, with its COST NAMED rather than hidden — per-boot work is linear in the
+      file's length. `.recovery` has the same shape and the same decision (one row per AUTOMATIC
+      roll-forward); **`.operator` does too**, and it is the one an OPERATOR drives, so its rate is
+      theirs; `src_of` inherits the question from the other side (never reaped at all). **The reporter
+      PRINTS the policy** — the five retention rows and the `retention-unbounded-by-decision` bound now
+      state the decision, its rationale and its cost on every run (it used to say "NO policy exists"),
+      and `tests/test_fx_report.sh`'s POLICY arm pins that text so a silent drift fails. No new machinery
+      was added, and no bound was weakened.
 
 ## 3. Known defects, pre-existing, not hidden
 

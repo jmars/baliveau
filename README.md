@@ -196,11 +196,13 @@ own checkpoint proven able to vanish without changing a verdict.
 
 - the language backend that lets the agent author components in the project's own language — the target
   of the first self-modification task; every other piece is in place and proven without it;
-- the **reporter** seat's two remaining inputs, both *decisions* rather than instruments: a **retention
-  policy** (the store's files are durable and the runtime log is not — the seat states and re-measures
-  that inequality on every run, but chooses no policy), and a change's **intent** (the config each
-  generation was built from is readable now; what was *attempted*, and why, is not recorded anywhere).
-  The **change/incident taxonomy** is not among them — it is frozen in the seat;
+- the **reporter** seat's one remaining input, a *decision* rather than an instrument: a change's
+  **intent** (the config each generation was built from is readable now; what was *attempted*, and why,
+  is not recorded anywhere). Its **retention policy** is no longer one of these: it is **DECIDED —
+  UNBOUNDED (user, 2026-10-12)**, and the seat prints it on every run (the store's files are durable and
+  the runtime log is not; nothing is pruned by default, because a rotation reads as a rewrite of a
+  previously observed record and would fire on a healthy machine). The **change/incident taxonomy** is
+  not among them either — it is frozen in the seat;
 - network access as a **typed capability** rather than raw sockets (designed, not implemented);
 - a second target: a browser-hosted machine, which needs a purpose-built kernel.
 

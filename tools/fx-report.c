@@ -116,7 +116,13 @@
  * carve-out — and reaps a dir whose snapshot was pruned, WITH its facts,
  * so a pruned generation's input is unreportable: absence-by-retention,
  * not a missing event); the renumber hazard after `rollback --hard`; and
- * the absent retention policy for .bootlog, .recovery and .operator.  A
+ * the retention policy that is STATED and UNBOUNDED by the user's
+ * decision (2026-10-12): .bootlog, .recovery and .operator are NEVER
+ * pruned — dropping a row would break the roll-forward target
+ * (bootlog_last/bootlog_newest_ok_below) and fx-audit's append
+ * accounting, and a rotation reads as a REWRITE and fires on a HEALTHY
+ * machine — at the NAMED cost of a full .bootlog rescan per boot, linear
+ * in its length.  A
  * report that implies more than its records support is the failure mode
  * this whole project exists to argue against.
  *
@@ -869,23 +875,23 @@ static const struct {
       "survives (disk)",
       "survives (a roll-forward PUBLISHES a new version)",
       "NOT-surviving: `fxstore gc --retain N` prunes at publish; after `rollback --hard` a later publish renumbers from CURRENT+1 (the gc --retain guard's own statement, store.zig) and can destroy the versions between",
-      "a knob exists (gc --retain N); NOTHING sets a default — no policy" },
+      "DECIDED (user, 2026-10-12): UNBOUNDED by default — `gc --retain N` is the OPERATOR's deliberate knob and NOTHING SETS IT, the same decision as the journals below: every published version survives unless an operator asks otherwise (§1a gap 4 is now this DECISION, not a gap)" },
     { ".bootlog", "<store>/.bootlog (fx-init, append-only, fsync+syncfs per append)",
       "survives (disk)", "survives (append)",
       "survives (fxstore does not know the file; it outlives pruned versions)",
-      "NO growth policy exists (design record §1a gap 4)" },
+      "DECIDED (user, 2026-10-12): UNBOUNDED, and NOTHING MAY BE DROPPED — bootlog_last/bootlog_newest_ok_below need the newest `ok` below CURRENT (that IS the roll-forward TARGET), and fx-audit's append accounting + its previous-observation comparison need the record INTACT (a rotation reads as a REWRITE of a previously observed record and fires on a HEALTHY machine).  Growth is linear in events that really happened: the guardrail bounds it to real boots, one in-progress line per in-guest activation and one verdict per boot.  THE STATED COST, not hidden: the file is FULLY RESCANNED on every boot (bootlog_last/bootlog_newest_ok_below), so per-boot work is linear in its length (§1a gap 4 is now this DECISION, not a gap)" },
     { ".recovery", "<store>/.recovery (fx-init, '#'-header + one data row per automatic roll-forward)",
       "survives (disk)", "survives (append)",
       "survives (fxstore does not know the file)",
-      "NO growth policy exists (§1a gap 4)" },
+      "DECIDED (user, 2026-10-12): UNBOUNDED, and NOTHING MAY BE DROPPED — one row per AUTOMATIC roll-forward and the record stays INTACT (fx-audit's append accounting + its previous-observation comparison: a rotation reads as a REWRITE of a previously observed record and fires on a HEALTHY machine).  Growth is linear in roll-forwards that really happened (§1a gap 4 is now this DECISION, not a gap)" },
     { "retained config (the INPUT)", "<store>/<genhash>-system-generation/config.dhall (fx-activate, per activation)",
       "survives (disk)", "survives (each activation writes its own gen dir)",
       "RETAINED-WHILE-NAMED (MEASURED on this tree, store.zig pinned blob 30dce7cb: `fxstore gc <root>` keeps every <genhash>-system-generation dir named by a SURVIVING snapshot's generation fact — the dir sweep's carve-out, logged per dir on stderr; a dir whose snapshot was pruned by `gc --retain N` IS reaped, with its facts)",
-      "no policy for how LONG: the copy is exactly as durable as the snapshot that names it (`gc --retain N` prunes version and dir together); a GENUINELY missing copy (hand-deleted, or a dir a surviving fact names that is gone) still fires config-retained-copy-gone" },
+      "DECIDED (user, 2026-10-12): UNBOUNDED by default — no pruning-by-age policy exists to state, because the copy is exactly as durable as the snapshot that names it (`gc --retain N` prunes version and dir together, and NOTHING sets that default): retention is bounded only by an operator's deliberate gc, never by time.  A GENUINELY missing copy (hand-deleted, or a dir a surviving fact names that is gone) still fires config-retained-copy-gone" },
     { ".operator", "<store>/.operator (fx-init ca9cb06, '#'-header + one data row per control-channel intervention on the generation plane, INCLUDING the ones that FAILED or were REFUSED; append+fsync per request, BEFORE the reply is flushed)",
       "survives (disk)", "survives (append — one row per ctrl request, whatever its outcome)",
       "survives (fxstore does not know the file; it outlives pruned versions AND keeps rows naming versions gc has since pruned — a row records the move the operator asked for, it is not a promise the version is still there)",
-      "NO growth policy exists (§1a gap 4).  NOT tamper-proof: PID1's control handler is its only writer, but root in-guest can forge or truncate it exactly as it can .bootlog (the file's own header says so)" },
+      "DECIDED (user, 2026-10-12): UNBOUNDED, and NOTHING MAY BE DROPPED — one row per control-channel intervention and fx-audit's append accounting + its previous-observation comparison need the record INTACT (a rotation reads as a REWRITE of a previously observed record and fires on a HEALTHY machine).  Growth is linear in interventions that really happened, whose rate is the OPERATOR's own (§1a gap 4 is now this DECISION, not a gap).  NOT tamper-proof: PID1's control handler is its only writer, but root in-guest can forge or truncate it exactly as it can .bootlog (the file's own header says so)" },
     { "runtime datalog rt_effect/rt_control", "/run/fx/log.db (fx-init init.zig:32 DEFAULT_RUN; path built :4752, opened :4753 by fx_log_open) — read by NOBODY here",
       "DOES NOT SURVIVE (post-pivot '/' is tmpfs, init.zig M4 pivot — the log dies at every reboot)",
       "n/a (dies with the boot that wrote it)",
@@ -911,8 +917,8 @@ static const struct { const char *id, *text; } BOUNDS[] = {
       "MEASURED on this tree: `fxstore gc <root>` RETAINS every <genhash>-system-generation dir a SURVIVING snapshot's generation fact names (the dir sweep's carve-out) and REAPS a dir whose snapshot was pruned by `gc --retain N` — with its facts, so the pruned generation's input is not reportable at all (the version is gone from the timeline: absence-by-retention, not a finding). config-retained-copy-gone therefore requires a GENUINELY missing copy (a hand-deleted file, or a dir a surviving fact names that is gone) — the post-gc store itself is COHERENT" },
     { "renumber-after-hard",
       "after `rollback --hard` (CURRENT < newest), a later publish renumbers from CURRENT+1 and can destroy the versions between (stated by the gc --retain guard, store.zig; not reproduced here) — the CURRENT!=newest signature is therefore TRANSIENT, visible only until that next publish" },
-    { "retention-unpoliced",
-      ".bootlog, .recovery and .operator grow without bound and no policy exists for them (§1a gap 4); the snapshots have a knob (gc --retain N) that nothing sets by default" },
+    { "retention-unbounded-by-decision",
+      "BY DECISION, NOT BY OMISSION (user, 2026-10-12; §1a gap 4 is now a policy): `.bootlog`, `.recovery` and `.operator` grow WITHOUT BOUND and NOTHING MAY BE DROPPED — `bootlog_last`/`bootlog_newest_ok_below` need the newest `ok` below CURRENT (that IS the roll-forward TARGET), and fx-audit's append accounting + its previous-observation comparison need the record INTACT (a rotation reads as a REWRITE of a previously observed record and would fire on a HEALTHY machine).  Growth is linear in events that really happened: real boots, one in-progress line per in-guest activation, one `.recovery` row per automatic roll-forward, one `.operator` row per intervention.  THE STATED COST, not hidden: `.bootlog` is FULLY RESCANNED on every boot, so per-boot work is linear in its length.  The snapshots keep their knob (`gc --retain N`) and NOTHING sets a default — the same decision" },
     { "same-store-only",
       "this report is a function of ONE store directory; anything recorded elsewhere (the runtime log, the harness's own transcript, the audit's observation file) is out of domain, and the report never guesses at it" },
 };

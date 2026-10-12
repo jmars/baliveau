@@ -112,19 +112,31 @@ cheating its own guardrail; they are also what a third party would need in order
      generation and an audit incoherence are all candidate "situations that may present a risk" or
      "substantial modifications"; nothing classifies them as such or links them to an affected
      generation. (The raw events are recorded; the taxonomy is not.)
-  4. **Retention is unpoliced.** `.bootlog` / `.recovery` / `src_of` growth has no stated policy (§2),
-     and the RUNTIME log (`log.db`) lives under `/run/fx` — tmpfs, so it does not survive a reboot,
-     while the store's own files do. Art. 19's retention question therefore has a real answer for some
-     records and none for others, and that difference must be stated rather than assumed.
+  4. **Retention is DECIDED: UNBOUNDED (user, 2026-10-12) — the gap is closed, and its cost is NAMED.**
+     This was the open decision, not an unmeasured fact; it is now stated in the reporter's frozen
+     retention table and in its `retention-unbounded-by-decision` bound, which print on every run. WHY
+     UNBOUNDED: growth is linear in events that really happened — real boots (the guardrail bounds it to
+     boots that occurred), one in-progress line per in-guest activation, one `.recovery` row per
+     AUTOMATIC roll-forward, one `.operator` row per intervention — and **NOTHING MAY BE DROPPED**:
+     `bootlog_last`/`bootlog_newest_ok_below` need the newest `ok` below CURRENT (that IS the
+     roll-forward TARGET), and `fx-audit`'s append accounting plus its previous-observation comparison
+     need the record INTACT — a rotation reads as a REWRITE of a previously observed record and would
+     fire on a HEALTHY machine. THE COST, named rather than hidden (MEASURED: `bootlog_last` /
+     `bootlog_newest_ok_below` read the file end to end): `.bootlog` is FULLY RESCANNED on every boot,
+     so per-boot work is linear in its length. Snapshots keep their knob (`fxstore gc --retain N`) and
+     NOTHING sets it by default — the same decision. The RUNTIME log (`log.db` under `/run/fx`, tmpfs)
+     still does not survive a reboot: Art. 19's retention question now has a STATED answer for the
+     durable records and a stated non-answer for the runtime one, where before there was silence.
   5. **Nothing distinguishes a record's READER from its WRITER** at the reporting boundary yet: the
      reporter must be host-side for the same reason the oracle is, and that has to be a property of its
      seat, not a convention.
 
 **WHAT THIS CHANGES ABOUT THE ROADMAP.** It adds no new subsystem — it promotes existing records to
-LOAD-BEARING and adds three small things: the config→generation link (gap 1), a change/incident record
-with a stated taxonomy (gaps 2-3), and a retention policy (gap 4). It also makes one existing rule
-non-negotiable rather than merely prudent: **the reportable record must be the substrate's, never the
-agent's self-report.**
+LOAD-BEARING and adds two small things: the config→generation link (gap 1) and a change/incident record
+with a stated taxonomy (gaps 2-3). Retention is no longer owed: it is a DECISION (gap 4) — UNBOUNDED,
+stated in the reporter's frozen tables and re-measured on every run, with no mechanism to build. It also
+makes one existing rule non-negotiable rather than merely prudent: **the reportable record must be the
+substrate's, never the agent's self-report.**
 
 ---
 
@@ -838,7 +850,8 @@ from these inputs does denote the same bytes here.
 ## 8. Corrections carried (refuted claims must not propagate)
 
 1. **The store is NOT history-free.** It carries `.db/snapshots/N/{closure,dep,pkg,root,srcstore,store}.dafsa`
-   + `manifest.txt`. What is missing is a *retention decision*, not a history. (An earlier note of
+   + `manifest.txt`. What was missing was a *retention decision*, not a history — and that decision is now
+   MADE (**UNBOUNDED, user, 2026-10-12; §1a gap 4**). (An earlier note of
    mine said "the store is history-free by design; git is the journal" — wrong. **MEASURED.**)
 2. **Nothing verifies a built artifact's bytes against its address.** The store is
    **input-addressed**: `hex64 = sha256_hex(canonical_derivation(P))` over name/version/**source
