@@ -133,6 +133,26 @@ FXSTORE="${FXSTORE_BIN:-$SIBS/fxstore/zig-out/bin/fxstore}"
 
 INIT="${FX_INIT_REPO:-$SIBS/fx-init}"
 [ -d "$INIT" ] || skip "fx-init checkout not found at $INIT (set FX_INIT_REPO)"
+
+# ── THE CITATION PIN (fx-init d0de8c9): the tree every cited LINE means ──
+# This gate and tools/fx-select.c cite init.zig BY LINE NUMBER; nothing
+# pinned the file, so the citations rotted SILENTLY — S13's `:4387` (the
+# boot path's in-progress append, which stood at :4387 at fx-init
+# 500fc68/4d6a8c2) was still read as that line when it was :4718 at ca9cb06.
+# A citation into a file that MOVED is a FINDING, not a renumbering job, so
+# the pin makes the drift LOUD.  The pin is a FIXED object — the file's BLOB
+# name, not HEAD and not the working file — so it stays exact once a later
+# commit lands (identical bytes, identical blob).  Guarded (git cat-file -e)
+# the house way: a shallow clone fails as a MISSING PIN, never as a pass.
+pin_init_blob() { # pin_init_blob BLOB FILE CITING...
+    git -C "$INIT" cat-file -e "$1" 2>/dev/null \
+        || fail "CITATION PIN: blob $1 is not present in $INIT's object db — the pin is a fixed object name; hash-object -w the measured file or update the pin consciously"
+    git -C "$INIT" cat-file blob "$1" | cmp -s - "$INIT/$2" \
+        || fail "CITATION PIN: $INIT/$2 differs from the pinned blob $1 this gate's citations were measured against — the init.zig citations in $3 are STALE; re-measure every cited line against this tree and fix the ones that MOVED"
+}
+pin_init_blob aca04d1bdfc14f75c63830cac7ca38462efee546 zig/src/init.zig "tools/fx-select.c and tests/test_fx_select.sh"
+echo "test_fx_select: CITATION PIN: init.zig is the tree (fx-init d0de8c9, blob aca04d1b) every cited line in tools/fx-select.c and this gate was measured against"
+
 DL="$SIBS/datalog-dafsa/zig-out/lib"
 
 SELECT="${SELECT_BIN:-$REPO/build/fx-select}"
@@ -622,7 +642,7 @@ grep -q '^caveat	bootlog-damage	damaged=0	torn=1	' "$F1/o.s12" \
 echo "test_fx_select: S12 the STRICT torn rule holds: a torn tail naming v$F1_O_LAST ($(state_of "$F1/o.s12" "$F1_O_LAST")) poisons it -> keep $F1_C_LAST"
 
 # ── S13: CURRENT MID-BOOT WITHHOLDS (fix B) ────────────────────────────
-# The writer's own line PAIR is in-progress-then-verdict (init.zig:4387), so
+# The writer's own line PAIR is in-progress-then-verdict (init.zig:4782), so
 # during a boot of the incumbent its LAST line is in-progress.  Treating that
 # as merely "not viable" would recommend — and --apply perform — a rollback of
 # a system that is booting right now.

@@ -285,6 +285,28 @@ FXSTORE="${FXSTORE_BIN:-$SIBS/fxstore/zig-out/bin/fxstore}"
 
 INIT="${FX_INIT_REPO:-$SIBS/fx-init}"
 [ -d "$INIT" ] || skip "fx-init checkout not found at $INIT (set FX_SIBLINGS or FX_INIT_REPO)"
+
+# ── THE CITATION PIN (fx-init d0de8c9): the tree every cited LINE means ──
+# This gate and tools/fx-audit.c cite init.zig BY LINE NUMBER, and nothing
+# pinned the file, so the citations rotted SILENTLY: the accounting header
+# cited :4465 for the in-progress site when it was :4718, and :1674 for
+# recovery_append when it was :932 — found by hand, only because a unit
+# happened to print every cited line.  A citation into a file that MOVED is
+# a FINDING, not a renumbering job, so the pin makes the drift LOUD.
+# The pin is a FIXED object — the file's BLOB name, not HEAD and not the
+# working file — so it stays exact once a later commit lands (identical
+# bytes, identical blob) and never moves under the gate's feet.  Guarded
+# (git cat-file -e) the house way: a shallow clone fails as a MISSING PIN,
+# never as a pass.
+pin_init_blob() { # pin_init_blob BLOB FILE CITING...
+    git -C "$INIT" cat-file -e "$1" 2>/dev/null \
+        || fail "CITATION PIN: blob $1 is not present in $INIT's object db — the pin is a fixed object name; hash-object -w the measured file or update the pin consciously"
+    git -C "$INIT" cat-file blob "$1" | cmp -s - "$INIT/$2" \
+        || fail "CITATION PIN: $INIT/$2 differs from the pinned blob $1 this gate's citations were measured against — the init.zig citations in $3 are STALE; re-measure every cited line against this tree and fix the ones that MOVED"
+}
+pin_init_blob aca04d1bdfc14f75c63830cac7ca38462efee546 zig/src/init.zig "tools/fx-audit.c and tests/test_fx_audit.sh"
+echo "test_fx_audit: CITATION PIN: init.zig is the tree (fx-init d0de8c9, blob aca04d1b) every cited line in tools/fx-audit.c and this gate was measured against"
+
 DL="$SIBS/datalog-dafsa/zig-out/lib"
 [ -f "$DL/libdatalog.so" ] || skip "libdatalog.so missing at $DL (set FX_SIBLINGS)"
 

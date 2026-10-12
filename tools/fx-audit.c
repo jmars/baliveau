@@ -206,7 +206,7 @@
  *                  new version through fx-activate (the store's CURRENT
  *                  moves) and then RESETS the latch — g_boot_decided=0,
  *                  g_boot_failed=0, a fresh grace deadline (init.zig:
- *                  3690-3693) — so the SAME boot appends a SECOND verdict
+ *                  3693-3696) — so the SAME boot appends a SECOND verdict
  *                  for the NEWLY ACTIVATED version, which now WEARS ITS OWN
  *                  in-progress: init.zig:3620 writes it before the facts are
  *                  read, so the activated window is on disk ip-FIRST under
