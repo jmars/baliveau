@@ -359,18 +359,48 @@ regulator** — §6b's audit stance is what makes these records evidentially usa
       canary, boot-ok v_NEW in-boot). The deeper `svc_table_free` semantics (old rows freed, never
       stopped) are UNCHANGED by design — the exemption makes them harmless for the agent row; the
       option (b) residual (the re-arm appends no `.bootlog` in-progress line) remains open below.
-- [ ] **The activate arm's re-arm still writes NO `.bootlog` line** — the re-armed window judges the
-      new generation, but nothing marks the window OPEN in the disk `.bootlog` at activation time
-      (only boot start / boot-ok / boot-failed / shutdown append). Harmless today because the
-      verdict line lands at decision time, but a crash between activation and verdict leaves the
-      next boot to infer the in-flight generation from CURRENT alone. (Option (b) of the original
-      oscillator note, split out because (a)/the exemption above is done.)
-- [ ] **The refused-activation path can latch a vacuous boot-ok**: on PID1's service-table overflow
-      refusal the table is FREED and the boot decision NOT re-armed, so an already-running grace
-      window may later expire over an EMPTY service table and record `boot-ok` for whatever
-      `g_current_version` then held — a generation that was just REFUSED. Measured from source
-      (init.zig read_store_facts refusal + boot_decision's vacuous `all_started`); the in-guest
-      refusal gate deliberately asserts no boot verdict for that arm. Fix belongs in fx-init.
+- [x] **The activate arm's re-arm writes NO `.bootlog` line — CLOSED.** The re-armed window judged the
+      new generation with no on-disk marker: a crash between activation and verdict left the next boot to
+      infer the in-flight generation from CURRENT alone. The activate arm now appends
+      `bootlog_append(g_current_version, "in-progress", now_s())` between the CURRENT rewrite and
+      `read_store_facts` (init.zig) — the SAME word the boot path uses, so `decide_boot_version`'s
+      roll-forward trigger (`in-progress|failed == CURRENT`) already reads it as stale, and no .bootlog
+      grammar changes in any of the three parsers. Gated by the new `tests/qemu_svc_refuse.sh` (see below).
+      (Option (b) of the original oscillator note.)
+- [x] **The refused-activation path can latch a vacuous boot-ok — CLOSED (the same unit).** On PID1's
+      service-table overflow refusal the table was FREED and the boot decision NOT re-armed, so an
+      already-running grace window could expire over an EMPTY table and pin `boot-ok` for the generation
+      PID1 had just REFUSED. The activate arm now captures `read_store_facts`' rc, widens the refusal
+      branch to `(g_svc_overflow != 0 or rc != 0)` (the rc-discard was an ADJACENT hole in the same arm —
+      a corrupt-store read failure fell through the same way), and on any refusal writes the HONEST
+      verdict: `rt_set_boot(v,"failed")` + `bootlog_append(v,"failed")` + the latch pin, BEFORE replying.
+      The rollback-refusal arm gets the same latch pin (no disk line — a rollback opens no window).
+      ASYMMETRY, MEASURED on one store/image/command sequence: the treatment disk `.bootlog` reads
+      `… 7 in-progress / 7 failed` with NO `boot-ok v7` and boot 2 rolls forward; the pinned `ca9cb06`
+      control reads `… 7 ok` — the vacuous ok, no marker — and boot 2 re-fails on v7. New gate
+      `fx-init tests/qemu_svc_refuse.sh`, cmp-guarded control.
+
+- [ ] **The fx-audit APPEND-ACCOUNTING is now PER-VERSION, and the older per-nonce entry below is a
+      historical record of the nonce unit, LEFT AS WRITTEN (append-only correction, not a rewrite).** The
+      re-arm in-progress line above changed a rule `fx-audit` DERIVES from the writer's call sites, so
+      the seat's rule changed with it: the boot's own first in-progress anchors a nonce, every LATER
+      in-progress in that nonce must name a version first-published in the window AND newer than that
+      nonce's first, the re-arm ip budget is ONE PER FIRST-PUBLISHED VERSION PER WINDOW (keyed on version
+      alone — a per-(nonce,version) key re-opened a cross-nonce flip, caught by review, pinned by
+      `REARMIPX`), and the per-version verdict budget's `+1` first-published credit NEVER stacks on a
+      present re-arm ip. A further clause — NOT-ALREADY-BOOTED — closes the roll-forward-REPUBLISH shape
+      (a version first published WITHOUT an activation has no legitimate later ip; `REARMIPREPUB`). The
+      seat's threat-model header and printed bound were rewritten and NO LONGER overclaim: the surviving
+      residual is NAMED there (a forged pair for a version published without an activation and NOT YET
+      booted still reads as a legitimate re-arm and lands that version's FIRST verdict — reachable only
+      in the operator-rollback window; it grants no verdict slot the `+1` credit did not already grant).
+      Arms: `REARMIP`/`REARMIP2` (healthy, incl. the false-positive direction) / `REARMIPFLIP` /
+      `REARMIPFORGE` / `REARMIPOLDER` / `REARMIPX` / `REARMIPREPUB`, each with a pinned pre-fix reader
+      (`BEFORE-D`/`BEFORE-E`/`BEFORE-F`) as its fail-before. NOTE: this unit moved `init.zig`, so
+      `tests/test_fx_report.sh`'s init.zig pin and every `init.zig:` citation in `tools/fx-audit.c`,
+      `tools/fx-report.c` and `tests/test_fx_audit.sh` were re-measured — a whole cluster was found
+      STALE (cited `:4465` for the in-progress site, actually `:4718`; `:1674` for `recovery_append`,
+      actually `:932`), the same class the reporter's own pin exists to catch.
 
 - [x] **The store CAN attribute a src_hash to a generation — `src_of` landed and the oracle consumes it**
       (was: "the store cannot attribute", found by the osier-share review). `srcstore` is append-only

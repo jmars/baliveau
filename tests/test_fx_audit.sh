@@ -96,34 +96,75 @@
 #                        that boot's.
 #   REARM       the WRITER's second verdict per boot, derived not patched:
 #               the in-guest `activate` publishes a NEW version (the
-#               store's CURRENT moves) and RE-ARMS the boot decision
-#               (init.zig:3415-3418), so ONE boot under ONE nonce can
-#               legitimately append a verdict for a version with NO
-#               in-progress of its own — fx-init's own suite measures the
-#               second DISK verdict (tests/qemu_boot_rollback.sh:18-27).
-#               The per-NONCE verdict budget (verdicts<=1 per nonce) rested
+#               store's CURRENT moves), appends the ACTIVATED version's own
+#               "<v> in-progress" for it (init.zig:3620, the re-arm marker
+#               this unit's writer change added) and RE-ARMS the boot
+#               decision (init.zig:3693-3696), so ONE boot under ONE nonce
+#               legitimately carries a verdict for a second version —
+#               fx-init's own suite measures the second DISK verdict
+#               (tests/qemu_boot_rollback.sh:18-27).
+#               The per-NONCE VERDICT budget (verdicts<=1 per nonce) rested
 #               on "the g_boot_decided latch allows one verdict per boot"
 #               and the writer refutes it — a HEALTHY boot audited as a
 #               forgery, the direction that rolls back a live machine.
 #               The derived accounting: verdicts are budgeted PER VERSION
-#               (<= in-progress lines for the version + 1 for the ONE
-#               re-arm verdict a first-published version can carry) and a
-#               verdict's provenance is EITHER a same-nonce in-progress OR
-#               the store's own record that the version was first
-#               published in the window.  Arms:
-#               REARM    the healthy shape (boot pair + the re-arm verdict
-#                        for the activated version, one nonce) stays
-#                        COHERENT and the re-arm attribution is NAMED;
-#               DGRACE   the during-grace activate (the boot's in-progress
-#                        for the booted version, the verdict for the
-#                        ACTIVATED one — the version-exact attribution
-#                        measured firing at the old per-nonce rule) stays
-#                        coherent;
+#               (<= in-progress lines for the version, + 1 ONLY for a
+#               first-published version with NO re-arm ip of its own) and a
+#               verdict's provenance is EITHER a same-nonce in-progress
+#               (the boot's own, or the re-arm's own) OR the store's own
+#               record that the version was first published in the window;
+#               the IN-PROGRESS budget is per nonce with the FIRST line =
+#               that boot's OWN and every later one an activate re-arm
+#               (first-published in the window, newer than the booted
+#               version).  Arms:
+#               REARM    the OLD-writer healthy shape (boot pair + the
+#                        re-arm verdict for the activated version with NO
+#                        ip of its own, one nonce) stays COHERENT and the
+#                        re-arm attribution is NAMED — mixed-history
+#                        coverage: old histories must stay readable;
+#               DGRACE   the during-grace old-writer activate (the boot's
+#                        in-progress for the booted version, the verdict for
+#                        the ACTIVATED one) stays coherent;
 #               REARMFLIP a SECOND verdict for the activated version (the
 #                        flip that overwrites the re-arm verdict by
 #                        appending after it, wearing the same live nonce)
 #                        fires the per-VERSION budget — the one budget a
 #                        per-nonce rule cannot express;
+#               REARMIP  the NEW-writer healthy shape (the boot's own pair,
+#                        then the activated version's ip AND its verdict,
+#                        one nonce): COHERENT, the re-arm ip NAMED and the
+#                        verdict NAMED as consuming it;
+#               REARMIPFLIP the +1 must NOT stack on a present re-arm ip: a
+#                        real ip + ONE forged second verdict fires the
+#                        per-VERSION budget (allow = ip + 0);
+#               REARMIPFORGE a forged ip+verdict pair on a real boot's nonce
+#                        for a version the store did NOT first publish in
+#                        the window (and the older-than-the-boot's-own
+#                        variant) fires the re-arm rule;
+#               REARMIPOLDER the same rule, the ordering half: a
+#                        first-published ip NOT newer than the nonce's own
+#                        first ip fires it;
+#               REARMIPX THE CROSS-NONCE FLIP: with TWO real window nonces, a
+#                        forged ip+verdict pair for the version the LIVE boot
+#                        activated, riding an EARLIER boot's nonce, fires the
+#                        ONE-per-first-published-VERSION-per-window cap (a
+#                        per-(nonce, version) rule reads it as a legitimate
+#                        re-arm and passes a SECOND verdict for an
+#                        already-verdicted version — BEFORE-E pins both the
+#                        pre-re-arm reader (which closed it) and the
+#                        round-1 reader (which re-opened it));
+#               REARMIPREPUB the ROLL-FORWARD REPUBLISH shape: a version the
+#                        store first published WITHOUT an activation (a
+#                        roll-forward republish) and then BOOTED has no
+#                        legitimate later ip, so a forged pair for it riding
+#                        an EARLIER boot's nonce fires the NOT-ALREADY-BOOTED
+#                        re-arm clause (round 2's reader read it as a
+#                        legitimate re-arm and passed a SECOND verdict);
+#               REARMIP2 the FALSE-POSITIVE direction for that clause: TWO
+#                        activations in ONE boot (two re-arm ips under ONE
+#                        nonce, NEITHER activated version booted) must stay
+#                        COHERENT — a too-broad clause rolls back a HEALTHY
+#                        machine, the costly direction;
 #               MIXED    a window with one nonced boot + one healthy
 #                        operator hand-boot ('none' placeholder lines,
 #                        ledger shorter than the window) is information
@@ -170,7 +211,7 @@
 #               roll-forwards between two audits), and an in-progress
 #               followed by a SHUTDOWN (a clean stop during the judgement —
 #               do_shutdown appends its line whether or not the boot ever
-#               decided a verdict, init.zig:3925/:4461).
+#               decided a verdict, init.zig:4292/:4856).
 #   TRIGGER     --rollback REFUSES a clean store (CURRENT untouched) and on
 #               the coherent-tamper store calls `fxstore rollback --hard`
 #               (CURRENT repointed, LOUD, naming the finding), after which
@@ -208,7 +249,7 @@
 # not run host-side; the gate WRITES them in the writers' exact formats
 # (bootlog_append's "%u %s %u\n" — a "<v> in-progress <epoch>" line AND the
 # verdict line for every boot, because that is what the writer appends per
-# boot (init.zig:4387 then the verdict sites); recovery_line's "<epoch>
+# boot (init.zig:4782 then the verdict sites); recovery_line's "<epoch>
 # <published> <from-failed> <genhash>\n" under the verbatim RECOVERY_HEADER
 # from init.zig).  The HOST BOOT COUNT narrative is likewise declared, not
 # measured: the baseline store's history is THREE boots the "host" (this
@@ -429,7 +470,7 @@ materialize_rootfs() {
 
 # write_records STORE BOOTLOG_ROWS... — .bootlog + the header-only .recovery
 # in the WRITERS' exact formats (see FIXTURE HONESTY above).  Every boot is
-# written as its REAL line pair: "<v> in-progress <epoch>" (init.zig:4387,
+# written as its REAL line pair: "<v> in-progress <epoch>" (init.zig:4782,
 # when the boot starts) followed by that boot's verdict — never a bare
 # verdict, because the writer never emits one without its in-progress.
 write_records() {
@@ -519,7 +560,7 @@ materialize_rootfs "$STORE" "$ROOT" "$CUR" "$PS_A"
 # started — v1 boots ok; v2 boots and FAILS; the next boot rolls forward
 # (fxstore soft rollback republishing v1's content as v$CUR) and boots ok.
 # Each boot is the writer's real line pair (in-progress at boot start,
-# init.zig:4387; the verdict from the g_boot_decided latch), each wearing
+# init.zig:4782; the verdict from the g_boot_decided latch), each wearing
 # the nonce the host issued for it (the gate's own ledger).
 write_records "$STORE" \
     "$V1 in-progress 99 $(nth 1)" \
@@ -831,7 +872,7 @@ echo "test_fx_audit: BOOTS: no --boots -> exit 2, loud refusal (an optional anch
 # THE MOTIVATING EXPLOIT, on the store where it is actually invisible: a
 # failure that has NOT been rolled forward (no .recovery row — the moment
 # the exploit is used).  v$V2's last verdict is failed; the agent APPENDS
-# "<v$V2> ok" in the writer's exact shape.  bootlog_last (init.zig:737)
+# "<v$V2> ok" in the writer's exact shape.  bootlog_last (init.zig:782)
 # reads the LAST non-shutdown status, so the next boot would treat v$V2 as
 # ok and fx-init would NOT roll forward — the broken generation stays
 # current.  On the standard baseline (which carries a .recovery row from
@@ -1128,7 +1169,7 @@ echo "test_fx_audit: LEGIT: a boot killed at the verdict (in-progress alone) sta
 # a SILENT boot: the host started one more boot (issuing its nonce) and the
 # writer appended NOTHING (no bootable generation: decide_boot_version
 # returned 0, which appends no line and pre-decides the verdict away,
-# init.zig:4368-4379).  Coherent — and the nonce makes the silence ITSELF a
+# init.zig:4772-4778).  Coherent — and the nonce makes the silence ITSELF a
 # reportable fact: the boot's nonce is UNCLAIMED.  This is the
 # false-positive direction the review priced: a machine that booted nothing
 # is not an incoherence, and an unclaimed nonce must NEVER roll a healthy
@@ -1167,8 +1208,9 @@ echo "test_fx_audit: LEGIT: the same version booted twice in one window (2 real 
 # boot rolls forward to the republished generation (a .recovery row), THAT
 # generation fails too, and a second boot rolls forward again — two complete
 # cycles between two audits (4 boots, 2 rows).  Writer-faithful: the row is
-# written in the boot that rolls forward (init.zig:1624), before that boot's
-# in-progress line, and each row names the version that failed.
+# written in the boot that rolls forward (init.zig:1879, recovery_append's
+# call), before that boot's in-progress line (init.zig:4782), and each row
+# names the version that failed.
 # FAILS if recovery-without-failure reads anything but the LAST non-shutdown
 # verdict for a row's from-failed version (boot 6 wrote "$R1 ok 113", boot 7
 # wrote "$R1 failed 115": a first-match reader calls row 2 unanswered), or
@@ -1207,8 +1249,8 @@ echo "test_fx_audit: LEGIT: a MULTI-CYCLE roll-forward in one window (two real f
 
 # an in-progress followed by a SHUTDOWN and NO verdict: the boot started, was
 # told to stop during the grace (SIGTERM -> sigterm_handler sets g_shutdown ->
-# the main loop exits -> do_shutdown appends the shutdown line, init.zig:3925,
-# called from :4461), and never decided.  Writer-faithful: do_shutdown appends
+# the main loop exits -> do_shutdown appends the shutdown line, init.zig:4292,
+# called from :4856), and never decided.  Writer-faithful: do_shutdown appends
 # its line whether or not the boot ever decided a verdict.
 # FAILS if the counter ever demanded a verdict before a shutdown line, or if
 # an open in-progress for the current version were turned into its own
@@ -1223,19 +1265,19 @@ grep -q 'boot accounting: host boots 4 -> 5 (delta 1); this window added in-prog
 echo "test_fx_audit: LEGIT: an in-progress followed by a shutdown (clean stop during the judgement, no verdict) stays coherent"
 
 # ══ THE RE-ARM: the writer's SECOND verdict per boot, derived not patched ═
-# The per-nonce verdict budget (<=1 verdict per nonce) rested on "the
+# The per-nonce VERDICT budget (<=1 verdict per nonce) rested on "the
 # g_boot_decided latch allows at most one verdict per boot" — and the writer
 # refutes it: the in-guest `activate` (the control channel; the agent-slot
 # loop's every task cycle) publishes a NEW version through fx-activate and
-# RE-ARMS the latch (init.zig:3415-3418), so one boot under one nonce
-# legitimately appends a verdict for the ACTIVATED version, which has NO
-# in-progress of its own in that boot.  fx-init's own suite measures the
-# second DISK verdict (tests/qemu_boot_rollback.sh:18-27).  A reader that
-# budgets verdicts per nonce calls this healthy boot a forgery and rolls a
-# healthy machine back.  The derived rule: verdicts are budgeted PER
-# VERSION (<= the window's in-progress lines for the version + 1 for the
-# ONE re-arm verdict a first-published version can carry), and a verdict's
-# provenance is EITHER a same-nonce in-progress OR the store's own record
+# RE-ARMS the latch (init.zig:3693-3696), so one boot under one nonce
+# legitimately carries a verdict for the ACTIVATED version as well.
+# fx-init's own suite measures the second DISK verdict
+# (tests/qemu_boot_rollback.sh:18-27).  A reader that budgets verdicts per
+# nonce calls this healthy boot a forgery and rolls a healthy machine back.
+# The derived rule: verdicts are budgeted PER VERSION (<= the window's
+# in-progress lines for the version, + 1 ONLY for a first-published version
+# with NO re-arm ip of its own), and a verdict's provenance is EITHER a
+# same-nonce in-progress OR the store's own record
 # that the version was first published in this window.
 # mk_rearm NAME — the common fixture: boot 5 boots v$CUR ok (the writer's
 # real pair under its issued nonce), then the harness drives the SAME
@@ -1309,6 +1351,218 @@ grep -q "version $REARM_V carries 2 ADDED verdict line(s) this window but at mos
 grep -q '^INCOHERENT bootlog-forged-verdict ' "$WORK/out.rearmflip" \
     && fail "REARMFLIP: provenance fired too (isolation failed — BOTH verdicts legitimately ride the first-published anchor; only the budget may fire): $(grep '^INCOHERENT' "$WORK/out.rearmflip")"
 echo "test_fx_audit: REARMFLIP: a SECOND verdict for the activated version (same live nonce) fires the PER-VERSION verdict budget — the flip a per-nonce rule cannot see"
+
+# ── THE NEW-WRITER RE-ARM SHAPE (the re-arm in-progress, init.zig:3620) ──
+# mk_rearmip NAME — boot 5 boots v$CUR ok (the writer's real pair under its
+# issued nonce), then the SAME fx-activate the in-guest handler drives
+# publishes v$ACTV > v$CUR, and the activated version's OWN
+# "<v> in-progress" lands BEFORE the re-armed window's verdict for it — the
+# exact on-disk order fx-init's activate arm now writes (the ip after the
+# CURRENT rewrite and before the facts are read).  Sets REARMIP_V.
+mk_rearmip() { # mk_rearmip NAME — sets REARMIP_V to the activated version
+    _n="$1"
+    fresh "$_n"
+    echo "$CUR in-progress 110 $(nth 5)" >> "$WORK/store-$_n/.bootlog"
+    echo "$CUR ok 111 $(nth 5)"          >> "$WORK/store-$_n/.bootlog"
+    _a=$(LD_LIBRARY_PATH="$DL" "$ZB/fx-activate" --store "$WORK/store-$_n" \
+            --package-set "$PS_A" --config "$WORK/cfg-store-a.dhall" 2>&1 \
+            | sed -n 's/.*as version \([0-9][0-9]*\).*/\1/p' | head -1)
+    [ -n "$_a" ] || fail "mk_rearmip $_n: no version from the activate"
+    [ "$_a" -gt "$CUR" ] || fail "mk_rearmip $_n: the activate did not ratchet ($_a <= $CUR)"
+    materialize_rootfs "$WORK/store-$_n" "$WORK/rootfs-$_n" "$_a" "$PS_A"
+    echo "$_a in-progress 112 $(nth 5)" >> "$WORK/store-$_n/.bootlog"
+    echo "$_a ok 113 $(nth 5)"          >> "$WORK/store-$_n/.bootlog"
+    REARMIP_V="$_a"
+}
+
+# REARMIP — the healthy NEW-writer shape: one boot, one nonce, the boot's
+# own ip+verdict, then the re-arm ip AND its verdict for the activated
+# version.  FAILS (exit 1) if the per-nonce rule rejects a legitimate
+# re-arm line (a healthy machine rolled back), and FAILS its greps if
+# either attribution is not NAMED (a silent pass).
+mk_rearmip rearmip
+FBOOTS=5 run_fixture rearmip > "$WORK/out.rearmip" 2>&1
+expect_coh "$WORK/out.rearmip" $? "REARMIP (the NEW writer shape: the activated version's own in-progress, then its verdict, one boot, one nonce)"
+grep -q "carries a RE-ARM in-progress for v$REARMIP_V" "$WORK/out.rearmip" \
+    || fail "REARMIP: the re-arm in-progress is not NAMED: $(grep -i 'RE-ARM' "$WORK/out.rearmip")"
+grep -q "for v$REARMIP_V CONSUMES the RE-ARM in-progress this boot wrote for it" "$WORK/out.rearmip" \
+    || fail "REARMIP: the verdict is not NAMED as riding the re-arm ip: $(grep -i 'CONSUMES' "$WORK/out.rearmip")"
+grep -q 'INCOHERENT' "$WORK/out.rearmip" \
+    && fail "REARMIP: a healthy new-writer re-arm boot was called incoherent: $(grep '^INCOHERENT' "$WORK/out.rearmip")"
+echo "test_fx_audit: REARMIP: the NEW writer's shape (boot pair, then the activated version's own ip AND its verdict, one nonce) stays COHERENT with both attributions NAMED"
+
+# REARMIP2 — THE FALSE-POSITIVE DIRECTION for the NOT-ALREADY-BOOTED clause:
+# TWO activations in ONE boot give TWO re-arm in-progresses under ONE nonce,
+# and NEITHER activated version has been booted — so the clause (which fires
+# only on a version that already appeared as a boot's OWN first in-progress)
+# must NOT fire.  A false positive here rolls back a HEALTHY machine, the
+# costly direction; the multi-later-ip case is the one a too-broad clause
+# would break.
+mk_rearmip2() { # mk_rearmip2 NAME — two re-arm ips under one boot's nonce
+    _n="$1"
+    fresh "$_n"
+    echo "$CUR in-progress 110 $(nth 5)" >> "$WORK/store-$_n/.bootlog"
+    echo "$CUR ok 111 $(nth 5)"          >> "$WORK/store-$_n/.bootlog"
+    _i=0
+    while [ "$_i" -lt 2 ]; do
+        _a=$(LD_LIBRARY_PATH="$DL" "$ZB/fx-activate" --store "$WORK/store-$_n" \
+                --package-set "$PS_A" --config "$WORK/cfg-store-a.dhall" 2>&1 \
+                | sed -n 's/.*as version \([0-9][0-9]*\).*/\1/p' | head -1)
+        [ -n "$_a" ] || fail "mk_rearmip2 $_n: no version from activate $_i"
+        [ "$_a" -gt "$CUR" ] || fail "mk_rearmip2 $_n: activate $_i did not ratchet ($_a <= $CUR)"
+        materialize_rootfs "$WORK/store-$_n" "$WORK/rootfs-$_n" "$_a" "$PS_A"
+        echo "$_a in-progress $((112 + _i * 2)) $(nth 5)" >> "$WORK/store-$_n/.bootlog"
+        echo "$_a ok $((113 + _i * 2)) $(nth 5)"          >> "$WORK/store-$_n/.bootlog"
+        _i=$((_i + 1))
+    done
+}
+mk_rearmip2 rearmip2
+FBOOTS=5 run_fixture rearmip2 > "$WORK/out.rearmip2" 2>&1
+expect_coh "$WORK/out.rearmip2" $? "REARMIP2 (TWO activations in one boot: two re-arm in-progresses under ONE nonce, neither activated version booted — the NOT-ALREADY-BOOTED clause must not fire)"
+grep -q 'INCOHERENT' "$WORK/out.rearmip2" \
+    && fail "REARMIP2: a healthy TWO-activation boot was called incoherent (the NOT-ALREADY-BOOTED clause FALSE-POSITIVES): $(grep '^INCOHERENT' "$WORK/out.rearmip2")"
+echo "test_fx_audit: REARMIP2: two activations in one boot (two re-arm ip lines, ONE nonce, neither version booted) stay COHERENT — the NOT-ALREADY-BOOTED clause does not false-positive"
+
+# REARMIPFLIP — THE CRUX: the +1 first-published credit must NOT stack on a
+# present re-arm ip.  A REAL re-arm ip plus ONE forged second verdict for
+# the same version must still fire the per-version budget (allow = ip + 0);
+# if the +1 stacks, allow = 2 and this forgery passes SILENTLY.
+mk_rearmip rearmipflip
+echo "$REARMIP_V ok 999 $(nth 5)" >> "$WORK/store-rearmipflip/.bootlog"
+FBOOTS=5 run_fixture rearmipflip > "$WORK/out.rearmipflip" 2>&1
+expect_incoh "$WORK/out.rearmipflip" $? "REARMIPFLIP (a real re-arm ip + a SECOND forged verdict for the version)" bootlog-fabricated-boots
+grep -q "version $REARMIP_V carries 2 ADDED verdict line(s) this window but at most 1 can be behind them (1 in-progress line(s) for v$REARMIP_V, first published this window but its RE-ARM in-progress is PRESENT — the extra slot is NOT granted on top of it)" "$WORK/out.rearmipflip" \
+    || fail "REARMIPFLIP: the budget finding does not state that the +1 does NOT stack on the re-arm ip: $(grep '^INCOHERENT bootlog-fabricated' "$WORK/out.rearmipflip")"
+echo "test_fx_audit: REARMIPFLIP: a real re-arm ip + one forged verdict fires the PER-VERSION budget — the +1 does NOT stack on a present re-arm ip"
+
+# REARMIPFORGE — THE OTHER CRUX SIDE: a forged (ip + verdict) PAIR wearing a
+# REAL window boot's nonce, for a version the store did NOT first publish in
+# this window.  The pair is self-consistent (the forged verdict rides its
+# own forged ip, so provenance alone passes it), which is exactly why the
+# re-arm rule must fire on the IP.  A wrong predicate here (e.g. the
+# "newer than the boot's own" test dropped) lets the motivating forge pass.
+# The forged version is max+1 (the store's publish ratchet means REARMIP_V is
+# the highest version it holds, so REARMIP_V+1 is absent from the store
+# ENTIRELY): the ORDERING predicate is satisfied (it is greater than the
+# version the boot booted), so this fixture isolates the FIRST-PUBLISHED
+# predicate the way REARMIPOLDER isolates ordering.
+mk_rearmip rearmipforge
+RIPF_V=$((REARMIP_V + 1))
+echo "$RIPF_V in-progress 998 $(nth 5)" >> "$WORK/store-rearmipforge/.bootlog"
+echo "$RIPF_V ok 998 $(nth 5)"          >> "$WORK/store-rearmipforge/.bootlog"
+FBOOTS=5 run_fixture rearmipforge > "$WORK/out.rearmipforge" 2>&1
+expect_incoh "$WORK/out.rearmipforge" $? "REARMIPFORGE (a forged ip+verdict pair for a version NOT first published this window)" bootlog-fabricated-boots
+grep -q "carries 3 in-progress line(s) in this window" "$WORK/out.rearmipforge" \
+    || fail "REARMIPFORGE: the re-arm rule did not fire on the forged ip: $(grep '^INCOHERENT bootlog-fabricated' "$WORK/out.rearmipforge")"
+grep -q "is NOT a version the store first published in this window" "$WORK/out.rearmipforge" \
+    || fail "REARMIPFORGE: the finding does not state WHY the ip cannot be a re-arm: $(grep '^INCOHERENT bootlog-fabricated' "$WORK/out.rearmipforge")"
+grep -q "is NOT greater than" "$WORK/out.rearmipforge" \
+    && fail "REARMIPFORGE: the ORDERING predicate fired too — v$RIPF_V is greater than the booted version, so this fixture no longer ISOLATES first-published: $(grep '^INCOHERENT bootlog-fabricated' "$WORK/out.rearmipforge")"
+grep -q "the verdict that rides this line-pair is part of the same forge" "$WORK/out.rearmipforge" \
+    || fail "REARMIPFORGE: the finding does not name the PAIR the forged ip vouches for"
+echo "test_fx_audit: REARMIPFORGE: a forged ip+verdict pair for a version the store did NOT publish in the window (max+1, absent from the store) fires the re-arm rule on the FIRST-PUBLISHED predicate ALONE, and the finding names the pair"
+
+# REARMIPOLDER — the SAME rule, the OTHER predicate: an ip that IS a
+# first-published version of this window but NOT GREATER than the version
+# the nonce's first ip named.  This is the direction that must never fire on
+# a HEALTHY machine (the publish ratchet is max+1, so a real re-arm version
+# always exceeds the booted one) — and it is the one a "different version"
+# test in place of "greater version" would miss.  Built as the writer
+# cannot: CURRENT=$VB (the boot's own), then an ip for the EARLIER $VA.
+fresh rearmipolder
+VA=$(LD_LIBRARY_PATH="$DL" "$ZB/fx-activate" --store "$WORK/store-rearmipolder" \
+        --package-set "$PS_A" --config "$WORK/cfg-store-a.dhall" 2>&1 \
+        | sed -n 's/.*as version \([0-9][0-9]*\).*/\1/p' | head -1)
+VB=$(LD_LIBRARY_PATH="$DL" "$ZB/fx-activate" --store "$WORK/store-rearmipolder" \
+        --package-set "$PS_A" --config "$WORK/cfg-store-a.dhall" 2>&1 \
+        | sed -n 's/.*as version \([0-9][0-9]*\).*/\1/p' | head -1)
+[ -n "$VA" ] && [ -n "$VB" ] && [ "$VB" -gt "$VA" ] || fail "REARMIPOLDER: the two activations did not ratchet ($VA -> $VB)"
+materialize_rootfs "$WORK/store-rearmipolder" "$WORK/rootfs-rearmipolder" "$VB" "$PS_A"
+echo "$VB in-progress 110 $(nth 5)" >> "$WORK/store-rearmipolder/.bootlog"
+echo "$VA in-progress 111 $(nth 5)" >> "$WORK/store-rearmipolder/.bootlog"
+FBOOTS=5 run_fixture rearmipolder > "$WORK/out.rearmipolder" 2>&1
+expect_incoh "$WORK/out.rearmipolder" $? "REARMIPOLDER (a re-arm ip older than the nonce's own first ip)" bootlog-fabricated-boots
+grep -q "is NOT greater than v$VB, the version that nonce's first in-progress named" "$WORK/out.rearmipolder" \
+    || fail "REARMIPOLDER: the finding does not state the ORDERING it violated: $(grep '^INCOHERENT bootlog-fabricated' "$WORK/out.rearmipolder")"
+echo "test_fx_audit: REARMIPOLDER: a first-published ip that is NOT newer than the nonce's own first ip fires the same rule (the ordering predicate is the load-bearing half)"
+
+# ── REARMIPX — THE CROSS-NONCE FLIP (the review's BLOCKER): the re-arm
+# budget is ONE per first-published VERSION per WINDOW, never one per
+# (nonce, version).  With TWO real window nonces a forger takes the version
+# the LIVE boot activated (X: first-published in this window and, by the
+# publish ratchet, newer than every earlier boot's own version too) and
+# appends an in-progress+verdict PAIR for it riding an EARLIER window
+# boot's nonce.  Keyed per (nonce, version) that pair IS a legitimate
+# re-arm: X is first-published and X is newer than that nonce's first ip —
+# so ip(X) and vd(X) both rise to 2 and the per-version verdict budget
+# allows 2.  The result is a SECOND verdict for a version the window
+# already verdicted (the flip), which the PRE-RE-ARM reader closed (one
+# in-progress per nonce) and a per-(nonce, version) rule silently reopens.
+# FAILS (goes coherent) unless the duplicate is keyed on the VERSION alone.
+# The pinned pre-change reader's half of this asymmetry is BEFORE-E below.
+fresh rearmipx
+echo "$CUR in-progress 110 $(nth 5)" >> "$WORK/store-rearmipx/.bootlog"
+echo "$CUR failed 111 $(nth 5)"      >> "$WORK/store-rearmipx/.bootlog"
+FXSTORE_BIN="$FXSTORE" "$FXSTORE" rollback "$V1" --store "$WORK/store-rearmipx" >/dev/null 2>&1 \
+    || fail "REARMIPX: fxstore rollback (the roll-forward republish) failed"
+RIPX_REW=$(cur_of "$WORK/store-rearmipx")
+[ -n "$RIPX_REW" ] && [ "$RIPX_REW" -gt "$CUR" ] || fail "REARMIPX: the roll-forward did not republish above $CUR (got $RIPX_REW)"
+RIPX_GHW=$(genhash_of "$WORK/store-rearmipx" "$RIPX_REW")
+echo "113 $RIPX_REW $CUR $RIPX_GHW $(nth 6)" >> "$WORK/store-rearmipx/.recovery"
+materialize_rootfs "$WORK/store-rearmipx" "$WORK/rootfs-rearmipx" "$RIPX_REW" "$PS_A"
+echo "$RIPX_REW in-progress 112 $(nth 6)" >> "$WORK/store-rearmipx/.bootlog"
+echo "$RIPX_REW ok 113 $(nth 6)"          >> "$WORK/store-rearmipx/.bootlog"
+RIPX_V=$(LD_LIBRARY_PATH="$DL" "$ZB/fx-activate" --store "$WORK/store-rearmipx" \
+        --package-set "$PS_A" --config "$WORK/cfg-store-a.dhall" 2>&1 \
+        | sed -n 's/.*as version \([0-9][0-9]*\).*/\1/p' | head -1)
+[ -n "$RIPX_V" ] && [ "$RIPX_V" -gt "$RIPX_REW" ] || fail "REARMIPX: no ratcheted activate above $RIPX_REW (got $RIPX_V)"
+materialize_rootfs "$WORK/store-rearmipx" "$WORK/rootfs-rearmipx" "$RIPX_V" "$PS_A"
+echo "$RIPX_V in-progress 114 $(nth 6)" >> "$WORK/store-rearmipx/.bootlog"
+echo "$RIPX_V failed 115 $(nth 6)"      >> "$WORK/store-rearmipx/.bootlog"
+echo "$RIPX_V in-progress 116 $(nth 5)" >> "$WORK/store-rearmipx/.bootlog"
+echo "$RIPX_V ok 117 $(nth 5)"          >> "$WORK/store-rearmipx/.bootlog"
+FBOOTS=6 run_fixture rearmipx > "$WORK/out.rearmipx" 2>&1
+expect_incoh "$WORK/out.rearmipx" $? "REARMIPX (a forged pair for the activated version riding a SECOND real window nonce — the cross-nonce flip)" bootlog-fabricated-boots
+grep -q "a SECOND in-progress for v$RIPX_V in this window" "$WORK/out.rearmipx" \
+    || fail "REARMIPX: the finding does not state the per-version-per-window cap: $(grep '^INCOHERENT bootlog-fabricated' "$WORK/out.rearmipx")"
+echo "test_fx_audit: REARMIPX: a forged pair for the ACTIVATED version riding a SECOND real window nonce fires the per-version-per-window ip cap — the cross-nonce flip a per-(nonce, version) rule admits"
+
+# ── REARMIPREPUB — THE ROLL-FORWARD REPUBLISH SHAPE (the round-2 BLOCKER):
+# a version the STORE first published WITHOUT an activation — the roll-forward
+# republish W (fxstore rollback, the same call decide_boot_version drives) —
+# and then BOOTED in the window has NO legitimate later ip anywhere (its only
+# in-progress is its own boot's first).  A forged "<W> in-progress Nth>" +
+# "<W> ok Nth>" pair riding an EARLIER real window boot's nonce then passes
+# the version-keyed dup (W is not in seen_ip: it never had a real re-arm),
+# the first-published predicate (W IS first published) and the ordering
+# predicate (W > that boot's own, the ratchet) — so round 2's reader read it
+# as a legitimate re-arm and its verdict budget (ip=2, vd=2) passed a SECOND
+# verdict for a version the window already verdicted.  The fix is the
+# NOT-ALREADY-BOOTED clause: a re-arm names the version the activate JUST
+# published (max+1), which has never been booted, so a later ip for W — whose
+# OWN first in-progress (boot 6's) already appeared — is refused.  FAILS
+# (goes coherent) unless that clause is checked.
+fresh rearmiprepub
+echo "$CUR in-progress 110 $(nth 5)" >> "$WORK/store-rearmiprepub/.bootlog"
+echo "$CUR failed 111 $(nth 5)"      >> "$WORK/store-rearmiprepub/.bootlog"
+FXSTORE_BIN="$FXSTORE" "$FXSTORE" rollback "$V1" --store "$WORK/store-rearmiprepub" >/dev/null 2>&1 \
+    || fail "REARMIPREPUB: fxstore rollback (the roll-forward republish) failed"
+RIPR_W=$(cur_of "$WORK/store-rearmiprepub")
+[ -n "$RIPR_W" ] && [ "$RIPR_W" -gt "$CUR" ] || fail "REARMIPREPUB: the roll-forward did not republish above $CUR (got $RIPR_W)"
+RIPR_GHW=$(genhash_of "$WORK/store-rearmiprepub" "$RIPR_W")
+echo "113 $RIPR_W $CUR $RIPR_GHW $(nth 6)" >> "$WORK/store-rearmiprepub/.recovery"
+materialize_rootfs "$WORK/store-rearmiprepub" "$WORK/rootfs-rearmiprepub" "$RIPR_W" "$PS_A"
+echo "$RIPR_W in-progress 112 $(nth 6)" >> "$WORK/store-rearmiprepub/.bootlog"
+echo "$RIPR_W ok 113 $(nth 6)"          >> "$WORK/store-rearmiprepub/.bootlog"
+# THE FORGE: a pair for the REPUBLISHED (never activated) version, riding the
+# EARLIER boot's nonce — no activation ever wrote a re-arm ip for W.
+echo "$RIPR_W in-progress 114 $(nth 5)" >> "$WORK/store-rearmiprepub/.bootlog"
+echo "$RIPR_W ok 115 $(nth 5)"          >> "$WORK/store-rearmiprepub/.bootlog"
+FBOOTS=6 run_fixture rearmiprepub > "$WORK/out.rearmiprepub" 2>&1
+expect_incoh "$WORK/out.rearmiprepub" $? "REARMIPREPUB (a forged pair for the REPUBLISHED version riding an earlier real nonce — the roll-forward republish shape)" bootlog-fabricated-boots
+grep -q "was ALREADY BOOTED in this window" "$WORK/out.rearmiprepub" \
+    || fail "REARMIPREPUB: the finding does not state the not-already-booted predicate: $(grep '^INCOHERENT bootlog-fabricated' "$WORK/out.rearmiprepub")"
+echo "test_fx_audit: REARMIPREPUB: a forged pair for a version the store first published WITHOUT an activation (the roll-forward republish) and then BOOTED fires the not-already-booted re-arm predicate — the republish shape"
 
 # ══ MIXED: one nonced boot + one operator hand-boot is information only ══
 # The regime a real deployment hits by accident: the host nonced boot 4 but
@@ -1388,6 +1642,34 @@ pin_build() {
 pin_build 030fbdc "$WORK/fx-audit-pinned"
 pin_build 88a73b8 "$WORK/fx-audit-nonce-pin"
 pin_build fcebaa3 "$WORK/fx-audit-prefix"
+# ── BEFORE-D (bd3c5cf, the PRE-RE-ARM accounting): the fail-before of THIS
+# unit's accounting change, on the SAME fixture the new arms call COHERENT.
+# The pre-change reader budgets in-progress lines at ONE per nonce and
+# budgets the verdicts per version with an unconditional +1 for a
+# first-published version, so the NEW writer's healthy shape (the activated
+# version's own ip AND its verdict in one boot) is exactly what it calls a
+# forgery: "carries 2 in-progress line(s) in this window".  That is the
+# measured false positive the change closes — pass-after is the same
+# fixture's coherent REARMIP run above.
+pin_build bd3c5cf "$WORK/fx-audit-prev"
+# pin_blob_build BLOB OUTFILE — the same discipline for a source measured
+# against an UNCOMMITTED tree (this round's pre-fix reader): the pin is the
+# file's BLOB object name (git hash-object -w), stable across the later
+# commit — the committed tree stores the same blob — guarded, and cmp-PROVEN
+# different from the working tree.
+pin_blob_build() {
+    _blob="$1"; _out="$2"
+    [ "$(git -C "$REPO" cat-file -t "$_blob" 2>/dev/null)" = "blob" ] \
+        || fail "PINBLOB $_blob: not a blob in $REPO's object db (the control needs it — hash-object -w the measured file)"
+    git -C "$REPO" cat-file blob "$_blob" > "$_out.c" \
+        || fail "PINBLOB $_blob: cannot extract the pinned source"
+    cmp -s "$_out.c" "$REPO/tools/fx-audit.c" \
+        && fail "PINBLOB $_blob: the pinned source is IDENTICAL to the working tree — the control equals its subject and proves nothing"
+    cc -std=c11 -O2 -Wall -Wextra -I"$REPO/src/vendor/dhall-c" \
+       -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
+       -o "$_out" "$_out.c" "$REPO/src/vendor/dhall-c/sha256.c" \
+        || fail "PINBLOB $_blob: cannot build the pinned fx-audit"
+}
 
 # ── THE WRITER PIN (fx-init 500fc68): the fail-before of the WRITER half ──
 # The pre-nonce writer cannot stamp a nonce: its bootlog_append is the
@@ -1507,6 +1789,80 @@ grep -q "'$REARM_V failed 112' line has no '$REARM_V in-progress' line earlier i
 FBOOTS=5 run_fixture beforec > "$WORK/out.bc2" 2>&1
 expect_coh "$WORK/out.bc2" $? "BEFORE-C/AFTER on the same store and the same bytes"
 echo "test_fx_audit: BEFORE-C: on the pinned be2fbd1 the healthy re-arm boot (one nonce, the activate's second verdict) is REJECTED with the refuted per-nonce budget AND the version-exact attribution; the working tree audits the SAME store and bytes COHERENT (the BLOCKER's asymmetry)"
+
+# ── BEFORE-D/AFTER (bd3c5cf, the PRE-re-arm accounting): THIS unit's
+# fail-before/pass-after, on ONE fixture and ONE byte sequence.  The pinned
+# pre-change reader has no re-arm line in its writer model, so the NEW
+# writer's healthy shape (the activated version's own ip AND its verdict,
+# same boot, same nonce) trips its per-nonce in-progress budget: "carries 2
+# in-progress line(s) in this window".  The working tree's tool audits the
+# SAME store and bytes COHERENT (the REARMIP arm above) — and the SAME new
+# rule still fires on the forge (REARMIPFORGE / REARMIPOLDER), so this is
+# not a loosening.
+cp "$AOBSFILE" "$WORK/obs-rearmip-before.obs"
+FXSTORE_BIN="$FXSTORE" "$WORK/fx-audit-prev" --store "$WORK/store-rearmip" \
+    --rootfs "$WORK/rootfs-rearmip" --obs-file "$WORK/obs-rearmip-before.obs" \
+    --boots 5 --nonces "$WORK/nonces-rearmip.led" > "$WORK/out.rearmip-before" 2>&1
+expect_incoh "$WORK/out.rearmip-before" $? "BEFORE-D the healthy NEW-writer re-arm boot goes INCOHERENT on the pinned pre-re-arm accounting (fail-before)" \
+    bootlog-fabricated-boots
+grep -q "carries 2 in-progress line(s) in this window" "$WORK/out.rearmip-before" \
+    || fail "BEFORE-D: the pinned run did not make the ONE-per-nonce in-progress claim: $(grep '^INCOHERENT bootlog-fabricated' "$WORK/out.rearmip-before")"
+echo "test_fx_audit: BEFORE-D: on the pinned bd3c5cf the healthy NEW-writer re-arm boot is REJECTED by the one-in-progress-per-nonce budget; the working tree audits the SAME store and bytes COHERENT (REARMIP)"
+
+# ── BEFORE-E/AFTER (the CROSS-NONCE FLIP, two pins): the fail-before of the
+# per-version-per-window cap, on the REARMIPX fixture and ONE byte sequence.
+#  (1) the pre-re-arm reader (bd3c5cf, the pin BEFORE-D builds) CLOSED this
+#      forgery through its ONE-per-nonce in-progress budget;
+#  (2) the reader THIS round fixes — a per-(nonce, version) re-arm
+#      classification — re-opened it: its pinned BLOB object audits the same
+#      store and the same bytes COHERENT, naming the forged pair as a
+#      legitimate re-arm.  That blob is the uncommitted-tree pin
+#      (git hash-object -w tools/fx-audit.c before the fix), stable across
+#      the later commit.
+# The working tree's reader FIRES on the same store (REARMIPX above): the
+# asymmetry, and the capability the round-1 rule silently re-opened.
+cp "$AOBSFILE" "$WORK/obs-rearmipx-pre.obs"
+FXSTORE_BIN="$FXSTORE" "$WORK/fx-audit-prev" --store "$WORK/store-rearmipx" \
+    --rootfs "$WORK/rootfs-rearmipx" --obs-file "$WORK/obs-rearmipx-pre.obs" \
+    --boots 6 --nonces "$WORK/nonces-rearmipx.led" > "$WORK/out.rearmipx-pre" 2>&1
+expect_incoh "$WORK/out.rearmipx-pre" $? "BEFORE-E the PRE-re-arm reader on the cross-nonce forgery (the closure the round-1 rule re-opened)" \
+    bootlog-fabricated-boots
+grep -q "carries 2 in-progress line(s) in this window" "$WORK/out.rearmipx-pre" \
+    || fail "BEFORE-E: the pre-re-arm pin did not fire its one-per-nonce budget: $(grep '^INCOHERENT bootlog-fabricated' "$WORK/out.rearmipx-pre")"
+pin_blob_build 4e4976cc1d948f6882be6168ee6f2398d2c5806b "$WORK/fx-audit-r1pin"
+cp "$AOBSFILE" "$WORK/obs-rearmipx-r1.obs"
+FXSTORE_BIN="$FXSTORE" "$WORK/fx-audit-r1pin" --store "$WORK/store-rearmipx" \
+    --rootfs "$WORK/rootfs-rearmipx" --obs-file "$WORK/obs-rearmipx-r1.obs" \
+    --boots 6 --nonces "$WORK/nonces-rearmipx.led" > "$WORK/out.rearmipx-r1" 2>&1
+expect_coh "$WORK/out.rearmipx-r1" $? "BEFORE-E the ROUND-1 (per-(nonce,version)) pinned reader on the cross-nonce forgery — the hole"
+grep -q "carries a RE-ARM in-progress for v$RIPX_V" "$WORK/out.rearmipx-r1" \
+    || fail "BEFORE-E: the pinned round-1 reader did not NAME the FORGED pair as a legitimate re-arm (the fixture is not the shape it has): $(grep -i 'RE-ARM' "$WORK/out.rearmipx-r1")"
+grep -q "^INCOHERENT" "$WORK/out.rearmipx-r1" \
+    && fail "BEFORE-E: the pinned round-1 reader fired — the pin is not the reader that has the hole: $(grep '^INCOHERENT' "$WORK/out.rearmipx-r1")"
+echo "test_fx_audit: BEFORE-E: the cross-nonce forgery is CLOSED by the pinned PRE-re-arm reader (bd3c5cf, one in-progress per nonce) and audits COHERENT on the pinned round-1 reader (its per-(nonce,version) re-arm classification reads the forged pair as legitimate); the working tree's reader FIRES the same store and bytes (REARMIPX) — the re-opened capability, pinned"
+
+# ── BEFORE-F/AFTER (the ROLL-FORWARD REPUBLISH shape, round 3's blocker):
+# the fail-before of the NOT-ALREADY-BOOTED re-arm clause, on the
+# REARMIPREPUB fixture and ONE byte sequence.  The pinned reader THIS round
+# fixes — the round-2 version-keyed cap (the uncommitted-tree BLOB pin,
+# hash-object -w of tools/fx-audit.c at the end of round 2) — passes the
+# republish forge: W is first-published, newer than boot 5's own, and NOT in
+# seen_ip (no activation ever wrote a re-arm for it), so its per-nonce rule
+# reads the forged pair as a legitimate re-arm and the verdict budget
+# (ip=2, vd=2) passes a SECOND verdict for an already-verdicted version.
+# The working tree's reader FIRES on the same store (REARMIPREPUB above):
+# the asymmetry, and the shape the round-2 cap does not close.
+pin_blob_build 5125d206 "$WORK/fx-audit-r2pin"
+cp "$AOBSFILE" "$WORK/obs-rearmiprepub-r2.obs"
+FXSTORE_BIN="$FXSTORE" "$WORK/fx-audit-r2pin" --store "$WORK/store-rearmiprepub" \
+    --rootfs "$WORK/rootfs-rearmiprepub" --obs-file "$WORK/obs-rearmiprepub-r2.obs" \
+    --boots 6 --nonces "$WORK/nonces-rearmiprepub.led" > "$WORK/out.rearmiprepub-r2" 2>&1
+expect_coh "$WORK/out.rearmiprepub-r2" $? "BEFORE-F the ROUND-2 pinned reader on the republish forge — the hole"
+grep -q "carries a RE-ARM in-progress for v$RIPR_W" "$WORK/out.rearmiprepub-r2" \
+    || fail "BEFORE-F: the pinned round-2 reader did not NAME the forged pair as a legitimate re-arm (the fixture is not the shape it has): $(grep -i 'RE-ARM' "$WORK/out.rearmiprepub-r2")"
+grep -q "^INCOHERENT" "$WORK/out.rearmiprepub-r2" \
+    && fail "BEFORE-F: the pinned round-2 reader fired — the pin is not the reader that has the hole: $(grep '^INCOHERENT' "$WORK/out.rearmiprepub-r2")"
+echo "test_fx_audit: BEFORE-F: the republish forge audits COHERENT on the pinned round-2 reader (its version-keyed cap never sees the republished version — no activation wrote a re-arm for it) and the working tree's reader FIRES the same store and bytes (REARMIPREPUB) — the republish shape, pinned"
 
 # ── FORMAT2: the new tool refuses the pinned tool's format-2 observation —
 # a pre-nonce baseline cannot anchor a nonce-judged window, and assuming it
@@ -1641,7 +1997,64 @@ mk_rearm m-nobudget
 echo "$REARM_V ok 999 $(nth 5)" >> "$WORK/store-m-nobudget/.bootlog"
 MUT_BOOTS=5 mut_run "$WORK/mut-nobudget" m-nobudget > "$WORK/out.m-nobudget" 2>&1
 expect_coh "$WORK/out.m-nobudget" $? "MUTANT no-verdict-budget (the verdict FLIP goes coherent — the per-version budget is load-bearing)"
-echo "test_fx_audit: MUTANTS: each check's fixture goes coherent when that one check is sed-ed out — including the previous-observation comparison on the coherent tamper (the bound, made visible), boot-accounting on the appended forged verdict, and boot-accounting on the PAIR forgery (the nonce requirement is load-bearing); and the two intra-check seams: without the RE-ARM anchor the healthy re-arm boot goes INCOHERENT (the false-positive direction), without the PER-VERSION verdict budget the verdict FLIP goes coherent"
+# THE PER-VERSION-PER-WINDOW IP CAP direction (the BLOCKER's own seam): with
+# the duplicate check disabled (the version comparison can never match), the
+# CROSS-NONCE flip goes coherent on the REARMIPX fixture — the forged pair
+# rides a SECOND real window nonce, ip(v) and vd(v) rise in lockstep, and the
+# per-version budget passes a SECOND verdict for v.  That is the exact
+# re-opened capability the fix closes, and the seam proves the cap (not some
+# other predicate) is what fires in REARMIPX.
+sed 's|if (seen_ip\[q\] == g_bl\[i\].v) { /\* VERSION-KEY \*/|if (0) { /* mutant-versionkey */|' "$REPO/tools/fx-audit.c" > "$WORK/mut-versionkey.c" \
+    || fail "cannot write the no-version-key mutant"
+cmp -s "$WORK/mut-versionkey.c" "$REPO/tools/fx-audit.c" \
+    && fail "the no-version-key mutation changed nothing (the sed matched no line — marker drift?)"
+cc -std=c11 -O2 -Wall -Wextra -I"$REPO/src/vendor/dhall-c" \
+   -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
+   -o "$WORK/mut-versionkey" "$WORK/mut-versionkey.c" "$REPO/src/vendor/dhall-c/sha256.c" \
+    || fail "cannot build the no-version-key mutant"
+MUT_BOOTS=6 mut_run "$WORK/mut-versionkey" rearmipx > "$WORK/out.m-vkey" 2>&1
+expect_coh "$WORK/out.m-vkey" $? "MUTANT no-version-key (the CROSS-NONCE flip goes coherent — the per-version-per-window ip cap is load-bearing)"
+grep -q "for v$RIPX_V — a version the store FIRST PUBLISHED in this window" "$WORK/out.m-vkey" \
+    || fail "MUTANT no-version-key: the mutant did not even NAME the forged pair as a legitimate re-arm (the seam is vacuous): $(grep -i 'RE-ARM' "$WORK/out.m-vkey")"
+# THE NOT-ALREADY-BOOTED RE-ARM CLAUSE direction (the republish blocker's
+# own seam): with the own-check disabled (the already-booted comparison can
+# never match), the ROLL-FORWARD REPUBLISH forge goes coherent on the
+# REARMIPREPUB fixture — the forged pair rides an earlier real window nonce,
+# reads as a legitimate re-arm (the republished version is first-published,
+# newer than that boot's own, and never had a real re-arm), and the verdict
+# budget passes a SECOND verdict for it.  That is the exact republish shape
+# round 2's cap does not close, and the seam proves the not-already-booted
+# clause (not some other predicate) is what fires in REARMIPREPUB.
+sed 's|} else if (vstat_for(g_bl\[i\].v)->own) { /\* NOT-BOOTED-KEY \*/|} else if (0) { /* mutant-notbooted */|' "$REPO/tools/fx-audit.c" > "$WORK/mut-notbooted.c" \
+    || fail "cannot write the no-notbooted mutant"
+cmp -s "$WORK/mut-notbooted.c" "$REPO/tools/fx-audit.c" \
+    && fail "the no-notbooted mutation changed nothing (the sed matched no line — marker drift?)"
+cc -std=c11 -O2 -Wall -Wextra -I"$REPO/src/vendor/dhall-c" \
+   -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
+   -o "$WORK/mut-notbooted" "$WORK/mut-notbooted.c" "$REPO/src/vendor/dhall-c/sha256.c" \
+    || fail "cannot build the no-notbooted mutant"
+MUT_BOOTS=6 mut_run "$WORK/mut-notbooted" rearmiprepub > "$WORK/out.m-notbooted" 2>&1
+expect_coh "$WORK/out.m-notbooted" $? "MUTANT no-not-booted-key (the REPUBLISH forge goes coherent — the not-already-booted re-arm clause is load-bearing)"
+grep -q "for v$RIPR_W — a version the store FIRST PUBLISHED in this window" "$WORK/out.m-notbooted" \
+    || fail "MUTANT no-not-booted-key: the mutant did not even NAME the forged pair as a legitimate re-arm (the seam is vacuous): $(grep -i 'RE-ARM' "$WORK/out.m-notbooted")"
+# THE SAME CLAUSE IN THE FALSE-POSITIVE DIRECTION: with the own-check forced
+# ALWAYS-TRUE (any later in-progress rejected), the HEALTHY TWO-activation
+# boot (REARMIP2: two re-arm ips, one nonce, NEITHER version booted) goes
+# INCOHERENT — proving the clause must be scoped to a version that already
+# appeared as a boot's OWN first in-progress, and that the REARMIP2 arm CAN
+# FAIL (a fixture that cannot fail is not a test).
+sed 's|} else if (vstat_for(g_bl\[i\].v)->own) { /\* NOT-BOOTED-KEY \*/|} else if (1) { /* mutant-broad */|' "$REPO/tools/fx-audit.c" > "$WORK/mut-broad.c" \
+    || fail "cannot write the over-broad mutant"
+cmp -s "$WORK/mut-broad.c" "$REPO/tools/fx-audit.c" \
+    && fail "the over-broad mutation changed nothing (the sed matched no line — marker drift?)"
+cc -std=c11 -O2 -Wall -Wextra -I"$REPO/src/vendor/dhall-c" \
+   -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
+   -o "$WORK/mut-broad" "$WORK/mut-broad.c" "$REPO/src/vendor/dhall-c/sha256.c" \
+    || fail "cannot build the over-broad mutant"
+mk_rearmip2 m-broad
+MUT_BOOTS=5 mut_run "$WORK/mut-broad" m-broad > "$WORK/out.m-broad" 2>&1
+expect_incoh "$WORK/out.m-broad" $? "MUTANT over-broad not-booted clause (the HEALTHY two-activation boot goes INCOHERENT — the clause must not fire on a version that was never booted)" bootlog-fabricated-boots
+echo "test_fx_audit: MUTANTS: each check's fixture goes coherent when that one check is sed-ed out — including the previous-observation comparison on the coherent tamper (the bound, made visible), boot-accounting on the appended forged verdict, and boot-accounting on the PAIR forgery (the nonce requirement is load-bearing); and the four intra-check seams: without the RE-ARM anchor the healthy re-arm boot goes INCOHERENT (the false-positive direction), without the PER-VERSION verdict budget the verdict FLIP goes coherent, without the VERSION-KEYED re-arm duplicate the CROSS-NONCE flip goes coherent (REARMIPX), and without the NOT-BOOTED-KEY the REPUBLISH forge goes coherent (REARMIPREPUB)"
 
 # src-of-artifact's own finding (disagreement-artifact-gone) is emitted by
 # the previous-observation walk, whose mutant arm above covers the

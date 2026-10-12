@@ -941,6 +941,22 @@ cp "$WORK/obs-2-bootlog.txt" "$EVID/obs-boot2-bootlog.txt"
 echo "--- [obs] boot 2: the disk .bootlog ---"; sed 's/^/    /' "$WORK/obs-2-bootlog.txt"
 grep -q "^$V_A failed " "$WORK/obs-2-bootlog.txt" \
     || { cat "$WORK/obs-2-bootlog.txt"; fail "[obs] boot 2: no '$V_A failed' line in the disk .bootlog"; }
+# THE RE-ARM MARKER, on the real guest's own bytes: the in-guest `activate`
+# this boot drives writes the ACTIVATED version's own "<v> in-progress"
+# BEFORE the verdict for it (appended after the store's CURRENT rewrite and
+# before the facts are read), so EVERY activate-path verdict on the disk
+# rides a marker for the version it verdicts.  The crasher's activated v$V_A
+# is exactly such a verdict.  FAILS if the shape regressed (the marker is
+# gone, or it lands AFTER the verdict it must precede) — that regression is
+# also what the fx-audit accounting's per-nonce re-arm rule is derived from,
+# and qemu-agent-observe's audit arms below judge the same bytes.
+grep -q "^$V_A in-progress " "$WORK/obs-2-bootlog.txt" \
+    || { cat "$WORK/obs-2-bootlog.txt"; fail "[obs] boot 2: no '$V_A in-progress' marker in the disk .bootlog — the in-guest activation left the activated window unmarked (a stale pre-re-arm guest build, or the writer regressed)"; }
+_ip_ln=$(grep -n "^$V_A in-progress " "$WORK/obs-2-bootlog.txt" | head -1 | cut -d: -f1)
+_verdict_ln=$(grep -n "^$V_A failed " "$WORK/obs-2-bootlog.txt" | head -1 | cut -d: -f1)
+[ "$_ip_ln" -lt "$_verdict_ln" ] \
+    || fail "[obs] boot 2: the '$V_A in-progress' marker (line $_ip_ln) does not PRECEDE its verdict (line $_verdict_ln) — the activated window must be open on disk first"
+echo "qemu-agent-observe: [obs] RE-ARM MARKER PROOF: the real in-guest activation wrote '$V_A in-progress' (line $_ip_ln) BEFORE its '$V_A failed' verdict (line $_verdict_ln)"
 # THE WRITER PROOF, on the real guest's own bytes: every line the real
 # fx-init appended carries the nonce the HOST issued for the boot that
 # wrote it (latched from this launch's fx.bootnonce=), and PID1 ECHOED

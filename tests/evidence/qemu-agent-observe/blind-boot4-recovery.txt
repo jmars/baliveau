@@ -19,4 +19,4 @@
 # row; "none" = the host issued no nonce — an operator hand-boot).
 # It binds the row to that boot the way .bootlog's 4th field binds a
 # line: same boot, same nonce, fx-init never writes without one.
-1791680915 7 5 26aa9fc7ee3eecdf71e5566f09ca9fbba86cc9cbb2e45fc60d20974a12421aec 937874eea280e289
+1791771262 7 5 7c7c88d06bccf7702842559539df84a171113546be4585402bbb38966a91423a 44e3bae5ecd3f7b0

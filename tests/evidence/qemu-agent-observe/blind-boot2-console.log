@@ -1,6 +1,6 @@
 c[?7l[2J[0mSeaBIOS (version rel-1.17.0-2-g4f253b9b-prebuilt.qemu.org)
 Booting from ROM..c[?7l[2JLinux version 6.12.19 (root@cf88c41ef967) (gcc (Debian 14.2.0-19) 14.2.0, GNU ld (GNU Binutils for Debian) 2.44) #1 SMP Wed Sep 30 21:19:35 UTC 2026
-Command line: console=ttyS0,115200 rdinit=/fx/store/287e518e18a854360c36fe8467bfbb2c62364d878ce9dcd5dd0a19274a65701e-fx-init/fx-init fx.store=/fx/store fx.bootnonce=5a4dd840d33e7f21 panic=-1 oops=panic
+Command line: console=ttyS0,115200 rdinit=/fx/store/ecee869f33316105e112e6176648b5c3ead3adad833ffb0f3650f3764b61ba2e-fx-init/fx-init fx.store=/fx/store fx.bootnonce=2f51ea5351440f28 panic=-1 oops=panic
 BIOS-provided physical RAM map:
 BIOS-e820: [mem 0x0000000000000000-0x000000000009fbff] usable
 BIOS-e820: [mem 0x000000000009fc00-0x000000000009ffff] reserved
@@ -15,13 +15,13 @@ BIOS-e820: [mem 0x000000fd00000000-0x000000ffffffffff] reserved
 NX (Execute Disable) protection: active
 APIC: Static calls initialized
 tsc: Fast TSC calibration using PIT
-tsc: Detected 3499.997 MHz processor
+tsc: Detected 3500.186 MHz processor
 last_pfn = 0x7ffdc max_arch_pfn = 0x400000000
 x86/PAT: PAT support disabled because CONFIG_X86_PAT is disabled in the kernel.
 x86/PAT: Configuration [0-7]: WB  WT  UC- UC  WB  WT  UC- UC  
 found SMP MP-table at [mem 0x000f5470-0x000f547f]
 Using GB pages for direct mapping
-RAMDISK: [mem 0x7f2c5000-0x7ffcffff]
+RAMDISK: [mem 0x7f2c1000-0x7ffcffff]
 ACPI: Early table checksum verification disabled
 ACPI: RSDP 0x00000000000F52A0 000014 (v00 BOCHS )
 ACPI: RSDT 0x000000007FFE2356 000038 (v01 BOCHS  BXPC     00000001 BXPC 00000001)
@@ -72,7 +72,7 @@ CPU topo: Allowing 1 present CPUs plus 0 hotplug CPUs
 clocksource: refined-jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 7645519600211568 ns
 setup_percpu: NR_CPUS:2 nr_cpumask_bits:1 nr_cpu_ids:1 nr_node_ids:1
 percpu: Embedded 41 pages/cpu s137880 r0 d30056 u2097152
-Kernel command line: console=ttyS0,115200 rdinit=/fx/store/287e518e18a854360c36fe8467bfbb2c62364d878ce9dcd5dd0a19274a65701e-fx-init/fx-init fx.store=/fx/store fx.bootnonce=5a4dd840d33e7f21 panic=-1 oops=panic
+Kernel command line: console=ttyS0,115200 rdinit=/fx/store/ecee869f33316105e112e6176648b5c3ead3adad833ffb0f3650f3764b61ba2e-fx-init/fx-init fx.store=/fx/store fx.bootnonce=2f51ea5351440f28 panic=-1 oops=panic
 random: crng init done
 Dentry cache hash table entries: 262144 (order: 9, 2097152 bytes, linear)
 Inode-cache hash table entries: 131072 (order: 8, 1048576 bytes, linear)
@@ -106,8 +106,8 @@ ACPI: Core revision 20240827
 clocksource: hpet: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 19112604467 ns
 APIC: Switch to symmetric I/O mode setup
 ..TIMER: vector=0x30 apic1=0 pin1=2 apic2=-1 pin2=-1
-clocksource: tsc-early: mask: 0xffffffffffffffff max_cycles: 0x32734e5ebc4, max_idle_ns: 440795265422 ns
-Calibrating delay loop (skipped), value calculated using timer frequency.. 6999.99 BogoMIPS (lpj=13999988)
+clocksource: tsc-early: mask: 0xffffffffffffffff max_cycles: 0x327400b884b, max_idle_ns: 440795380855 ns
+Calibrating delay loop (skipped), value calculated using timer frequency.. 7000.37 BogoMIPS (lpj=14000744)
 Last level iTLB entries: 4KB 512, 2MB 255, 4MB 127
 Last level dTLB entries: 4KB 512, 2MB 255, 4MB 127, 1GB 0
 Spectre V2 : User space: Vulnerable
@@ -135,8 +135,8 @@ rcu: Hierarchical SRCU implementation.
 rcu: 	Max phase no-delay instances is 1000.
 smp: Bringing up secondary CPUs ...
 smp: Brought up 1 node, 1 CPU
-smpboot: Total of 1 processors activated (6999.99 BogoMIPS)
-Memory: 2029228K/2096616K available (6144K kernel code, 806K rwdata, 652K rodata, 784K init, 1132K bss, 64396K reserved, 0K cma-reserved)
+smpboot: Total of 1 processors activated (7000.37 BogoMIPS)
+Memory: 2029212K/2096616K available (6144K kernel code, 806K rwdata, 652K rodata, 784K init, 1132K bss, 64412K reserved, 0K cma-reserved)
 devtmpfs: initialized
 clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 7645041785100000 ns
 futex hash table entries: 256 (order: 2, 16384 bytes, linear)
@@ -244,26 +244,26 @@ serio: i8042 KBD port at 0x60,0x64 irq 1
 serio: i8042 AUX port at 0x60,0x64 irq 12
 amd_pstate: the _CPC object is not present in SBIOS or ACPI disabled
 IPI shorthand broadcast: enabled
-sched_clock: Marking stable (388282657, 116919551)->(527924212, -22722004)
+sched_clock: Marking stable (388655389, 111256252)->(522628845, -22717204)
 input: AT Translated Set 2 keyboard as /devices/platform/i8042/serio0/input/input1
-Freeing initrd memory: 13356K
+Freeing initrd memory: 13372K
 Freeing unused kernel image (initmem) memory: 784K
 Write protecting the kernel read-only data: 8192k
 Freeing unused kernel image (rodata/data gap) memory: 1396K
-Run /fx/store/287e518e18a854360c36fe8467bfbb2c62364d878ce9dcd5dd0a19274a65701e-fx-init/fx-init as init process
+Run /fx/store/ecee869f33316105e112e6176648b5c3ead3adad833ffb0f3650f3764b61ba2e-fx-init/fx-init as init process
 fx-init: store from kernel command line fx.store=/fx/store
-fx-init: boot nonce 5a4dd840d33e7f21
+fx-init: boot nonce 2f51ea5351440f28
 fx-init: boot start store /fx/store
 EXT4-fs (vda): recovery complete
-EXT4-fs (vda): mounted filesystem a5762b8c-3b34-47c5-bcdf-22e44bb4a91c r/w with ordered data mode. Quota mode: disabled.
+EXT4-fs (vda): mounted filesystem 3ab1c1a1-3d79-402a-8bda-fcad2e1ee8b9 r/w with ordered data mode. Quota mode: disabled.
 fx-init: disk store mounted (current v3)
 fx-init: pivot_root EINVAL (initramfs root is the namespace root) — switch_root fallback (MS_MOVE + chroot) applied
 fx-init: pivoted to tmpfs root (magic 0x1021994)
 fx-init: fifo control up (/run/fx/control.in + /run/fx/control.out)
 fx-init: no UNIX control socket (/run/fx/control.sock: socket failed: Function not implemented — this kernel has no socket layer: CONFIG_NET is not set) — the fifo pair (/run/fx/control.in + control.out) carries the protocol for in-guest fxctl
-activated d86106865bf9dc22ffd1f92ed8a0b3a1d8643588d2ffd8dfb7e4c14c0bbea940 as version 5; buildfile /fx/disk/store/d86106865bf9dc22ffd1f92ed8a0b3a1d8643588d2ffd8dfb7e4c14c0bbea940-system-generation/Dhakefile.dhall
+activated 82c6a3a51d2e5cb2d16dd0dc927e325e2bef658521ddf3d2e0be9f39221e0438 as version 5; buildfile /fx/disk/store/82c6a3a51d2e5cb2d16dd0dc927e325e2bef658521ddf3d2e0be9f39221e0438-system-generation/Dhakefile.dhall
+input: ImExPS/2 Generic Explorer Mouse as /devices/platform/i8042/serio1/input/input3
 agent_main: warning: the loop hit the turn limit (--max-turns 2) with tool calls still pending: this run did NOT finish the task, so NO 'done' marker is recorded for it — the task stays eligible for the next boot
 OBS-AGENT-RAN-obs-agent-4d17
-input: ImExPS/2 Generic Explorer Mouse as /devices/platform/i8042/serio1/input/input3
 fakesvc exit 7
 fx-init: boot-FAILED v5

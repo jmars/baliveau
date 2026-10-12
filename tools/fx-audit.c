@@ -163,7 +163,7 @@
  * changed" as a finding, because LEGITIMATE growth is expected: fx-init
  * appends to .bootlog on every boot.  So an APPENDED forged line in the
  * writer's exact shape was invisible — and it defeats the substrate's own
- * recovery: fx-init's boot decision (bootlog_last, init.zig:737) reads the
+ * recovery: fx-init's boot decision (bootlog_last, init.zig:782) reads the
  * LAST non-shutdown status for a version, so an agent that APPENDS
  * "<its failed version> ok <epoch>" makes the next boot read that version
  * as ok, fx-init does NOT roll forward, and the broken generation stays
@@ -181,40 +181,57 @@
  *
  * THE ACCOUNTING RULE, DERIVED FROM THE WRITER'S CALL SITES (init.zig, not
  * guessed) — every append path ONE boot the host started may take:
- *   boot start     at most ONE in-progress (init.zig:4465, the ONLY site
- *                  that writes it, once per PID1 lifetime, for the version
- *                  being booted), and only when a generation was bootable
- *                  AND its facts read ok; the no-generation and facts-fail
- *                  paths append NOTHING and pre-decide the verdict away
- *                  (g_boot_decided=1 before any line is written)
+ *   boot start     TWO sites, both bounded by the boot's nonce.  At most
+ *                  ONE from the boot path (init.zig:4782: once per PID1
+ *                  lifetime, for the version being booted, and only when a
+ *                  generation was bootable AND its facts read ok — the
+ *                  no-generation and facts-fail paths append NOTHING and
+ *                  pre-decide the verdict away, g_boot_decided=1 before
+ *                  any line is written), and ONE PER ACTIVATE from the
+ *                  activate arm (init.zig:3620: appended AFTER the store's
+ *                  CURRENT rewrite and BEFORE the activated version's facts
+ *                  are read, so the activated window is OPEN on disk before
+ *                  anything can refuse it).  The boot path's line is that
+ *                  boot's FIRST in-progress, always — the PER-NONCE rule
+ *                  below rests on exactly that.
  *   verdict        the g_boot_decided latch allows one verdict per DECISION:
- *                  the boot path (dhake failure init.zig:4476; grace
- *                  expiry :2669/:2681; a service exiting during grace
- *                  :2776) verdicts the version it BOOTED, in a boot that
- *                  already appended its in-progress for that same version
+ *                  the boot path (dhake failure init.zig:4793; grace
+ *                  expiry :2874/:2886; a service exiting during grace
+ *                  :2981) verdicts the version it BOOTED, in a boot that
+ *                  already appended its in-progress for that same version;
+ *                  the activate REFUSAL arm verdicts the version it refused
+ *                  (init.zig:3663), riding the arm's own in-progress above
  *   the RE-ARM     the in-guest `activate` (the control channel, the path
  *                  the agent-slot loop uses every task cycle) PUBLISHES a
  *                  new version through fx-activate (the store's CURRENT
  *                  moves) and then RESETS the latch — g_boot_decided=0,
  *                  g_boot_failed=0, a fresh grace deadline (init.zig:
- *                  3415-3418) — so the SAME boot appends a SECOND verdict
- *                  for the NEWLY ACTIVATED version, with NO in-progress
- *                  for it (the boot's one in-progress already ran for the
- *                  version it booted; fx-init's own suite measures this
- *                  second DISK verdict, fx-init tests/qemu_boot_rollback.sh).
+ *                  3690-3693) — so the SAME boot appends a SECOND verdict
+ *                  for the NEWLY ACTIVATED version, which now WEARS ITS OWN
+ *                  in-progress: init.zig:3620 writes it before the facts are
+ *                  read, so the activated window is on disk ip-FIRST under
+ *                  the same boot's nonce (the boot's own in-progress already
+ *                  ran for the version it booted; fx-init's own suite
+ *                  measures this second DISK verdict pair, fx-init
+ *                  tests/qemu_boot_rollback.sh).  The store's publish
+ *                  RATCHET is what makes the pair attributable: a publish
+ *                  allocates max+1, so a re-arm version is ALWAYS greater
+ *                  than the version that boot BOOTED.
  *                  The ctrl `rollback` path moves CURRENT but does NOT
  *                  re-arm and appends nothing.  An activate can happen once
  *                  per control command — unbounded per boot — but every
  *                  publish allocates a FRESH version number (the store's
  *                  monotonic ratchet never reuses one), so at most ONE
- *                  re-arm verdict exists per (boot, version), hence per
- *                  version per window.
- *   shutdown       at most ONE (init.zig:3975, the SIGTERM path), naming
+ *                  re-arm in-progress and ONE re-arm verdict exists per
+ *                  first-published VERSION per window — the one boot that
+ *                  activated it (which may be ANY window boot, not
+ *                  necessarily the one whose verdict it lands next to).
+ *   shutdown       at most ONE (init.zig:4292, the SIGTERM path), naming
  *                  whatever version is current when PID1 exits (after an
  *                  activate, the ACTIVATED one — no in-progress of its own
  *                  in this boot either; the shutdown budget never looks at
  *                  versions)
- *   .recovery      at most ONE data row (recovery_append, init.zig:1674,
+ *   .recovery      at most ONE data row (recovery_append, init.zig:932,
  *                  once per successful roll-forward inside
  *                  decide_boot_version, whose every appending walk
  *                  iteration returns)
@@ -246,17 +263,124 @@
  *      machine and its message named an in-progress the same run's
  *      accounting line printed as present;
  *   2. per version v: added verdicts for v must number at most the added
- *      in-progress lines for v, plus one if v was first published in the
- *      window (the single re-arm verdict a version can ever carry).  More
- *      verdicts than boots behind them — including a SECOND verdict for a
- *      version the window already verdicted, under any nonce in the
- *      window — are FABRICATED BOOTS;
- *   3. added in-progress lines, shutdown lines and recovery rows must each
- *      number at most the host's boot DELTA, and at most ONE per nonce —
- *      more boots on paper than the host started are FABRICATED BOOTS, and
- *      a nonce that carries a verdict but no in-progress is a forge
- *      wearing a stolen boot's nonce (every verdict site runs in a boot
- *      that already appended its own in-progress).
+ *      in-progress lines for v, PLUS ONE ONLY for a version first published
+ *      in the window AND carrying NO re-arm in-progress of its own:
+ *      allow(v) = ip(v) + 1 iff first-published(v) AND ip(v) == 0.  The +1
+ *      is the OLD-writer shape of the single re-arm verdict (init.zig
+ *      before the re-arm's in-progress existed) and must NEVER stack on a
+ *      present re-arm ip — a first-published version that HAS its own ip
+ *      gets exactly that one verdict slot.  More verdicts than boots behind
+ *      them — including a SECOND verdict for a version the window already
+ *      verdicted, under any nonce in the window — are FABRICATED BOOTS;
+ *   3. added in-progress lines must number at most the host's boot DELTA
+ *      PLUS the versions the store FIRST PUBLISHED in this window (every
+ *      activate re-arm appends one, for a distinct first-published
+ *      version); shutdown lines and recovery rows at most the DELTA — more
+ *      boots on paper than the host started are FABRICATED BOOTS.
+ *      PER NONCE, the FIRST added in-progress is that boot's OWN
+ *      (init.zig:4782, written before every verdict site), and every
+ *      SUBSEQUENT one must be an activate re-arm (init.zig:3620) naming a
+ *      version the store FIRST PUBLISHED in this window AND numerically
+ *      GREATER than the version that nonce's first in-progress named (the
+ *      publish ratchet is max+1, so a boot's re-arm versions always exceed
+ *      the version it booted) AND NOT ALREADY BOOTED in this window — the
+ *      re-arm names the version the activate JUST published (max+1), which
+ *      has therefore never been booted, so a later in-progress for a
+ *      version whose OWN first in-progress already appeared is a forged
+ *      pair riding an earlier boot's nonce.  AND PER WINDOW, the re-arm
+ *      in-progress budget is ONE PER FIRST-PUBLISHED VERSION: a publish
+ *      allocates a version number exactly ONCE, so exactly ONE boot can
+ *      have activated that version and written its re-arm line — a SECOND
+ *      in-progress naming the same version, under ANY window nonce, is a
+ *      forged pair riding a second real boot's nonce (this is the keying
+ *      that closes the cross-nonce flip: keyed per (nonce, version) it
+ *      would be read as a legitimate re-arm for the second boot, ip(v) and
+ *      vd(v) would rise in lockstep, and rule 2 would pass a SECOND verdict
+ *      for a version the window already verdicted).  The NOT-ALREADY-BOOTED
+ *      clause is what closes the REPUBLISH shape: a version the STORE first
+ *      published WITHOUT an activation (a roll-forward republish, automatic
+ *      or operator) and then BOOTED in the window has no legitimate later
+ *      ip anywhere, and a forged "<v> in-progress Nth>" + "<v> ok Nth>"
+ *      pair riding an EARLIER real boot's nonce would otherwise read as a
+ *      legitimate re-arm (v is first-published and newer than that boot's
+ *      own) and buy a SECOND verdict for a version the window already
+ *      verdicted.  Anything else is a second boot on paper wearing one real
+ *      boot's nonce — and a nonce that carries a verdict but no in-progress
+ *      is that same forge (every verdict site runs in a boot that appended
+ *      its own first).
+ * ── THE THREAT-MODEL DELTA OF THE RE-ARM IN-PROGRESS ────────────────────
+ * The pre-re-arm reader's per-nonce in-progress budget was ONE, and that
+ * single budget WAS the pair-forgery closure: a forged
+ * "<v> in-progress" + "<v> ok|failed" pair appended into the slack of a
+ * real window boot fired it.  The writer's new re-arm line RE-OPENS that
+ * shape, by design, and the closure moves into the per-nonce rule above: a
+ * forged pair for a first-published version may now ride ANY real window
+ * boot's nonce — provided the version is PLAUSIBLY ACTIVATABLE, i.e. first
+ * published in the window, newer than that boot's own version, NOT already
+ * booted in the window, AND provided NO other later in-progress in the
+ * window already named that version (the one-per-first-published-VERSION-
+ * per-window cap).  That last clause is the load-bearing one and it is
+ * NOT derivable per nonce: with
+ * two real nonces in a window, keyed per (nonce, version) a forger could
+ * append an in-progress+verdict pair for the version the LIVE boot
+ * activated, riding an EARLIER window boot's nonce — the version IS
+ * first-published and IS newer than that earlier boot's own, so the pair
+ * reads as a legitimate re-arm; ip(v) and vd(v) then rise in lockstep and
+ * rule 2 passes a SECOND verdict for a version the window already
+ * verdicted.  That is the flip the PRE-re-arm reader closed (one
+ * in-progress per nonce) and a per-(nonce, version) rule re-opens; keying
+ * the duplicate on the VERSION alone closes it (MEASURED: the cross-nonce
+ * flip audits COHERENT on the per-(nonce, version) reader and INCOHERENT
+ * after the fix — tests/test_fx_audit.sh REARMIPX, with the pre-fix reader
+ * pinned as BEFORE-E and the pre-re-arm reader pinned firing it).  The
+ * version-keyed cap alone does NOT close a SECOND shape, MEASURED in round
+ * 2 (tests/test_fx_audit.sh REARMIPREPUB): a version the STORE first
+ * published WITHOUT an activation — the roll-forward REPUBLISH (automatic,
+ * init.zig:1879, or the operator `rollback`, init.zig:3749) — and then
+ * BOOTED in the window has NO legitimate later ip anywhere, so the dup
+ * check never sees it; a forged "<v> in-progress Nth>" + "<v> ok Nth>" pair
+ * riding an EARLIER real window boot's nonce then passes every predicate
+ * (v is first-published, newer than that boot's own, not a dup) and buys a
+ * SECOND verdict for a version the window already verdicted — the exact
+ * flip REARMIPX pins, in the republish shape.  The NOT-ALREADY-BOOTED
+ * clause closes it: the re-arm ip for a republished version is a re-arm for
+ * a version whose OWN first in-progress already appeared (it was BOOTED),
+ * and a version the activate JUST published has never been booted, so that
+ * later ip is refused — measured, tests/test_fx_audit.sh REARMIPREPUB.
+ * What the forger still CANNOT do: mint an in-progress for a version the
+ * store did not publish in this window, or one OLDER than that nonce's
+ * first in-progress (both fire the per-nonce rule — the (b2) forged-pair
+ * arm of tests/qemu-agent-observe.sh keeps firing, through this rule now),
+ * or land a SECOND verdict for a version the window already verdicted
+ * (rule 2, and tighter than before: the +1 no longer stacks on a present
+ * re-arm ip, the re-arm ip itself is one per first-published version per
+ * window, AND it must name a version not already booted — so a forged pair
+ * cannot ride a second window nonce to buy that second verdict, whether
+ * the version was activated or republished).  What the legitimate re-arm
+ * line GRANTS a forger is therefore NOTHING it did not already have: the
+ * +1 first-published credit already granted exactly ONE verdict slot per
+ * first-published version, and the one-per-version-per-window cap (plus
+ * the not-already-booted clause) keeps it at one; the in-progress line
+ * only makes the activation window visible on disk.  The remaining hole is
+ * the LIVE-BOOT substitution already named in the printed bound (the agent
+ * appends inside its own boot under its own boot's nonce) — it is not
+ * opened by this rule.  A SECOND residual, named, not closed: a version
+ * first published WITHOUT an activation and NOT YET BOOTED in the window
+ * admits a forged pair indistinguishable from a real activation's re-arm —
+ * it lands the version's FIRST verdict (a fabricated one; the later real
+ * boot of it is the second, inside the ip(v)=2/vd(v)=2 budget).  The only
+ * writer window where that shape is reachable is the OPERATOR `rollback`
+ * during a live boot (the republish lands on the ctrl channel, the next
+ * boot boots it, and an agent runs in between); the AUTOMATIC roll-forward
+ * has no such window (the republish and the boot are one PID1 start,
+ * before any agent runs), and the not-already-booted clause refuses the
+ * same forge the moment the version IS booted.  Telling that forge from a
+ * real activation would require reading the .operator journal (an
+ * `activate` row against a `rollback` row naming the version), which this
+ * seat does not read; the PRE-re-arm reader closed it only as a side
+ * effect of its one-in-progress-per-nonce budget, which also rejected
+ * every healthy re-arm boot.
+ *
  * The rule is deliberately STRICT about window edges: a verdict gets NO
  * credit for an in-progress left open at the previous observation.  The
  * audit is a BETWEEN-BOOTS instrument (run it with the guest stopped —
@@ -1156,9 +1280,10 @@ static long bl_consume_ip(size_t before, unsigned long v, const char *nonce, siz
  * timeline now, absent from the previous observation's version list?  The
  * in-guest `activate` handler publishes a NEW version through the
  * fx-activate child (the store's CURRENT moves with it) and RE-ARMS the
- * boot decision (init.zig:3415-3418); the re-armed grace window then
- * verdicts EXACTLY that version, with no in-progress for it in the boot
- * (the boot's one in-progress already ran for the version it booted).
+ * boot decision (init.zig:3693-3696); the re-armed grace window then
+ * verdicts EXACTLY that version, riding the in-progress the activate arm
+ * appended for it (init.zig:3620 — the writer's re-arm marker; the OLD
+ * writer shape has no such line, which is what the allow(v) +1 is for).
  * The record used here is fxstore's own publish history — the timeline,
  * the snapshot manifests and facts a publish writes transactionally —
  * NOT .bootlog, the file a forger appends to.  A version number is
@@ -1166,7 +1291,10 @@ static long bl_consume_ip(size_t before, unsigned long v, const char *nonce, siz
  * one), so "in the timeline now, absent at the previous observation" is
  * exactly "first published this window", and the ONE re-arm verdict a
  * version can ever carry is why the per-version verdict budget adds at
- * most one for it.  Forging the anchor means adding a version to the
+ * most one for it — but ONLY when that version carries no re-arm
+ * in-progress of its own: the new-writer shape has the ip, so the +1 must
+ * not stack on it (a first-published version gets exactly one slot either
+ * way, and the extra ip must never buy a second verdict).  Forging the
  * fxstore db itself: hand-crafting that in-guest is a store-format
  * barrier (and the per-version facts hash + genhash cross-checks apply
  * to the fabricated version the moment it exists), while running the
@@ -1181,11 +1309,27 @@ static int ver_published_this_window(unsigned long v) {
     return 1; /* REARM-ANCHOR: first published since the previous observation */
 }
 
+/* how many versions the store FIRST PUBLISHED in this window — the store's
+ * own total for the identifier above (the header's rule 3: every activate's
+ * in-progress is for one of them, and every publish allocates a fresh
+ * number, so this is exactly the re-arm line allowance of the window). */
+static size_t nfp_this_window(void) {
+    size_t n = 0;
+    if (!g_have_obs) return 0;
+    for (size_t i = 0; i < g_nvers; i++) {
+        int seen = 0;
+        for (size_t j = 0; j < g_nobs_vers; j++)
+            if (g_obs_vers[j] == g_vers[i]) { seen = 1; break; }
+        if (!seen) n++;
+    }
+    return n;
+}
+
 /* per-VERSION verdict accounting for the ADDED lines of one window (see
  * the header's rule 2): a linear table is plenty — it is bounded by the
  * added-line count of one window, and it dies loudly rather than silently
  * truncating, the fixed-array discipline of this file. */
-typedef struct { unsigned long v; size_t ip, vd; } vstat_t;
+typedef struct { unsigned long v; size_t ip, vd; char own; } vstat_t;
 static vstat_t g_vstat[4096];
 static size_t g_nvstat = 0;
 static vstat_t *vstat_for(unsigned long v) {
@@ -1196,6 +1340,7 @@ static vstat_t *vstat_for(unsigned long v) {
     g_vstat[g_nvstat].v = v;
     g_vstat[g_nvstat].ip = 0;
     g_vstat[g_nvstat].vd = 0;
+    g_vstat[g_nvstat].own = 0;
     return &g_vstat[g_nvstat++];
 }
 
@@ -1223,15 +1368,19 @@ static vstat_t *vstat_for(unsigned long v) {
  * written) runs no agent service at all (no services load — the writer's
  * own pre-decided failure path), so nobody is alive inside it to spend its
  * nonce, and (4) an invented nonce is not in the host's ledger.  The
- * per-boot accounting is then applied PER NONCE for the once-per-boot
- * lines (<=1 in-progress, <=1 shutdown, <=1 .recovery row) and PER VERSION
- * for verdicts: a verdict rides an in-progress wearing ITS OWN nonce (one
- * boot, one nonce — every line of a boot carries the nonce latched at its
- * start) OR names a version the STORE first published in this window (the
- * in-guest activate re-arm, which verdicts the activated generation
- * without a new in-progress, init.zig:3415-3418); and a version carries
- * at most one verdict per in-progress behind it plus that one re-arm
- * verdict.  What this genuinely cannot see — a verdict SUBSTITUTED for
+ * per-boot accounting is then applied PER NONCE for the in-progress lines
+ * (the boot's OWN first line plus one activate RE-ARM per version the store
+ * FIRST PUBLISHED in this window — each newer than the version its boot
+ * booted, init.zig:3620 — and <=1 shutdown, <=1 .recovery row) and PER
+ * VERSION for verdicts: a verdict rides an in-progress wearing ITS OWN
+ * nonce (one boot, one nonce — every line of a boot carries the nonce
+ * latched at its start, the re-arm ip included) OR names a version the
+ * STORE first published in this window (the OLD-writer activate re-arm,
+ * which verdicts the activated generation without a new in-progress,
+ * init.zig:3693-3696); and a version carries at most one verdict per
+ * in-progress behind it, plus that one re-arm verdict ONLY when it has no
+ * re-arm ip of its own.  What this genuinely cannot see — a verdict
+ * SUBSTITUTED for
  * the live boot's own (the agent appends the verdict itself wearing the
  * live nonce and suppresses fx-init's): one verdict, one (nonce, version)
  * — named in the printed bound, not claimed closed.
@@ -1378,6 +1527,46 @@ static void check_boot_accounting(void) {
     if (!skip_bl) {
         char *consumed = calloc(g_nbl ? g_nbl : 1, 1);
         if (!consumed) die("out of memory");
+        /* ── the RE-ARM classification state (header rule 3) ──
+         * have_first_ip[slot] / first_ip_v[slot] record the FIRST added
+         * in-progress of each nonce — that boot's OWN line (init.zig:4782,
+         * written before every verdict site, so it is provably the boot's
+         * first).  is_rearm_ip[i] marks every LATER in-progress the store's
+         * own publish record accounts for (a re-arm: first-published in
+         * this window AND newer than that nonce's first version — the
+         * publish ratchet is max+1), and seen_ip[] is the set of VERSIONS
+         * the window's later in-progress lines have named: the re-arm ip
+         * budget is ONE PER FIRST-PUBLISHED VERSION PER WINDOW, so the
+         * duplicate check is keyed on the VERSION ALONE — a version is
+         * published by exactly ONE activate, hence exactly one boot can
+         * have written its re-arm ip; a second line naming it anywhere in
+         * the window is a forged pair riding a second boot's nonce.
+         * vstat_t.own marks a version that already appeared as a boot's
+         * OWN first in-progress (init.zig:4782): the re-arm line names a
+         * version the activate JUST published (max+1), which has therefore
+         * NEVER been booted, so a later in-progress naming an already-
+         * booted version is the roll-forward REPUBLISH forge — a version
+         * first published WITHOUT an activation, then booted, then given a
+         * forged re-arm pair riding an earlier boot's nonce to buy a SECOND
+         * verdict for it.  rej_ip_* keep the FIRST offending later line per
+         * nonce, so the finding can be reported with the nonce's total and
+         * the reason. */
+        unsigned long *first_ip_v = malloc((g_nnled ? g_nnled : 1) * sizeof *first_ip_v);
+        char *have_first_ip = malloc(g_nnled ? g_nnled : 1);
+        char *is_rearm_ip = malloc((g_nbl ? g_nbl : 1) * sizeof *is_rearm_ip);
+        char *has_rej = malloc(g_nnled ? g_nnled : 1);
+        unsigned long *rej_ip_v = malloc((g_nnled ? g_nnled : 1) * sizeof *rej_ip_v);
+        char (*rej_ip_why)[288] = malloc((g_nnled ? g_nnled : 1) * sizeof *rej_ip_why);
+        unsigned long *seen_ip = malloc((g_nbl ? g_nbl : 1) * sizeof *seen_ip);
+        if (!first_ip_v || !have_first_ip || !is_rearm_ip || !has_rej || !rej_ip_v || !rej_ip_why || !seen_ip)
+            die("out of memory");
+        for (size_t i = 0; i < g_nnled; i++) {
+            have_first_ip[i] = has_rej[i] = 0;
+            first_ip_v[i] = rej_ip_v[i] = 0;
+            rej_ip_why[i][0] = 0;
+        }
+        if (g_nbl) memset(is_rearm_ip, 0, g_nbl);
+        size_t n_seen_ip = 0;
         for (size_t i = 0; i < g_nbl; i++) {
             if (g_bl[i].off < base) continue; /* not added this window */
             const char *st = g_bl[i].status;
@@ -1389,7 +1578,64 @@ static void check_boot_accounting(void) {
                 long ws = nonce_slot(g_bl[i].nonce);
                 int in_win = (ws >= 0 && g_nled[ws].boot > g_obs_boots && g_nled[ws].boot <= g_boots);
                 if (in_win) {
-                    if (!strcmp(st, "in-progress")) nip[ws]++;
+                    if (!strcmp(st, "in-progress")) {
+                        nip[ws]++;
+                        if (!have_first_ip[ws]) {
+                            have_first_ip[ws] = 1;
+                            first_ip_v[ws] = g_bl[i].v;
+                            /* that boot's OWN version.  A version is FRESH
+                             * at activation time — the publish ratchet
+                             * allocates max+1, so the activate arm's re-arm
+                             * line (init.zig:3620) can only ever name a
+                             * version that has NOT yet been booted.  Mark it
+                             * booted so the later-ip check below refuses a
+                             * "re-arm" for an already-booted version — the
+                             * REPUBLISH forge, where a first-published-but-
+                             * never-activated version is booted and a forged
+                             * pair rides an earlier boot's nonce to buy a
+                             * SECOND verdict for it. */
+                            vstat_for(g_bl[i].v)->own = 1;
+                        } else {
+                            /* a LATER in-progress of this boot: only an
+                             * activate re-arm can produce one, and each
+                             * VERSION it names can be activated exactly
+                             * once in the window */
+                            int dup = 0;
+                            for (size_t q = 0; q < n_seen_ip; q++)
+                                if (seen_ip[q] == g_bl[i].v) { /* VERSION-KEY */ dup = 1; break; }
+                            if (dup) {
+                                if (!has_rej[ws]) {
+                                    has_rej[ws] = 1; rej_ip_v[ws] = g_bl[i].v;
+                                    snprintf(rej_ip_why[ws], sizeof rej_ip_why[ws],
+                                             "a SECOND in-progress for v%lu in this window (a publish allocates a version number exactly ONCE, so exactly ONE boot can have activated it and written its re-arm in-progress — a second one is a forged pair riding a second boot's nonce)", g_bl[i].v);
+                                }
+                            } else if (vstat_for(g_bl[i].v)->own) { /* NOT-BOOTED-KEY */
+                                if (!has_rej[ws]) {
+                                    has_rej[ws] = 1; rej_ip_v[ws] = g_bl[i].v;
+                                    snprintf(rej_ip_why[ws], sizeof rej_ip_why[ws],
+                                             "v%lu was ALREADY BOOTED in this window (its own first in-progress appeared earlier) — a re-arm (init.zig:3620) names the version the activate JUST published (max+1, never booted): a forged pair riding an earlier boot's nonce to buy a SECOND verdict", g_bl[i].v);
+                                }
+                            } else if (!ver_published_this_window(g_bl[i].v)) {
+                                if (!has_rej[ws]) {
+                                    has_rej[ws] = 1; rej_ip_v[ws] = g_bl[i].v;
+                                    snprintf(rej_ip_why[ws], sizeof rej_ip_why[ws],
+                                             "v%lu is NOT a version the store first published in this window (init.zig:3620 only ever names the version the activate just published)", g_bl[i].v);
+                                }
+                            } else if (!(g_bl[i].v > first_ip_v[ws])) {
+                                if (!has_rej[ws]) {
+                                    has_rej[ws] = 1; rej_ip_v[ws] = g_bl[i].v;
+                                    snprintf(rej_ip_why[ws], sizeof rej_ip_why[ws],
+                                             "v%lu is NOT greater than v%lu, the version that nonce's first in-progress named (the publish ratchet is max+1, so a real re-arm version always exceeds the booted one)",
+                                             g_bl[i].v, first_ip_v[ws]);
+                                }
+                            } else {
+                                is_rearm_ip[i] = 1;
+                                info("boot accounting: the nonce the host issued for boot %lu (%s) carries a RE-ARM in-progress for v%lu — a version the store FIRST PUBLISHED in this window and NEWER than v%lu, the version that boot BOOTED: the activate arm's own window marker (init.zig:3620, appended before the activated facts are read); accounted, not a finding",
+                                     g_nled[ws].boot, g_nled[ws].nonce, g_bl[i].v, first_ip_v[ws]);
+                            }
+                            seen_ip[n_seen_ip++] = g_bl[i].v;
+                        }
+                    }
                     else if (!strcmp(st, "shutdown")) nsd[ws]++;
                     else nvd[ws]++;
                 } else {
@@ -1415,13 +1661,17 @@ static void check_boot_accounting(void) {
              * window — the in-guest activate re-arm verdicts the newly
              * activated generation without a new in-progress.  Anything
              * else is a verdict no writer path produces. */
-            if (bl_consume_ip(i, g_bl[i].v, g_bl[i].nonce, base, consumed) < 0) {
+            const long aj = bl_consume_ip(i, g_bl[i].v, g_bl[i].nonce, base, consumed);
+            if (aj >= 0 && is_rearm_ip[aj])
+                info("boot accounting: the ADDED '%lu %s %lu' verdict for v%lu CONSUMES the RE-ARM in-progress this boot wrote for it (init.zig:3620) — the activated generation's own window, closed by the re-armed grace window (init.zig:3693-3696) under the same nonce; accounted, not a finding",
+                     g_bl[i].v, st, g_bl[i].epoch, g_bl[i].v);
+            if (aj < 0) {
                 if (ver_published_this_window(g_bl[i].v)) {
-                    info("boot accounting: an ADDED '%lu %s %lu' verdict rides no in-progress of its own, but v%lu was FIRST PUBLISHED this window (in the store's timeline now, absent at the previous observation) — the in-guest activate RE-ARM shape: fx-init resets the boot decision for the activated generation (init.zig:3415-3418) and the re-armed grace window verdicts it without a new in-progress; accounted, not a finding",
+                    info("boot accounting: an ADDED '%lu %s %lu' verdict rides no in-progress of its own, but v%lu was FIRST PUBLISHED this window (in the store's timeline now, absent at the previous observation) — the in-guest activate RE-ARM shape: fx-init resets the boot decision for the activated generation (init.zig:3693-3696) and the re-armed grace window verdicts it without a new in-progress; accounted, not a finding",
                          g_bl[i].v, st, g_bl[i].epoch, g_bl[i].v);
                 } else {
                     add_finding("bootlog-forged-verdict",
-                                "an ADDED '%lu %s %lu' line has no '%lu in-progress' line earlier in this window wearing its nonce, and v%lu is not a version the store first published in this window — the only two writer paths behind a verdict are the boot that BOOTED the version (in-progress first, same nonce: init.zig:4465, then the verdict sites 2669/2681/2776/4476 under the g_boot_decided latch) and the boot that ACTIVATED the version in-guest (the re-armed grace window verdicts the newly published version with no new in-progress, init.zig:3415-3418; the store's own timeline records that publish), so no boot the host started is behind this line: it was APPENDED by hand. This is the forge that feeds fx-init's boot decision a verdict no boot produced (bootlog_last, init.zig:782): a forged 'ok' makes the next boot skip the roll-forward and keeps a broken generation CURRENT; a forged 'failed' forces one that should not happen",
+                                "an ADDED '%lu %s %lu' line has no '%lu in-progress' line earlier in this window wearing its nonce, and v%lu is not a version the store first published in this window — the only two writer paths behind a verdict are the boot that BOOTED the version (in-progress first, same nonce: init.zig:4782, then the verdict sites 2874/2886/2981/4793 under the g_boot_decided latch) and the boot that ACTIVATED the version in-guest (the re-armed grace window verdicts the newly published version with no new in-progress, init.zig:3693-3696; the store's own timeline records that publish), so no boot the host started is behind this line: it was APPENDED by hand. This is the forge that feeds fx-init's boot decision a verdict no boot produced (bootlog_last, init.zig:782): a forged 'ok' makes the next boot skip the roll-forward and keeps a broken generation CURRENT; a forged 'failed' forces one that should not happen",
                                 g_bl[i].v, st, g_bl[i].epoch, g_bl[i].v, g_bl[i].v);
                 }
             }
@@ -1479,8 +1729,8 @@ static void check_boot_accounting(void) {
                         long aws = nonce_slot(g_bl[aj].nonce);
                         int awin = (aws >= 0 && g_nled[aws].boot > g_obs_boots && g_nled[aws].boot <= g_boots);
                         if (awin) nvd[aws]++;
-                        info("boot accounting: an added TORN '%lu %s %lu' line (no trailing newline) is accounted for by an added '%lu in-progress' line earlier in this window — one boot the host started wrote both and the append was cut short mid-write; counted, not a finding",
-                             tv, ts, tep, tv);
+                        info("boot accounting: an added TORN '%lu %s %lu' line (no trailing newline) is accounted for by an added '%lu in-progress' line earlier in this window%s — one boot the host started wrote both and the append was cut short mid-write; counted, not a finding",
+                             tv, ts, tep, tv, (is_rearm_ip[aj] ? " (the RE-ARM marker the activate arm appended for the activated version, init.zig:3620)" : ""));
                     } else if (ver_published_this_window(tv)) {
                         /* charge the torn line's own slot when its token is
                          * whole and in-window, so the verdict-without-ip
@@ -1488,11 +1738,11 @@ static void check_boot_accounting(void) {
                         long tws = nonce_slot(tnonce);
                         if (tws >= 0 && g_nled[tws].boot > g_obs_boots && g_nled[tws].boot <= g_boots)
                             nvd[tws]++;
-                        info("boot accounting: an added TORN '%lu %s %lu' line (no trailing newline) rides no in-progress of its own, but v%lu was FIRST PUBLISHED this window (in the store's timeline now, absent at the previous observation) — the in-guest activate RE-ARM shape (init.zig:3415-3418) with its verdict append cut mid-write; counted, not a finding",
+                        info("boot accounting: an added TORN '%lu %s %lu' line (no trailing newline) rides no in-progress of its own, but v%lu was FIRST PUBLISHED this window (in the store's timeline now, absent at the previous observation) — the in-guest activate RE-ARM shape (init.zig:3693-3696) with its verdict append cut mid-write; counted, not a finding",
                              tv, ts, tep, tv);
                     } else {
                         add_finding("bootlog-forged-verdict",
-                                    "an ADDED TORN '%lu %s %lu' line (no trailing newline) has no unconsumed '%lu in-progress' line earlier in this window and names no version the store first published in this window — a torn tail is what a crash mid-append leaves, and a hand-appended line without its newline looks identical, so the attribution decides it; the writer's only two paths behind a verdict are an in-progress FIRST (init.zig:4465, before the verdict sites) and the activate re-arm for a version newly published this window (init.zig:3415-3418), so no boot the host's count accounts for is behind this line. fx-init reads .bootlog with fgets, which RETURNS a final unterminated line, so bootlog_last still sees this verdict in-guest: the missing newline does not make an appended forge unreadable, only harder to see",
+                                    "an ADDED TORN '%lu %s %lu' line (no trailing newline) has no unconsumed '%lu in-progress' line earlier in this window and names no version the store first published in this window — a torn tail is what a crash mid-append leaves, and a hand-appended line without its newline looks identical, so the attribution decides it; the writer's only two paths behind a verdict are an in-progress FIRST (init.zig:4782, before the verdict sites) and the activate re-arm for a version newly published this window (its own marker at init.zig:3620, re-armed at :3693-3696), so no boot the host's count accounts for is behind this line. fx-init reads .bootlog with fgets, which RETURNS a final unterminated line, so bootlog_last still sees this verdict in-guest: the missing newline does not make an appended forge unreadable, only harder to see",
                                     tv, ts, tep, tv);
                     }
                 }
@@ -1500,35 +1750,79 @@ static void check_boot_accounting(void) {
             g_bl_bytes[g_bl_len] = save;
         }
         free(consumed);
-        if (n_ip > delta)
+        /* ── THE RE-ARM IN-PROGRESS RULE (header's rule 3) ────────────────
+         * The first in-progress a nonce carries is that boot's OWN; every
+         * later one must be an activate re-arm — first-published in this
+         * window, newer than the nonce's first version, and the ONLY later
+         * in-progress in the window naming that version.  One finding per
+         * offending nonce: it names the nonce, the nonce's in-progress
+         * TOTAL, the offending version and WHY it cannot be a re-arm — and
+         * it says the verdict riding that pair is part of the same forge,
+         * because the forged ip is exactly what vouches for the forged
+         * verdict. */
+        if (g_nonces_given)
+            for (size_t i = 0; i < g_nnled; i++) {
+                if (!has_rej[i]) continue;
+                add_finding("bootlog-fabricated-boots",
+                            "the nonce the host issued for boot %lu (%s) carries %zu in-progress line(s) in this window — the FIRST is that boot's OWN (init.zig:4782, written before every verdict site); every later one must be an activate RE-ARM (init.zig:3620) naming a version the store FIRST PUBLISHED in this window, NEWER than that first version (the publish ratchet is max+1, so a re-arm version always exceeds the booted one) AND NOT ALREADY BOOTED (a re-arm names the version the activate JUST published, max+1, which has never been booted) — and, per window, at most ONE re-arm in-progress per first-published version (a publish allocates a version number exactly ONCE, so exactly one boot can have activated it). The one naming v%lu is none of those: %s. A second boot on paper wearing one real boot's nonce — and the verdict that rides this line-pair is part of the same forge",
+                            g_nled[i].boot, g_nled[i].nonce, nip[i], rej_ip_v[i], rej_ip_why[i]);
+            }
+        /* the window's re-arm allowance (header rule 3): every activate
+         * appends an in-progress for a version the store first published
+         * HERE, so the budget is the boot delta PLUS those versions.  Slack
+         * (a roll-forward republish also first-publishes a version) only
+         * widens the bound, which is the safe direction — this must never
+         * fire on a healthy machine. */
+        size_t n_fp = nfp_this_window();
+        if (n_ip > delta + n_fp)
             add_finding("bootlog-fabricated-boots",
-                        "%zu in-progress line(s) added but the host started only %lu boot(s) since the previous observation (host boots %lu -> %lu) — fx-init writes at most ONE in-progress per boot the host starts (init.zig:4465); the surplus was appended by something that is not fx-init booting",
-                        n_ip, delta, g_obs_boots, g_boots);
+                        "%zu in-progress line(s) added but the host started only %lu boot(s) since the previous observation (host boots %lu -> %lu) — and at most %zu of those can be an activate RE-ARM (a version the store FIRST PUBLISHED in this window, init.zig:3620): fx-init writes at most ONE in-progress per boot the host starts (init.zig:4782) plus one per activate re-arm; the surplus was appended by something that is not fx-init booting",
+                        n_ip, delta, g_obs_boots, g_boots, n_fp);
         if (n_sd > delta)
             add_finding("bootlog-fabricated-boots",
-                        "%zu shutdown line(s) added but the host started only %lu boot(s) since the previous observation (host boots %lu -> %lu) — at most one shutdown per boot (init.zig:3975)",
+                        "%zu shutdown line(s) added but the host started only %lu boot(s) since the previous observation (host boots %lu -> %lu) — at most one shutdown per boot (init.zig:4292)",
                         n_sd, delta, g_obs_boots, g_boots);
         /* the PER-VERSION verdict budget (the header's rule 2): the writer
          * verdicts a version once per boot that wrote an in-progress for it
          * (the g_boot_decided latch) and at most once more EVER — the boot
          * that ACTIVATED the version in-guest (the re-armed grace window;
-         * a publish allocates the version number exactly once).  This is
-         * the budget that survives the re-arm: a per-NONCE verdict budget
-         * cannot (one boot, one nonce, MANY activates), and a per-version
-         * budget is what catches a SECOND verdict for a version the window
-         * already verdicted — under ANY window nonce, the flip that would
-         * overwrite a real verdict by appending after it. */
+         * a publish allocates the version number exactly once).  That ONE
+         * extra slot is granted ONLY to a first-published version that
+         * carries NO re-arm in-progress of its own: when the writer put the
+         * re-arm ip on disk (init.zig:3620) the version's verdict rides THAT
+         * and the +1 must not stack on top of it — otherwise a real ip plus
+         * one forged verdict would fit the budget and REARMFLIP would
+         * regress silently.  This is the budget that survives the re-arm: a
+         * per-NONCE verdict budget cannot (one boot, one nonce, MANY
+         * activates), and a per-version budget is what catches a SECOND
+         * verdict for a version the window already verdicted — under ANY
+         * window nonce, the flip that would overwrite a real verdict by
+         * appending after it. */
         for (size_t k = 0; k < g_nvstat; k++) { /* VERDICT-BUDGET */
             vstat_t *vs = &g_vstat[k];
-            size_t allow = vs->ip + (ver_published_this_window(vs->v) ? 1u : 0u);
-            if (vs->vd > allow)
+            const int fp = ver_published_this_window(vs->v);
+            size_t allow = vs->ip + ((fp && vs->ip == 0) ? 1u : 0u);
+            if (vs->vd > allow) {
+                /* the parenthetical must state what was actually GRANTED:
+                 * the +1 credit never applies on top of a present re-arm ip,
+                 * and printing the first-published flag then would imply a
+                 * slot this version did not get. */
+                char credit[200];
+                if (vs->ip == 0 && fp)
+                    snprintf(credit, sizeof credit, ", first published this window");
+                else if (vs->ip != 0 && fp)
+                    snprintf(credit, sizeof credit, ", first published this window but its RE-ARM in-progress is PRESENT — the extra slot is NOT granted on top of it");
+                else
+                    credit[0] = 0;
                 add_finding("bootlog-fabricated-boots",
-                            "version %lu carries %zu ADDED verdict line(s) this window but at most %zu can be behind them (%zu in-progress line(s) for v%lu%s) — the writer verdicts a version once per boot that wrote an in-progress for it (the g_boot_decided latch, init.zig:2669/2681/2776/4476) and at most once more EVER: the boot that ACTIVATED it in-guest, the re-armed grace window (init.zig:3415-3418; a publish allocates the version number exactly once). A surplus verdict is a boot on paper the host never started",
-                            vs->v, vs->vd, allow, vs->ip, vs->v,
-                            ver_published_this_window(vs->v) ? ", first published this window" : "");
+                            "version %lu carries %zu ADDED verdict line(s) this window but at most %zu can be behind them (%zu in-progress line(s) for v%lu%s) — the writer verdicts a version once per boot that wrote an in-progress for it (the g_boot_decided latch, init.zig:2874/2886/2981/4793) and at most once more EVER: the boot that ACTIVATED it in-guest, the re-armed grace window (init.zig:3693-3696; a publish allocates the version number exactly once), and that ONE extra slot is granted only to a version with NO re-arm in-progress of its own (init.zig:3620). A surplus verdict is a boot on paper the host never started",
+                            vs->v, vs->vd, allow, vs->ip, vs->v, credit);
+            }
         }
         if (n_ip + n_sd + n_verdict == 0 && !g_obs_bl_absent)
             info("boot accounting: no .bootlog lines added this window");
+        free(first_ip_v); free(have_first_ip); free(is_rearm_ip);
+        free(has_rej); free(rej_ip_v); free(rej_ip_why); free(seen_ip);
     }
 
     /* ── the .recovery rows ADDED since the previous observation ── */
@@ -1609,28 +1903,26 @@ static void check_boot_accounting(void) {
                 info("boot accounting: %zu ADDED .recovery row(s) carry no window nonce (first: '%s') — the mixed/manual regime: counted by the boot arithmetic, not nonce-bound",
                      n_unbound_rec, unbound_rec_first);
         }
-        /* the per-nonce budget for the ONCE-PER-BOOT lines: at most one
-         * in-progress, one shutdown, one row per nonce — and a nonce that
-         * carries a verdict must carry an in-progress (every verdict site
-         * runs in a live boot, which wrote its own in-progress first; the
-         * re-arm verdict rides the SAME live boot's nonce).  The VERDICT
-         * budget is per VERSION, not per nonce — one boot can activate
-         * many versions — and lives above, on the added-line walk. */
+        /* the per-nonce budget for the lines that ARE once-per-boot: one
+         * shutdown, one row per nonce, and a nonce that carries a verdict
+         * must carry an in-progress (every verdict site runs in a live boot,
+         * which wrote its own in-progress first — and the re-arm verdict
+         * rides the re-arm's own ip, or, under the OLD writer, the SAME live
+         * boot's nonce).  The IN-PROGRESS budget is per VERSION, not per
+         * nonce — one boot can activate many versions, each with its own
+         * re-arm line (the per-nonce re-arm rule above), and the VERDICT
+         * budget is per version too, on the added-line walk. */
         for (size_t w = 0; w < nwin; w++) {
             size_t s = wslot[w];
             unsigned long b = g_nled[s].boot;
             const char *tok = g_nled[s].nonce;
-            if (nip[s] > 1)
-                add_finding("bootlog-fabricated-boots",
-                            "the nonce the host issued for boot %lu (%s) carries %zu in-progress line(s) in this window — fx-init appends at most ONE per boot (init.zig:4465); a second boot on paper wearing one real boot's nonce",
-                            b, tok, nip[s]);
             if (nsd[s] > 1)
                 add_finding("bootlog-fabricated-boots",
-                            "the nonce the host issued for boot %lu (%s) carries %zu shutdown line(s) — at most one per boot (init.zig:3975)",
+                            "the nonce the host issued for boot %lu (%s) carries %zu shutdown line(s) — at most one per boot (init.zig:4292)",
                             b, tok, nsd[s]);
             if (nvd[s] >= 1 && nip[s] == 0)
                 add_finding("bootlog-fabricated-boots",
-                            "a verdict rides the nonce the host issued for boot %lu (%s), but NO in-progress line wears that nonce — a boot that started wrote its in-progress FIRST (init.zig:4465, before every verdict site), and the re-arm verdict rides the SAME live boot's nonce, so a verdict whose nonce carries no in-progress is a forge wearing a stolen boot's nonce: the pair appended on top of a real boot's own lines",
+                            "a verdict rides the nonce the host issued for boot %lu (%s), but NO in-progress line wears that nonce — a boot that started wrote its in-progress FIRST (init.zig:4782, before every verdict site), and the re-arm verdict rides the SAME live boot's nonce (its own ip under the new writer, init.zig:3620), so a verdict whose nonce carries no in-progress is a forge wearing a stolen boot's nonce: the pair appended on top of a real boot's own lines",
                             b, tok);
             if (nrw[s] > 1)
                 add_finding("bootlog-fabricated-boots",
@@ -1646,8 +1938,8 @@ static void check_boot_accounting(void) {
     }
 
     if (!skip_bl)
-        info("boot accounting: host boots %lu -> %lu (delta %lu); this window added in-progress %zu, verdicts %zu, shutdown %zu — every verdict rides an in-progress the host's count can account for",
-             g_obs_boots, g_boots, delta, n_ip, n_verdict, n_sd);
+        info("boot accounting: host boots %lu -> %lu (delta %lu); this window added in-progress %zu, verdicts %zu, shutdown %zu — every verdict rides an in-progress the host's count can account for (the in-progress total is bounded by delta %lu + %zu version(s) FIRST PUBLISHED in this window: one activate re-arm per first-published version, each naming a version newer than the one its boot booted and not already booted itself)",
+             g_obs_boots, g_boots, delta, n_ip, n_verdict, n_sd, delta, nfp_this_window());
 }
 
 /* the previous-observation comparison — THE load-bearing check */
@@ -2079,7 +2371,7 @@ int main(int argc, char **argv) {
 
     if (g_bl_torn) info(".bootlog has a torn tail (%zu unterminated line(s)) — a crash mid-write, not a verdict", g_bl_torn);
     printf("checks: %zu pass, %zu failed; findings: %zu\n", pass, fail, g_nfindings);
-    printf("bound: this seat sees REWRITES and TRUNCATIONS of records it previously observed, cross-record INCOHERENCE, and — anchored on --boots and the per-boot nonce ledger (--nonces) — APPENDED .bootlog/.recovery growth the host cannot account for. IN THE NONCE REGIME (the host issues fx.bootnonce= per boot and every window boot is covered) the forged line-PAIR in a silent boot's slack is CLOSED: every ADDED line must wear a nonce the host issued for a boot in this window, the per-nonce budgets hold at one in-progress / shutdown / .recovery row, the VERDICT accounting is per VERSION — one verdict per in-progress line the window added for that version plus at most one for a version FIRST PUBLISHED in the window (the in-guest activate re-arm, init.zig:3415-3418, which verdicts the activated generation without a new in-progress) — and an unclaimed nonce is REPORTED as a silent boot. What this seat CANNOT see, stated as its bound: a verdict SUBSTITUTED inside a LIVE boot — the agent is root in the guest and can read its own /proc/cmdline nonce, so it can append the verdict itself in the writer's exact shape wearing the live nonce and suppress fx-init's own (a panic before grace expiry); that leaves ONE verdict for one (nonce, version) with every anchor satisfied, and the line's authorship inside the boot that owns the nonce is NOT distinguishable from the host — auditing, not proofing (the defence against substitution is the rollback machinery plus the observation hashes, not this reader); window boots the ledger does not cover (a mixed/manual regime — nonce-less lines are named and counted, but a forged pair in an UNCOVERED boot's slack still passes the arithmetic); boots started off the counting host, or a miscounted / moved --obs-file reuse (the count and the ledger are only as true as the host's own bookkeeping); a coherent tamper on a store first seen at enrollment (the enrollment gap — first run trusts, loudly). That is the honest bound of auditing, not proofing (§6b), printed on every run so the tool never implies more than it knows.\n");
+    printf("bound: this seat sees REWRITES and TRUNCATIONS of records it previously observed, cross-record INCOHERENCE, and — anchored on --boots and the per-boot nonce ledger (--nonces) — APPENDED .bootlog/.recovery growth the host cannot account for. IN THE NONCE REGIME (the host issues fx.bootnonce= per boot and every window boot is covered) the forged line-PAIR in a silent boot's slack is CLOSED: every ADDED line must wear a nonce the host issued for a boot in this window, the per-nonce IN-PROGRESS budget is the boot's OWN line plus one activate RE-ARM per version the store FIRST PUBLISHED in this window (each naming a version newer than the one its boot booted — init.zig:3620), the re-arm ip budget being ONE per first-published VERSION per WINDOW (a publish allocates a version number exactly once) AND naming a version NOT ALREADY BOOTED in the window (a re-arm names the version the activate JUST published, max+1, which has never been booted — this is what refuses the roll-forward REPUBLISH forge), shutdown / .recovery rows hold at one per boot, and the VERDICT accounting is per VERSION — one verdict per in-progress line the window added for that version, plus ONE more ONLY for a first-published version carrying NO re-arm ip of its own (the OLD-writer re-arm shape, init.zig:3693-3696). THE RE-ARM LINE'S OWN DELTA: that legitimate line RE-OPENS the forged-PAIR shape for a version that is first-published in the window AND newer than the boot's own, on ANY real window boot's nonce (the closure there is per VERSION, not per nonce — ONE re-arm in-progress per first-published version per window, so a forged pair cannot ride a second window nonce to buy a second verdict, whether the version was activated or republished — the republish shape is refused by the not-already-booted clause — and the legitimate line grants no verdict slot the +1 did not already grant). RESIDUAL, named: a forged pair for a version first published WITHOUT an activation and NOT YET BOOTED in the window (the operator `rollback` during a live boot, before the next boot boots it) still reads as a legitimate re-arm and lands the version's FIRST verdict — indistinguishable from a real activation without the .operator journal this seat does not read; the automatic roll-forward has no such window (the republish and the boot are one PID1 start), and the moment the version IS booted the not-already-booted clause refuses the same forge. What a forger still cannot mint is an in-progress for a version the store did not publish in this window, or one NOT newer than that nonce's own first line (the per-nonce rule fires on both) — and an unclaimed nonce is REPORTED as a silent boot. What this seat CANNOT see, stated as its bound: a verdict SUBSTITUTED inside a LIVE boot — the agent is root in the guest and can read its own /proc/cmdline nonce, so it can append the verdict itself in the writer's exact shape wearing the live nonce and suppress fx-init's own (a panic before grace expiry); that leaves ONE verdict for one (nonce, version) with every anchor satisfied, and the line's authorship inside the boot that owns the nonce is NOT distinguishable from the host — auditing, not proofing (the defence against substitution is the rollback machinery plus the observation hashes, not this reader); window boots the ledger does not cover (a mixed/manual regime — nonce-less lines are named and counted, but a forged pair in an UNCOVERED boot's slack still passes the arithmetic); boots started off the counting host, or a miscounted / moved --obs-file reuse (the count and the ledger are only as true as the host's own bookkeeping); a coherent tamper on a store first seen at enrollment (the enrollment gap — first run trusts, loudly). That is the honest bound of auditing, not proofing (§6b), printed on every run so the tool never implies more than it knows.\n");
     printf("evidence: the store's own records only — attempts.jsonl (the harness self-report) is never opened.\n");
 
     if (g_nfindings > 0) {

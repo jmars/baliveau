@@ -42,8 +42,8 @@
  *                                     <outcome> <from-version|-> <to-version|->
  *                                     <boot-nonce|none>" — INCLUDING the ones
  *                                     that failed or were refused (the ctrl
- *                                     arms, init.zig:3467/:3561/:3601/:3612/
- *                                     :3669/:3682/:3702/:3711/:3730/:3752).
+ *                                     arms, init.zig:3467/:3561/:3601/:3626/
+ *                                     :3712/:3725/:3745/:3754/:3773/:3816).
  *                                     The header IN THE FILE is the
  *                                     definition (OPERATOR_HEADER,
  *                                     init.zig:965) — read from the artifact,
@@ -72,10 +72,10 @@
  *    later ──────────────────────────────────────────────────────────────
  * fx-init's runtime datalog — rt_effect/rt_control: activations
  * (rt_effect "version"), REFUSED activations (rt_effect "activate",
- * "failed", init.zig:3563; "dhake-failed", :3671), rollbacks and
+ * "failed", init.zig:3563; "dhake-failed", :3714), rollbacks and
  * shutdowns (rt_control, the shared activate|rollback ctrl arm, :3490) —
  * lives at /run/fx/log.db (DEFAULT_RUN "/run/fx", init.zig:32; path
- * built :4688, opened :4689).  Post-pivot "/" is TMPFS (init.zig's M4
+ * built :4752, opened :4753).  Post-pivot "/" is TMPFS (init.zig's M4
  * pivot: /proc/mounts' root entry reads "tmpfs" after it), so the log
  * DOES NOT SURVIVE A REBOOT, and this seat never reads it.
  *
@@ -593,12 +593,17 @@ static void read_operator(void) {
 /* The writer's refusal vocabulary, read from the record rather than
  * assumed: an intervention the journal shows did NOT take effect as
  * asked.  `failed:<rc>` and `refused-config` are the activate arm's
- * (init.zig:3561/:3612; refused-config is written by the rollback arm
- * too, :3730 — the writer calls it the same record from the other
- * direction), `refused` is the rollback arm's when the STORE rejected
- * the target (:3711).  NOT refusals, and named as such in the taxonomy:
+ * (init.zig:3561/:3626; refused-config is written by the rollback arm
+ * too, :3773 — the writer calls it the same record from the other
+ * direction), and refused-config means the generation DID land in the
+ * store but PID1 REFUSED it: the declared service set is past its bound
+ * OR the configuration could not be read at all (read_store_facts rc != 0,
+ * the activate arm's two message forms at :3632/:3638 and the rollback
+ * arm's at :3781/:3788).  `refused` is the rollback arm's when the STORE
+ * rejected the target (:3754).  NOT refusals, and named as such in the
+ * taxonomy:
  * `dhake-failed` (the generation DID land; the live-root reapply failed,
- * :3669) and `unverified` (the store could not be re-opened to confirm —
+ * :3712) and `unverified` (the store could not be re-opened to confirm —
  * the record is AMBIGUOUS, which is not the same as refused), and `ok`. */
 static int outcome_is_refusal(const char *o) {
     return !strncmp(o, "failed:", 7) || !strcmp(o, "refused") || !strcmp(o, "refused-config");
@@ -846,10 +851,10 @@ static const struct { const char *cls, *record, *absence; } TAXONOMY[] = {
       "<store>/.recovery data row <epoch> <published> <from-failed> <genhash> <nonce> (fx-init, once per successful roll-forward)",
       "no-file=no-automatic-roll-forward-ever-recorded; no-row-naming-v=v-was-not-published-by-the-automatic-path (within the file's retention)" },
     { "operator-intervention",
-      "MEASURED — <store>/.operator rows: one line per control-channel intervention on the generation plane, written by PID1's handler (fx-init ca9cb06; the file's own OPERATOR_HEADER, init.zig:965, IS the definition): <epoch> <action> <arg> <outcome> <from-version|-> <to-version|-> <boot-nonce|none>, appended + fsync'd BEFORE the reply is flushed (operator_append: shutdown :3467, activate-failed :3561, unverified :3601, refused-config :3612, dhake-failed :3669, ok :3682, rollback unverified :3702, refused :3711, refused-config :3730, ok :3752).  action = the ctrl arm that wrote it, arg = the operator's operand VERBATIM, outcome = ok | failed:<rc> | refused | refused-config | dhake-failed | unverified.  The journal records the GENERATION PLANE ONLY — its header names what it does NOT record (the reads, file transfers, the shell, per-service commands, probe) and what it cannot record AND cannot DETECT: the paths that bypass PID1's handler (host-side `fxstore rollback`, `rollback --hard`, a hand-edited CURRENT).  DERIVED — the RETAINED FALLBACK, for a store with NO .operator and for exactly those bypass paths: two signatures. (restore) version r whose genhash matches a version TWO-OR-MORE back (a duplicate of only the IMMEDIATELY-PRECEDING generation is fx-activate's own publish-of-live — MEASURED: every activation after the first leaves that benign pair — or gc's publish-first, and is NOT this class) and no .recovery row publishes r — the ctrl rollback arm (init.zig:3706) and host `fxstore rollback` drive the SAME soft rollback and append NOTHING to .recovery; (current-repoint) CURRENT != newest. Both are DERIVED, never a verdict.",
+      "MEASURED — <store>/.operator rows: one line per control-channel intervention on the generation plane, written by PID1's handler (fx-init ca9cb06; the file's own OPERATOR_HEADER, init.zig:965, IS the definition): <epoch> <action> <arg> <outcome> <from-version|-> <to-version|-> <boot-nonce|none>, appended + fsync'd BEFORE the reply is flushed (operator_append: shutdown :3467, activate-failed :3561, unverified :3601, refused-config :3626, dhake-failed :3712, ok :3725, rollback unverified :3745, refused :3754, refused-config :3773, ok :3816).  action = the ctrl arm that wrote it, arg = the operator's operand VERBATIM, outcome = ok | failed:<rc> | refused | refused-config | dhake-failed | unverified.  The journal records the GENERATION PLANE ONLY — its header names what it does NOT record (the reads, file transfers, the shell, per-service commands, probe) and what it cannot record AND cannot DETECT: the paths that bypass PID1's handler (host-side `fxstore rollback`, `rollback --hard`, a hand-edited CURRENT).  DERIVED — the RETAINED FALLBACK, for a store with NO .operator and for exactly those bypass paths: two signatures. (restore) version r whose genhash matches a version TWO-OR-MORE back (a duplicate of only the IMMEDIATELY-PRECEDING generation is fx-activate's own publish-of-live — MEASURED: every activation after the first leaves that benign pair — or gc's publish-first, and is NOT this class) and no .recovery row publishes r — the ctrl rollback arm (init.zig:3749) and host `fxstore rollback` drive the SAME soft rollback and append NOTHING to .recovery; (current-repoint) CURRENT != newest. Both are DERIVED, never a verdict.",
       "TWO DIFFERENT STATES, never conflated: (i) .operator PRESENT with zero rows = no generation-plane intervention in the retained journal — a MEASUREMENT, not a gap; (ii) .operator ABSENT = a store PREDATING ca9cb06 (or one never booted under it) — NOT 'none occurred' (see absence/.operator).  For (ii), and for the bypass paths the journal's own header lists as NOT-RECORDED-AND-NOT-DETECTABLE, the DERIVED signature is the fallback and it is a DISJUNCTION: an operator rollback OR a deliberate re-activation of an older config — either way content moved back without the automatic .recovery row — OR a removed .recovery row, which the AUDIT seat's previous-observation comparison, not this seat, is built to catch.  The derived signature is only a backward move or a stale CURRENT, and gc/renumber can destroy both.  A journal row does NOT suppress the derived row: it can EXPLAIN a backward move but cannot prove the journal saw every path that produced one." },
     { "activation-refusal",
-      "MEASURED — <store>/.operator rows whose outcome is a refusal (fx-init ca9cb06): failed:<rc> (the activate executor exited rc; nothing landed — init.zig:3561), refused-config (the generation DID land in the store but PID1's service table REFUSED the configuration — :3612 from the activate arm, :3730 from the rollback arm, the writer's own 'same durable record from the other direction'), refused (the STORE rejected a rollback target — :3711).  Recorded in the SAME journal and NOT this class: dhake-failed (:3669 — the generation DID land, the live-root reapply failed) and unverified (:3601 — the store could not be re-opened to confirm, i.e. AMBIGUOUS, which is not the same as refused).  The tmpfs runtime log that held these (rt_effect activate failed|dhake-failed, init.zig:3563/:3671, DEFAULT_RUN :32) still dies at every reboot and is NOT read by this seat.",
+      "MEASURED — <store>/.operator rows whose outcome is a refusal (fx-init ca9cb06): failed:<rc> (the activate executor exited rc; nothing landed — init.zig:3561), refused-config (the generation DID land in the store but PID1 REFUSED it — the declared service set past its bound, or a configuration read_store_facts could not read: :3626 from the activate arm, :3773 from the rollback arm, the writer's own 'same durable record from the other direction'), refused (the STORE rejected a rollback target — :3754).  Recorded in the SAME journal and NOT this class: dhake-failed (:3712 — the generation DID land, the live-root reapply failed) and unverified (:3601 — the store could not be re-opened to confirm, i.e. AMBIGUOUS, which is not the same as refused).  The tmpfs runtime log that held these (rt_effect activate failed|dhake-failed, init.zig:3563/:3714, DEFAULT_RUN :32) still dies at every reboot and is NOT read by this seat.",
       "no-row-with-a-refusal-outcome-in-the-retained-journal = no RECORDED refusal within the journal (a count of RECORDED refusals, never of attempts).  This absence-meaning WAS 'NOT-DURABLY-RECORDED' before ca9cb06 — a refused activation left NOTHING in the store (fx-activate refuses before touching it) and PID1's record of it lived in /run's tmpfs — and it is that again EXACTLY WHEN .operator IS ABSENT: a store predating the journal CANNOT answer this class, and the report says so via absence/.operator instead of printing a zero.  Bounds carried INTO the class: PID1's control handler is the journal's only writer, so an fx-activate refused outside it is invisible; `unverified` rows are ambiguity, not refusals; and root in-guest can forge or truncate the file exactly as it can .bootlog — a row is CHECKABLE against the store's version/genhash history, not authoritative over it." },
     { "content-recurrence",
       "DERIVED: .recovery data rows whose trailing genhash is IDENTICAL (the .recovery header's own semantics: the same content re-failing)",
@@ -881,7 +886,7 @@ static const struct {
       "survives (disk)", "survives (append — one row per ctrl request, whatever its outcome)",
       "survives (fxstore does not know the file; it outlives pruned versions AND keeps rows naming versions gc has since pruned — a row records the move the operator asked for, it is not a promise the version is still there)",
       "NO growth policy exists (§1a gap 4).  NOT tamper-proof: PID1's control handler is its only writer, but root in-guest can forge or truncate it exactly as it can .bootlog (the file's own header says so)" },
-    { "runtime datalog rt_effect/rt_control", "/run/fx/log.db (fx-init init.zig:32 DEFAULT_RUN; path built :4688, opened :4689 by fx_log_open) — read by NOBODY here",
+    { "runtime datalog rt_effect/rt_control", "/run/fx/log.db (fx-init init.zig:32 DEFAULT_RUN; path built :4752, opened :4753 by fx_log_open) — read by NOBODY here",
       "DOES NOT SURVIVE (post-pivot '/' is tmpfs, init.zig M4 pivot — the log dies at every reboot)",
       "n/a (dies with the boot that wrote it)",
       "n/a",
@@ -1224,7 +1229,7 @@ int main(int argc, char **argv) {
     if (!g_bl_present)
         h("boots: NO .bootlog — no boot has ever been recorded for this store.");
     else
-        h("boots (from .bootlog, %u line(s)): %u ok, %u failed, %u in-progress, %u shutdown.",
+        h(".bootlog LINES (not boots: an in-guest activation appends its own in-progress line, so these can exceed the boot count): %u line(s) — %u ok, %u failed, %u in-progress, %u shutdown.",
           g_nbl, n_ok, n_fa, n_ip, n_sd);
     h("automatic roll-forwards: %u row(s) in .recovery%s.", g_nrec,
       g_rec_present ? "" : " (no .recovery — none ever recorded)");

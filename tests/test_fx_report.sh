@@ -249,7 +249,22 @@ pin_blob() { # pin_blob REPO BLOB FILE LABEL
     git -C "$1" cat-file blob "$2" | cmp -s - "$1/$3" \
         || fail "PIN: $1/$3 differs from the pinned blob $2 this seat's retention table was measured against — the citations in tools/fx-report.c are STALE; re-measure and update the frozen tables"
 }
-pin_guard "$INIT" ca9cb06 zig/src/init.zig "fx-init"
+# fx-init re-measured at the re-arm-accounting unit (the in-guest activate's
+# own (v, in-progress) — init.zig:3620 — plus the refusal verdict/pin) AND
+# AGAIN at the round-2 fix (the ROLLBACK refusal arm now captures
+# read_store_facts' rc and pins the latch on any non-zero rc too, with its
+# own message — init.zig:3768-3802): every line citation in tools/fx-report.c
+# was re-measured against THIS tree, and the ones at or after the two edited
+# hunks (the activate-arm comment and the rollback-refusal block) moved with
+# them (:3709->:3712, :3711->:3714, :3722->:3725, :3742->:3745,
+# :3746->:3749, :3751->:3754, :3770->:3773, :3802->:3816, :4738->:4752,
+# :4739->:4753).  The pin is a BLOB object (git hash-object -w
+# zig/src/init.zig), the same shape as the fxstore store.zig carve-out pin
+# below, because this unit's fx-init change is not committed yet: identical
+# bytes give the same blob object, so the pin stays exact once the commit
+# lands (a revision pin at ca9cb06 can no longer match — the tree it guarded
+# has moved on).
+pin_blob "$INIT" aca04d1bdfc14f75c63830cac7ca38462efee546 zig/src/init.zig "fx-init"
 # fxstore re-measured at e97758c (the install-origin unit): the FACTS SURFACE
 # this seat reads is unchanged — RELATION_SCHEMAS still defines every name in
 # fx-report.c's FACT_RELS, and the gc carve-out's claim (store.zig) is a
@@ -339,7 +354,7 @@ VB=$(act "$WORK/cfgB.dhall")
 [ "$VB" -gt "$VA" ] || fail "expected VB ($VB) > VA ($VA)"
 
 # the operator-shaped move: fxstore's SOFT rollback (the same call fx-init's
-# automatic roll-forward drives in-guest, init.zig:3550) republishes VA's
+# automatic roll-forward drives in-guest, init.zig:1861) republishes VA's
 # content as a NEW version — the ONLY durable difference between the
 # automatic and the operator path is the .recovery row, and the gate arms
 # exactly that split below.
