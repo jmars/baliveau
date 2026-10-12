@@ -238,7 +238,8 @@ let Package = { name : Text, version : Text, src : Src, deps : List Text,
                 excludes : List Text, build : { target : Text, recipe : List Action } }
 in  { packages = [
 EOF
-    # fx-activate REQUIRES these four in every closure (activate.zig:1059)
+    # fx-activate REQUIRES these four in every closure (activate.zig:1335,
+    # need_tools)
     ps_pkg dhake        "$SRC/tool"
     ps_pkg fx-init      "$SRC/tool"
     ps_pkg fxctl        "$SRC/tool"

@@ -128,7 +128,7 @@
 # inspects with the verbs that DO work in-guest: fx_ls + fx_read (native) and,
 # for the activation, fx_activate — which now execs the RUNNING ROOT's
 # /bin/fx-activate with the SAME argv fx-init's own activate handler uses
-# (init.zig:3513-3514).  See the lane's report: that is an in-repo (fx-harness)
+# (init.zig:3436-3437).  See the lane's report: that is an in-repo (fx-harness)
 # change, no other repo is touched.
 #
 # Env: QEMU_BOOT_TIMEOUT (default 120)  QEMU_KEEP=1  B2_MARKER
@@ -181,10 +181,12 @@ BOOT_TIMEOUT="${QEMU_BOOT_TIMEOUT:-120}"
 SETTLE="${QEMU_AGENT_SETTLE:-12}"
 [ -d "$INIT" ] || skip "fx-init checkout not found at $INIT (set FX_SIBLINGS or FX_INIT_REPO)"
 
-# ── THE CITATION PIN (fx-init d0de8c9): the tree every cited LINE means ──
+# ── THE CITATION PIN (fx-init d0de8c9, re-measured at the RUNTIME-RECORD
+#    CLOSURE on the working tree above it): the tree every cited LINE means ──
 # This gate cites init.zig BY LINE NUMBER — the activate handler's argv+exec
-# of /bin/fx-activate, `:2696` at fx-init 675e801, `:3250` at 4d6a8c2, and
-# `:3513-3514` at d0de8c9.  Nothing pinned the file, so the citation rotted
+# of /bin/fx-activate, `:2696` at fx-init 675e801, `:3250` at 4d6a8c2,
+# `:3513-3514` at d0de8c9, and `:3436-3437` at the runtime-record closure
+# (the child's marker inserted above them; the working tree above d0de8c9).  Nothing pinned the file, so the citation rotted
 # SILENTLY through three fx-init rewrites.  A citation into a file that
 # MOVED is a FINDING, not a renumbering job, so the pin makes the drift
 # LOUD.  It costs one `cat-file` and runs BEFORE the boot.  The pin is a
@@ -198,8 +200,11 @@ pin_init_blob() { # pin_init_blob BLOB FILE CITING...
     git -C "$INIT" cat-file blob "$1" | cmp -s - "$INIT/$2" \
         || fail "CITATION PIN: $INIT/$2 differs from the pinned blob $1 this gate's citations were measured against — the init.zig citations in $3 are STALE; re-measure every cited line against this tree and fix the ones that MOVED"
 }
-pin_init_blob aca04d1bdfc14f75c63830cac7ca38462efee546 zig/src/init.zig "tests/qemu-agent-b2.sh"
-echo "qemu-agent-b2: CITATION PIN: init.zig is the tree (fx-init d0de8c9, blob aca04d1b) the cited line in this gate was measured against"
+# ROUND-2 NIT PASS: init.zig moved (ONE REQ_MAX definition; the marker's
+# setenv now CHECKED) with a ZERO line delta, so the cited line :3436-3437
+# below still lands; only the blob pin was re-measured.
+pin_init_blob 7c054559821da222fddf793c62989b4b65e97361 zig/src/init.zig "tests/qemu-agent-b2.sh"
+echo "qemu-agent-b2: CITATION PIN: init.zig measured for this gate is fx-init d0de8c9 + the runtime-record closure (uncommitted working tree, blob 7c054559); the cited line is :3436-3437"
 
 PIN="$INIT/scripts/kernel-pin.txt"
 [ -f "$PIN" ] || skip "scripts/kernel-pin.txt missing"

@@ -450,7 +450,8 @@ twice for a bound that was right in the small and inert beyond a limit.
 `fx-activate` merges the config's inline packages into the package set *before* computing the
 closure, so no new file becomes agent-writable and no bridge is created. **Why packages and not
 files:** MEASURED, the config can ALREADY ship arbitrary file content — `extraEtc : List {path,
-content}` → `/etc/<path>` (`activate.zig:1358-1367`) — so "add some lua files" is expressible today.
+content}` → `/etc/<path>` (`activate.zig:1366-1368` collected, `:1437-1445` written) — so "add some
+lua files" is expressible today.
 But such a file has **no `provides` and no `src_of`**, so it is not a *component* of the generation
 and the oracle cannot attribute it. A **package** gets a source artifact, and `src_of` binds it to
 the generation — that is what makes the agent's work *provable*, which is the entire point of the
@@ -496,7 +497,8 @@ PARAGRAPH IS STALE — ELEMENTS (A), (B), (D) AND (E) ARE BUILT.** `fx-init 4c58
 `Run` argv[0] (`:980`, `execvp` with a recipe-controlled PATH), `Fetch` as a src, and non-empty
 `deps` — gated by corpus fixtures (`zig/corpus/inline-good.dhall`, `inline-reject-shell.dhall`,
 `inline-reject-fetch.dhall`, `activate/inline-closure|collide|inert.dhall`) and a zig test at
-`config.zig:1437`. The config's packages are merged by `fx-activate` (`activate.zig:1930`), so (E)'s
+`config.zig:1437`. The config's packages are merged by `fx-activate` (`activate.zig:1275`, the
+`mergeInlinePackages` call before the closure is computed), so (E)'s
 "no new file becomes agent-writable" holds as designed. **What actually remains is element (C) ONLY**
 — the userspace reach bound in `fxstore`'s action runner (`zig/src/build.zig:167-174`: `resolve_path`
 concatenates and refuses nothing outside the workdir + install target) — and §6b downgraded it to

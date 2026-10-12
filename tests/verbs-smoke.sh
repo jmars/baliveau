@@ -254,6 +254,14 @@ env = {
     "RATTAN_ENABLE": "1",
     "LD_PRELOAD": "/tmp/evil.so",
     "HOME": "/home/nobody",
+    # THE HANDLER'S MARKER, planted (12).  fx-init tells its OWN activate
+    # child not to self-record by setting FX_OPERATOR_RECORDED in that
+    # child's env; the fallback's child env is an explicit WHITELIST
+    # (build_verb_envp), so the marker must NOT reach a direct exec even
+    # when the server's own environment carries it — which is what makes
+    # "a direct exec always self-records, a channel child never does" a
+    # structural claim rather than a convention.
+    "FX_OPERATOR_RECORDED": "1",
 }
 server = subprocess.Popen([bin], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                           stderr=subprocess.PIPE, env=env)
@@ -467,6 +475,37 @@ ok("fx_activate with NO channel: direct-exec fallback with a LOUD banner",
 ok("fx_activate fallback: the pinned argv is intact (guest store + frozen pkgset)",
    "RUNBIN fx-activate args: --store /fx/disk/store --package-set "
    "/usr/fx/package-set.dhall --config /fx/disk/agent-config.dhall" in txt, txt)
+# THE MARKER'S STRUCTURAL EXCLUSION, and the .operator exclusion the
+# runtime-record closure turns on TWO conditions:
+#   (i) the whitelist: the marker planted in the SERVER's env (above) must
+#       NOT reach the fallback child.  The stub fx-activate dumps `env` into
+#       $ROOT/envdump, so this is measured on the child, not asserted about
+#       the code; the same dict's RATTAN_*/LD_* keys are the probe's control
+#       (12 asserts those dropped for a sibling verb's child).
+#   (ii) the no-nonce half of the predicate is proven by the OFFLINE gates
+#       (fx-init's activate_diff.sh / prov_e2e.sh / qemu_activate.sh run
+#       fx-activate directly on the HOST's kernel command line, which carries
+#       no fx.bootnonce=) and by fx-init's qemu_svc_refuse.sh nonce-less
+#       in-guest direct exec.  A host-side stub cannot reach the publish
+#       step (the pinned argv names the GUEST's /fx/disk/store and
+#       /usr/fx/package-set.dhall), so what is pinned HERE is the fallback
+#       PLUMBING and that the server itself is not a journal writer.
+fenv = open(os.path.join(root, "envdump")).read().splitlines()
+fkeys = set(l.split("=", 1)[0] for l in fenv if "=" in l)
+ok("fx_activate fallback: the handler's marker does NOT leak into the direct "
+   "exec (SAME dump keeps the whitelist live: the planted RATTAN_*/LD_* are "
+   "dropped too)",
+   "FX_OPERATOR_RECORDED" not in fkeys
+   and not any(k.startswith("RATTAN_") or k.startswith("LD_") for k in fkeys),
+   repr(sorted(fkeys)))
+if "fx.bootnonce=" in open("/proc/cmdline").read():
+    print("skip - the .operator exclusion arm: this HOST's own /proc/cmdline "
+          "carries fx.bootnonce=, so a host-side fx-activate would self-record "
+          "and the no-nonce exclusion cannot be measured here")
+else:
+    ok("fx_activate fallback: the pinned store gains NO .operator from the exec",
+       not os.path.exists(os.path.join(root, "fx/disk/store/.operator")),
+       "the server (or its stub target) wrote a journal row")
 # the mkinitramfs -b STAGED copy is a DIFFERENT binary; it must not shadow the
 # running root's.  This check FAILS on the pre-2026-10 resolution order.
 ok("the staged usr/fx-core/bin copy does NOT shadow the running root's /bin",

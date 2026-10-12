@@ -962,10 +962,14 @@ static int fifo_activate(const char *config, Capture *out, int *exitcode) {
  * own handler execs.  This is the REDUCED semantics and the banner says so:
  * the generation is PUBLISHED to the store (CURRENT moves, the next boot
  * runs it) but NOT COMMITTED (no live-root re-materialization, no boot-
- * decision re-arm, no service restart, no runtime record).  It exists for a
- * deployment whose PID1 has no fifo pair (setup failed / a future transport
- * change), never as a silent downgrade: the banner is the reply's FIRST
- * line. */
+ * decision re-arm, no service restart, no line in PID1's live runtime log —
+ * the tmpfs log dies with the boot anyway).  The DURABLE record of the
+ * publish is not this route's claim to make: fx-activate SELF-RECORDS it in
+ * <store>/.operator since the runtime-record closure, one row under THIS
+ * boot's fx.bootnonce= (and records nothing where the boot carries no
+ * nonce).  It exists for a deployment whose PID1 has no fifo pair (setup
+ * failed / a future transport change), never as a silent downgrade: the
+ * banner is the reply's FIRST line. */
 static void fallback_direct_activate(const char *config, Capture *out,
                                      int *exitcode) {
     cap_append_str(out,
@@ -973,8 +977,12 @@ static void fallback_direct_activate(const char *config, Capture *out,
         "with REDUCED semantics: the generation will be PUBLISHED to the store "
         "(CURRENT moves; the next boot runs it) but NOT COMMITTED to the "
         "running system (no hot-apply of /etc+/bin, no boot-decision re-arm, "
-        "no service restart, no runtime record).  Route fx-activate through "
-        "PID1's control channel for the full activation.\n");
+        "no service restart, no line in PID1's live runtime log).  The "
+        "publish still SELF-RECORDS in the store's durable <store>/.operator "
+        "journal where this boot carries an fx.bootnonce= (fx-activate writes "
+        "that row itself); with no boot nonce nothing durable is recorded.  "
+        "Route fx-activate through PID1's control channel for the full "
+        "activation.\n");
     char *cmd = resolve_command("fx-activate");
     if (!cmd) {
         cap_append_str(out, "fx-verbs: fx-activate not found under FX_VERB_ROOT (");

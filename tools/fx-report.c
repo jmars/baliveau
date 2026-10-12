@@ -37,17 +37,24 @@
  *                                     "#"-header + "<epoch> <published>
  *                                     <from-failed> <genhash|-> <nonce>"
  *   <store>/.operator                 fx-init, per OPERATOR intervention on
- *                                     the generation plane (fx-init ca9cb06):
+ *                                     the generation plane (fx-init ca9cb06,
+ *                                     and since the RUNTIME-RECORD closure
+ *                                     also fx-activate ITSELF for a publish
+ *                                     committed OUTSIDE the control handler
+ *                                     — a direct exec — on a boot carrying
+ *                                     an fx.bootnonce=):
  *                                     "#"-header + "<epoch> <action> <arg>
  *                                     <outcome> <from-version|-> <to-version|->
  *                                     <boot-nonce|none>" — INCLUDING the ones
  *                                     that failed or were refused (the ctrl
- *                                     arms, init.zig:3467/:3561/:3601/:3626/
- *                                     :3712/:3725/:3745/:3754/:3773/:3816).
+ *                                     arms, init.zig:3375/:3484/:3524/:3549/
+ *                                     :3635/:3648/:3668/:3677/:3696/:3739).
  *                                     The header IN THE FILE is the
  *                                     definition (OPERATOR_HEADER,
- *                                     init.zig:965) — read from the artifact,
- *                                     not assumed here.
+ *                                     operator_journal.zig:122 — ONE
+ *                                     definition, imported by both writers)
+ *                                     — read from the artifact, not assumed
+ *                                     here.
  *   <store>/<genhash>-system-generation/config.dhall
  *                                     fx-activate, per activation: the
  *                                     RETAINED INPUT (fx-init 1399dbd),
@@ -72,10 +79,10 @@
  *    later ──────────────────────────────────────────────────────────────
  * fx-init's runtime datalog — rt_effect/rt_control: activations
  * (rt_effect "version"), REFUSED activations (rt_effect "activate",
- * "failed", init.zig:3563; "dhake-failed", :3714), rollbacks and
- * shutdowns (rt_control, the shared activate|rollback ctrl arm, :3490) —
- * lives at /run/fx/log.db (DEFAULT_RUN "/run/fx", init.zig:32; path
- * built :4752, opened :4753).  Post-pivot "/" is TMPFS (init.zig's M4
+ * "failed", init.zig:3486; "dhake-failed", :3637), rollbacks and
+ * shutdowns (rt_control, the shared activate|rollback ctrl arm, :3398) —
+ * lives at /run/fx/log.db (DEFAULT_RUN "/run/fx", init.zig:33; path
+ * built :4675, opened :4676).  Post-pivot "/" is TMPFS (init.zig's M4
  * pivot: /proc/mounts' root entry reads "tmpfs" after it), so the log
  * DOES NOT SURVIVE A REBOOT, and this seat never reads it.
  *
@@ -86,25 +93,46 @@
  * `operator-intervention` is MEASURED from those rows, and
  * `activation-refusal` — whose absence-meaning was NOT-DURABLY-RECORDED,
  * because fx-activate refuses before touching the store and the only
- * record of it lived in tmpfs — is MEASURED too.  The journal's own
- * header names what it does NOT cover, and the DERIVED signature is
- * RETAINED as the fallback for exactly that residue: a store predating
- * ca9cb06 (no .operator at all), and the paths that bypass PID1's
- * control handler (a host-side `fxstore rollback`, `rollback --hard`, a
- * hand-edited store CURRENT).  A class never becomes more authoritative
- * than its record: the journal is written by PID1's handler alone, root
- * in-guest can forge or truncate it exactly as it can .bootlog, and a
- * row is CHECKABLE against the store's version history, not
- * authoritative over it.
+ * record of it lived in tmpfs — is MEASURED too.
+ *
+ * THE SECOND WRITER (the runtime-record closure) NARROWED the
+ * "only writer" claim without weakening it into vagueness: a boot process
+ * that executes fx-activate OUTSIDE PID1's control handler (the harness's
+ * channel-less direct-exec fallback, a command in the interactive shell)
+ * used to publish a generation with NO durable operator record at all —
+ * the gap this closure closes.  fx-activate now records that publish
+ * ITSELF, in the SAME grammar and the SAME file (operator_journal.zig is
+ * the one definition of both), under two structural conditions: the
+ * handler's own child carries a marker telling it the handler is about to
+ * append the row for the REQUEST (so a channel activation still leaves
+ * EXACTLY ONE row, never two), and the boot must carry an fx.bootnonce=
+ * (a row must be attributable to its boot, so a self-recorded row NEVER
+ * carries "none" — and every offline caller, a CI host / a golden run /
+ * a fixture with no PID1, records nothing).  The direct exec's row is
+ * NARROWER than the handler's BY CONSTRUCTION and the header says so: the
+ * handler records a request whether or not it took effect, while a direct
+ * exec records only a PUBLISH THAT REACHED COMMIT.
+ *
+ * The journal's own header names what it does NOT cover, and the DERIVED
+ * signature is RETAINED as the fallback for exactly that residue: a store
+ * predating ca9cb06 (no .operator at all), and the paths that bypass
+ * PID1's control handler AND the journal's own self-record (a host-side
+ * `fxstore rollback`, `rollback --hard`, a hand-edited store CURRENT).  A
+ * class never becomes more authoritative than its record: root in-guest
+ * can forge or truncate the file exactly as it can .bootlog, and a row is
+ * CHECKABLE against the store's version history, not authoritative over
+ * it.
  *
  * ── THE BOUND, printed on every run (the audit seat's discipline) ──────
  * See the frozen BOUNDS[] table at the bottom of the tables below: the
- * runtime log's tmpfs death; the operator journal's own bounds (PID1's
- * control handler is its only writer, a store predating ca9cb06 has
+ * runtime log's tmpfs death; the operator journal's own bounds (its two
+ * named writers — PID1's control handler, and fx-activate's own publish
+ * record where the boot carries a nonce — a store predating ca9cb06 has
  * none, root in-guest can forge or truncate it exactly as it can
- * .bootlog); the paths that BYPASS that handler and are therefore
- * invisible to it (host-side `fxstore rollback`, `rollback --hard`, a
- * hand-edited CURRENT) with the DERIVED class's retained disjunction for
+ * .bootlog); the paths that BYPASS that handler and that self-record and
+ * are therefore invisible to it (host-side `fxstore rollback`,
+ * `rollback --hard`, a hand-edited CURRENT) with the DERIVED class's
+ * retained disjunction for
  * them — an unattributed backward move is an operator rollback, OR a
  * same-input re-activation — MEASURED: two genuine activations one
  * second apart produced byte-equal facts — OR a removed .recovery row,
@@ -535,13 +563,15 @@ static int version_field_ok(const char *f) {
 
 /* ── <store>/.operator (fx-init ca9cb06): the DURABLE operator journal ───
  *    The writer's shape is the contract, and this file's header is the
- *    DEFINITION (OPERATOR_HEADER, init.zig:965): one DATA line per
+ *    DEFINITION (OPERATOR_HEADER, operator_journal.zig:122): one DATA line per
  *    control-channel intervention on the generation plane, INCLUDING the
- *    ones that failed or were refused.  A line that does not match the
- *    shape is refused LOUDLY — never skipped, exactly as .bootlog/.recovery
- *    are — and the file's ABSENCE is its own state: a store predating
- *    ca9cb06 legitimately has none, and this seat must not turn that into
- *    "no interventions occurred". */
+ *    ones that failed or were refused — plus, since the runtime-record
+ *    closure, the publishes fx-activate committed OUTSIDE that handler
+ *    (same grammar, so the shape below covers both writers).  A line that
+ *    does not match the shape is refused LOUDLY — never skipped, exactly as
+ *    .bootlog/.recovery are — and the file's ABSENCE is its own state: a
+ *    store predating ca9cb06 legitimately has none, and this seat must not
+ *    turn that into "no interventions occurred". */
 static void read_operator(void) {
     char path[4096];
     snprintf(path, sizeof path, "%s/.operator", g_store);
@@ -576,7 +606,7 @@ static void read_operator(void) {
          * silently accepted one would invent an operator action out of a
          * damaged file. */
         if (!version_field_ok(froms) || !version_field_ok(tos))
-            die("%s:%u: the generation pair is not the writer's vocabulary (a decimal version or \"-\", operator_line, init.zig): \"%s\"",
+            die("%s:%u: the generation pair is not the writer's vocabulary (a decimal version or \"-\", operator_line, operator_journal.zig): \"%s\"",
                 path, ln, line);
         if (g_nop >= MAX_OPERATOR_ROWS)
             die("%s: more than %u data rows — raise MAX_OPERATOR_ROWS (a report over a truncated view is a lie)",
@@ -599,17 +629,17 @@ static void read_operator(void) {
 /* The writer's refusal vocabulary, read from the record rather than
  * assumed: an intervention the journal shows did NOT take effect as
  * asked.  `failed:<rc>` and `refused-config` are the activate arm's
- * (init.zig:3561/:3626; refused-config is written by the rollback arm
- * too, :3773 — the writer calls it the same record from the other
+ * (init.zig:3484/:3549; refused-config is written by the rollback arm
+ * too, :3696 — the writer calls it the same record from the other
  * direction), and refused-config means the generation DID land in the
  * store but PID1 REFUSED it: the declared service set is past its bound
  * OR the configuration could not be read at all (read_store_facts rc != 0,
- * the activate arm's two message forms at :3632/:3638 and the rollback
- * arm's at :3781/:3788).  `refused` is the rollback arm's when the STORE
- * rejected the target (:3754).  NOT refusals, and named as such in the
+ * the activate arm's two message forms at :3555/:3561 and the rollback
+ * arm's at :3704/:3711).  `refused` is the rollback arm's when the STORE
+ * rejected the target (:3677).  NOT refusals, and named as such in the
  * taxonomy:
  * `dhake-failed` (the generation DID land; the live-root reapply failed,
- * :3712) and `unverified` (the store could not be re-opened to confirm —
+ * :3635) and `unverified` (the store could not be re-opened to confirm —
  * the record is AMBIGUOUS, which is not the same as refused), and `ok`. */
 static int outcome_is_refusal(const char *o) {
     return !strncmp(o, "failed:", 7) || !strcmp(o, "refused") || !strcmp(o, "refused-config");
@@ -857,11 +887,11 @@ static const struct { const char *cls, *record, *absence; } TAXONOMY[] = {
       "<store>/.recovery data row <epoch> <published> <from-failed> <genhash> <nonce> (fx-init, once per successful roll-forward)",
       "no-file=no-automatic-roll-forward-ever-recorded; no-row-naming-v=v-was-not-published-by-the-automatic-path (within the file's retention)" },
     { "operator-intervention",
-      "MEASURED — <store>/.operator rows: one line per control-channel intervention on the generation plane, written by PID1's handler (fx-init ca9cb06; the file's own OPERATOR_HEADER, init.zig:965, IS the definition): <epoch> <action> <arg> <outcome> <from-version|-> <to-version|-> <boot-nonce|none>, appended + fsync'd BEFORE the reply is flushed (operator_append: shutdown :3467, activate-failed :3561, unverified :3601, refused-config :3626, dhake-failed :3712, ok :3725, rollback unverified :3745, refused :3754, refused-config :3773, ok :3816).  action = the ctrl arm that wrote it, arg = the operator's operand VERBATIM, outcome = ok | failed:<rc> | refused | refused-config | dhake-failed | unverified.  The journal records the GENERATION PLANE ONLY — its header names what it does NOT record (the reads, file transfers, the shell, per-service commands, probe) and what it cannot record AND cannot DETECT: the paths that bypass PID1's handler (host-side `fxstore rollback`, `rollback --hard`, a hand-edited CURRENT).  DERIVED — the RETAINED FALLBACK, for a store with NO .operator and for exactly those bypass paths: two signatures. (restore) version r whose genhash matches a version TWO-OR-MORE back (a duplicate of only the IMMEDIATELY-PRECEDING generation is fx-activate's own publish-of-live — MEASURED: every activation after the first leaves that benign pair — or gc's publish-first, and is NOT this class) and no .recovery row publishes r — the ctrl rollback arm (init.zig:3749) and host `fxstore rollback` drive the SAME soft rollback and append NOTHING to .recovery; (current-repoint) CURRENT != newest. Both are DERIVED, never a verdict.",
+      "MEASURED — <store>/.operator rows: one line per intervention on the generation plane, written by PID1's control handler (fx-init ca9cb06) or, since the runtime-record closure, by fx-activate ITSELF for a publish it committed OUTSIDE that handler on a boot carrying an fx.bootnonce= (the file's own OPERATOR_HEADER, operator_journal.zig:122, IS the definition — ONE definition, imported by both writers): <epoch> <action> <arg> <outcome> <from-version|-> <to-version|-> <boot-nonce|none>, appended + fsync'd BEFORE the reply is flushed (operator_append: shutdown :3375, activate-failed :3484, unverified :3524, refused-config :3549, dhake-failed :3635, ok :3648, rollback unverified :3668, refused :3677, refused-config :3696, ok :3739).  SECOND WRITER (the runtime-record closure): fx-activate records the publish IT committed OUTSIDE that handler — one row, activate/ok or activate/unverified, on a boot carrying an fx.bootnonce= — through the SAME grammar and header (selfRecord, fx-init activate.zig:898/:1768/:1754; the writer itself, operator_journal.zig:235).  action = the ctrl arm that wrote it, arg = the operator's operand VERBATIM, outcome = ok | failed:<rc> | refused | refused-config | dhake-failed | unverified.  The journal records the GENERATION PLANE ONLY — its header names what it does NOT record (the reads, file transfers, the shell, per-service commands, probe) and what it cannot record AND cannot DETECT: the paths that bypass PID1's handler (host-side `fxstore rollback`, `rollback --hard`, a hand-edited CURRENT).  DERIVED — the RETAINED FALLBACK, for a store with NO .operator and for exactly those bypass paths: two signatures. (restore) version r whose genhash matches a version TWO-OR-MORE back (a duplicate of only the IMMEDIATELY-PRECEDING generation is fx-activate's own publish-of-live — MEASURED: every activation after the first leaves that benign pair — or gc's publish-first, and is NOT this class) and no .recovery row publishes r — the ctrl rollback arm (init.zig:3672) and host `fxstore rollback` drive the SAME soft rollback and append NOTHING to .recovery; (current-repoint) CURRENT != newest. Both are DERIVED, never a verdict.",
       "TWO DIFFERENT STATES, never conflated: (i) .operator PRESENT with zero rows = no generation-plane intervention in the retained journal — a MEASUREMENT, not a gap; (ii) .operator ABSENT = a store PREDATING ca9cb06 (or one never booted under it) — NOT 'none occurred' (see absence/.operator).  For (ii), and for the bypass paths the journal's own header lists as NOT-RECORDED-AND-NOT-DETECTABLE, the DERIVED signature is the fallback and it is a DISJUNCTION: an operator rollback OR a deliberate re-activation of an older config — either way content moved back without the automatic .recovery row — OR a removed .recovery row, which the AUDIT seat's previous-observation comparison, not this seat, is built to catch.  The derived signature is only a backward move or a stale CURRENT, and gc/renumber can destroy both.  A journal row does NOT suppress the derived row: it can EXPLAIN a backward move but cannot prove the journal saw every path that produced one." },
     { "activation-refusal",
-      "MEASURED — <store>/.operator rows whose outcome is a refusal (fx-init ca9cb06): failed:<rc> (the activate executor exited rc; nothing landed — init.zig:3561), refused-config (the generation DID land in the store but PID1 REFUSED it — the declared service set past its bound, or a configuration read_store_facts could not read: :3626 from the activate arm, :3773 from the rollback arm, the writer's own 'same durable record from the other direction'), refused (the STORE rejected a rollback target — :3754).  Recorded in the SAME journal and NOT this class: dhake-failed (:3712 — the generation DID land, the live-root reapply failed) and unverified (:3601 — the store could not be re-opened to confirm, i.e. AMBIGUOUS, which is not the same as refused).  The tmpfs runtime log that held these (rt_effect activate failed|dhake-failed, init.zig:3563/:3714, DEFAULT_RUN :32) still dies at every reboot and is NOT read by this seat.",
-      "no-row-with-a-refusal-outcome-in-the-retained-journal = no RECORDED refusal within the journal (a count of RECORDED refusals, never of attempts).  This absence-meaning WAS 'NOT-DURABLY-RECORDED' before ca9cb06 — a refused activation left NOTHING in the store (fx-activate refuses before touching it) and PID1's record of it lived in /run's tmpfs — and it is that again EXACTLY WHEN .operator IS ABSENT: a store predating the journal CANNOT answer this class, and the report says so via absence/.operator instead of printing a zero.  Bounds carried INTO the class: PID1's control handler is the journal's only writer, so an fx-activate refused outside it is invisible; `unverified` rows are ambiguity, not refusals; and root in-guest can forge or truncate the file exactly as it can .bootlog — a row is CHECKABLE against the store's version/genhash history, not authoritative over it." },
+      "MEASURED — <store>/.operator rows whose outcome is a refusal (fx-init ca9cb06): failed:<rc> (the activate executor exited rc; nothing landed — init.zig:3484), refused-config (the generation DID land in the store but PID1 REFUSED it — the declared service set past its bound, or a configuration read_store_facts could not read: :3549 from the activate arm, :3696 from the rollback arm, the writer's own 'same durable record from the other direction'), refused (the STORE rejected a rollback target — :3677).  Recorded in the SAME journal and NOT this class: dhake-failed (:3635 — the generation DID land, the live-root reapply failed) and unverified (:3524 — the store could not be re-opened to confirm, i.e. AMBIGUOUS, which is not the same as refused).  The tmpfs runtime log that held these (rt_effect activate failed|dhake-failed, init.zig:3486/:3637, DEFAULT_RUN :32) still dies at every reboot and is NOT read by this seat.",
+      "no-row-with-a-refusal-outcome-in-the-retained-journal = no RECORDED refusal within the journal (a count of RECORDED refusals, never of attempts).  This absence-meaning WAS 'NOT-DURABLY-RECORDED' before ca9cb06 — a refused activation left NOTHING in the store (fx-activate refuses before touching it) and PID1's record of it lived in /run's tmpfs — and it is that again EXACTLY WHEN .operator IS ABSENT: a store predating the journal CANNOT answer this class, and the report says so via absence/.operator instead of printing a zero.  Bounds carried INTO the class: a REFUSAL row is written by PID1's control handler alone (a direct exec records only a publish that reached commit), so an fx-activate that refuses outside that handler is invisible; `unverified` rows are ambiguity, not refusals; and root in-guest can forge or truncate the file exactly as it can .bootlog — a row is CHECKABLE against the store's version/genhash history, not authoritative over it." },
     { "content-recurrence",
       "DERIVED: .recovery data rows whose trailing genhash is IDENTICAL (the .recovery header's own semantics: the same content re-failing)",
       "no-repeated-genhash=no-recurrence-within-the-surviving-rows" },
@@ -888,11 +918,11 @@ static const struct {
       "survives (disk)", "survives (each activation writes its own gen dir)",
       "RETAINED-WHILE-NAMED (MEASURED on this tree, store.zig pinned blob 30dce7cb: `fxstore gc <root>` keeps every <genhash>-system-generation dir named by a SURVIVING snapshot's generation fact — the dir sweep's carve-out, logged per dir on stderr; a dir whose snapshot was pruned by `gc --retain N` IS reaped, with its facts)",
       "DECIDED (user, 2026-10-12): UNBOUNDED by default — no pruning-by-age policy exists to state, because the copy is exactly as durable as the snapshot that names it (`gc --retain N` prunes version and dir together, and NOTHING sets that default): retention is bounded only by an operator's deliberate gc, never by time.  A GENUINELY missing copy (hand-deleted, or a dir a surviving fact names that is gone) still fires config-retained-copy-gone" },
-    { ".operator", "<store>/.operator (fx-init ca9cb06, '#'-header + one data row per control-channel intervention on the generation plane, INCLUDING the ones that FAILED or were REFUSED; append+fsync per request, BEFORE the reply is flushed)",
-      "survives (disk)", "survives (append — one row per ctrl request, whatever its outcome)",
+    { ".operator", "<store>/.operator (fx-init ca9cb06, '#'-header + one data row per intervention on the generation plane — a control-channel REQUEST (appended+fsync'd by the handler BEFORE the reply is flushed, INCLUDING the ones that FAILED or were REFUSED) or, since the runtime-record closure, ONE row for a publish fx-activate committed OUTSIDE the handler on a boot carrying an fx.bootnonce= (a self-recorded row never carries \"none\"))",
+      "survives (disk)", "survives (append — one row per ctrl request whatever its outcome, plus one per direct-exec publish where the boot carries a nonce)",
       "survives (fxstore does not know the file; it outlives pruned versions AND keeps rows naming versions gc has since pruned — a row records the move the operator asked for, it is not a promise the version is still there)",
-      "DECIDED (user, 2026-10-12): UNBOUNDED, and NOTHING MAY BE DROPPED — one row per control-channel intervention and fx-audit's append accounting + its previous-observation comparison need the record INTACT (a rotation reads as a REWRITE of a previously observed record and fires on a HEALTHY machine).  Growth is linear in interventions that really happened, whose rate is the OPERATOR's own (§1a gap 4 is now this DECISION, not a gap).  NOT tamper-proof: PID1's control handler is its only writer, but root in-guest can forge or truncate it exactly as it can .bootlog (the file's own header says so)" },
-    { "runtime datalog rt_effect/rt_control", "/run/fx/log.db (fx-init init.zig:32 DEFAULT_RUN; path built :4752, opened :4753 by fx_log_open) — read by NOBODY here",
+      "DECIDED (user, 2026-10-12): UNBOUNDED, and NOTHING MAY BE DROPPED — one row per control-channel intervention and fx-audit's append accounting + its previous-observation comparison need the record INTACT (a rotation reads as a REWRITE of a previously observed record and fires on a HEALTHY machine).  Growth is linear in interventions that really happened, whose rate is the OPERATOR's own (§1a gap 4 is now this DECISION, not a gap).  NOT tamper-proof: PID1's control handler owns it and fx-activate adds one row for a publish committed outside that handler on a boot carrying a nonce (its TWO writers, in the file's own header), but root in-guest can forge or truncate it exactly as it can .bootlog" },
+    { "runtime datalog rt_effect/rt_control", "/run/fx/log.db (fx-init init.zig:33 DEFAULT_RUN; path built :4675, opened :4676 by fx_log_open) — read by NOBODY here",
       "DOES NOT SURVIVE (post-pivot '/' is tmpfs, init.zig M4 pivot — the log dies at every reboot)",
       "n/a (dies with the boot that wrote it)",
       "n/a",
@@ -910,9 +940,9 @@ static const struct { const char *id, *text; } BOUNDS[] = {
     { "pre-first-snapshot",
       "nothing before the store's first snapshot is representable; a .bootlog line naming a version not in the timeline is reported as such (pruned by gc, or written by a store history this disk no longer holds)" },
     { "operator-journal-bounds",
-      "<store>/.operator is the durable operator record SINCE fx-init ca9cb06, and it is bounded on every side: it holds the GENERATION PLANE only, and only what PID1's control handler saw.  The file's own header (OPERATOR_HEADER, init.zig:965) names what it does NOT record — the reads (status/q/grep/search), file transfers (put/rm), the interactive shell, per-service commands (start/stop/restart), probe, and a malformed request no arm executed — and what is NOT recorded AND NOT DETECTABLE: a host-side `fxstore rollback`, `rollback --hard`, a hand-edited store CURRENT.  Its only writer is that handler, and root in-guest can forge or truncate it exactly as it can .bootlog: a row is CHECKABLE against the store's version/genhash history, not authoritative over it.  A store predating the journal has NO file at all — absence of the FILE is a state of the store, never 'no interventions occurred'." },
+      "<store>/.operator is the durable operator record SINCE fx-init ca9cb06, and it is bounded on every side: it holds the GENERATION PLANE only, and only what PID1's control handler saw — plus, since the RUNTIME-RECORD CLOSURE, the publishes fx-activate committed OUTSIDE that handler (a direct exec: the harness's channel-less fallback, or a command in the interactive shell) on a boot carrying an fx.bootnonce=, ONE row each and only when the publish REACHED COMMIT (a pre-publish failure records nothing: there is no request to attribute it to).  The file's own header (OPERATOR_HEADER, operator_journal.zig:122) names what it does NOT record — the reads (status/q/grep/search), file transfers (put/rm), per-service commands (start/stop/restart), probe, and a malformed request no arm executed; the `shell` REQUEST is still not recorded, although a DIRECT exec FROM that shell now records its own publish — and what is NOT recorded AND NOT DETECTABLE: a host-side `fxstore rollback`, `rollback --hard`, a hand-edited store CURRENT.  Root in-guest can forge or truncate the file exactly as it can .bootlog: a row is CHECKABLE against the store's version/genhash history, not authoritative over it.  A store predating the journal has NO file at all — absence of the FILE is a state of the store, never 'no interventions occurred'." },
     { "operator-bypass-paths",
-      "the paths that bypass PID1's control handler have NO record: host-side `fxstore rollback`, `rollback --hard`, and a hand-edited store CURRENT.  Their only durable trace is a generation move the automatic .recovery row does not attribute, so the DERIVED operator-intervention signature is RETAINED as the fallback for them — and it is a DISJUNCTION: an operator rollback, a deliberate re-activation of an older config, or a REMOVED .recovery row (which the AUDIT seat's previous-observation comparison, not this seat, is built to catch).  A rollback to the content that is ALREADY current moves nothing and is invisible in this class by construction.  A journal row can EXPLAIN a derived backward move; it never suppresses the derived row, because the journal cannot prove it saw every path that produced one." },
+      "the paths that bypass PID1's control handler have NO record: host-side `fxstore rollback`, `rollback --hard`, and a hand-edited store CURRENT.  A DIRECT EXEC of fx-activate is no longer one of them — it records its own publish on a boot carrying an fx.bootnonce= (the runtime-record closure) — but that row covers exactly its OWN publish, so these three remain the unrecorded set.  Their only durable trace is a generation move the automatic .recovery row does not attribute, so the DERIVED operator-intervention signature is RETAINED as the fallback for them — and it is a DISJUNCTION: an operator rollback, a deliberate re-activation of an older config, or a REMOVED .recovery row (which the AUDIT seat's previous-observation comparison, not this seat, is built to catch).  A rollback to the content that is ALREADY current moves nothing and is invisible in this class by construction.  A journal row can EXPLAIN a derived backward move; it never suppresses the derived row, because the journal cannot prove it saw every path that produced one." },
     { "gc-config-loss",
       "MEASURED on this tree: `fxstore gc <root>` RETAINS every <genhash>-system-generation dir a SURVIVING snapshot's generation fact names (the dir sweep's carve-out) and REAPS a dir whose snapshot was pruned by `gc --retain N` — with its facts, so the pruned generation's input is not reportable at all (the version is gone from the timeline: absence-by-retention, not a finding). config-retained-copy-gone therefore requires a GENUINELY missing copy (a hand-deleted file, or a dir a surviving fact names that is gone) — the post-gc store itself is COHERENT" },
     { "renumber-after-hard",
@@ -1009,7 +1039,7 @@ int main(int argc, char **argv) {
         printf("absence\t.recovery\tno-automatic-roll-forward-recorded\tABSENT\n");
     /* .operator's absence is its OWN state, not "no interventions": the
      * writer's header is ensured on every store at boot (operator_ensure,
-     * init.zig:1038), so a file that is not there is a store that never
+     * init.zig:963), so a file that is not there is a store that never
      * booted under ca9cb06 — the derived fallback's domain. */
     if (!g_op_present)
         printf("absence\t.operator\tno-operator-journal-this-store-predates-fx-init-ca9cb06-or-never-booted-under-it\tABSENT\n");
@@ -1258,7 +1288,7 @@ int main(int argc, char **argv) {
     if (!g_op_present)
         h("activation refusals: THIS REPORT CANNOT SAY (no .operator journal — this store predates fx-init ca9cb06 — and rt_effect at /run/fx/log.db is tmpfs; see bound/rt-log-tmpfs).  The class's absence-meaning is NOT-DURABLY-RECORDED again exactly here.");
     else
-        h("activation refusals: %u MEASURED in the .operator journal (outcome failed:<rc> | refused | refused-config, out of %u row(s)) — a count of RECORDED refusals, never of attempts.  Absence in the retained journal means NONE-IN-THE-JOURNAL, not 'none occurred': PID1's control handler is the journal's only writer (an fx-activate refused outside it is invisible), `unverified` rows are AMBIGUITY not refusal, and root in-guest can forge or truncate the file exactly as it can .bootlog (bound/operator-journal-bounds).",
+        h("activation refusals: %u MEASURED in the .operator journal (outcome failed:<rc> | refused | refused-config, out of %u row(s)) — a count of RECORDED refusals, never of attempts.  Absence in the retained journal means NONE-IN-THE-JOURNAL, not 'none occurred': a REFUSAL row is written by PID1's control handler alone (an fx-activate that refuses outside the handler is invisible — a direct exec records only a publish that REACHED COMMIT), `unverified` rows are AMBIGUITY not refusal, and root in-guest can forge or truncate the file exactly as it can .bootlog (bound/operator-journal-bounds).",
           (unsigned)op_count_refusals(), g_nop);
     h("the reconstruction question — 'what changed between N and N+1, and from");
     h("which input?' — is answered by the config/config-line/config-diff records");

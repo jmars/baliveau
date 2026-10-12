@@ -152,7 +152,7 @@
 # exact formats (bootlog_append's "%u %s %u %s\n" — in-progress at boot
 # start plus the verdict per boot; recovery's "#"-header + "<epoch>
 # <published> <from-failed> <genhash|-> <nonce>" row; and the operator
-# journal's OWN header (copied from OPERATOR_HEADER, init.zig:965, because
+# journal's OWN header (copied from OPERATOR_HEADER, operator_journal.zig:122, because
 # that header IS the definition) plus operator_line's "<epoch> <action>
 # <arg> <outcome> <from-version|-> <to-version|-> <nonce>" rows) and
 # DECLARES that here, exactly as tests/test_fx_audit.sh does.  Everything else is written by the real
@@ -259,22 +259,31 @@ pin_blob() { # pin_blob REPO BLOB FILE LABEL
     git -C "$1" cat-file blob "$2" | cmp -s - "$1/$3" \
         || fail "PIN: $1/$3 differs from the pinned blob $2 this seat's retention table was measured against — the citations in tools/fx-report.c are STALE; re-measure and update the frozen tables"
 }
-# fx-init re-measured at the re-arm-accounting unit (the in-guest activate's
-# own (v, in-progress) — init.zig:3620 — plus the refusal verdict/pin) AND
-# AGAIN at the round-2 fix (the ROLLBACK refusal arm now captures
-# read_store_facts' rc and pins the latch on any non-zero rc too, with its
-# own message — init.zig:3768-3802): every line citation in tools/fx-report.c
-# was re-measured against THIS tree, and the ones at or after the two edited
-# hunks (the activate-arm comment and the rollback-refusal block) moved with
-# them (:3709->:3712, :3711->:3714, :3722->:3725, :3742->:3745,
-# :3746->:3749, :3751->:3754, :3770->:3773, :3802->:3816, :4738->:4752,
-# :4739->:4753).  The pin is a BLOB object (git hash-object -w
-# zig/src/init.zig), the same shape as the fxstore store.zig carve-out pin
-# below, because this unit's fx-init change is not committed yet: identical
-# bytes give the same blob object, so the pin stays exact once the commit
-# lands (a revision pin at ca9cb06 can no longer match — the tree it guarded
-# has moved on).
-pin_blob "$INIT" aca04d1bdfc14f75c63830cac7ca38462efee546 zig/src/init.zig "fx-init"
+# fx-init RE-MEASURED AGAIN at the RUNTIME-RECORD CLOSURE (fx-activate
+# SELF-RECORDS the publish it commits when it is NOT PID1's child: the
+# handler's marker in the activate child, the boot-nonce predicate in
+# activate.zig's selfRecord, and the ONE journal definition — header,
+# grammar, nonce parse — moved OUT of init.zig into operator_journal.zig,
+# imported by both writers).  EVERY line citation in tools/fx-report.c was
+# re-measured against THIS tree.  The edit DELETED two blocks (the kernel-
+# nonce parse, old :719-741; the journal definition, old :961-1073), MOVED
+# two test batteries out to the module, and INSERTED the child's marker, so
+# the deltas are piecewise — every cite at or after the deleted journal
+# block moved by -173 or more, and the ones that survived with the same
+# code are content-verified (old line N and new line N' carry IDENTICAL
+# text for every remapped cite).  The previous units' pair tables (the
+# re-arm-accounting and round-2 refresh) are SUPERSEDED: they named lines
+# of trees that no longer exist, and the cites they moved are re-anchored
+# above.  The pin is a BLOB object (git hash-object -w zig/src/init.zig),
+# the same shape as the fxstore store.zig carve-out pin below, because this
+# unit's fx-init change is not committed yet: identical bytes give the same
+# blob object, so the pin stays exact once the commit lands (a revision pin
+# at ca9cb06 can no longer match — the tree it guarded has moved on).
+# ROUND-2 NIT PASS (reviewer's five NITs, same uncommitted tree): init.zig
+# changed (ONE REQ_MAX definition, the marker's setenv now CHECKED) with a
+# ZERO line delta — the marker comment was reflowed to pay for the guard —
+# so every cite above still lands.  The blob moved; the citation map did not.
+pin_blob "$INIT" 7c054559821da222fddf793c62989b4b65e97361 zig/src/init.zig "fx-init"
 # fxstore re-measured at e97758c (the install-origin unit): the FACTS SURFACE
 # this seat reads is unchanged — RELATION_SCHEMAS still defines every name in
 # fx-report.c's FACT_RELS, and the gc carve-out's claim (store.zig) is a
@@ -364,7 +373,7 @@ VB=$(act "$WORK/cfgB.dhall")
 [ "$VB" -gt "$VA" ] || fail "expected VB ($VB) > VA ($VA)"
 
 # the operator-shaped move: fxstore's SOFT rollback (the same call fx-init's
-# automatic roll-forward drives in-guest, init.zig:1861) republishes VA's
+# automatic roll-forward drives in-guest, init.zig:1769) republishes VA's
 # content as a NEW version — the ONLY durable difference between the
 # automatic and the operator path is the .recovery row, and the gate arms
 # exactly that split below.
@@ -538,13 +547,14 @@ cp -a "$WORK/s2" "$WORK/s2j" || fail cp
 # in an unquoted one).
 cat > "$WORK/s2j/.operator" <<'OPHDR'
 # fx-init operator journal. One DATA line per OPERATOR intervention
-# on the generation plane, i.e. per control-channel `activate`,
-# `rollback` or `shutdown` — INCLUDING the ones that FAILED or were
-# REFUSED: an intervention that did not take effect is still an
-# intervention.  The count of interventions is the number of lines
-# starting with a digit.
+# on the generation plane: per control-channel `activate`, `rollback`
+# or `shutdown` — INCLUDING the ones that FAILED or were REFUSED; an
+# intervention that did not take effect is still one — AND, since the
+# runtime-record closure, one row for each publish fx-activate committed
+# OUTSIDE that handler.  The count of interventions is the number of
+# lines starting with a digit.
 # line: <epoch-s> <action> <arg> <outcome> <from-version|-> <to-version|-> <boot-nonce|none>
-# (the rest of OPERATOR_HEADER, init.zig:965, is abridged here: every "#"
+# (the rest of OPERATOR_HEADER, operator_journal.zig:122, is abridged here: every "#"
 # line is the writer's header and the reader skips them ALL.)
 OPHDR
 # the data rows: five shapes of intervention, three of them refusals, one
@@ -559,8 +569,13 @@ cat >> "$WORK/s2j/.operator" <<EOF
 205 activate /fx/src/y.dhall dhake-failed $VCUR 5 gateboot03
 300 rollback $VA ok $VB $VCUR gateboot03
 301 activate /fx/src/gone.dhall ok $VCUR 999 gateboot03
+302 activate /run/fx/config-a.dhall ok $VB $VCUR gateboot03
 EOF
-NOPROWS=8
+# 302 IS THE DIRECT-EXEC SHAPE (the runtime-record closure): fx-activate
+# recording the publish IT committed when it ran outside PID1's handler —
+# same grammar, same file, and its nonce is the boot's own token (a
+# self-recorded row NEVER carries "none", the predicate forbids it).
+NOPROWS=9
 NOPSREF=3
 report "$WORK/s2j" "$WORK/out-s2j"
 [ $? -eq 0 ] || fail "JOURNAL: a store WITH an operator journal must report cleanly (exit 0), got $?"
@@ -572,6 +587,10 @@ grep -q "^event${TAB}operator-intervention${TAB}MEASURED${TAB}file${TAB}.operato
     || fail "JOURNAL: no MEASURED operator row for the journal's own first data line (the file is being ignored)"
 grep -q "^event${TAB}operator-intervention${TAB}MEASURED${TAB}file${TAB}.operator${TAB}line${TAB}[0-9]*${TAB}epoch${TAB}300${TAB}action${TAB}rollback${TAB}arg${TAB}$VA${TAB}outcome${TAB}ok" "$WORK/out-s2j" \
     || fail "JOURNAL: the operator ROLLBACK row (action+verbatim arg) is not reported"
+# the DIRECT-EXEC row: parsed by the SAME read_operator shape validator (a
+# self-recorded row is a row like any other — the writer is not a field)
+grep -q "^event${TAB}operator-intervention${TAB}MEASURED${TAB}file${TAB}.operator${TAB}line${TAB}[0-9]*${TAB}epoch${TAB}302${TAB}action${TAB}activate${TAB}arg${TAB}/run/fx/config-a.dhall${TAB}outcome${TAB}ok${TAB}from-version${TAB}$VB${TAB}to-version${TAB}$VCUR${TAB}nonce${TAB}gateboot03" "$WORK/out-s2j" \
+    || fail "JOURNAL: the direct-exec (self-recorded) activate row — the shape the runtime-record closure adds — is not parsed and reported"
 # the row naming a version the store does not hold is CHECKED, not trusted
 grep -q "^event${TAB}operator-intervention${TAB}MEASURED.*to-version${TAB}999.*note${TAB}to-version-not-in-timeline-pruned-or-foreign" "$WORK/out-s2j" \
     || fail "JOURNAL: a journal row naming a version not in the timeline must carry the pruned-or-foreign note (the row is checkable, not authoritative)"

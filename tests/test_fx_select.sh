@@ -66,7 +66,7 @@
 #   S15 an excluded CHALLENGER is named and blocks nothing (keep the measured
 #       incumbent) — the mirror of S5a, stated rather than left implicit.
 #   S16 a DAMAGED line naming a candidate poisons it (the merged-line hole
-#       fx-init's un-repaired append produces, init.zig:764-780).
+#       fx-init's un-repaired append produces, init.zig:746-762).
 #   S17 THE BOUND: candidates = {CURRENT, the generation it replaced}; the
 #       intermediate snapshot a two-snapshot publish leaves behind (same
 #       generation genhash as its own predecessor) is NOT a candidate and
@@ -90,7 +90,7 @@
 #   OD    O + an Osier package in the closure that NOBODY runs -> 1.000000
 #         (the tie arm: same run set, different closure)
 # The .bootlog verdict lines are hand-appended in the WRITER's exact shape
-# (init.zig:769 `fprintf(f, "%u %s %u %s\n", v, status, epoch, nonce)`),
+# (init.zig:751 `fprintf(f, "%u %s %u %s\n", v, status, epoch, nonce)`),
 # as the real line PAIR (in-progress then the verdict, test_fx_audit.sh's
 # discipline), with `none` in the nonce field (the writer's placeholder for
 # a boot with no host token).
@@ -134,7 +134,8 @@ FXSTORE="${FXSTORE_BIN:-$SIBS/fxstore/zig-out/bin/fxstore}"
 INIT="${FX_INIT_REPO:-$SIBS/fx-init}"
 [ -d "$INIT" ] || skip "fx-init checkout not found at $INIT (set FX_INIT_REPO)"
 
-# ── THE CITATION PIN (fx-init d0de8c9): the tree every cited LINE means ──
+# ── THE CITATION PIN (fx-init d0de8c9, re-measured at the RUNTIME-RECORD
+#    CLOSURE on the working tree above it): the tree every cited LINE means ──
 # This gate and tools/fx-select.c cite init.zig BY LINE NUMBER; nothing
 # pinned the file, so the citations rotted SILENTLY — S13's `:4387` (the
 # boot path's in-progress append, which stood at :4387 at fx-init
@@ -150,8 +151,11 @@ pin_init_blob() { # pin_init_blob BLOB FILE CITING...
     git -C "$INIT" cat-file blob "$1" | cmp -s - "$INIT/$2" \
         || fail "CITATION PIN: $INIT/$2 differs from the pinned blob $1 this gate's citations were measured against — the init.zig citations in $3 are STALE; re-measure every cited line against this tree and fix the ones that MOVED"
 }
-pin_init_blob aca04d1bdfc14f75c63830cac7ca38462efee546 zig/src/init.zig "tools/fx-select.c and tests/test_fx_select.sh"
-echo "test_fx_select: CITATION PIN: init.zig is the tree (fx-init d0de8c9, blob aca04d1b) every cited line in tools/fx-select.c and this gate was measured against"
+# ROUND-2 NIT PASS: init.zig moved (ONE REQ_MAX definition; the marker's
+# setenv now CHECKED) with a ZERO line delta, so the cites above are
+# unchanged — only this gate's blob pin was re-measured.
+pin_init_blob 7c054559821da222fddf793c62989b4b65e97361 zig/src/init.zig "tools/fx-select.c and tests/test_fx_select.sh"
+echo "test_fx_select: CITATION PIN: init.zig measured for tools/fx-select.c and this gate is fx-init d0de8c9 + the runtime-record closure (uncommitted working tree, blob 7c054559)"
 
 DL="$SIBS/datalog-dafsa/zig-out/lib"
 
@@ -604,7 +608,7 @@ grep -q "^candidate	$F1_O_LAST	0	viability	failed	.*the pre-nonce legacy shape" 
 echo "test_fx_select: S10 the 3-field pre-nonce verdict shape is read (and named as such)"
 
 # ── S16: a DAMAGED line naming a candidate POISONS it (rule 2) ──────────
-# A 5-field line is not the writer's shape (init.zig:769 emits 3 or 4).
+# A 5-field line is not the writer's shape (init.zig:751 emits 3 or 4).
 # FAILING DIRECTION: without the poison, v$F1_O_LAST keeps its earlier `ok`,
 # stays viable, and its 1.000000 share wins -> revert-to it on the strength of
 # a record the writer never wrote.
@@ -642,7 +646,7 @@ grep -q '^caveat	bootlog-damage	damaged=0	torn=1	' "$F1/o.s12" \
 echo "test_fx_select: S12 the STRICT torn rule holds: a torn tail naming v$F1_O_LAST ($(state_of "$F1/o.s12" "$F1_O_LAST")) poisons it -> keep $F1_C_LAST"
 
 # ── S13: CURRENT MID-BOOT WITHHOLDS (fix B) ────────────────────────────
-# The writer's own line PAIR is in-progress-then-verdict (init.zig:4782), so
+# The writer's own line PAIR is in-progress-then-verdict (init.zig:4705), so
 # during a boot of the incumbent its LAST line is in-progress.  Treating that
 # as merely "not viable" would recommend — and --apply perform — a rollback of
 # a system that is booting right now.

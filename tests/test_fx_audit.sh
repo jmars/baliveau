@@ -97,9 +97,9 @@
 #   REARM       the WRITER's second verdict per boot, derived not patched:
 #               the in-guest `activate` publishes a NEW version (the
 #               store's CURRENT moves), appends the ACTIVATED version's own
-#               "<v> in-progress" for it (init.zig:3620, the re-arm marker
+#               "<v> in-progress" for it (init.zig:3543, the re-arm marker
 #               this unit's writer change added) and RE-ARMS the boot
-#               decision (init.zig:3693-3696), so ONE boot under ONE nonce
+#               decision (init.zig:3616-3619), so ONE boot under ONE nonce
 #               legitimately carries a verdict for a second version —
 #               fx-init's own suite measures the second DISK verdict
 #               (tests/qemu_boot_rollback.sh:18-27).
@@ -211,7 +211,7 @@
 #               roll-forwards between two audits), and an in-progress
 #               followed by a SHUTDOWN (a clean stop during the judgement —
 #               do_shutdown appends its line whether or not the boot ever
-#               decided a verdict, init.zig:4292/:4856).
+#               decided a verdict, init.zig:4215/:4779).
 #   TRIGGER     --rollback REFUSES a clean store (CURRENT untouched) and on
 #               the coherent-tamper store calls `fxstore rollback --hard`
 #               (CURRENT repointed, LOUD, naming the finding), after which
@@ -249,7 +249,7 @@
 # not run host-side; the gate WRITES them in the writers' exact formats
 # (bootlog_append's "%u %s %u\n" — a "<v> in-progress <epoch>" line AND the
 # verdict line for every boot, because that is what the writer appends per
-# boot (init.zig:4782 then the verdict sites); recovery_line's "<epoch>
+# boot (init.zig:4705 then the verdict sites); recovery_line's "<epoch>
 # <published> <from-failed> <genhash>\n" under the verbatim RECOVERY_HEADER
 # from init.zig).  The HOST BOOT COUNT narrative is likewise declared, not
 # measured: the baseline store's history is THREE boots the "host" (this
@@ -286,11 +286,12 @@ FXSTORE="${FXSTORE_BIN:-$SIBS/fxstore/zig-out/bin/fxstore}"
 INIT="${FX_INIT_REPO:-$SIBS/fx-init}"
 [ -d "$INIT" ] || skip "fx-init checkout not found at $INIT (set FX_SIBLINGS or FX_INIT_REPO)"
 
-# ── THE CITATION PIN (fx-init d0de8c9): the tree every cited LINE means ──
+# ── THE CITATION PIN (fx-init d0de8c9, re-measured at the RUNTIME-RECORD
+#    CLOSURE on the working tree above it): the tree every cited LINE means ──
 # This gate and tools/fx-audit.c cite init.zig BY LINE NUMBER, and nothing
 # pinned the file, so the citations rotted SILENTLY: the accounting header
 # cited :4465 for the in-progress site when it was :4718, and :1674 for
-# recovery_append when it was :932 — found by hand, only because a unit
+# recovery_append when it was :914 — found by hand, only because a unit
 # happened to print every cited line.  A citation into a file that MOVED is
 # a FINDING, not a renumbering job, so the pin makes the drift LOUD.
 # The pin is a FIXED object — the file's BLOB name, not HEAD and not the
@@ -304,8 +305,11 @@ pin_init_blob() { # pin_init_blob BLOB FILE CITING...
     git -C "$INIT" cat-file blob "$1" | cmp -s - "$INIT/$2" \
         || fail "CITATION PIN: $INIT/$2 differs from the pinned blob $1 this gate's citations were measured against — the init.zig citations in $3 are STALE; re-measure every cited line against this tree and fix the ones that MOVED"
 }
-pin_init_blob aca04d1bdfc14f75c63830cac7ca38462efee546 zig/src/init.zig "tools/fx-audit.c and tests/test_fx_audit.sh"
-echo "test_fx_audit: CITATION PIN: init.zig is the tree (fx-init d0de8c9, blob aca04d1b) every cited line in tools/fx-audit.c and this gate was measured against"
+# ROUND-2 NIT PASS: init.zig moved (ONE REQ_MAX definition; the marker's
+# setenv now CHECKED) with a ZERO line delta, so the cites above are
+# unchanged — only this gate's blob pin was re-measured.
+pin_init_blob 7c054559821da222fddf793c62989b4b65e97361 zig/src/init.zig "tools/fx-audit.c and tests/test_fx_audit.sh"
+echo "test_fx_audit: CITATION PIN: init.zig measured for tools/fx-audit.c and this gate is fx-init d0de8c9 + the runtime-record closure (uncommitted working tree, blob 7c054559)"
 
 DL="$SIBS/datalog-dafsa/zig-out/lib"
 [ -f "$DL/libdatalog.so" ] || skip "libdatalog.so missing at $DL (set FX_SIBLINGS)"
@@ -492,7 +496,7 @@ materialize_rootfs() {
 
 # write_records STORE BOOTLOG_ROWS... — .bootlog + the header-only .recovery
 # in the WRITERS' exact formats (see FIXTURE HONESTY above).  Every boot is
-# written as its REAL line pair: "<v> in-progress <epoch>" (init.zig:4782,
+# written as its REAL line pair: "<v> in-progress <epoch>" (init.zig:4705,
 # when the boot starts) followed by that boot's verdict — never a bare
 # verdict, because the writer never emits one without its in-progress.
 write_records() {
@@ -582,7 +586,7 @@ materialize_rootfs "$STORE" "$ROOT" "$CUR" "$PS_A"
 # started — v1 boots ok; v2 boots and FAILS; the next boot rolls forward
 # (fxstore soft rollback republishing v1's content as v$CUR) and boots ok.
 # Each boot is the writer's real line pair (in-progress at boot start,
-# init.zig:4782; the verdict from the g_boot_decided latch), each wearing
+# init.zig:4705; the verdict from the g_boot_decided latch), each wearing
 # the nonce the host issued for it (the gate's own ledger).
 write_records "$STORE" \
     "$V1 in-progress 99 $(nth 1)" \
@@ -894,7 +898,7 @@ echo "test_fx_audit: BOOTS: no --boots -> exit 2, loud refusal (an optional anch
 # THE MOTIVATING EXPLOIT, on the store where it is actually invisible: a
 # failure that has NOT been rolled forward (no .recovery row — the moment
 # the exploit is used).  v$V2's last verdict is failed; the agent APPENDS
-# "<v$V2> ok" in the writer's exact shape.  bootlog_last (init.zig:782)
+# "<v$V2> ok" in the writer's exact shape.  bootlog_last (init.zig:764)
 # reads the LAST non-shutdown status, so the next boot would treat v$V2 as
 # ok and fx-init would NOT roll forward — the broken generation stays
 # current.  On the standard baseline (which carries a .recovery row from
@@ -1191,7 +1195,7 @@ echo "test_fx_audit: LEGIT: a boot killed at the verdict (in-progress alone) sta
 # a SILENT boot: the host started one more boot (issuing its nonce) and the
 # writer appended NOTHING (no bootable generation: decide_boot_version
 # returned 0, which appends no line and pre-decides the verdict away,
-# init.zig:4772-4778).  Coherent — and the nonce makes the silence ITSELF a
+# init.zig:4695-4701).  Coherent — and the nonce makes the silence ITSELF a
 # reportable fact: the boot's nonce is UNCLAIMED.  This is the
 # false-positive direction the review priced: a machine that booted nothing
 # is not an incoherence, and an unclaimed nonce must NEVER roll a healthy
@@ -1230,8 +1234,8 @@ echo "test_fx_audit: LEGIT: the same version booted twice in one window (2 real 
 # boot rolls forward to the republished generation (a .recovery row), THAT
 # generation fails too, and a second boot rolls forward again — two complete
 # cycles between two audits (4 boots, 2 rows).  Writer-faithful: the row is
-# written in the boot that rolls forward (init.zig:1879, recovery_append's
-# call), before that boot's in-progress line (init.zig:4782), and each row
+# written in the boot that rolls forward (init.zig:1787, recovery_append's
+# call), before that boot's in-progress line (init.zig:4705), and each row
 # names the version that failed.
 # FAILS if recovery-without-failure reads anything but the LAST non-shutdown
 # verdict for a row's from-failed version (boot 6 wrote "$R1 ok 113", boot 7
@@ -1271,8 +1275,8 @@ echo "test_fx_audit: LEGIT: a MULTI-CYCLE roll-forward in one window (two real f
 
 # an in-progress followed by a SHUTDOWN and NO verdict: the boot started, was
 # told to stop during the grace (SIGTERM -> sigterm_handler sets g_shutdown ->
-# the main loop exits -> do_shutdown appends the shutdown line, init.zig:4292,
-# called from :4856), and never decided.  Writer-faithful: do_shutdown appends
+# the main loop exits -> do_shutdown appends the shutdown line, init.zig:4215,
+# called from :4779), and never decided.  Writer-faithful: do_shutdown appends
 # its line whether or not the boot ever decided a verdict.
 # FAILS if the counter ever demanded a verdict before a shutdown line, or if
 # an open in-progress for the current version were turned into its own
@@ -1291,7 +1295,7 @@ echo "test_fx_audit: LEGIT: an in-progress followed by a shutdown (clean stop du
 # g_boot_decided latch allows at most one verdict per boot" — and the writer
 # refutes it: the in-guest `activate` (the control channel; the agent-slot
 # loop's every task cycle) publishes a NEW version through fx-activate and
-# RE-ARMS the latch (init.zig:3693-3696), so one boot under one nonce
+# RE-ARMS the latch (init.zig:3616-3619), so one boot under one nonce
 # legitimately carries a verdict for the ACTIVATED version as well.
 # fx-init's own suite measures the second DISK verdict
 # (tests/qemu_boot_rollback.sh:18-27).  A reader that budgets verdicts per
@@ -1374,7 +1378,7 @@ grep -q '^INCOHERENT bootlog-forged-verdict ' "$WORK/out.rearmflip" \
     && fail "REARMFLIP: provenance fired too (isolation failed — BOTH verdicts legitimately ride the first-published anchor; only the budget may fire): $(grep '^INCOHERENT' "$WORK/out.rearmflip")"
 echo "test_fx_audit: REARMFLIP: a SECOND verdict for the activated version (same live nonce) fires the PER-VERSION verdict budget — the flip a per-nonce rule cannot see"
 
-# ── THE NEW-WRITER RE-ARM SHAPE (the re-arm in-progress, init.zig:3620) ──
+# ── THE NEW-WRITER RE-ARM SHAPE (the re-arm in-progress, init.zig:3543) ──
 # mk_rearmip NAME — boot 5 boots v$CUR ok (the writer's real pair under its
 # issued nonce), then the SAME fx-activate the in-guest handler drives
 # publishes v$ACTV > v$CUR, and the activated version's OWN
