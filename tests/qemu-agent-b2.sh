@@ -128,7 +128,7 @@
 # inspects with the verbs that DO work in-guest: fx_ls + fx_read (native) and,
 # for the activation, fx_activate — which now execs the RUNNING ROOT's
 # /bin/fx-activate with the SAME argv fx-init's own activate handler uses
-# (init.zig:3457-3458).  See the lane's report: that is an in-repo (fx-harness)
+# (init.zig:3617-3618).  See the lane's report: that is an in-repo (fx-harness)
 # change, no other repo is touched.
 #
 # Env: QEMU_BOOT_TIMEOUT (default 120)  QEMU_KEEP=1  B2_MARKER
@@ -215,8 +215,17 @@ pin_init_blob() { # pin_init_blob BLOB FILE CITING...
 # slice's own unprivileged host-side mkfs): a COMMENT-ONLY edit with a ZERO
 # line delta — the two-line block is replaced line for line — so the cited
 # line :3457-3458 still lands; only the blob pin was re-measured.
-pin_init_blob b7bf3c075b1ce63d32f5396f5b6523d1db5fb0b2 zig/src/init.zig "tests/qemu-agent-b2.sh"
-echo "qemu-agent-b2: CITATION PIN: init.zig measured for this gate is fx-init d0de8c9 + the runtime-record closure (uncommitted working tree, blob b7bf3c07); the cited line is :3457-3458"
+# NOBB RE-MEASURE (fx-init 43d3221 "disk: the ATA probe, and then NO busybox",
+# committed; working tree == HEAD, blob 201cf9ed, 5354 -> 5609 lines): the
+# disk migration is native (run_bb deleted, mkfs a pre-format refusal, lstat
+# added to fxstat.zig); +255 lines, first divergence at old :755, a large
+# rework over old :2170-:2394, and a +95 insert at old :4805.  The lineage of
+# THIS gate's cited line continues: `:3617-3618` at 43d3221.  An old->new map
+# from the two blobs was applied mechanically and the cite was verified to
+# carry IDENTICAL text at its new line (the activate handler's argv+exec of
+# /bin/fx-activate is unchanged code; only the number moved).
+pin_init_blob 201cf9ed6a5303e52e69dc9d40d5f7cf24d558c5 zig/src/init.zig "tests/qemu-agent-b2.sh"
+echo "qemu-agent-b2: CITATION PIN: init.zig measured for this gate is fx-init 43d3221 + the disk/no-busybox work (blob 201cf9ed); the cited line is :3617-3618"
 
 PIN="$INIT/scripts/kernel-pin.txt"
 [ -f "$PIN" ] || skip "scripts/kernel-pin.txt missing"

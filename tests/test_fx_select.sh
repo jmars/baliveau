@@ -66,7 +66,7 @@
 #   S15 an excluded CHALLENGER is named and blocks nothing (keep the measured
 #       incumbent) — the mirror of S5a, stated rather than left implicit.
 #   S16 a DAMAGED line naming a candidate poisons it (the merged-line hole
-#       fx-init's un-repaired append produces, init.zig:746-762).
+#       fx-init's un-repaired append produces, init.zig:746-763).
 #   S17 THE BOUND: candidates = {CURRENT, the generation it replaced}; the
 #       intermediate snapshot a two-snapshot publish leaves behind (same
 #       generation genhash as its own predecessor) is NOT a candidate and
@@ -167,8 +167,21 @@ pin_init_blob() { # pin_init_blob BLOB FILE CITING...
 # line delta — the two-line block is replaced line for line — so every cite
 # above and every cite in tools/fx-select.c still lands; only the blob pin was
 # re-measured.
-pin_init_blob b7bf3c075b1ce63d32f5396f5b6523d1db5fb0b2 zig/src/init.zig "tools/fx-select.c and tests/test_fx_select.sh"
-echo "test_fx_select: CITATION PIN: init.zig measured for tools/fx-select.c and this gate is fx-init d0de8c9 + the runtime-record closure (uncommitted working tree, blob b7bf3c07)"
+# NOBB RE-MEASURE (fx-init 43d3221 "disk: the ATA probe, and then NO busybox",
+# committed; working tree == HEAD, blob 201cf9ed, 5354 -> 5609 lines): the
+# disk migration is native, and the first divergence is a comment rework at
+# old :755-756 INSIDE bootlog_append — the function this gate's surface cites
+# as a range.  The SLICE 2 paragraph's present-tense claim that
+# tools/fx-select.c's (:746-762, :751) "are before the insertion and did NOT
+# move" is thereby SUPERSEDED: the range cite is now 746-763 (the body is the
+# same function; the busybox-mkfs comment became a pre-formatted-ext4 comment
+# and grew one line), while :751 (the fprintf shape) and the other prefixed
+# cites did not move.  An old->new map from the two blobs was applied
+# mechanically to every prefixed AND bare continuation cite in
+# tools/fx-select.c and this gate (:870-871 -> :871-872, :4726 -> :4886);
+# each was verified to carry IDENTICAL text at its new line.
+pin_init_blob 201cf9ed6a5303e52e69dc9d40d5f7cf24d558c5 zig/src/init.zig "tools/fx-select.c and tests/test_fx_select.sh"
+echo "test_fx_select: CITATION PIN: init.zig measured for tools/fx-select.c and this gate is fx-init 43d3221 + the disk/no-busybox work (blob 201cf9ed)"
 
 DL="$SIBS/datalog-dafsa/zig-out/lib"
 
@@ -659,7 +672,7 @@ grep -q '^caveat	bootlog-damage	damaged=0	torn=1	' "$F1/o.s12" \
 echo "test_fx_select: S12 the STRICT torn rule holds: a torn tail naming v$F1_O_LAST ($(state_of "$F1/o.s12" "$F1_O_LAST")) poisons it -> keep $F1_C_LAST"
 
 # ── S13: CURRENT MID-BOOT WITHHOLDS (fix B) ────────────────────────────
-# The writer's own line PAIR is in-progress-then-verdict (init.zig:4726), so
+# The writer's own line PAIR is in-progress-then-verdict (init.zig:4886), so
 # during a boot of the incumbent its LAST line is in-progress.  Treating that
 # as merely "not viable" would recommend — and --apply perform — a rollback of
 # a system that is booting right now.

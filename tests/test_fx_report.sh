@@ -300,7 +300,38 @@ pin_blob() { # pin_blob REPO BLOB FILE LABEL
 # slice's own unprivileged host-side mkfs): a COMMENT-ONLY edit with a ZERO
 # line delta — the two-line block is replaced line for line — so no cite here
 # or in tools/fx-report.c moved; only the blob pin was re-measured.
-pin_blob "$INIT" b7bf3c075b1ce63d32f5396f5b6523d1db5fb0b2 zig/src/init.zig "fx-init"
+# NOBB RE-MEASURE (fx-init 43d3221 "disk: the ATA probe, and then NO busybox",
+# committed; working tree == HEAD, blob 201cf9ed, 5354 -> 5609 lines): the
+# disk migration is native (run_bb deleted, mkfs a pre-format refusal, lstat
+# added to fxstat.zig), so init.zig moved +255 — first divergence at old :755
+# (a comment rework inside bootlog_append), a large rework over old
+# :2170-:2394, small edits at old :2679/:3205/:3263, and a +95 insert at old
+# :4805.  An old->new map from the two blobs was applied mechanically to every
+# init.zig:PREFIXED cite AND every bare ":NNNN" continuation ref sharing a
+# line with one (fx-report.c's frozen tables carry 25 of the bare kind); each
+# remapped cite was verified to carry IDENTICAL text at its new line.  This
+# file's one cite moved off the SLICE 2 paragraph's "did not move" claim:
+# :1769 -> :1770.  tools/fx-report.c's cites moved with it (e.g. :3396 ->
+# :3556, :3505 -> :3665, :4696/:4697 -> :4856/:4857).  The SLICE 2 paragraph's
+# present-tense "no cite in test_fx_report.sh moved" is thereby superseded —
+# recorded here, the paragraph above kept as history.
+# TWO MORE FINDINGS in fx-report.c's refusal-vocabulary comment, same class
+# as the fx-audit.c ones (citations WRONG at the pinned tree, not shifted —
+# this pass content-checked EVERY bare ":NNNN" continuation ref, per line,
+# having found that a cross-line de-dup in the first inventory scan had
+# hidden four of them): (3) "refused is the rollback arm's when the STORE
+# rejected the target (:3677)" — old :3677 is the ACTIVATE arm's loss-window
+# comment, the wrong arm; the true refused append was :3698, corrected to
+# :3858.  (4) "`dhake-failed` (the live-root reapply failed, :3635)" — old
+# :3635 is the activate arm's re-arm comment; the reapply-failure surface is
+# :3654-:3656, corrected to :3816 (the dhake-failed append, which the
+# taxonomy's ctrl-arms list at :890 already named as :3656->:3816).  ONE
+# further ref was APPROXIMATE at the pinned tree and is mechanically
+# preserved, not blessed: "the rollback arm's :3856" points at that branch's
+# rationale comment, 21 lines above the refused-config append (:3877) —
+# same text it always pointed at, flagged here rather than re-aimed by
+# guesswork.
+pin_blob "$INIT" 201cf9ed6a5303e52e69dc9d40d5f7cf24d558c5 zig/src/init.zig "fx-init"
 # fxstore re-measured at e97758c (the install-origin unit): the FACTS SURFACE
 # this seat reads is unchanged — RELATION_SCHEMAS still defines every name in
 # fx-report.c's FACT_RELS, and the gc carve-out's claim (store.zig) is a
@@ -390,7 +421,7 @@ VB=$(act "$WORK/cfgB.dhall")
 [ "$VB" -gt "$VA" ] || fail "expected VB ($VB) > VA ($VA)"
 
 # the operator-shaped move: fxstore's SOFT rollback (the same call fx-init's
-# automatic roll-forward drives in-guest, init.zig:1769) republishes VA's
+# automatic roll-forward drives in-guest, init.zig:1770) republishes VA's
 # content as a NEW version — the ONLY durable difference between the
 # automatic and the operator path is the .recovery row, and the gate arms
 # exactly that split below.
