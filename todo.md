@@ -22,10 +22,13 @@ Two repos are in play: **this one** (`fx-harness`) and **`../fx-init`** (PID 1, 
       **NEXT, in the order I would take them:** (a) the **Osier→Lua backend** — blocked elsewhere, and
       the only thing between here and the first self-modification task; (b) the retention POLICY — **CLOSED
       2026-10-12: DECIDED UNBOUNDED**, stated in the reporter's frozen tables (§2), so there is nothing to
-      build; (c) the residual store defects in §3 — the
-      **`install`-fact fix** that made `fxstore verify` report 5 drifts on a stock system is now CLOSED
-      (below); what remains there is the `fx_read`/`fx_ls` `root_join` reach and the two ungated oracle
-      paths.
+      build; (c) the residual store defects in §3 — **ALL THREE CLOSED**: the **`install`-fact fix** (the
+      writer's 5 drifts on a stock system), the **`fx_read`/`fx_ls` `root_join` reach** (both now take the
+      same `canon_root_rel` gate `fx_write` has) and the **ungated oracle paths**. What remains in §3 is
+      the two-implementations-of-the-store note and the two literal-skip arms, below.
+      **(d) THE CLAIM UNIT — the newest thread** (§1b's last item, and §1a's AI-Act gap 2): S0 is landed
+      and green; **S1** (the judge seat `tools/fx-claim.c`), **S2** (reporter surfacing + the
+      `claim-evaluator-location` bound) and **S3** (the `le`→Osier port + by-name enforcement) are queued.
 
 - [x] **`fx-harness` committed**: `7de7433` (the observation loop + the B2 pin fix + evidence),
       `648984f` (the write-surface fix — see §4), `e3eb984` (the first oracle — §1).
@@ -975,11 +978,19 @@ regulator** — §6b's audit stance is what makes these records evidentially usa
       the package set is a different file. The host declares the set per task, so the first task's
       deployment must name whatever the task legitimately writes (the config AND how a component
       enters the closure). That is a design decision for the task, not a patch to the bound.
-- [ ] **The runtime-record gap.** A direct exec of `/bin/fx-activate` writes **no `rt_effect("activate")`**,
-      no runtime-DB update, no hot-apply. The agent's activation is recorded in the *store* but not in
-      the *runtime record*. Accept "a cold activate, effective on next boot" — or record it? (Note the
-      consequence: the *store* record and the agent's own checkpoint are then the only evidence, which
-      is why the checkpoint is the causal link.)
+- [x] **The runtime-record gap — CLOSED, with a STATED SUBSTITUTION.** A direct exec of
+      `/bin/fx-activate` wrote no `rt_effect("activate")`, no runtime-DB update, no hot-apply: the
+      activation was recorded in the *store* but not in the *runtime record*. **A literal `rt_effect` is
+      IMPOSSIBLE and the reason is structural, not a missing call:** `/run/fx/log.db` is held FOR LIFE by
+      PID1 under the datalog engine's process-lifetime exclusive lock (`fxctl.zig:8`: "direct access would
+      block fx-init"), nothing outside fx-init opens it, and it is tmpfs. The DURABLE record is
+      `<store>/.operator`, and PID1's control handler was its only writer. So the closure puts the record
+      THERE: **fx-activate now self-records a publish it commits outside that handler** (fx-init
+      `1aafa4a`; a marker env in the child suppresses the double record; the predicate is marker-absent
+      AND a boot nonce parses from `/proc/cmdline`, which is what keeps every offline caller silent). The
+      banner that claimed "no runtime record" was itself FALSE once the self-record existed and is
+      corrected. `.operator`'s header and the reporter's bound now name TWO writers — a property with an
+      exception, which is the same move this design makes everywhere else.
 - [ ] **Per-client reply fifos (fifo option (b))** — deferred, and the choice is **reversible** because
       it is additive (the request line gains a reply path). Chosen now: one request fifo + one reply
       fifo, **single-client by convention, not enforcement** (a second client's replies interleave).
@@ -1238,10 +1249,22 @@ regulator** — §6b's audit stance is what makes these records evidentially usa
       step stay RED — the boot-verdict, pivot, disk-mount and no-ramfs-fallback rows still run.
       Nothing else was touched to make them pass, and the gates are NOT marked skip: a red gate that
       names its reason is the record.
-- [ ] **Determinism** (§7.3): v86's RTC is host-fed, device identity comes from
-      `Math.random`/`getRandomValues`, and `Date.now()` appears in the network stack. Patch those three
-      sites, or always enter from a hashed `restore_state` snapshot. The *agent* path can never be
-      hermetic; only the *build* path can.
+- [x] **Determinism** (§7.3) — the NATIVE lane's half is CLOSED; the browser lane's half is
+      OUT OF SCOPE BY CONSTRUCTION. The requirement: v86's RTC is host-fed, device identity comes from
+      `Math.random`/`getRandomValues`, and `Date.now()` appears in the network stack — patch those three
+      sites, or always enter from a hashed `restore_state` snapshot; the *agent* path can never be
+      hermetic, only the *build* path. **MEASURED, and the brief's premise was wrong:** two boots of the
+      pre-fix binary already produced BYTE-IDENTICAL transcripts — the residual was one level in, SIX
+      boots giving SIX DIFFERENT INSTRUCTION COUNTS over one transcript, because the host-fed RTC changes
+      how the guest PACES ITSELF. Closed in `souche` (the native port) by the port's own D-F2 timebase
+      (1 instruction = 1 µs) on a FIXED epoch, and by RDRAND always taking its seeded arm (a per-run
+      seed would be host entropy by another route, and the guest can OBSERVE RDRAND). Item three of the
+      list is vacuous there: no NE2K/virtio-net, and `clock_gettime` now appears in no file under `src/`.
+      Gate `souche tests/gate-m2-5-determinism.sh` (two boots byte-identical in serial, virtio AND
+      instruction count), with the RTC as the attributed cause by CONTROL (RTC back on the host clock
+      with RDRAND fixed -> the counts differ again). **The browser lane cannot be patched** — `v86`'s JS
+      is this project's READ-ONLY reference and fx-demo ships its unmodified build — so its route is
+      `restore_state` or nothing, and that is a separate decision, not owed here.
 
 ---
 
