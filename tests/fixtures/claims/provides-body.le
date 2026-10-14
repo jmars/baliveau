@@ -1,0 +1,5 @@
+# A SECOND store template genuinely consumed in a body: `provides` (package,
+# store_dir -- two different sorts) type-checks, so the agent really does read
+# the store spine, not just generation_config.
+ClaimA is grounded in a generation G1 if a package P1 is provided by a store_dir D1 and ClaimA comes from the generation.
+ClaimA contends for a generation G1 if ClaimA is grounded in the generation.

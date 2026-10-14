@@ -1,0 +1,5 @@
+# A well-formed argument that never reaches the judgment rule: it concludes the
+# intermediate `noted` (a valid agent-conclusion predicate) and never the
+# contention, so the policy consumes nothing it derives.
+ClaimA is grounded in a generation G1 if ClaimA comes from the generation and the generation was produced from a config C1 by an origin O1.
+ClaimA notes a config C1 if ClaimA starts at the config.

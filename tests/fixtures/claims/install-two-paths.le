@@ -1,0 +1,7 @@
+# THE MEASURED LIMIT OF TODAY'S AGENT VOCABULARY, stated rather than hidden:
+# `install(target, origin, mode, genhash)` has TWO same-sort (path) columns,
+# and le allows ONE unanchored `a <noun>` binding per sort per clause, so the
+# USEFUL install shape cannot be written.  The refusal is LOUD (le's own gap),
+# never a silent drop; the degenerate `install(T1, T1, M1, G1)` does compile.
+ClaimA is grounded in a generation G1 if a path T1 was installed from a path S1 with mode a mode M1 in a generation G2.
+ClaimA contends for a generation G1 if ClaimA is grounded in the generation.

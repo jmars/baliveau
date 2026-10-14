@@ -1,0 +1,6 @@
+# The premise is ASSERTED, not derived: the store as of the claim's
+# from_version records nothing about GenZ, so the premise is false and the
+# evaluator refuses before any rule is queried.
+GenZ was produced from CfgZ by OrigA.
+ClaimA is grounded in GenZ if ClaimA comes from GenZ and GenZ was produced from a config C1 by an origin O1.
+ClaimA contends for a generation G1 if ClaimA is grounded in the generation.

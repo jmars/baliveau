@@ -1,0 +1,3 @@
+generation_config	gena	aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa	origa
+install	/etc/foo	/fx/store/abc	420	cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+provides	foo	/fx/store/abc

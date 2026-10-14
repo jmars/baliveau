@@ -301,6 +301,50 @@ $(BIN_REPORT): tools/fx-report.c src/vendor/dhall-c/sha256.c src/vendor/dhall-c/
 
 .PHONY: test-report
 
+# THE CLAIM UNIT's S0 GATE (pre-registered claims; plan handoff-claim-rev-plan).
+# Three host-authored inputs under policy/ — the AGENT-FACING CLOSED LEXICON
+# (policy/claims-lexicon.ini: no `justified`, no [actions] — that absence IS
+# the soundness boundary), the FROZEN POLICY (policy/claims-policy.le +
+# policy/policy-lexicon.ini, compiled into the sha-pinned rule-text artifact
+# policy/claims-policy.dl) and the FREE-LE EVALUATOR (policy/eval_claim.py:
+# compile the claim against the agent lexicon, head check, premise
+# verification against the store facts as-of from_version, query justified).
+# `le` is CONSUMED AS A DEPENDENCY from its own checkout — never forked — and
+# the engine is the sibling's dlb binding; the gate FAILS (never skips) when
+# either is absent, because free LE over a closed lexicon IS this slice.
+# tests/test_claim_policy.sh carries the boundary arms, the mutants each
+# blind on exactly its fixture, the pin/determinism arms and the four vacuity
+# arms.  It also TYPES the evaluator's one trusted-facts channel: a facts dump
+# may name a store template and nothing else (A10), so neither a row binding
+# nor the judgment predicate can enter from outside, and the verdict is
+# checked to name only the claim its rows carry — with the PRE-FIX evaluator
+# executed to show that arm can fail.  No C is built here: S1 is
+# tools/fx-claim.c, a later unit.
+test-claim-policy:
+	bash tests/test_claim_policy.sh
+
+# The policy release path: regenerating the pinned artifact is a HOST release
+# (it rewrites policy/claims-policy.dl, and policy/PINS' sha must be updated
+# in the same commit — the gate fails until both agree).
+#
+# The `le` checkout, resolved the repo's way (sibling first, then the
+# relocated default).  NO parse-time $(error): le is needed by this target and
+# by test-claim-policy only, and a hard parse error here would break every
+# OTHER target on a machine without the sibling.  Note it is passed as LE_DIR
+# (the env var policy/eval_claim.py reads), not as a make variable name it
+# would not see.
+LE_ROOT ?= $(if $(wildcard ../logical-english/le/__init__.py),../logical-english,$(HOME)/logical-english)
+
+policy-artifact:
+	LE_DIR=$(abspath $(LE_ROOT)) python3 policy/eval_claim.py --compile-policy \
+	    --policy-le policy/claims-policy.le \
+	    --policy-lexicon policy/policy-lexicon.ini > policy/claims-policy.dl.tmp
+	mv policy/claims-policy.dl.tmp policy/claims-policy.dl
+	@printf 'policy/claims-policy.dl sha256: '; sha256sum policy/claims-policy.dl | cut -d' ' -f1
+	@printf 'policy/PINS must carry exactly that value for claims-policy.dl\n'
+
+.PHONY: test-claim-policy policy-artifact
+
 # The slot ground for the first self-modification task (todo.md §5): the
 # deployment pre-declares ONE package whose src.path is a directory the
 # agent may write; the host-frozen recipe (a STUB — no Osier->Lua compiler

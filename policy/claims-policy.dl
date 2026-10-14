@@ -1,0 +1,1 @@
+justified(C1) :- contention(C1, G1), claim_from(C1, G1), claim_config(C1, C2), generation_config(G1, C2, O1), !landed_config(C2).

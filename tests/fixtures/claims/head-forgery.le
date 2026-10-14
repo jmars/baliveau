@@ -1,0 +1,6 @@
+# HEAD FORGERY: the agent tries to MANUFACTURE the store spine by concluding a
+# store template as a rule head.  It COMPILES (generation_config is a declared
+# predicate) and the evaluator's head check refuses it by name.
+GenZ was produced from CfgZ by OrigA if ClaimA comes from a generation G1.
+ClaimA is grounded in a generation G1 if ClaimA comes from the generation and GenZ was produced from CfgZ by OrigA.
+ClaimA contends for a generation G1 if ClaimA is grounded in the generation.

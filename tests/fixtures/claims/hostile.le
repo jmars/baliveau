@@ -1,0 +1,3 @@
+# THE HOSTILE CLAIM: it names the judgment predicate.  Against the agent
+# lexicon this is GAP_CLOSED_LEXICON, refused by name at compile time.
+ClaimA is justified if ClaimA comes from a generation G1.

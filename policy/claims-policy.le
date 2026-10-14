@@ -1,0 +1,50 @@
+# policy/claims-policy.le — THE FROZEN POLICY.  Host-authored.  Never writable
+# by a claiming agent, and the ONLY place `justified` is ever concluded.
+#
+# ONE judgment rule, and the three things it demands of a claim:
+#
+#   1. THE AGENT'S CONTENTION DERIVES.  `contention` is the agent's own
+#      conclusion; it is a fact only if the agent's argument (its premises +
+#      its intermediate rules, compiled against policy/claims-lexicon.ini)
+#      actually derives it.  The engine is a LEAST FIXPOINT, so an argument
+#      that never reaches this rule — a rule about an intermediate the policy
+#      never consumes, or a self-loop with no base case — derives ZERO rows,
+#      and zero rows IS does-not-derive: vacuity falls out, it is not
+#      policed (tests/test_claim_policy.sh arm A4).
+#
+#   2. THE STORE SPINE HOLDS AS OF THE CLAIM'S from_version.  The claim's own
+#      row bindings (claim_from: the generation it comes from;
+#      claim_config: the config it starts at) are injected as FACTS by
+#      policy/eval_claim.py straight from /etc/fx-claim.tsv — so `s_from` is
+#      not what the claim asserts, it is what the ROW says — and this rule
+#      requires the STORE to record exactly that configuration for that
+#      generation (`generation_config(G, S, O)`, the store's own relation).
+#      A claim whose row names a configuration the store never recorded
+#      cannot derive: the spine is checked against the store, not against the
+#      claim (constraints 1+2 — a lying claim fails to derive).
+#
+#   3. THE DIFFERS GUARD HOLDS.  `it is not the case that the config is the
+#      config now landed`: if the configuration the claim starts at IS the
+#      configuration already landed, nothing changed and the claim is
+#      vacuous (empty).  The guard is a NEGATED ATOM, not a `!=` comparison:
+#      le's built-in copulas are the ordering ones (le/lexicon.py:679-684,
+#      `is before` / `is after` / `is on or after` / `is on or before` and the
+#      `<N> days before` arithmetic form) and there is no inequality copula
+#      over symbol constants, so the difference is stated as absence of the
+#      landed_config fact — stratified negation, which the engine supports
+#      (le/test_negation.py) and which makes the guard FALSE exactly when the
+#      landed configuration equals s_from.
+#
+# The verdict is therefore HOST-COMPUTED: pinned policy + store facts +
+# the agent's argument.  Never the claim's assertions.
+#
+# Compiled at pin time (see the Makefile's `policy-artifact` target) with the
+# EXISTING compiler, as a dependency, never forked:
+#   PYTHONPATH=<le> python3 -m le policy/claims-policy.le \
+#       --lexicon policy/policy-lexicon.ini
+# Emitted dl (the pinned artifact, policy/claims-policy.dl):
+#   justified(C1) :- contention(C1, V1), claim_from(C1, V1),
+#                    claim_config(C1, V2), generation_config(V1, V2, V3),
+#                    !landed_config(V2).
+
+A claim C1 is justified if the claim contends for a generation G1 and the claim comes from the generation and the claim starts at a config C2 and the generation was produced from the config by an origin O1 and it is not the case that the config is the config now landed.

@@ -1,0 +1,7 @@
+# A premise the agent asserts about the CLAIM ROW ITSELF.  The row's bindings
+# are injected by the evaluator AFTER premise verification, so this is
+# premise-false -- an agent cannot certify its own from_version.  (If the two
+# ever swapped order, this arm is what would catch it.)
+ClaimA comes from GenA.
+ClaimA is grounded in a generation G1 if ClaimA comes from the generation.
+ClaimA contends for a generation G1 if ClaimA is grounded in the generation.

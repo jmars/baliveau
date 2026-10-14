@@ -1,0 +1,4 @@
+# A policy whose judgment rule consumes NO store template: it judges on the
+# claim's own say-so, with no store spine.  The pin-time linter refuses it by
+# name (policy-vacuous) -- the vacuity guard is a property of the POLICY.
+A claim C1 is justified if the claim contends for a generation G1 and the claim comes from the generation.

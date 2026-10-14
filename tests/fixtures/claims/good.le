@@ -1,0 +1,6 @@
+# The argument that DERIVES: the claim is grounded in the generation it comes
+# from (claim_from is injected from the claim row by the evaluator) as soon as
+# that generation was produced from some config by some origin -- a store
+# template consumed in the BODY, which the agent may never conclude.
+ClaimA is grounded in a generation G1 if ClaimA comes from the generation and the generation was produced from a config C1 by an origin O1.
+ClaimA contends for a generation G1 if ClaimA is grounded in the generation.

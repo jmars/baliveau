@@ -1,0 +1,4 @@
+# A policy that concludes something other than the judgment predicate: every
+# head of the frozen policy is `justified` (refused by name,
+# policy-foreign-head).
+A claim C1 contends for a generation G1 if the claim comes from the generation.

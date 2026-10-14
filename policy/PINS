@@ -1,0 +1,6 @@
+# policy/PINS -- the frozen-table pin (fx-select/fx-report discipline).
+# name<TAB>sha256.  policy/claims-policy.dl is produced ONLY by
+# `python3 policy/eval_claim.py --compile-policy` (the same call lints it).
+claims-lexicon.ini	50705bb5ec2affd4ab836dacc621604480e7d4b5489fac683173bff9969084b6
+policy-lexicon.ini	7285643cf0cb9091752e34ce440ff838c9fd159beb906223b1349b0306ed0bec
+claims-policy.dl	9abb1484baa3585d96fee19237cd0c0a44ba1310f494a35bd3b5fac1770ae23a
