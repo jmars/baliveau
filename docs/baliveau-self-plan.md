@@ -108,6 +108,24 @@ cheating its own guardrail; they are also what a third party would need in order
      of generations exists, but the *input* of each step is not recorded with it.
   2. **No change record as such.** The generation chain IS the substrate's change record, but nothing
      states a change's INTENT or SEMANTICS (what was attempted and why) — only the resulting state.
+     **CORRECTION (appended 2026-10-13, by the claim unit; the sentence above stays true of the
+     SUBSTRATE — what is corrected is that the gap is no longer an open design question). THE INTENT
+     RECORD IS DESIGNED.** A generation carries the agent's own claim — a `/etc/fx-claim.tsv` row (the
+     claim, its config-diff, its `from_version` and `S_from`) and a `/etc/fx-claim.le` ARGUMENT written
+     in free LE (premises + the agent's intermediate rules) — and the host judges it against a FROZEN,
+     host-released POLICY over the store's own facts. **The soundness boundary is the JUDGMENT
+     PREDICATE `justified` alone:** it is absent from the agent's CLOSED lexicon, so only the frozen
+     policy can conclude it, and every refusal is by name. That is why intent becomes a RECORD and not
+     a self-report: the agent states what it attempted and why, and the state — not the claim's word —
+     decides whether it is justified. **First instance HOST-SIDE** (the S0 lexicons + policy +
+     evaluator + their gate are landed in the working tree, uncommitted at this writing; the
+     `fx-claim` seat and the reporter's rows are S1/S2), **and the in-guest target is NAMED: the qemu
+     lane, x64 via QBE** through the
+     le→Osier port of the judgment path — the evaluator's LOCATION is a deployment difference, never a
+     licence to shrink the language. INTERPRETATION: what the substrate still does not record is the
+     intent itself — it records the SEAT that judges the agent's intent and refuses the unjustified by
+     name — and it does not record it as one: the claim is the agent's assertion, the verdict is the
+     host's.
   3. **No risk/incident classification.** A failed boot, a refused activation, a rolled-back
      generation and an audit incoherence are all candidate "situations that may present a risk" or
      "substantial modifications"; nothing classifies them as such or links them to an affected
@@ -162,7 +180,7 @@ Sibling checkouts — separate repositories in the same workspace: `{fx-init,fxs
 **MEASURED — the control surface is built.** `fxctl` verbs: `status | q <rel> [vals…] |
 start|stop|restart <svc> | probe | activate <config> | rollback <ver> | shutdown | grep <regex> |
 search <term…>`. Two transports: AF_UNIX `/run/fx/control.sock`, and a virtio-serial port
-(`/dev/vportNpM`, `init.zig:2972-3075`) with `fxctl --chardev` / `FX_CHARDEV` (`fxctl.zig:206-224`).
+(`/dev/vportNpM`, `init.zig:2993-3096`) with `fxctl --chardev` / `FX_CHARDEV` (`fxctl.zig:206-224`).
 
 **MEASURED — the runtime datalog IS the provenance graph.** `activate_facts.zig:28-45`:
 `generation, svc, svc_argv, svc_env, svc_probe, svc_bin, svc_backoff, svc_console, user,
@@ -174,14 +192,37 @@ where, in which generation.
 tree), `why <pkg>` (closure, provided targets, pulling roots), `verify` (**bidirectional**, exit 1
 on drift), `timeline`, `gc --retain N`, `rollback <v>`.
 
-**MEASURED — the guest's executable surface is closed.** The shipped image contains `/bin/init` and
-`/usr/fx-core/bin/fx-*` (**69 stages**) and nothing else: **no `sh`, no `bash`, no busybox, no
-coreutils** (`fx-demo/evidence/image-contents.txt`). `fxsh` has a `-c LINE` mode
+**MEASURED — the guest's executable surface is closed.** The shipped image contains `/bin/init` (a
+symlink into the store) plus the store's OWN package payloads and its `.db` — and **nothing else**:
+**no `sh`, no `bash`, no busybox, no coreutils, and no fx-core payload**
+(`fx-demo/evidence/image-contents.txt`, 126 entries). The
+`usr/fx-core/bin/fx-*` set the previous revision of this paragraph named was **REMOVED** (2026-10-13):
+those 63 static i386 binaries (MEASURED 63 entries under `usr/fx-core/bin`, not the 69 this paragraph
+used to say) were the image's only **un-provenanced** payload — copied from a host bindir beside the
+store, with no `provides` and no `src_of`, so the store's own `what`/`why`/`verify` audit could not
+see them. The busybox the image briefly carried for fx-init's disk path was removed with them: the
+pinned build carried `sh`, `ash` AND `hush` (MEASURED `busybox --list`), which made this very
+paragraph false while it read as true. fx-init's disk migration (`rm -rf` / `cp -a` / `mv` / `sync`)
+is native in init.zig now, and a blank disk is refused rather than formatted — the disk is
+pre-formatted at build time. `fxsh` has a `-c LINE` mode
 (`fx-sh.zig:112`), and **separators and a background `&` are loud errors** (`fx-shell.zig:36`) —
-there is no `&&`, `||` or `&`.
+there is no `&&`, `||` or `&`. **The property is asserted, not assumed**: fx-demo's
+`harness/check-shell-free.mjs` walks the shipped archive's cpio headers and FAILS if any entry is a
+shell or a busybox or lives under `usr/fx-core/`, and its `--mutant` arm re-stages a busybox into a
+copy of the image and requires the gate to flip.
 
-**INTERPRETATION:** the guest is already the containment story. The vocabulary is a *fact* (the
-binaries do not exist) rather than a policy anyone enforces.
+**INTERPRETATION:** the guest is the containment story again. The vocabulary is a *fact* (the
+binaries do not exist) **and** a checked one. **WHY THE BOOT STILL REACHES ITS VERDICT — measured,
+and it is NOT the ignored-exit rule:** the demo's store is activated from `m3/config-good.dhall`,
+which declares NO console service. A DECLARED service whose binary is absent is an EXEC failure, and
+fx-init fails the boot on that by design (init.zig: "a console service that fails to SPAWN/EXEC
+still fails the boot honestly" — the exit it ignores is a user typing `exit`). The first image
+rebuilt without fx-core kept `config-console.dhall` and booted `fx-init: exec failed` /
+`boot-FAILED v3` — MEASURED — which is precisely the trap this paragraph now records.
+**DEFERRED, in the user's own terms**: the demo has NO terminal, and that is accepted. The route back
+is to install fxsh **THROUGH THE SYSTEM DHALL CONFIG as a package** (which both restores the terminal
+and makes it attributable: `provides`, `src_of`, the oracle can see it) — not by re-adding a
+host-bindir copy beside the store's knowledge.
 
 ---
 
@@ -465,7 +506,7 @@ whose `src` is agent-writable and whose recipe is frozen. It stays as the proven
   have required a bridge, and inline packages need none — the config is already the unit a generation
   is derived from. That is why this shape is right and the general one is not.
 - **THE COMMIT EXISTS, AND THE AGENT IS ON THE WRONG SIDE OF IT.** MEASURED (`fx-init
-  zig/src/init.zig:3218-3395`): PID 1's `activate` forks `fx-activate` (config → closure →
+  zig/src/init.zig:3239-3416`): PID 1's `activate` forks `fx-activate` (config → closure →
   per-generation Dhakefile → generation facts → snapshot → CURRENT), re-reads the store's facts,
   re-arms the boot decision, then **`run_dhake()` MATERIALIZES the new generation onto the RUNNING
   root** — the hot-apply — and records `rt_effect("activate")`. A direct exec of `/bin/fx-activate`
@@ -477,7 +518,7 @@ whose `src` is agent-writable and whose recipe is frozen. It stays as the proven
   plausible belongs to `fxstore`, which does open the store DB — a property of a neighbour, applied
   to the object.
 - **NO IN-GUEST REBOOT.** The control protocol carries `status | log | activate | rollback |
-  shutdown` and **no reboot** (`init.zig:3098-3228`), and the guest tests pass qemu `-no-reboot`
+  shutdown` and **no reboot** (`init.zig:3119-3249`), and the guest tests pass qemu `-no-reboot`
   (`qemu-agent-observe.sh:648`) with the HOST restarting the VM. So "activate ... (causing a reboot
   into it)" needs a reboot the machine can perform on its own; today the change becomes live by
   hot-apply and takes effect at boot only because the next boot reads CURRENT.
@@ -580,9 +621,10 @@ why the auditor is host-side rather than a second file inside the machine.
 
 ## 7. What is designed, and what is not
 
-**As of 2026-10-13 §7.1 has a first instance (`osier-share`) and §7.1a a first design (egress as a
-type); the rest of this section is still open.** The founding statement was blunt and is kept: the
-oracle is the item that decides whether this is worth building.
+**As of 2026-10-12 §7.1 has a first instance (`osier-share`), §7.1a a first design (egress as a
+type), and §7.4's v86 lane now BOOTS THE GUEST — its kernel and disk are built, gated and committed
+(see §7.4's correction below).** The rest of this section is still open. The founding statement was
+blunt and is kept: the oracle is the item that decides whether this is worth building.
 
 ### 7.1 The oracle — a per-task frozen seat, and its first instance
 **THE FOUNDING PROBLEM, unchanged:** there is **no design for what makes a change an improvement** —
@@ -812,6 +854,30 @@ and matching its sha256) — and **v86 cannot boot 64-bit kernels**. v86 also ha
 (only console/9p/net/balloon, though it does expose `virtio-console0-output-bytes`/`-input-bytes`).
 So the browser lane is the **harder** lane, not the easier one: it needs a purpose-built i386 kernel
 with virtio-console *and* ATA, `/dev/hda` support in `fx-init`, and device wiring in the harness.
+
+**CORRECTION (appended 2026-10-12, MEASURED): THE LIST ABOVE IS BUILT.** The lane now boots the guest
+and mounts a real disk store, on the native port AND in the browser.
+- **The kernel** — `fx-demo/kbuild/build-v86guest.sh` (`9255c43`): the lean fragment verbatim plus
+  BLOCK/BLK_DEV/PCI/SCSI/ATA/ATA_PIIX/ATA_GENERIC/BLK_DEV_SD/VIRTIO/ext4, every disk-path driver `=y`,
+  zero modules. Two cold container builds are byte-identical (`f0278a8f`). `CONFIG_BLOCK` was the one
+  parent symbol the delta list missed — tinyconfig leaves it off and it parents SCSI, the ATA menu and
+  the whole `if BLOCK` fs menu, so five named symbols silently resolved UNSET until the recipe's own
+  fatal assert caught it.
+- **The disk** — the device is **`/dev/sda`, not `/dev/hda`**: libata's name, MEASURED in the native
+  port's own M2-3. `pick_disk_dev()` therefore probes `[vda1, vda, sda1, sda]` with vda FIRST, so the
+  qemu lane is byte-inert (its kernel builds no ATA driver) and the pinned `no /dev/vda — using ramfs
+  store` line stays byte-identical.
+- **The wiring** — `hda:{buffer}`, **not `{url}`**: MEASURED, v86's url path writes into a JS block
+  cache that dies with the emulator, so only `{buffer}` can reboot in place — and the persistence
+  claim needed exactly that.
+- **The oracle** — the native port's own **two-leg machinery** (its C interpreter against the pinned
+  JS reference) is what gates the guest's device behaviour: `souche tests/gate-m2-5.sh` and
+  `tests/gate-m2-5-guest.sh`, both legs, with a pinned pre-fix control that reaches neither device.
+  That is this project's own principle applied outward: the thing that GRADES the port is the
+  reference it is a port OF.
+- **AND ONE MEASURED HAZARD that cost hours**: the instruction limit is a `uint32` on BOTH machines
+  and is **unenforceable above 2³²−1** — v86 accepts `6e9` and never stops, and because the serial is
+  written only at the END, an over-limit run is indistinguishable from a hang.
 
 ### 7.5 Is the image a cache or a blob?
 **MEASURED:** `image.zig:40-57` — two **cold** builds of identical sources are **not**

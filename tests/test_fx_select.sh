@@ -154,8 +154,21 @@ pin_init_blob() { # pin_init_blob BLOB FILE CITING...
 # ROUND-2 NIT PASS: init.zig moved (ONE REQ_MAX definition; the marker's
 # setenv now CHECKED) with a ZERO line delta, so the cites above are
 # unchanged — only this gate's blob pin was re-measured.
-pin_init_blob 7c054559821da222fddf793c62989b4b65e97361 zig/src/init.zig "tools/fx-select.c and tests/test_fx_select.sh"
-echo "test_fx_select: CITATION PIN: init.zig measured for tools/fx-select.c and this gate is fx-init d0de8c9 + the runtime-record closure (uncommitted working tree, blob 7c054559)"
+# SLICE 2 RE-MEASURE (HANDOFF=v86guest, fx-init's DISK PROBE): pick_disk_dev()
+# became a probe over [vda1, vda, sda1, sda] (DISK_DEVS added at old :2195).
+# +21 lines, all of it between old :2195 and old :2320, so every cite at or
+# after old :2320 moved exactly +21; an old->new line map from the two blobs was
+# applied mechanically and each remapped cite was verified to carry IDENTICAL
+# text at its new line.  tools/fx-select.c's cites (:746-762, :751) and this
+# gate's (:751) are before the insertion and did NOT move; only :4705 -> :4726.
+# SLICE 2 ROUND 2 (reviewer SF2: the false-premise comment at old :2348-2349,
+# "the host cannot mkfs/populate the image as uid 1001", refuted by this
+# slice's own unprivileged host-side mkfs): a COMMENT-ONLY edit with a ZERO
+# line delta — the two-line block is replaced line for line — so every cite
+# above and every cite in tools/fx-select.c still lands; only the blob pin was
+# re-measured.
+pin_init_blob b7bf3c075b1ce63d32f5396f5b6523d1db5fb0b2 zig/src/init.zig "tools/fx-select.c and tests/test_fx_select.sh"
+echo "test_fx_select: CITATION PIN: init.zig measured for tools/fx-select.c and this gate is fx-init d0de8c9 + the runtime-record closure (uncommitted working tree, blob b7bf3c07)"
 
 DL="$SIBS/datalog-dafsa/zig-out/lib"
 
@@ -646,7 +659,7 @@ grep -q '^caveat	bootlog-damage	damaged=0	torn=1	' "$F1/o.s12" \
 echo "test_fx_select: S12 the STRICT torn rule holds: a torn tail naming v$F1_O_LAST ($(state_of "$F1/o.s12" "$F1_O_LAST")) poisons it -> keep $F1_C_LAST"
 
 # ── S13: CURRENT MID-BOOT WITHHOLDS (fix B) ────────────────────────────
-# The writer's own line PAIR is in-progress-then-verdict (init.zig:4705), so
+# The writer's own line PAIR is in-progress-then-verdict (init.zig:4726), so
 # during a boot of the incumbent its LAST line is in-progress.  Treating that
 # as merely "not viable" would recommend — and --apply perform — a rollback of
 # a system that is booting right now.

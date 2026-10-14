@@ -128,7 +128,7 @@
 # inspects with the verbs that DO work in-guest: fx_ls + fx_read (native) and,
 # for the activation, fx_activate — which now execs the RUNNING ROOT's
 # /bin/fx-activate with the SAME argv fx-init's own activate handler uses
-# (init.zig:3436-3437).  See the lane's report: that is an in-repo (fx-harness)
+# (init.zig:3457-3458).  See the lane's report: that is an in-repo (fx-harness)
 # change, no other repo is touched.
 #
 # Env: QEMU_BOOT_TIMEOUT (default 120)  QEMU_KEEP=1  B2_MARKER
@@ -203,8 +203,20 @@ pin_init_blob() { # pin_init_blob BLOB FILE CITING...
 # ROUND-2 NIT PASS: init.zig moved (ONE REQ_MAX definition; the marker's
 # setenv now CHECKED) with a ZERO line delta, so the cited line :3436-3437
 # below still lands; only the blob pin was re-measured.
-pin_init_blob 7c054559821da222fddf793c62989b4b65e97361 zig/src/init.zig "tests/qemu-agent-b2.sh"
-echo "qemu-agent-b2: CITATION PIN: init.zig measured for this gate is fx-init d0de8c9 + the runtime-record closure (uncommitted working tree, blob 7c054559); the cited line is :3436-3437"
+# SLICE 2 RE-MEASURE (HANDOFF=v86guest, fx-init's DISK PROBE): pick_disk_dev()
+# became a probe over [vda1, vda, sda1, sda] (DISK_DEVS added at old :2195) so
+# the v86/ATA lane finds /dev/sda.  +21 lines, all of it between old :2195 and
+# old :2320, so every cite at or after old :2320 moved exactly +21; an old->new
+# line map from the two blobs was applied mechanically and each remapped cite
+# was verified to carry IDENTICAL text at its new line.  This gate's cited line
+# moved with everything else: :3436-3437 -> :3457-3458.
+# SLICE 2 ROUND 2 (reviewer SF2: the false-premise comment at old :2348-2349,
+# "the host cannot mkfs/populate the image as uid 1001", refuted by this
+# slice's own unprivileged host-side mkfs): a COMMENT-ONLY edit with a ZERO
+# line delta — the two-line block is replaced line for line — so the cited
+# line :3457-3458 still lands; only the blob pin was re-measured.
+pin_init_blob b7bf3c075b1ce63d32f5396f5b6523d1db5fb0b2 zig/src/init.zig "tests/qemu-agent-b2.sh"
+echo "qemu-agent-b2: CITATION PIN: init.zig measured for this gate is fx-init d0de8c9 + the runtime-record closure (uncommitted working tree, blob b7bf3c07); the cited line is :3457-3458"
 
 PIN="$INIT/scripts/kernel-pin.txt"
 [ -f "$PIN" ] || skip "scripts/kernel-pin.txt missing"

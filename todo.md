@@ -165,6 +165,18 @@ regulator** — §6b's audit stance is what makes these records evidentially usa
       change's INTENT (what was ATTEMPTED and why) is still not a substrate record — the config
       content is now readable, but nothing records the intent behind it; that is a §4 design
       decision, not a reporter gap.
+      **CORRECTION (appended 2026-10-13 by the claim unit — the item above is closed and this closes
+      its one remaining sub-item): that design decision is now MADE, and the intent record is
+      DESIGNED.** The intent is carried as the agent's own CLAIM riding into the activation's input
+      bytes (`/etc/fx-claim.tsv` row + `/etc/fx-claim.le` free-LE argument), judged by a FROZEN,
+      host-released POLICY over the store's facts — **the soundness boundary being the JUDGMENT
+      PREDICATE `justified` alone** (absent from the agent's closed lexicon, so only the policy
+      concludes it; every refusal is by name). FIRST INSTANCE HOST-SIDE: S0 (the closed lexicon, the
+      frozen policy, the evaluator and its gate — landed in the working tree, uncommitted at this
+      writing) with S1's `fx-claim` seat and S2's reporter rows to follow; the IN-GUEST TARGET is
+      NAMED as the qemu lane via x64 QBE through the le→Osier port of the judgment path. Recorded in
+      `docs/baliveau-self-plan.md` §1a gap 2 (the corrected version); the disposition of the class in
+      the reporter's frozen tables is S2's, not this line's.
 - [x] **THE OPERATOR-ACTION SUBSTRATE RECORD LANDED — the two weakest rows in the frozen table
       stop being (COMMITTED `fx-init ca9cb06`; `handoff-operator-journal-result`).** The
       reporter's `operator-intervention` row was a DERIVED disjunction and `activation-refusal`
@@ -230,7 +242,7 @@ regulator** — §6b's audit stance is what makes these records evidentially usa
       generation's config.dhall and the Dhakefile.dhall/etc the install facts point at, silently
       (the generation_config FACT survives, the copy does not).  The gate re-measures this every
       run and the frozen row goes stale-loud if gc changes.  Also measured: the runtime log
-      (`rt_effect`/`rt_control`, `/run/fx/log.db`, init.zig:32/:4523) dies at every reboot (tmpfs
+      (`rt_effect`/`rt_control`, `/run/fx/log.db`, init.zig:32/:4544) dies at every reboot (tmpfs
       post-pivot), and `rollback --hard` + a later publish can renumber over the versions between
       (the `gc --retain` guard's own statement).  OWED THEN, DECIDED NOW (2026-10-12) — a DECISION, not a
       measurement: retention for `.bootlog`/`.recovery`/`.operator` growth is UNBOUNDED BY DECISION and
@@ -528,7 +540,7 @@ regulator** — §6b's audit stance is what makes these records evidentially usa
 - [ ] **CORRECTION to the entry below (append-only; my own inference was too wide).** I wrote that
       `414b26c`'s non-zero exit for an unreadable record made the `console_pin` load-bearing "harder
       than before". MEASURED against fx-init: **FALSE, and the reason matters.** The non-console
-      branch (`zig/src/init.zig:2722-2733`) pins `failed` on ANY exit during the grace window —
+      branch (`zig/src/init.zig:2743-2754`) pins `failed` on ANY exit during the grace window —
       `if (g_boot_decided == 0 and !was_explicit_stop and s.console == 0)` — and **never consults the
       exit status**. Every refusal in this unit exits 0, and a non-console agent service exiting 0
       during grace fails the boot exactly as surely as exiting 2. So the pin's stake was already
@@ -707,7 +719,7 @@ regulator** — §6b's audit stance is what makes these records evidentially usa
       must be true as-of THIS audit)); N is the cumulative boots the host has EVER started on
       the store, recorded in the observation (format 2; a format-1 baseline is REFUSED with a
       re-enroll instruction — never assume a count). The accounting rule is DERIVED from the
-      writer's call sites (init.zig): per host-started boot at most ONE `in-progress` (:4387,
+      writer's call sites (init.zig): per host-started boot at most ONE `in-progress` (:4408,
       only when a generation is bootable and its facts read; the no-generation path appends
       NOTHING), at most ONE verdict (the `g_boot_decided` latch; :2619/:2631/:2726/:4398 — every
       verdict site runs in a boot that already appended its in-progress for the SAME version),
@@ -769,7 +781,7 @@ regulator** — §6b's audit stance is what makes these records evidentially usa
       boot 7 `R1 failed 115`, so a first-match reader calls row 2 unanswered — or if the row
       bound were one-per-window), and an `in-progress` followed by a `shutdown` with NO verdict
       (SIGTERM during the grace: `do_shutdown` appends its line whether or not the boot decided,
-      init.zig:3925 from :4461; fails if a shutdown were made to require a preceding verdict, or
+      init.zig:3946 from :4482; fails if a shutdown were made to require a preceding verdict, or
       if an open in-progress for CURRENT became its own finding). Plus a KNOWN-HOLE arm that
       ASSERTS the admitted bound rather than leaving it implicit, and a CONTENT-level
       stale-binary guard (the test greps the built binary for a message that exists only in this
@@ -937,7 +949,7 @@ regulator** — §6b's audit stance is what makes these records evidentially usa
       went red), the activation no longer starts the agent service at all: exempted BY IDENTITY via the
       required `agentService` field, now persisted as the `agent_svc` store fact.
 - [ ] **No in-guest reboot.** The control protocol carries `status|log|activate|rollback|shutdown`
-      and no reboot (`init.zig:3098-3228`); the guest tests pass qemu `-no-reboot` with the HOST
+      and no reboot (`init.zig:3119-3249`); the guest tests pass qemu `-no-reboot` with the HOST
       restarting the VM. "Activate … (causing a reboot into it)" needs a reboot the machine can
       perform on its own.
 - [x] **`src_of` closes the store's attribution gap** (`fx-init 9b20161`, read by the oracle
@@ -1145,7 +1157,7 @@ regulator** — §6b's audit stance is what makes these records evidentially usa
           to plain exec in the workdir and must SAY so) — `stage3` is a static System V x86-64 ELF and
           runs on this host, so it is EXPECTED guest-viable but must be PROVED there;
           (c) **THERE IS NO IN-GUEST REBOOT**: fx-init's control protocol carries
-          `status`/`log`/`activate`/`rollback`/`shutdown` and NO reboot (`init.zig:3098-3228`; only
+          `status`/`log`/`activate`/`rollback`/`shutdown` and NO reboot (`init.zig:3119-3249`; only
           "shutdown" exists), and the guest tests pass qemu `-no-reboot` (`qemu-agent-observe.sh:648`)
           with the HOST restarting the VM. So "make it effective" currently depends on something
           outside the guest, which is the same class of gap the user is pointing at.
@@ -1174,11 +1186,58 @@ regulator** — §6b's audit stance is what makes these records evidentially usa
 
 ## 7. The v86 lane (the browser demo) — the HARDER lane
 
-- [ ] **A purpose-built i386 kernel** with virtio-console *and* ATA: the lean demo kernel has
-      `# CONFIG_PCI is not set`, and the pinned qemu kernel is **x86_64** while v86 cannot boot 64-bit.
-      v86 also has **no virtio-blk** (only console/9p/net/balloon, though it does expose
-      `virtio-console0-output-bytes`/`-input-bytes`).
-- [ ] **`/dev/hda` in fx-init** alongside `/dev/vda`, plus harness device wiring in `drive.mjs`.
+- [x] **A purpose-built i386 kernel** with virtio-console *and* ATA — BUILT and GATED. The lean demo
+      kernel has `# CONFIG_PCI is not set`, and the pinned qemu kernel is **x86_64** while v86 cannot
+      boot 64-bit; v86 also has **no virtio-blk**, so the guest's disk has to be ATA. The recipe is
+      `fx-demo/kbuild/build-v86guest.sh` (commit `9255c43`): `kbuild/build-lean.sh`'s fragment
+      **verbatim** (the 20-line `./scripts/config` invocation is byte-identical, python-proved) plus a
+      second invocation carrying BLOCK/BLK_DEV/PCI/SCSI/ATA/ATA_PIIX/ATA_GENERIC/BLK_DEV_SD/
+      VIRTIO(_MENU/_PCI/_CONSOLE) and the ext4+CRYPTO chain — every disk-path driver `=y`, **zero
+      modules**. MEASURED: two COLD podman `debian:stable` builds are byte-identical (vmlinuz
+      `f0278a8f`), toolchain-scoped as stated. Gated by the native port's own **two-leg oracle**
+      (`souche tests/gate-m2-5.sh`, C port vs the pinned JS reference): both reach the ATA disk
+      (`ata1.00`, `[sda]`, `sda1`, m2-3's pinned md5) AND the virtio console (`console [hvc0] enabled`,
+      `11: N XT-PIC virtio0`, host→guest read-back), while the pinned lean kernel reaches neither.
+      **ONE SYMBOL THE PLAN'S DELTA LIST DID NOT NAME**: `CONFIG_BLOCK` — tinyconfig leaves it OFF and
+      it is the PARENT of SCSI, the ATA menu and the whole `if BLOCK` fs menu, so without it five
+      named symbols silently resolved UNSET; the recipe's own fatal assert caught it on the first cold
+      build.
+- [x] **`/dev/hda` in fx-init** alongside `/dev/vda`, plus the harness device wiring — BUILT. The
+      device is **`/dev/sda`, not `/dev/hda`** (MEASURED: libata names it that way; souche's M2-3 saw
+      it first), so `pick_disk_dev()` became a probe over `[vda1, vda, sda1, sda]` with **vda first**
+      so the qemu lane stays byte-inert (its kernel builds no ATA driver). The fallback keeps the
+      pinned `no /dev/vda — using ramfs store` line **byte-identical**. Gate
+      `fx-init tests/qemu_disk_probe.sh` (24 assertions) with a real fail-before (the pre-fix binary,
+      cmp-proved to differ) and host arms proving the host's own `/dev/sda` is never touched. The
+      browser lane wires the disk as `hda:{buffer}` in `fx-demo/harness` (commit `f10adee`) — **not
+      `{url}`**, MEASURED: v86's url path writes into a JS block cache that dies with the emulator, so
+      only `{buffer}` can reboot in place. Persistence is proven by an **in-place reboot**
+      (`harness/persist.mjs`: boot 2 mounts, is not re-seeded, and the ledger grows with boot 1's bytes
+      as a prefix), and the fail-before is the shipped pre-disk pair via `harness/control-ramfs.sh`.
+- [x] **THE BUSYBOX (AND FX-CORE) ARE OUT OF THE GUEST — 2026-10-13, the user's decision.** The disk
+      image briefly carried a static i386 busybox for fx-init's disk path, and the artifact we shipped
+      **carried `sh`, `ash` AND `hush`** (MEASURED `busybox --list`) — a live shell inside the guest
+      whose containment claim (§2, above) is "no `sh`, no `bash`, no busybox". Fixed at the root:
+      fx-init's four shell-outs are NATIVE now (`rm_rf` / `copy_tree` / `rename(2)` / `syncfs_path` in
+      init.zig), a blank disk is a **LOUD REFUSAL** (formatting is a BUILD condition — the host mkfs's
+      the file image unprivileged; only MOUNT is a host limit), and `fx-demo` ships neither busybox
+      nor the 63-binary fx-core payload — the image's only un-provenanced blob (no `provides`, no
+      `src_of`). Gate: `fx-demo/harness/check-shell-free.mjs`, whose `--mutant` arm re-stages a
+      busybox and requires the gate to flip. Cost, ACCEPTED: the demo has **no terminal**. The
+      verdict survives for a reason worth writing down: the store is activated from
+      `m3/config-good.dhall`, which declares NO console service — a DECLARED service whose binary is
+      absent is an EXEC failure and fx-init fails the boot on that BY DESIGN. MEASURED the hard way:
+      the first rebuild kept `config-console.dhall` and booted `fx-init: exec failed` /
+      `boot-FAILED v3`; the "fx-init ignores a console service's exit" rule covers a user typing
+      `exit`, not a missing binary.
+- [ ] **THE DEMO'S TERMINAL — DEFERRED, the user's own terms: install fxsh THROUGH THE SYSTEM DHALL
+      CONFIG as a package.** That is the route that makes it attributable (`provides`, `src_of`, the
+      oracle can see it), instead of `mkinitramfs.sh -b` copying binaries from a host bindir beside
+      the store's knowledge. Until it lands, `fx-demo/harness/assert.mjs`'s terminal-driven rows
+      (materialization, pipeline, `/tmp`, the ledger read-back) and `harness/persist.mjs`'s `cat`
+      step stay RED — the boot-verdict, pivot, disk-mount and no-ramfs-fallback rows still run.
+      Nothing else was touched to make them pass, and the gates are NOT marked skip: a red gate that
+      names its reason is the record.
 - [ ] **Determinism** (§7.3): v86's RTC is host-fed, device identity comes from
       `Math.random`/`getRandomValues`, and `Date.now()` appears in the network stack. Patch those three
       sites, or always enter from a hashed `restore_state` snapshot. The *agent* path can never be

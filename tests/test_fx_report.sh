@@ -283,7 +283,24 @@ pin_blob() { # pin_blob REPO BLOB FILE LABEL
 # changed (ONE REQ_MAX definition, the marker's setenv now CHECKED) with a
 # ZERO line delta — the marker comment was reflowed to pay for the guard —
 # so every cite above still lands.  The blob moved; the citation map did not.
-pin_blob "$INIT" 7c054559821da222fddf793c62989b4b65e97361 zig/src/init.zig "fx-init"
+# SLICE 2 RE-MEASURE (HANDOFF=v86guest, fx-init's DISK PROBE): pick_disk_dev()
+# became a probe over [vda1, vda, sda1, sda] (DISK_DEVS added at old :2195) so
+# the v86/ATA lane finds /dev/sda.  The addition is +21 lines and lies entirely
+# between old :2195 and old :2320, so EVERY cite at or after old :2320 moved
+# exactly +21 and every cite before :2195 is untouched — an old->new line map
+# built from the two blobs was applied mechanically and each remapped cite was
+# verified to carry IDENTICAL text at its new line (so the cites' MEANINGS are
+# unchanged, only their numbers).  The cites THIS file's surface uses
+# (:1769) are before the insertion: no cite in test_fx_report.sh moved.  The
+# cites inside the pinned tools/fx-report.c table DID move and were remapped in
+# the same pass (e.g. :3375 -> :3396, :3484 -> :3505, :4675/:4676 -> :4696/:4697)
+# — the blob pin below is the mechanism that would have caught a miss.
+# SLICE 2 ROUND 2 (reviewer SF2: the false-premise comment at old :2348-2349,
+# "the host cannot mkfs/populate the image as uid 1001", refuted by this
+# slice's own unprivileged host-side mkfs): a COMMENT-ONLY edit with a ZERO
+# line delta — the two-line block is replaced line for line — so no cite here
+# or in tools/fx-report.c moved; only the blob pin was re-measured.
+pin_blob "$INIT" b7bf3c075b1ce63d32f5396f5b6523d1db5fb0b2 zig/src/init.zig "fx-init"
 # fxstore re-measured at e97758c (the install-origin unit): the FACTS SURFACE
 # this seat reads is unchanged — RELATION_SCHEMAS still defines every name in
 # fx-report.c's FACT_RELS, and the gc carve-out's claim (store.zig) is a
