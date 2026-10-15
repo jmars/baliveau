@@ -1,0 +1,10 @@
+# THE SEAM'S SILENT DIRECTION, as an operator would naively write it: the
+# runtime verb symbol spelled as a proper noun.  `Fxwrite` IS letters-only,
+# so the lexicon accepts it and the compiler compiles it — but the
+# seat-injected fact carries the REAL symbol `fx_write`, so the body atom
+# touches(fxwrite, P1) matches NOTHING: the policy pins cleanly and silently
+# allows everything.  Compiles only against a lexicon declaring Fxwrite
+# (the gate sed-generates that mutant); the honest gate arms assert the
+# denial IS derived on the same facts, which is what fails under this
+# mutant — the silent allow-all is caught by the deny-direction arms.
+A verb W1 is denied for a path P1 if the verb touches the path and the verb has Write and Fxwrite touches the path and the path is of a pathclass C1 and the pathclass is protected.

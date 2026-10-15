@@ -1,0 +1,4 @@
+# A policy that concludes something other than `denied`: every head of the
+# frozen ops policy is `denied` (deny-more-only) — refused by name
+# (policy-foreign-head).
+A path P1 is in the writable set if a verb W1 touches the path.

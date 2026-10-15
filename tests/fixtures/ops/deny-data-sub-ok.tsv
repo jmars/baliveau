@@ -1,0 +1,12 @@
+# A WRITE to the agent-data SUBTREE, the S1 review's measurement: one touch
+# on the node itself and one on a GRANDCHILD three levels below.  Under the
+# SUBTREE form ('/fx/disk/agent-data/**') BOTH are covered and both denials
+# derive; under a bare directory path the grandchild is covered by NO row
+# (exact-only, NEVER a prefix) and no denial derives for it — the silent
+# under-protection b5e executes and the subtree form exists to prevent.
+touches	fx_write	/fx/disk/agent-data
+touches	fx_write	/fx/disk/agent-data/sub/deep/file
+kind	fx_write	write
+writable	/fx/disk/agent-data
+writable	/fx/disk/agent-data/sub/deep/file
+boot_verdict	ok

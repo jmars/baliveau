@@ -1,0 +1,4 @@
+# A deny rule whose body consumes NO seat-injected template: it denies on
+# nothing the enforcement seat said (pure self-reference over `denied`).
+# The pin-time linter refuses it by name (policy-vacuous).
+A verb W1 is denied for a path P1 if W1 is denied for another path P4 and another verb W2 is denied for P1.

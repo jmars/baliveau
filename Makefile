@@ -384,6 +384,44 @@ $(BIN_CLAIM): tools/fx-claim.c src/vendor/dhall-c/sha256.c src/vendor/dhall-c/dh
 
 .PHONY: test-claim
 
+# THE OPS-POLICY UNIT's S1 GATE (the operator deny policy; plan
+# handoff-oppolicy-plan, slice S1 — policy artifacts + release path +
+# boundary gate, NO server change).  Three host-authored inputs under
+# policy/ops/ — the OPERATOR-POLICY LEXICON (ops-lexicon.ini: closed,
+# deny-more-only, `denied` the only head; NO `justified` — that absence is
+# the two-author boundary against the claim unit), the OPERATOR POLICY
+# (ops-policy.le: D1 the conditioned protected-path denial, D2 the
+# boot-verdict-conditional denial a list cannot express) and the PINNED
+# ALIAS TABLE (ops-aliases.tsv: operator path aliases -> runtime patterns,
+# the bridge across the letters-only-proper-noun seam; an unresolvable alias
+# is a LOUD refusal, never a silent non-match), compiled + linted +
+# validated by policy/ops/eval_ops.py (a thin sibling of eval_claim.py; `le`
+# consumed as a dependency, never forked).  DENY-MORE-ONLY: the policy
+# tightens the compiled-in floors and never loosens them; the enforcement
+# seat at the verbs server's commit sites is slice S2 and is NOT built here.
+# tests/test_ops_policy.sh carries the pin/determinism arms, the lint
+# refusals, the two-author boundary arms (each side refuses the other's
+# predicate, and the boundary is shown to BE the closure by mutant), the
+# alias-refusal arms and the deny-direction arms driven through the engine
+# against a fixture fact set — each naming its failure direction (silent
+# deny-all and silent allow-all are different defects, and both are armed).
+test-ops-policy:
+	bash tests/test_ops_policy.sh
+
+# The ops policy release path (the policy-artifact pattern): regenerating the
+# pinned artifact is a HOST release — it rewrites policy/ops/ops-policy.dl,
+# and policy/ops/PINS' sha must be updated in the same commit (the gate
+# fails until both agree).
+ops-policy-artifact:
+	LE_DIR=$(abspath $(LE_ROOT)) python3 policy/ops/eval_ops.py --compile-policy \
+	    --policy-le policy/ops/ops-policy.le \
+	    --policy-lexicon policy/ops/ops-lexicon.ini > policy/ops/ops-policy.dl.tmp
+	mv policy/ops/ops-policy.dl.tmp policy/ops/ops-policy.dl
+	@printf 'policy/ops/ops-policy.dl sha256: '; sha256sum policy/ops/ops-policy.dl | cut -d' ' -f1
+	@printf 'policy/ops/PINS must carry exactly that value for ops-policy.dl\n'
+
+.PHONY: test-ops-policy ops-policy-artifact
+
 # The slot ground for the first self-modification task (todo.md §5): the
 # deployment pre-declares ONE package whose src.path is a directory the
 # agent may write; the host-frozen recipe (a STUB — no Osier->Lua compiler

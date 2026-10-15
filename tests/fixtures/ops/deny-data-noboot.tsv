@@ -1,0 +1,6 @@
+# Same facts as deny-data-ok.tsv but the boot verdict row is ABSENT
+# (unreadable bootlog): rule D2 must deny — the conditional a list cannot
+# express, failing CLOSED.  Only the boot row differs between the two files.
+touches	fx_write	/fx/disk/agent-data
+kind	fx_write	write
+writable	/fx/disk/agent-data

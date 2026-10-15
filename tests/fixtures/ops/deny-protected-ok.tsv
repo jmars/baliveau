@@ -1,0 +1,6 @@
+# A WRITE to the protected alias's path, the floor ALLOWS (the path is in
+# the compiled-in writable set), boot verdict ok: rule D1 must deny.
+touches	fx_write	/fx/disk/agent-config.dhall
+kind	fx_write	write
+writable	/fx/disk/agent-config.dhall
+boot_verdict	ok

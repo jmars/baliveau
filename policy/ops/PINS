@@ -1,0 +1,10 @@
+# policy/ops/PINS -- the frozen-table pin (the claim unit's policy/PINS
+# discipline; fx-select/fx-report family).  name<TAB>sha256.
+# policy/ops/ops-policy.dl is produced ONLY by
+# 'python3 policy/ops/eval_ops.py --compile-policy' (make ops-policy-artifact,
+# the same call lints it), and policy/ops/ops-aliases.tsv is validated by
+# eval_ops.py --check-aliases.  A stale or swapped artifact fails LOUDLY:
+# the release is artifact + PINS in the SAME commit.
+ops-lexicon.ini	4bdd88f557b1669bb264f2dd74da0531a3372a3cac52eb1262add2852c8ae8cb
+ops-policy.dl	1a8615246f53f1195425b87558d5598a8f0a7f5f96bfa33806349f5edc925159
+ops-aliases.tsv	29354b2b6c467662038a3a20c0dae13442016450f4d4c144dd8ad31b6eb00da0

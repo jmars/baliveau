@@ -1,0 +1,2 @@
+denied(W1, P1) :- touches(W1, P1), kind(W1, write), class(P1, C1), protected(C1).
+denied(W1, P1) :- touches(W1, P1), kind(W1, write), writable(P1), !boot_verdict(ok).

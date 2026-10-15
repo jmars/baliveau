@@ -1,0 +1,7 @@
+# A WRITE to the UNprotected alias's path, floor allows, boot ok: NEITHER
+# rule may deny.  Negative control for D1, and the DENY-ALL detector: a
+# policy that denied unconditionally fires here and must fail the gate.
+touches	fx_write	/fx/disk/agent-data
+kind	fx_write	write
+writable	/fx/disk/agent-data
+boot_verdict	ok

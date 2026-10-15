@@ -1,0 +1,9 @@
+# Same facts as deny-data-ok.tsv but the boot verdict reads FAILED (a real
+# degraded-boot shape): rule D2 must deny — negation over the ground constant
+# ok is indifferent to WHICH other atom is present, so a non-ok verdict
+# denies exactly like an ABSENT one does (b4c).  Only the boot row's VALUE
+# differs between the two files.
+touches	fx_write	/fx/disk/agent-data
+kind	fx_write	write
+writable	/fx/disk/agent-data
+boot_verdict	failed

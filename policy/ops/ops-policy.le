@@ -1,0 +1,47 @@
+# policy/ops/ops-policy.le — THE OPERATOR POLICY.  Host-authored (THE AUTHOR
+# IS THE OPERATOR, never the agent), compiled at pin time into the sha-pinned
+# artifact policy/ops/ops-policy.dl by
+# `make ops-policy-artifact` (policy/ops/eval_ops.py --compile-policy, which
+# also LINTS it); the seat loads the ARTIFACT, never this file, and verifies
+# its sha256 against policy/ops/PINS before believing a denial out of it.
+#
+# DENY-MORE-ONLY: every rule below CONCLUDES `denied` — the policy may
+# TIGHTEN the compiled-in floors, never loosen them (the floor stays the
+# floor; the decision is floor_allows && !denied).  There is deliberately no
+# allow/`justified` vocabulary at all: `justified` is the claim unit's
+# judgment predicate and is not declared in the ops lexicon — that absence is
+# the two-author boundary, and a rule naming it is refused by le's closure
+# (GAP_CLOSED_LEXICON) before the linter ever sees it.
+#
+# The rules are written over the CLOSED ABSTRACT vocabulary
+# (policy/ops/ops-lexicon.ini): no runtime symbol or path is spelled here —
+# the seam finding (MEASURED: le proper nouns are letters-only,
+# le/lexicon.py:157-159, and fold to lowercased symbols) means a spelled
+# runtime symbol would match NOTHING = a silent allow-all.  The binding rides
+# in as SEAT-INJECTED facts (touches / kind / class / writable /
+# boot_verdict / protected); which concrete paths the classes cover is the
+# PINNED alias table's business (policy/ops/ops-aliases.tsv).
+#
+# TWO rules — the two shapes a bare allow/deny LIST cannot express:
+#
+#   D1  a CONDITIONED denial: writing is denied where the path's class is
+#       protected — which classes are protected is operator data (the
+#       `protected` facts the seat injects from the pinned alias table), not
+#       compiled-in.
+#
+#   D2  the CONDITIONAL denial: writing to a FLOOR-writable path is denied
+#       while the boot verdict is NOT ok.  Negation over the injected
+#       `boot_verdict(ok)` fact (stratified negation, the engine supports it
+#       — policy/claims-policy.le uses the same shape): the verdict not being
+#       ok, or being ABSENT/UNREADABLE, both satisfy the body — the rule
+#       fails CLOSED, which is what deny-more-only demands.  A list cannot
+#       express this rule at all: it is a function of runtime state.
+#
+# Compiled dl (deterministic; the gate re-compiles and demands byte-equality):
+#   denied(W1, P1) :- touches(W1, P1), kind(W1, write), class(P1, C1),
+#                     protected(C1).
+#   denied(W1, P1) :- touches(W1, P1), kind(W1, write), writable(P1),
+#                     !boot_verdict(ok).
+
+A verb W1 is denied for a path P1 if the verb touches the path and the verb has Write and the path is of a pathclass C1 and the pathclass is protected.
+A verb W1 is denied for a path P1 if the verb touches the path and the verb has Write and the path is in the writable set and it is not the case that Ok is the boot verdict.

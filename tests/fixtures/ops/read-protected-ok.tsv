@@ -1,0 +1,7 @@
+# A READ on the protected path: D1 is scoped to kind write — no denial.
+# The fixture deliberately carries a REAL runtime verb symbol (fx_read,
+# underscored) that the policy vocabulary could never spell.
+touches	fx_read	/fx/disk/agent-config.dhall
+kind	fx_read	read
+writable	/fx/disk/agent-config.dhall
+boot_verdict	ok
