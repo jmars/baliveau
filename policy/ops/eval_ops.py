@@ -251,7 +251,13 @@ def _check_aliases(args) -> None:
         has_glob = any(c in pattern for c in _GLOBS)
         if has_glob:
             base = pattern[:-3] if pattern.endswith("/**") else None
+            # a subtree base ending in '/' (F5, S2 review: '/a//**' passed
+            # here while the seat refused it — pin-time-green vs
+            # startup-dead) can never match a canonical runtime path, so it
+            # is the same refusal: the seat implements THIS grammar, not a
+            # looser one.
             if base is None or not base.startswith("/") or len(base) < 2 \
+                    or base.endswith("/") \
                     or any(c in base for c in _GLOBS):
                 _refuse(
                     "alias-ambiguous-pattern",

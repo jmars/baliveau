@@ -77,6 +77,7 @@ cleanup() {
     rm -rf "$ROOT"
     rm -rf "$OUTSIDE"
     if [ -n "$PRE_DIR" ]; then rm -rf "$PRE_DIR"; fi
+    if [ -n "${PRE_OPS_DIR:-}" ]; then rm -rf "$PRE_OPS_DIR"; fi
 }
 trap cleanup EXIT
 mkdir -p "$OUTSIDE/hostdir"
@@ -118,6 +119,63 @@ if git cat-file -e "$PRE_VERBS_REV^{commit}" 2>/dev/null; then
     fi
 else
     echo "verbs-smoke: SKIP (root-bound asymmetry): pre-fix revision $PRE_VERBS_REV unavailable (shallow clone?)" >&2
+fi
+
+# ── THE PRE-FIX ARTIFACT of the OPS-POLICY seat (the P0 ASYMMETRY arm) ───────
+# The policy-deny case (a protected path + a boot-not-ok verdict, BOTH inside
+# the writable set so the FLOOR passes) must SUCCEED on the pre-seat server
+# and be REFUSED naming rule D2 on the current one — a policy layer proven
+# only post-change is a layer on trust.  The pinned rev is the S1 commit
+# (the ops artifacts + gate landed; the verbs server carries NO seat).  Same
+# house discipline as the root-bound PRE above: a fixed rev, a cat-file
+# guard, a cmp proof that the pinned source DIFFERS from the working tree,
+# and a LOUD skip (never a claimed asymmetry that did not run).
+PRE_OPS_REV="e2ebb39"   # ops-policy S1: artifacts + gate; the seat is S2
+PRE_OPS_BIN=""
+if git cat-file -e "$PRE_OPS_REV^{commit}" 2>/dev/null; then
+    PRE_OPS_DIR=$(mktemp -d /tmp/fxv-ops-prefix.XXXXXX)
+    if git show "$PRE_OPS_REV:tools/fx-verbs-server.c" > "$PRE_OPS_DIR/pre.c" 2>/dev/null; then
+        if cmp -s "$PRE_OPS_DIR/pre.c" tools/fx-verbs-server.c; then
+            echo "verbs-smoke: SKIP (ops-policy asymmetry): $PRE_OPS_REV's server source is IDENTICAL to the working tree — the arm would compare the code to itself" >&2
+            rm -rf "$PRE_OPS_DIR"; PRE_OPS_DIR=""
+        else
+            if cc -std=c11 -O2 -g -Wall -Wextra -Isrc -Isrc/vendor/yyjson \
+                  -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
+                  -o "$PRE_OPS_DIR/pre-ops-server" "$PRE_OPS_DIR/pre.c" \
+                  src/agent/outcome.c src/vendor/yyjson/yyjson.c 2>"$PRE_OPS_DIR/cc.log"; then
+                PRE_OPS_BIN="$PRE_OPS_DIR/pre-ops-server"
+            else
+                echo "verbs-smoke: SKIP (ops-policy asymmetry): cannot build the pinned $PRE_OPS_REV server" >&2
+                cat "$PRE_OPS_DIR/cc.log" >&2
+                rm -rf "$PRE_OPS_DIR"; PRE_OPS_DIR=""
+            fi
+        fi
+    else
+        echo "verbs-smoke: SKIP (ops-policy asymmetry): cannot extract $PRE_OPS_REV:tools/fx-verbs-server.c" >&2
+        rm -rf "$PRE_OPS_DIR"; PRE_OPS_DIR=""
+    fi
+else
+    echo "verbs-smoke: SKIP (ops-policy asymmetry): pre-seat revision $PRE_OPS_REV unavailable (shallow clone?)" >&2
+fi
+
+# The FOLDING arm (P8) and the grammar-drift arm (P10) drive the S1 compiler
+# tooling (policy/ops/eval_ops.py consumes `le` as a dependency) — the SAME
+# three-step sibling resolution tests/test_ops_policy.sh uses, exported for
+# the python driver.  A le-less host SKIPS those arms loudly below; it never
+# claims a folding proof it did not run.
+LE_ROOT="${LE_DIR:-}"
+if [ -z "$LE_ROOT" ]; then
+    REPO_ABS=$(cd "$(dirname "$0")/.." && pwd)
+    SIBS="${FX_SIBLINGS:-$(cd "$REPO_ABS/.." && pwd)}"
+    [ -d "$SIBS/fx-init" ] || [ -n "${FX_SIBLINGS:-}" ] || SIBS="$HOME/fixpoint-linux"
+    for cand in "$SIBS/logical-english" "$REPO_ABS/../logical-english" "$HOME/logical-english"; do
+        if [ -f "$cand/le/__init__.py" ]; then LE_ROOT="$cand"; break; fi
+    done
+fi
+if [ -f "$LE_ROOT/le/__init__.py" ]; then
+    export LE_DIR="$LE_ROOT"
+else
+    echo "verbs-smoke: SKIP (P8 folding / P10 grammar arms): no le checkout (set LE_DIR)" >&2
 fi
 
 # ── the stub root ────────────────────────────────────────────────────────────
@@ -233,13 +291,14 @@ RECOVERY
 printf '%s' "1791556310 10 9 dead" >> "$ROOT/fx/disk/store/.recovery"
 
 # ── the driver ───────────────────────────────────────────────────────────────
-python3 - "$ROOT" "$BIN" "$PRE_BIN" "$OUTSIDE" <<'DRIVER'
+python3 - "$ROOT" "$BIN" "$PRE_BIN" "$OUTSIDE" "$PRE_OPS_BIN" <<'DRIVER'
 import json, os, select, shutil, subprocess, sys, time
 
 root = sys.argv[1]
 bin = os.path.abspath(sys.argv[2])
 pre_bin = sys.argv[3]
 outside = sys.argv[4]
+pre_ops_bin = sys.argv[5]
 
 env = {
     "PATH": "/usr/bin:/bin",
@@ -1013,6 +1072,485 @@ ok("default set: the refused write did not touch /note.txt",
    repr(open(os.path.join(root, "note.txt")).read()))
 s4.stdin.close()
 s4.wait(timeout=5)
+
+# ── fifth instance family: THE OPERATOR POLICY SEAT (ops-policy, S2) ─────────
+# The seat loads <root>/usr/fx-agent/policy/{ops-policy.dl,ops-aliases.tsv,
+# ops-lexicon.ini,PINS} at startup, verifies every pinned sha256, resolves the
+# alias table against the paths it SERVES, and consults the compiled rules at
+# the fx_write commit site — AFTER the floor passes, BEFORE open().  Each arm
+# names its failure direction; the mutants are the OPERATOR'S OWN re-pinned
+# edits, so no pin check can mask them.
+import hashlib
+
+POL_SRC = os.path.join(os.getcwd(), "policy", "ops")
+POL_FILES = ("ops-policy.dl", "ops-aliases.tsv", "ops-lexicon.ini", "PINS")
+REPO_DL_SHA = [l.split("\t")[1].strip()
+               for l in open(os.path.join(POL_SRC, "PINS")).read().splitlines()
+               if l.startswith("ops-policy.dl\t")][0]
+# BOTH writable paths are covered by the REAL pinned table (Agentconfig exact,
+# Agentdata exact-on-the-node): the config path is PROTECTED (D1), the data
+# node is not — the two shapes the two rules distinguish.
+POL_WRITABLE = "/fx/disk/agent-config.dhall:/fx/disk/agent-data"
+
+def build_policy_root(tag, boot, with_policy=True, mutate=None):
+    r = os.path.join(root, "pol-" + tag)
+    pol = os.path.join(r, "usr/fx-agent/policy")
+    if with_policy:
+        os.makedirs(pol)
+        for f in POL_FILES:
+            shutil.copy(os.path.join(POL_SRC, f), os.path.join(pol, f))
+    os.makedirs(os.path.join(r, "fx/disk/store/.db/snapshots"))
+    with open(os.path.join(r, "fx/disk/store/.db/snapshots/CURRENT"), "w") as fh:
+        fh.write("5\n")
+    if boot is not None:
+        with open(os.path.join(r, "fx/disk/store/.bootlog"), "w") as fh:
+            fh.write("5 %s 1791556274\n" % boot)
+    if mutate:
+        mutate(pol)
+    return r
+
+def repin(pol, name):
+    sha = hashlib.sha256(open(os.path.join(pol, name), "rb").read()).hexdigest()
+    pins_path = os.path.join(pol, "PINS")
+    out = []
+    for ln in open(pins_path).read().splitlines(True):
+        out.append("%s\t%s\n" % (name, sha) if ln.startswith(name + "\t") else ln)
+    open(pins_path, "w").write("".join(out))
+
+class Srv:
+    """One spawned server against its own policy root (the instance pattern
+    above, wrapped: the policy load happens before the loop, and a REFUSING
+    server never answers the handshake)."""
+    def __init__(self, binpath, proot, writable):
+        e = dict(env)
+        e["FX_VERB_ROOT"] = proot
+        e["FX_AGENT_WRITABLE"] = writable
+        self.p = subprocess.Popen([binpath], stdin=subprocess.PIPE,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                  env=e)
+        self.buf = b""
+        self.init = None  # the initialize reply, set by handshake()
+    def read_line(self, timeout=30.0):
+        end = time.time() + timeout
+        while b"\n" not in self.buf:
+            left = end - time.time()
+            if left <= 0: return None
+            r, _, _ = select.select([self.p.stdout.raw], [], [], left)
+            if not r: return None
+            chunk = os.read(self.p.stdout.raw.fileno(), 65536)
+            if not chunk: return None
+            self.buf += chunk
+        line, _, rest = self.buf.partition(b"\n")
+        self.buf = rest
+        return line
+    def handshake(self):
+        self.p.stdin.write((json.dumps({"jsonrpc": "2.0", "id": 1,
+            "method": "initialize", "params": {}}) + "\n").encode())
+        self.p.stdin.flush()
+        ln = self.read_line()
+        self.init = json.loads(ln) if ln is not None else None
+        good = ln is not None and self.init is not None and self.init.get("id") == 1
+        try:
+            self.p.stdin.write((json.dumps({"jsonrpc": "2.0",
+                "method": "notifications/initialized",
+                "params": {}}) + "\n").encode())
+            self.p.stdin.flush()
+        except (BrokenPipeError, OSError):
+            pass  # a server that REFUSED startup is already dead; that is
+                  # the answer the pin/alias arms are reading
+        return good
+    def text(self, name, args, cid):
+        try:
+            self.p.stdin.write((json.dumps({"jsonrpc": "2.0", "id": cid,
+                "method": "tools/call", "params": {"name": name,
+                "arguments": args}}) + "\n").encode())
+            self.p.stdin.flush()
+        except (BrokenPipeError, OSError):
+            return ""  # a dead server fails its arm cleanly, never crashes
+        ln = self.read_line()
+        if ln is None: return ""
+        return json.loads(ln)["result"]["content"][0]["text"]
+    def close(self):
+        try: self.p.stdin.close()
+        except Exception: pass
+        rc = self.p.wait(timeout=15)
+        return rc, self.p.stderr.read().decode("latin1")
+
+# P1 — THE FLOOR, byte-identical.  A root with NO policy dir is the named
+# floor-only state: the floor refusal is unchanged, the set's own member
+# still writes (no over-refusal), and the startup line NAMES the state.
+bare = build_policy_root("bare", "failed", with_policy=False)
+s1 = Srv(bin, bare, POL_WRITABLE); s1.handshake()
+t = s1.text("fx_write", {"path": "/fx/disk/nope.txt", "content": "x"}, 100)
+ok("P1 floor-only: the floor refusal is unchanged by the policy seat",
+   t.startswith("exit=1\nfx-verbs: fx_write REFUSED: ")
+   and "is not in the host-declared writable set FX_AGENT_WRITABLE='" in t
+   and "host-declared" in t and "ops-policy" not in t and "rule D" not in t,
+   repr(t))
+if pre_ops_bin:
+    pre1 = Srv(pre_ops_bin, bare, POL_WRITABLE); pre1.handshake()
+    pt = pre1.text("fx_write", {"path": "/fx/disk/nope.txt", "content": "x"}, 100)
+    ok("P1 floor-only: BYTE-IDENTICAL to the pre-seat server on the same request",
+       pt == t, repr((t, pt)))
+    pre1.close()
+else:
+    sys.stderr.write("verbs-smoke: SKIP (P1 byte-identical): no pre-seat server\n")
+t2 = s1.text("fx_write", {"path": "/fx/disk/agent-data", "content": "x"}, 101)
+ok("P1 floor-only: the set's own member still writes (no over-refusal)",
+   t2.startswith("exit=0\n"), repr(t2))
+rc, err = s1.close()
+ok("P1 floor-only: the ABSENT policy dir is the NAMED state, said once",
+   "no operator policy at" in err and "floor-only mode" in err
+   and "pol-bare/usr/fx-agent/policy" in err, repr(err))
+
+# P0 — THE ASYMMETRY: the policy-deny case (protected path + boot-not-ok,
+# BOTH inside the writable set so the FLOOR passes) succeeds pre-change and
+# is REFUSED naming rule D2 post-change.  Plus P2: the refusal carries the
+# RULE NAME and the DERIVATION (the artifact's own rule text) for every
+# fired rule.
+deny_root = build_policy_root("deny", "failed")
+if pre_ops_bin:
+    pre0 = Srv(pre_ops_bin, deny_root, POL_WRITABLE); pre0.handshake()
+    pt = pre0.text("fx_write", {"path": "/fx/disk/agent-config.dhall",
+                                "content": "x"}, 110)
+    ok("P0 ASYMMETRY fail-before: the SAME protected+boot-not-ok write SUCCEEDED "
+       "on the pre-seat server (the floor alone governed)",
+       pt is not None and pt.startswith("exit=0\n") and "wrote" in pt, repr(pt))
+    pre0.close()
+    # clear the pre-seat write so the post arm's no-file claim is its own
+    os.unlink(os.path.join(deny_root, "fx/disk/agent-config.dhall"))
+else:
+    sys.stderr.write("verbs-smoke: SKIP (ops-policy P0 fail-before): no pre-seat "
+                     "server was built — the asymmetry half did NOT run\n")
+sp0 = Srv(bin, deny_root, POL_WRITABLE); sp0.handshake()
+dt = sp0.text("fx_write", {"path": "/fx/disk/agent-config.dhall",
+                           "content": "x"}, 111)
+ok("P0/P2 deny direction: REFUSED naming rule D1 AND rule D2, each with the "
+   "artifact's own derivation, the verb, the path and the boot verdict",
+   dt.startswith("exit=1\n") and "REFUSED" in dt
+   and "policy ops-policy rule D1" in dt and "policy ops-policy rule D2" in dt
+   and "protected(C1)" in dt and "!boot_verdict(ok)" in dt
+   and "boot verdict not ok" in dt
+   and "path /fx/disk/agent-config.dhall" in dt
+   and "(verb fx_write" in dt, repr(dt))
+rc, err = sp0.close()
+ok("P0: the denial lines also reach stderr (the stand-alone console copy)",
+   err.count("policy ops-policy rule D") >= 2, repr(err[:400]))
+ok("P0: the denied write never reached the filesystem (refused BEFORE open())",
+   not os.path.exists(os.path.join(deny_root, "fx/disk/agent-config.dhall")))
+
+# P2-allow side + P3 — the over-refusal guard on the REAL pinned table: the
+# ok-boot protected write is STILL denied (D1 is unconditional — that is the
+# operator's pinned intent), with the attribution naming D1 alone and the
+# boot verdict ok; the ok-boot UNPROTECTED covered write SUCCEEDS.
+ok_root = build_policy_root("okboot", "ok")
+sok = Srv(bin, ok_root, POL_WRITABLE); sok.handshake()
+t = sok.text("fx_write", {"path": "/fx/disk/agent-config.dhall",
+                          "content": "x"}, 120)
+ok("P2 D1-only attribution: the ok-boot protected write names rule D1 alone, "
+   "with boot verdict ok",
+   t.startswith("exit=1\n") and "rule D1" in t and "rule D2" not in t
+   and "boot verdict ok" in t, repr(t))
+t3 = sok.text("fx_write", {"path": "/fx/disk/agent-data", "content": "x"}, 121)
+ok("P3 over-refusal guard: the ok-boot unprotected covered write SUCCEEDS",
+   t3.startswith("exit=0\n") and "wrote" in t3, repr(t3))
+rc, err = sok.close()
+ok("the loaded startup line names the artifact, rules, rows and served set",
+   "ops-policy: loaded" in err and "2 rule(s)" in err and "2 alias row(s)" in err
+   and "2 served writable path(s)" in err and REPO_DL_SHA[:16] in err, repr(err))
+
+# THE VERDICT MOVES, per call, within ONE server: the R3 wrong-moment risk —
+# the boot verdict is recomputed fresh per call and a denial never LATCHES.
+mroot = build_policy_root("move", "failed")
+smv = Srv(bin, mroot, POL_WRITABLE); smv.handshake()
+a = smv.text("fx_write", {"path": "/fx/disk/agent-data", "content": "x"}, 130)
+ok("verdict-moves: the failed-boot unprotected write is denied by D2 alone",
+   a.startswith("exit=1\n") and "rule D2" in a and "rule D1" not in a, repr(a))
+with open(os.path.join(mroot, "fx/disk/store/.bootlog"), "w") as fh:
+    fh.write("5 ok 1791556274\n")
+b = smv.text("fx_write", {"path": "/fx/disk/agent-data", "content": "x"}, 131)
+ok("verdict-moves: the SAME server, the bootlog now ok, the SAME write "
+   "SUCCEEDS (per-call verdict, nothing latched)",
+   b is not None and b.startswith("exit=0\n"), repr(b))
+with open(os.path.join(mroot, "fx/disk/store/.bootlog"), "w") as fh:
+    fh.write("5 failed 1791556274\n")
+c = smv.text("fx_write", {"path": "/fx/disk/agent-data", "content": "x"}, 132)
+ok("verdict-moves: and it denies again when the verdict moves back",
+   c.startswith("exit=1\n") and "rule D2" in c, repr(c))
+smv.close()
+
+# P3 — THE SILENT DENY-ALL CATCH: a deny-all mutant the operator re-pins
+# themselves must FLIP the P3 success arm, or the guard is decoration.
+def mutate_deny_all(pol):
+    with open(os.path.join(pol, "ops-policy.dl"), "w") as fh:
+        fh.write("denied(W1, P1) :- touches(W1, P1), kind(W1, write), "
+                 "writable(P1).\n")
+    repin(pol, "ops-policy.dl")
+da = build_policy_root("denyall", "ok", mutate=mutate_deny_all)
+sda = Srv(bin, da, POL_WRITABLE)
+ok("P3-mutant: the re-pinned deny-all artifact loads (a re-pin is a release; "
+   "the pin cannot catch the operator's own mutant)", sda.handshake())
+t = sda.text("fx_write", {"path": "/fx/disk/agent-data", "content": "x"}, 140)
+ok("P3 THE SILENT DENY-ALL CATCH: the deny-all mutant REFUSES the write the "
+   "real policy allows — the P3 arm can fail in the deny-all direction",
+   t.startswith("exit=1\n") and "REFUSED" in t and "rule D1" in t, repr(t))
+sda.close()
+
+# P4a — THE SILENT ALLOW-ALL CATCH, the seam mutation: the PROTECTED alias's
+# pattern is changed to a valid path that matches nothing served, and the PIN
+# IS RE-TAKEN (the operator's own bad edit — no pin check can catch it).
+# The seat must refuse STARTUP loudly: an unresolvable protected alias is
+# never silently unmatched.
+def mutate_pattern(pol):
+    p = os.path.join(pol, "ops-aliases.tsv")
+    txt = open(p).read().replace(
+        "Agentconfig\tConfigpath\tyes\t/fx/disk/agent-config.dhall",
+        "Agentconfig\tConfigpath\tyes\t/fx/disk/never-matches")
+    if "never-matches" not in txt:
+        raise AssertionError("the P4a tsv sed matched NOTHING")
+    open(p, "w").write(txt)
+    repin(pol, "ops-aliases.tsv")
+p4a = build_policy_root("p4a", "ok", mutate=mutate_pattern)
+sp4 = Srv(bin, p4a, POL_WRITABLE)
+hsh = sp4.handshake()
+rc, err = sp4.close()
+ok("P4a THE SILENT ALLOW-ALL CATCH: the re-pinned never-matching protected "
+   "alias refuses STARTUP loudly (naming the table, not the pin — the pin "
+   "passed)",
+   (not hsh) and rc != 0 and "ops-policy REFUSED" in err
+   and ("matches NO served writable path" in err
+        or "covered by NO alias row" in err)
+   and "sha256 mismatch" not in err, repr(err))
+
+# P4b — the mutation that IS silent (the protected FLAG flipped, pin
+# re-taken): the P2 denial DISAPPEARS — the ok-boot protected write SUCCEEDS.
+# This is the allow-all executed; the paired control is the P2 D1-only arm
+# above on the real table, which refuses the same request.
+def mutate_unprotect(pol):
+    p = os.path.join(pol, "ops-aliases.tsv")
+    txt = open(p).read().replace("Agentconfig\tConfigpath\tyes\t",
+                                 "Agentconfig\tConfigpath\tno\t")
+    if "Agentconfig\tConfigpath\tno\t" not in txt:
+        raise AssertionError("the P4b tsv sed matched NOTHING")
+    open(p, "w").write(txt)
+    repin(pol, "ops-aliases.tsv")
+p4b = build_policy_root("p4b", "ok", mutate=mutate_unprotect)
+sb4 = Srv(bin, p4b, POL_WRITABLE)
+ok("P4b: the flag-flip mutant loads clean (well-formed; re-pinned)",
+   sb4.handshake())
+t = sb4.text("fx_write", {"path": "/fx/disk/agent-config.dhall",
+                          "content": "x"}, 150)
+ok("P4b THE DENIAL DISAPPEARS: with D1's protected row silently flipped (pin "
+   "re-taken), the ok-boot protected write SUCCEEDS — the paired P2 arm is "
+   "what would fail, and does fail, without it",
+   t.startswith("exit=0\n"), repr(t))
+sb4.close()
+
+# P5 — THE PIN ARMS: a swapped .dl and a missing .dl each refuse startup,
+# naming both shas; two identical deployments decide identically.
+def mutate_dl_swap(pol):
+    with open(os.path.join(pol, "ops-policy.dl"), "w") as fh:
+        fh.write("denied(W1, P1) :- touches(W1, P1), kind(W1, write), "
+                 "class(P1, C1), protected(C1).\n")
+    # deliberately NO repin: a swapped artifact must die on the pin
+p5 = build_policy_root("p5mismatch", "ok", mutate=mutate_dl_swap)
+s5 = Srv(bin, p5, POL_WRITABLE)
+hsh = s5.handshake(); rc, err = s5.close()
+ok("P5: a swapped .dl refuses STARTUP naming BOTH shas (pinned and actual)",
+   (not hsh) and rc != 0 and "sha256 mismatch" in err
+   and REPO_DL_SHA in err and "pinned" in err and "actual" in err, repr(err))
+p5b = build_policy_root("p5missing", "ok")
+os.unlink(os.path.join(p5b, "usr/fx-agent/policy/ops-policy.dl"))
+s5b = Srv(bin, p5b, POL_WRITABLE)
+hsh = s5b.handshake(); rc, err = s5b.close()
+ok("P5: a MISSING pinned .dl refuses STARTUP naming the file and the pinned "
+   "sha",
+   (not hsh) and rc != 0 and "MISSING" in err and REPO_DL_SHA in err, repr(err))
+d1 = build_policy_root("det1", "failed")
+d2 = build_policy_root("det2", "failed")
+sa = Srv(bin, d1, POL_WRITABLE); sa.handshake()
+sb2 = Srv(bin, d2, POL_WRITABLE); sb2.handshake()
+ta = sa.text("fx_write", {"path": "/fx/disk/agent-config.dhall",
+                          "content": "x"}, 160)
+tb = sb2.text("fx_write", {"path": "/fx/disk/agent-config.dhall",
+                           "content": "x"}, 160)
+ok("P5 determinism: identical deployments decide identically, byte for byte",
+   ta is not None and ta == tb and "rule D2" in ta, repr((ta, tb)))
+sa.close(); sb2.close()
+
+# P7 — THE WRONG-MOMENT ARM: a mid-run swap of the .dl is NOT picked up (the
+# startup snapshot decides); a restart with the swapped file dies on the pin.
+p7 = build_policy_root("p7", "failed")
+s7 = Srv(bin, p7, POL_WRITABLE); s7.handshake()
+t1 = s7.text("fx_write", {"path": "/fx/disk/agent-config.dhall",
+                          "content": "x"}, 170)
+with open(os.path.join(p7, "usr/fx-agent/policy/ops-policy.dl"), "w") as fh:
+    fh.write("denied(W1, P1) :- touches(W1, P1), kind(W1, write), "
+             "writable(P1), !boot_verdict(ok).\n")
+t2 = s7.text("fx_write", {"path": "/fx/disk/agent-config.dhall",
+                          "content": "x"}, 171)
+ok("P7 THE WRONG-MOMENT ARM: a mid-run .dl swap is NOT picked up — the same "
+   "request gets the byte-identical startup-snapshot refusal",
+   t1 == t2 and "rule D2" in t2, repr((t1, t2)))
+s7.close()
+s7b = Srv(bin, p7, POL_WRITABLE)
+hsh = s7b.handshake(); rc, err = s7b.close()
+ok("P7: a RESTART with the swapped file fails on the pin check",
+   (not hsh) and rc != 0 and "sha256 mismatch" in err, repr(err))
+
+# ── round 3 (the S2 review's findings F1–F5) ────────────────────────────────
+# The /tmp scratch snapshot must precede the FIRST loaded policy spawn (the
+# P1 bare root is floor-only and creates none): F3 moved the engine's scratch
+# db under the run dir, and this pin is the negative — no fxv-ops-* dir may
+# appear in /tmp all run.
+TMP_SCRATCH_BEFORE = {n for n in os.listdir("/tmp") if n.startswith("fxv-ops")}
+
+# F2 — the policy STATE rides the initialize reply (serverInfo): the harness
+# /dev/null's the server's stderr (mcp_client.c), so the floor-only startup
+# line would leave NO durable marker there.  s1 (P1) is the floor-only
+# server; sp0 (P0) is a loaded one; both handshook above.
+si1 = (s1.init or {}).get("result", {}).get("serverInfo", {})
+ok("F2 floor-only: the initialize reply carries opsPolicy=floor-only in "
+   "serverInfo — the state is on the channel the deployment keeps",
+   si1.get("opsPolicy") == "floor-only" and "opsPolicySha" not in si1,
+   repr(si1))
+si0 = (sp0.init or {}).get("result", {}).get("serverInfo", {})
+ok("F2 loaded: opsPolicy=loaded and opsPolicySha is the FULL pinned .dl sha",
+   si0.get("opsPolicy") == "loaded" and si0.get("opsPolicySha") == REPO_DL_SHA,
+   repr(si0))
+
+# F3 — the engine scratch db lives under the RUN DIR, not /tmp: the
+# landlock-fallback lane unveils the real /tmp rwc, so same-uid recipe code
+# could swap a valid-but-empty db in (rows=0 => allow).  /run is unveiled in
+# neither lane.
+f3root = build_policy_root("f3", "ok")
+sf3 = Srv(bin, f3root, POL_WRITABLE); sf3.handshake()
+opsdir = os.path.join(f3root, "run", "fx", "ops")
+live = sorted(os.listdir(opsdir)) if os.path.isdir(opsdir) else []
+ok("F3: the scratch db is created under <root>/run/fx/ops (one ops-* dir "
+   "while the server is alive)",
+   len(live) == 1 and live[0].startswith("ops-"), repr(live))
+rc, err = sf3.close()
+ok("F3: the scratch db is removed at the clean exit (the ops dir is empty)",
+   os.path.isdir(opsdir) and os.listdir(opsdir) == [], repr(os.listdir(opsdir)))
+TMP_SCRATCH_AFTER = {n for n in os.listdir("/tmp") if n.startswith("fxv-ops")}
+ok("F3: NO /tmp fxv-ops-* scratch db appeared at any point this run",
+   TMP_SCRATCH_AFTER.issubset(TMP_SCRATCH_BEFORE),
+   repr((sorted(TMP_SCRATCH_BEFORE), sorted(TMP_SCRATCH_AFTER))))
+
+# F1 — THE FOLDING ARM: a rule in the LEGAL lexer spelling.  The sentence
+# fills the pathclass slot with the proper noun the lexicon declares
+# ('Configpath'), so le compiles it to the FOLDED dl constant
+# class(P1, configpath) — MEASURED pre-fix: the seat injected the RAW tsv
+# surface ('Configpath'), the compiled constant matched nothing, and the
+# protected write was ALLOWED (a legal policy silently stopped protecting).
+# The compile is the real tooling (eval_ops.py --compile-sentence), so the
+# rule here is byte-for-byte what le emits.
+LE_DIR = os.environ.get("LE_DIR", "")
+EVAL_OPS = os.path.join(os.getcwd(), "policy", "ops", "eval_ops.py")
+LE_OK = bool(LE_DIR) and os.path.isfile(os.path.join(LE_DIR, "le", "__init__.py"))
+F1_DL = None
+if LE_OK:
+    f1le = os.path.join(root, "fold-sentence.le")
+    with open(f1le, "w") as fh:
+        fh.write("A verb W1 is denied for a path P1 if the verb touches the "
+                 "path and the verb has Write and the path is of "
+                 "Configpath.\n")
+    r = subprocess.run(["python3", EVAL_OPS, "--compile-sentence",
+                        "--policy-lexicon",
+                        os.path.join(POL_SRC, "ops-lexicon.ini"),
+                        "--sentence", f1le],
+                       capture_output=True, text=True,
+                       env=dict(env, LE_DIR=LE_DIR))
+    if r.returncode != 0:
+        sys.stderr.write("verbs-smoke: F1 arm: the LEGAL folded sentence did "
+                         "not compile: %s%s\n" % (r.stdout, r.stderr))
+    else:
+        F1_DL = r.stdout
+        ok("P8 THE FOLDING ARM (compile half): le compiles the legal "
+           "'pathclass Configpath' sentence to the FOLDED constant "
+           "class(P1, configpath)",
+           "class(P1, configpath)" in F1_DL and "Configpath" not in F1_DL,
+           repr(F1_DL))
+else:
+    sys.stderr.write("verbs-smoke: SKIP (P8 folding arm): no le checkout "
+                     "(set LE_DIR) — the folding proof did NOT run\n")
+
+if F1_DL is not None:
+    def mutate_fold(pol):
+        with open(os.path.join(pol, "ops-policy.dl"), "w") as fh:
+            fh.write(F1_DL)
+        repin(pol, "ops-policy.dl")
+    fold_root = build_policy_root("fold", "ok", mutate=mutate_fold)
+    sfo = Srv(bin, fold_root, POL_WRITABLE); sfo.handshake()
+    t = sfo.text("fx_write", {"path": "/fx/disk/agent-config.dhall",
+                              "content": "x"}, 180)
+    ok("P8 THE FOLDING ARM (fire half): the folded-constant rule FIRES — the "
+       "protected write is refused, naming D1 and quoting the compiled "
+       "class(P1, configpath)",
+       t.startswith("exit=1\n") and "rule D1" in t
+       and "class(P1, configpath)" in t, repr(t))
+    ok("P8: the denied write never reached the filesystem",
+       not os.path.exists(os.path.join(fold_root,
+                                       "fx/disk/agent-config.dhall")))
+    t = sfo.text("fx_write", {"path": "/fx/disk/agent-data", "content": "x"},
+                 181)
+    ok("P8 control: the folded-constant rule denies ONLY its class — the "
+       "unprotected covered write still succeeds (not a deny-all mutant)",
+       t.startswith("exit=0\n") and "wrote" in t, repr(t))
+    sfo.close()
+else:
+    sys.stderr.write("verbs-smoke: SKIP (P8 fire half): no compiled folded "
+                     "rule — the folding proof did NOT run\n")
+
+# F5 — the separator and cap cosmetics, both directions armed.
+def mutate_crlf(pol):
+    p = os.path.join(pol, "ops-aliases.tsv")
+    txt = open(p, newline="").read().replace("\n", "\r\n")
+    open(p, "w", newline="").write(txt)
+    repin(pol, "ops-aliases.tsv")
+crlf_root = build_policy_root("crlf", "ok", mutate=mutate_crlf)
+scr = Srv(bin, crlf_root, POL_WRITABLE)
+ok("F5 CRLF: a CRLF alias table LOADS CLEAN (the trailing CR is stripped, "
+   "never folded into the pattern)", scr.handshake())
+t = scr.text("fx_write", {"path": "/fx/disk/agent-config.dhall",
+                          "content": "x"}, 182)
+ok("F5 CRLF: the protected write is still denied under the CRLF table (the "
+   "patterns survived the strip)",
+   t.startswith("exit=1\n") and "rule D1" in t, repr(t))
+scr.close()
+
+def mutate_biglex(pol):
+    with open(os.path.join(pol, "ops-lexicon.ini"), "wb") as fh:
+        fh.write(b"# over the artifact cap\n")
+        fh.write(b"x" * (1024 * 1024 + 100))
+    repin(pol, "ops-lexicon.ini")
+big_root = build_policy_root("biglex", "ok", mutate=mutate_biglex)
+sbg = Srv(bin, big_root, POL_WRITABLE)
+hsh = sbg.handshake(); rc, err = sbg.close()
+ok("F5 cap: a pinned file OVER the artifact cap refuses NAMING the reason "
+   "(File too large), not a bare MISSING",
+   (not hsh) and rc != 0 and "MISSING or unreadable" in err
+   and "File too large" in err, repr(err[:300]))
+
+if LE_OK:
+    bad = os.path.join(root, "bad-aliases.tsv")
+    with open(bad, "w") as fh:
+        fh.write("Agentconfig\tConfigpath\tyes\t/a//**\n")
+    r = subprocess.run(["python3", EVAL_OPS, "--check-aliases",
+                        "--policy-lexicon",
+                        os.path.join(POL_SRC, "ops-lexicon.ini"),
+                        "--aliases", bad],
+                       capture_output=True, text=True,
+                       env=dict(env, LE_DIR=LE_DIR))
+    ok("F5 grammar drift: '/a//**' (a subtree base ending in '/') is "
+       "REFUSED by --check-aliases — the pin-time checker states the SAME "
+       "two-form grammar the seat enforces at startup",
+       r.returncode != 0 and "alias-ambiguous-pattern" in (r.stdout + r.stderr),
+       repr((r.stdout + r.stderr)[:300]))
+else:
+    sys.stderr.write("verbs-smoke: SKIP (F5 grammar-drift arm): no le "
+                     "checkout (set LE_DIR)\n")
 
 print("SMOKE: %d checks, %d failed" % (checks["n"], checks["failed"]))
 sys.exit(1 if checks["failed"] else 0)

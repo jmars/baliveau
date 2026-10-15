@@ -173,6 +173,7 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <poll.h>
+#include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -187,6 +188,14 @@
 #include "yyjson.h"
 #include "agent/outcome.h"   /* the store's outcome files — ONE reader, shared
                              * with the harness's own boot-time consume */
+#include "vendor/datalog-dafsa/src/dl.h"  /* the sibling datalog engine — the
+                             * ops-policy seat's evaluator; the SAME engine the
+                             * harness's runstore links, resolved by the SAME
+                             * DATALOG_DIR discipline (tools/build.sh / Makefile)
+                             */
+#include "dhall.h"           /* sha256_hex — the vendored dhall-c hash the
+                             * PINS verification calls (fx-report.c's pattern) */
+
 
 extern char **environ; /* the server's own environment (pass-through source) */
 
@@ -762,6 +771,807 @@ static char *store_if_present(void) {
     return sp;
 }
 
+/* ── THE OPERATOR POLICY SEAT (the ops-policy unit, slice S2) ──────────────
+ *
+ * An OPERATOR-authored datalog ALLOW/DENY layer consulted at the fx_write
+ * commit site — AFTER the writable-set floor passes and BEFORE open(), so a
+ * denial is a commit-site fact, not a walk-around-able pre-dispatch table
+ * (§7.1c).  THE AUTHOR IS THE OPERATOR, never the agent: the artifacts live
+ * at <root>/usr/fx-agent/policy/ — in NO writable set — and are PINNED
+ * (policy/ops/PINS); the release path is `make ops-policy-artifact` with
+ * artifact + PINS in the same commit.
+ *
+ * DENY-MORE-ONLY (decided 2026-10-14): the policy may TIGHTEN, never loosen.
+ * decision = floor_allows && !denied — the compiled-in writable set above
+ * stays the FLOOR, and no rule here can grant anything (the artifact's only
+ * head is `denied`, enforced by the pin-time lint).
+ *
+ * THE VOCABULARY SEAM (the design's load-bearing constraint, MEASURED in S1):
+ * le proper nouns are letters-only and fold to lowercased symbols, so a
+ * policy that spelled a runtime symbol or path would match NOTHING — a
+ * silent allow-all.  The pinned policy is therefore written over the CLOSED
+ * ABSTRACT vocabulary (policy/ops/ops-lexicon.ini), and THIS SEAT injects
+ * the binding facts from its own tables:
+ *
+ *   at startup (the resolve):     class(<served path>, <pathclass>)
+ *                                 protected(<pathclass>)   [protected=yes rows]
+ *   static:                       kind(fx_write, write)
+ *   per call (in ops_write_allowed):
+ *                                 touches(fx_write, <canon path>)
+ *                                 writable(<canon path>)
+ *                                 boot_verdict(ok)         [iff the bootlog's
+ *                                  newest ok|failed verdict reads ok]
+ *
+ * THE SERVED SET is the canonicalized FX_AGENT_WRITABLE entries — the paths
+ * this seat can actually commit — so an alias resolves against what the seat
+ * SERVES, never against a wish (the S1 review's resolve-set obligation).
+ * Two loud startup refusals pin the table's honesty, both directions:
+ *   - a PROTECTED alias matching NO served path (the silent allow-all it
+ *     would buy), and
+ *   - a SERVED path covered by NO row (an unclassified writable path —
+ *     untightened, not loosened, but refused loudly, never silently
+ *     unguarded).
+ * The protected-direction check is scoped to a NON-EMPTY served set: with
+ * nothing writable the floor refuses everything and there is no allow-all
+ * to guard.
+ *
+ * THE PIN: every file PINS names must exist here with the pinned sha256
+ * (sha256_hex, the vendored dhall-c hash) BEFORE any of it is believed.  A
+ * PRESENT-but-stale or swapped artifact is a LOUD STARTUP REFUSAL naming
+ * both shas — never a silent allow-all; the failed service exit propagates
+ * into fx-init's boot verdict.  An ABSENT policy dir is the NAMED
+ * floor-only state (one startup line), never an error and never silent.
+ *
+ * STARTUP SNAPSHOT (P7's risk, the evaluated-at-the-wrong-moment class):
+ * the artifact is read and its rules compiled ONCE here; per-call facts —
+ * the ONLY thing that moves — are computed fresh per call.  A mid-run swap
+ * of the files cannot change a decision; a restart with a swapped file dies
+ * on the pin check.
+ *
+ * MEASURED (C engine, this host): startup open+declare ~27 ms and
+ * dl_load_rules ~10 ms after first-touch (the process' FIRST engine touch
+ * costs ~0.5 s of page-in — once per server spawn); the per-call
+ * dl_query(denied) 0.37 ms; the denial path's per-rule attribution
+ * (dl_query_rules_ro) ~1.1 ms per rule.
+ */
+#define FXV_OPS_DIR_REL "usr/fx-agent/policy"
+#define FXV_OPS_DL      "ops-policy.dl"
+#define FXV_OPS_TSV     "ops-aliases.tsv"
+#define FXV_OPS_PINS    "PINS"
+#define FXV_OPS_MAX_FILE (1024u * 1024u) /* the artifact cap, FXV_MAX_LINE's */
+
+typedef struct {
+    char *alias;        /* the raw tsv surface, for the refusals */
+    char *alias_folded; /* its FOLDED symbol (le's proper-noun fold); the
+                         * duplicate check runs on the FOLDED form, matching
+                         * eval_ops.py --check-aliases */
+    char *pathclass;    /* the raw surface, for the refusals */
+    char *class_sym;    /* FOLDED — the symbol the class and protected facts
+                         * carry (the folding contract) */
+    int   prot;     /* the yes/no column: D1's protected facts ride on it */
+    char *pattern;  /* EXACT '<path>' or SUBTREE ('<path>' + the two-star
+                     * slash tail) — never a prefix */
+} OpsAliasRow;
+
+static struct {
+    int           present;  /* 0 = floor-only mode */
+    dl_db        *db;
+    char          scratch[PATH_MAX]; /* the scratch db dir (removed at exit) */
+    char          sha[65];     /* the pinned .dl sha (the serverInfo state) */
+    char         *dl_text;       /* the artifact's bytes */
+    char        **rule;          /* its rule lines, for per-rule attribution */
+    size_t        n_rule;
+    OpsAliasRow  *row;
+    size_t        n_row;
+    size_t        n_served;      /* canonicalized writable-set entries */
+    size_t        n_class;       /* class facts the resolve injected */
+} OPS;
+
+/* A LOUD startup refusal: exit nonzero, naming the fault on stderr.  The
+ * mcp client /dev/null's this server's stderr (mcp_client.c) — there the
+ * refusal IS the failed spawn (initialize never answers, the boot verdict
+ * turns FAILED); stand-alone, the line is on the console. */
+static void ops_die(const char *fmt, ...) {
+    fputs("fx-verbs: ops-policy REFUSED: ", stderr);
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+    fputc('\n', stderr);
+    exit(1);
+}
+
+/* Best-effort scratch-db removal (flat engine files; no shell, no system(3)). */
+static void ops_rm_rf(const char *dir, int depth) {
+    DIR *d = opendir(dir);
+    if (!d) return;
+    struct dirent *de;
+    while ((de = readdir(d)) != NULL) {
+        if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0) continue;
+        char *child = malloc(strlen(dir) + 1 + strlen(de->d_name) + 1);
+        if (!child) break;
+        sprintf(child, "%s/%s", dir, de->d_name);
+        if (unlink(child) != 0 && errno == EISDIR && depth < 4)
+            ops_rm_rf(child, depth + 1);
+        free(child);
+    }
+    closedir(d);
+    rmdir(dir);
+}
+
+static void ops_policy_shutdown(void) {
+    if (OPS.db) { dl_close(OPS.db); OPS.db = NULL; }
+    if (OPS.scratch[0]) { ops_rm_rf(OPS.scratch, 0); OPS.scratch[0] = '\0'; }
+}
+
+/* defined below (the PID1 control-channel section): the scratch db's parent */
+static char *ctrl_run_dir(void);
+
+static char *ops_read_file(const char *path, size_t *len_out) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return NULL;
+    size_t cap = 8192, len = 0;
+    char *buf = malloc(cap + 1);
+    if (!buf) { fclose(f); return NULL; }
+    for (;;) {
+        if (len == cap) {
+            if (cap >= FXV_OPS_MAX_FILE) {
+                /* the CAP path is not a read failure: name it as one, or the
+                 * caller's strerror prints the stale errno (F5: a pinned
+                 * file over the cap read as "MISSING ... Success") */
+                errno = EFBIG;
+                free(buf); fclose(f); return NULL;
+            }
+            cap *= 2;
+            char *nb = realloc(buf, cap + 1);
+            if (!nb) { free(buf); fclose(f); return NULL; }
+            buf = nb;
+        }
+        size_t n = fread(buf + len, 1, cap - len, f);
+        len += n;
+        if (n == 0) break;
+    }
+    if (ferror(f)) { free(buf); fclose(f); return NULL; }
+    fclose(f);
+    buf[len] = '\0';
+    if (len_out) *len_out = len;
+    return buf;
+}
+
+/* THE PIN CHECK: every file PINS names must exist with the pinned sha256.
+ * Names BOTH shas on a mismatch — the operator's diagnosis is "which bytes
+ * did I expect vs which bytes am I holding".  Also demands that the two
+ * files the seat LOADS (the .dl and the alias table) are pinned at all: a
+ * PINS that omitted them would silently skip their verification.
+ * F4 (the S2 review): the verified bytes are KEPT and handed to the loaders
+ * through dl_out/tsv_out — re-reading the files after the hash check would
+ * open a window where a swap loads unverified bytes.  dl_sha_out (65 bytes)
+ * receives the pinned .dl sha for the startup line and serverInfo. */
+static void ops_verify_pins(const char *dir, const char *pins_path,
+                            char **dl_out, char **tsv_out, char *dl_sha_out) {
+    size_t plen = 0;
+    char *pins = ops_read_file(pins_path, &plen);
+    if (!pins)
+        ops_die("%s cannot be read: %s — a present policy dir must carry a "
+                "verifiable pin set", pins_path, strerror(errno));
+    int saw_dl = 0, saw_tsv = 0;
+    char *save = NULL;
+    for (char *line = strtok_r(pins, "\n", &save); line;
+         line = strtok_r(NULL, "\n", &save)) {
+        while (*line == ' ' || *line == '\t') line++;
+        if (!*line || *line == '#') continue;
+        char *tab = strchr(line, '\t');
+        if (!tab) ops_die("%s: a pin row is name<TAB>sha256, got '%.80s'",
+                          pins_path, line);
+        *tab = '\0';
+        char *name = line, *want = tab + 1;
+        char *nl = strchr(want, '\r');
+        if (nl) *nl = '\0';
+        int is_dl = strcmp(name, FXV_OPS_DL) == 0;
+        int is_tsv = strcmp(name, FXV_OPS_TSV) == 0;
+        if (is_dl) saw_dl = 1;
+        if (is_tsv) saw_tsv = 1;
+        size_t flen = 0;
+        char path[PATH_MAX];
+        int n = snprintf(path, sizeof path, "%s/%s", dir, name);
+        if (n <= 0 || n >= (int)sizeof path) ops_die("pin path too long: %s", name);
+        char *bytes = ops_read_file(path, &flen);
+        if (!bytes)
+            ops_die("pinned file %s is MISSING or unreadable (: %s) "
+                    "(pinned sha256 %s) — no such file, or it is over the "
+                    "%u-byte artifact cap; restore it or re-pin",
+                    path, strerror(errno), want, FXV_OPS_MAX_FILE);
+        char got[65];
+        sha256_hex(bytes, flen, got);
+        if (strcmp(got, want) != 0) {
+            free(bytes);
+            ops_die("pinned file %s sha256 mismatch: pinned %s != actual %s "
+                    "— the deployed artifact is stale or swapped; a policy "
+                    "edit is a re-pin (artifact + PINS in the same release)",
+                    path, want, got);
+        }
+        /* verified: the LOADED files are the bytes just hashed */
+        if (is_dl) {
+            free(*dl_out);
+            *dl_out = bytes;
+            snprintf(dl_sha_out, 65, "%s", want);
+        } else if (is_tsv) {
+            free(*tsv_out);
+            *tsv_out = bytes;
+        } else {
+            free(bytes);
+        }
+    }
+    free(pins);
+    if (!saw_dl || !saw_tsv)
+        ops_die("%s does not pin both %s and %s — the loaded artifacts would "
+                "go unverified", pins_path, FXV_OPS_DL, FXV_OPS_TSV);
+}
+
+/* THE PATTERN GRAMMAR — the TWO FORMS policy/ops/ops-aliases.tsv states and
+ * eval_ops.py --check-aliases enforces at pin time, implemented for the
+ * resolve (the seat does not trust the staging to have been checked):
+ *   EXACT   '<path>'   glob-less; matches that one path, NEVER a prefix
+ *   SUBTREE            '<path>' plus a slash and two asterisks: the path
+ *                      itself and every descendant
+ * Anything else (a lone '*', '?', '[', '**' off the tail, a trailing '/',
+ * a subtree base ending in '/' — it can never match a canonical path) is a
+ * LOUD startup refusal: coverage nobody stated is the silent allow-all. */
+static int ops_glob_char(const char *s) {
+    return strpbrk(s, "*?[") != NULL;
+}
+
+static int ops_pattern_valid(const char *p) {
+    size_t l = strlen(p);
+    if (l < 2 || p[0] != '/') return 0;
+    if (l >= 3 && strcmp(p + l - 3, "/**") == 0) {
+        size_t bl = l - 3;
+        if (bl < 2 || p[0] != '/' || p[bl - 1] == '/') return 0;
+        char base[PATH_MAX];
+        if (bl >= sizeof base) return 0;
+        memcpy(base, p, bl); base[bl] = '\0';
+        return !ops_glob_char(base);
+    }
+    if (p[l - 1] == '/') return 0;
+    return !ops_glob_char(p);
+}
+
+static int ops_pattern_hits(const char *pattern, const char *canon) {
+    size_t pl = strlen(pattern);
+    if (pl >= 3 && strcmp(pattern + pl - 3, "/**") == 0) {
+        size_t bl = pl - 3;
+        size_t cl = strlen(canon);
+        if (cl < bl || strncmp(canon, pattern, bl) != 0) return 0;
+        return cl == bl || canon[bl] == '/';
+    }
+    return strcmp(canon, pattern) == 0;
+}
+
+/* The FOLD (the folding contract, seat half — F1): le compiles a proper noun
+ * (CAPITALISED letters-only, le/lexicon.py:157) to its LOWERCASED dl symbol
+ * (le/binding.py:144 — `Configpath` -> `configpath`), so that folded symbol
+ * is what a LEGAL operator rule spells after compilation.  The seat folds the
+ * alias table's surfaces the same way before interning: injecting the RAW
+ * surface would never match a legal rule's folded constant — a policy that
+ * stops matching stops protecting, silently.  A surface that is not ASCII
+ * letters-only is REFUSED here rather than folded: le could never compile it
+ * into a constant, so it could only ever non-match (the same silent
+ * allow-all in another spelling; eval_ops.py --check-aliases owns lexicon
+ * MEMBERSHIP at pin time, this owns shape).  Returns 0 on a non-proper
+ * surface. */
+static int ops_fold_proper(char *dst, size_t dstsz, const char *src) {
+    size_t l = strlen(src);
+    if (l == 0 || l >= dstsz) return 0;
+    for (size_t i = 0; i < l; i++) {
+        unsigned char c = (unsigned char)src[i];
+        if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'))) return 0;
+        dst[i] = (char)(c | 0x20);
+    }
+    dst[l] = '\0';
+    return 1;
+}
+
+/* The alias table: alias<TAB>pathclass<TAB>protected<TAB>pattern, '#'
+ * comments — parsed and VALIDATED here (grammar above, duplicate aliases,
+ * the yes/no flag), because a malformed row must refuse loudly, never
+ * half-match.  `tsv_owned` is the verified bytes ops_verify_pins kept (F4);
+ * `path` names the file in the refusals.  A trailing CR is stripped per line
+ * (F5: a CRLF table used to validate as an exact pattern with a trailing
+ * \r — a shape that can never match, refused under a confusing name). */
+static void ops_load_aliases(const char *path, char *tsv_owned) {
+    char *tsv = tsv_owned;
+    size_t cap = 8;
+    OPS.row = malloc(cap * sizeof *OPS.row);
+    if (!OPS.row) ops_die("out of memory");
+    char *save = NULL;
+    for (char *line = strtok_r(tsv, "\n", &save); line;
+         line = strtok_r(NULL, "\n", &save)) {
+        while (*line == ' ' || *line == '\t') line++;
+        size_t ll = strlen(line);
+        if (ll > 0 && line[ll - 1] == '\r') line[ll - 1] = '\0';
+        if (!*line || *line == '#') continue;
+        char *f[4];
+        int nf = 0;
+        char *lsave = NULL;
+        for (char *tok = strtok_r(line, "\t", &lsave); tok && nf < 4;
+             tok = strtok_r(NULL, "\t", &lsave))
+            f[nf++] = tok;
+        if (nf != 4)
+            ops_die("%s: an alias row is alias<TAB>pathclass<TAB>protected"
+                    "<TAB>pattern, got %d field(s)", path, nf);
+        if (strcmp(f[2], "yes") != 0 && strcmp(f[2], "no") != 0)
+            ops_die("%s: the protected flag is '%s', not yes|no", path, f[2]);
+        if (!ops_pattern_valid(f[3]))
+            ops_die("%s: the pattern '%s' is neither of the two stated forms "
+                    "— an EXACT glob-less path or a SUBTREE '<path>/**'",
+                    path, f[3]);
+        if (OPS.n_row == cap) {
+            cap *= 2;
+            OpsAliasRow *nr = realloc(OPS.row, cap * sizeof *OPS.row);
+            if (!nr) ops_die("out of memory");
+            OPS.row = nr;
+        }
+        OpsAliasRow *r = &OPS.row[OPS.n_row];
+        r->alias = strdup(f[0]);
+        r->pathclass = strdup(f[1]);
+        r->pattern = strdup(f[3]);
+        r->alias_folded = malloc(strlen(f[0]) + 1);
+        r->class_sym = malloc(strlen(f[1]) + 1);
+        if (!r->alias || !r->pathclass || !r->pattern ||
+            !r->alias_folded || !r->class_sym) ops_die("out of memory");
+        if (!ops_fold_proper(r->alias_folded, strlen(f[0]) + 1, f[0]))
+            ops_die("%s: the alias '%s' is not a proper noun (ASCII letters "
+                    "only) — le compiles proper nouns to their lowercased "
+                    "symbol, so any other shape could only ever match nothing",
+                    path, f[0]);
+        if (!ops_fold_proper(r->class_sym, strlen(f[1]) + 1, f[1]))
+            ops_die("%s: the pathclass '%s' is not a proper noun (ASCII "
+                    "letters only) — le compiles proper nouns to their "
+                    "lowercased symbol, so any other shape could only ever "
+                    "match nothing", path, f[1]);
+        for (size_t i = 0; i < OPS.n_row; i++)
+            if (strcmp(OPS.row[i].alias_folded, r->alias_folded) == 0)
+                ops_die("%s: the alias '%s' is mapped twice", path, f[0]);
+        OPS.n_row++;
+        r->prot = (strcmp(f[2], "yes") == 0);
+    }
+    free(tsv);
+    if (OPS.n_row == 0)
+        ops_die("%s carries no alias rows — the vocabulary seam's binding "
+                "table is empty and every served path would be unclassified",
+                path);
+}
+
+/* A grown-on-demand string vector (the served set). */
+typedef struct { char **v; size_t n, cap; } OpsVec;
+
+static void ops_vec_push(OpsVec *s, char *owned) {
+    if (s->n == s->cap) {
+        s->cap = s->cap ? s->cap * 2 : 8;
+        char **nv = realloc(s->v, s->cap * sizeof *nv);
+        if (!nv) ops_die("out of memory");
+        s->v = nv;
+    }
+    s->v[s->n++] = owned;
+}
+
+static int ops_vec_has(const OpsVec *s, const char *x) {
+    for (size_t i = 0; i < s->n; i++)
+        if (strcmp(s->v[i], x) == 0) return 1;
+    return 0;
+}
+
+/* THE POLICY'S PATH SPELLING: the alias patterns and the facts carry the
+ * GUEST-ABSOLUTE path ("/fx/disk/agent-config.dhall") — the spelling the
+ * pinned table declares and the driver's fact fixtures use; canon_root_rel
+ * yields the ROOT-RELATIVE form the writable-set floor compares in.  In the
+ * guest root == "/", so "/"+canon IS the runtime path; under a stub root it
+ * is the same declared spelling the floor's entries use. */
+static char *ops_abs_of(const char *canon) {
+    size_t cl = strlen(canon);
+    char *abs = malloc(cl + 2);
+    if (!abs) ops_die("out of memory");
+    abs[0] = '/';
+    memcpy(abs + 1, canon, cl + 1);
+    return abs;
+}
+
+/* THE RESOLVE: the served set is the canonicalized writable-set entries
+ * (EXACTLY in_writable_set's normalization, collected instead of compared —
+ * the floor code is not touched), spelled the policy's way (guest-absolute).
+ * Every served path must be covered by a row (loud refusal otherwise);
+ * covered paths get their class fact, and a protected=yes row's class gets
+ * the protected fact.  All fact adds are checked: the folding contract
+ * (inject FOLDED symbols) is machine-checked here — a failed add refuses
+ * startup, never silently proceeds. */
+static void ops_resolve_and_declare(void) {
+    OpsVec served = {0};
+    const char *set = writable_set();
+    const char *e = set;
+    while (e && *e) {
+        while (*e == ':') e++;
+        if (!*e) break;
+        const char *end = e;
+        while (*end && *end != ':') end++;
+        size_t el = (size_t)(end - e);
+        char ent[PATH_MAX];
+        if (el > 0 && el < sizeof ent) {
+            memcpy(ent, e, el); ent[el] = '\0';
+            char *cent;
+            if (ent[0] == '/') {
+                cent = canon_root_rel(ent);
+            } else {
+                char abs[PATH_MAX];
+                int n = snprintf(abs, sizeof abs, "/%s", ent);
+                cent = (n > 0 && n < (int)sizeof abs) ? canon_root_rel(abs) : NULL;
+            }
+            if (cent) {
+                char *abs = ops_abs_of(cent);
+                free(cent);
+                if (!ops_vec_has(&served, abs)) ops_vec_push(&served, abs);
+                else free(abs);
+            }
+        }
+        e = end;
+    }
+    OPS.n_served = served.n;
+
+    for (size_t i = 0; i < served.n; i++) {
+        int covered = 0;
+        for (size_t r = 0; r < OPS.n_row; r++) {
+            if (!ops_pattern_hits(OPS.row[r].pattern, served.v[i])) continue;
+            covered = 1;
+            /* F1: the class symbol is the FOLDED pathclass surface — the
+             * dl symbol le compiles a legal "the path is of the pathclass
+             * Configpath" sentence to.  The raw surface ('Configpath') would
+             * never match it: the rule would silently stop protecting. */
+            uint32_t c[2] = { dl_intern_str(OPS.db, served.v[i]),
+                              dl_intern_str(OPS.db, OPS.row[r].class_sym) };
+            if (!c[0] || !c[1] || dl_add_fact(OPS.db, "class", c, 2) < 0)
+                ops_die("cannot inject the class fact for %s (the folding "
+                        "contract is machine-checked: a failed add refuses, "
+                        "never silently proceeds)", served.v[i]);
+            OPS.n_class++;
+            if (OPS.row[r].prot) {
+                uint32_t p[1] = { dl_intern_str(OPS.db, OPS.row[r].class_sym) };
+                if (!p[0] || dl_add_fact(OPS.db, "protected", p, 1) < 0)
+                    ops_die("cannot inject the protected fact for %s",
+                            OPS.row[r].pathclass);
+            }
+        }
+        if (!covered)
+            ops_die("the served writable path %s is covered by NO alias row "
+                    "in %s — an unclassified writable path is refused loudly, "
+                    "never silently unguarded; add a row (and re-pin)",
+                    served.v[i], FXV_OPS_TSV);
+    }
+    /* the protected direction, scoped to a non-empty served set (with
+     * nothing writable the floor refuses everything — no allow-all to guard) */
+    if (served.n > 0) {
+        for (size_t r = 0; r < OPS.n_row; r++) {
+            if (!OPS.row[r].prot) continue;
+            int hit = 0;
+            for (size_t i = 0; i < served.n; i++)
+                if (ops_pattern_hits(OPS.row[r].pattern, served.v[i])) hit = 1;
+            if (!hit)
+                ops_die("the PROTECTED alias '%s' (pattern %s) matches NO "
+                        "served writable path — it would protect nothing "
+                        "while the policy and the pin say it does (the "
+                        "silent allow-all); fix the pattern and re-pin",
+                        OPS.row[r].alias, OPS.row[r].pattern);
+        }
+    }
+    for (size_t i = 0; i < served.n; i++) free(served.v[i]);
+    free(served.v);
+}
+
+/* STARTUP: the whole policy load, or the named floor-only state.  Called
+ * once from main() before the frame loop. */
+static void ops_policy_startup(void) {
+    memset(&OPS, 0, sizeof OPS);
+    char *dir = root_join(FXV_OPS_DIR_REL);
+    if (!dir) ops_die("cannot resolve " FXV_OPS_DIR_REL " under FX_VERB_ROOT");
+    struct stat st;
+    int empty = 0;
+    if (stat(dir, &st) == 0 && S_ISDIR(st.st_mode)) {
+        /* an EMPTY dir is also "no operator policy" (a fresh image's staging
+         * point), but a NON-EMPTY dir without a verifiable pin set is a
+         * broken release and refuses below */
+        DIR *d = opendir(dir);
+        if (d) {
+            struct dirent *de;
+            empty = 1;
+            while ((de = readdir(d)) != NULL) {
+                if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
+                    continue;
+                empty = 0;
+                break;
+            }
+            closedir(d);
+        }
+    }
+    if (stat(dir, &st) != 0 || !S_ISDIR(st.st_mode) || empty) {
+        /* THE NAMED FLOOR-ONLY STATE: no operator policy is a state of the
+         * deployment, stated once — never an error, never a silent
+         * allow-all (deny-more-only: the floor governs alone). */
+        fprintf(stderr, "fx-verbs: ops-policy: no operator policy at %s "
+                        "(FX_VERB_ROOT=%s) — floor-only mode: the "
+                        "compiled-in writable set governs alone\n",
+                dir, fx_root());
+        free(dir);
+        return;
+    }
+
+    char pins_path[PATH_MAX], dl_path[PATH_MAX], tsv_path[PATH_MAX];
+    snprintf(pins_path, sizeof pins_path, "%s/%s", dir, FXV_OPS_PINS);
+    snprintf(dl_path, sizeof dl_path, "%s/%s", dir, FXV_OPS_DL);
+    snprintf(tsv_path, sizeof tsv_path, "%s/%s", dir, FXV_OPS_TSV);
+    /* F4: verify AND KEEP — the .dl/tsv bytes are the ones just hashed, so
+     * no window exists where a swap loads unverified bytes. */
+    char *tsv_bytes = NULL;
+    ops_verify_pins(dir, pins_path, &OPS.dl_text, &tsv_bytes, OPS.sha);
+    ops_load_aliases(tsv_path, tsv_bytes);
+
+    /* the scratch db: the engine holds the compiled rules and this boot's
+     * policy facts — process-lifetime state, nothing on the store, removed
+     * at exit (registered NOW so a later refusal still cleans up).
+     * F3: it lives under the run dir — /run in the guest, <root>/run under a
+     * stub — NOT /tmp: the landlock-fallback lane unveils the REAL /tmp rwc
+     * (fxstore's build.zig), so same-uid recipe code could replace the
+     * backing store with a VALID-BUT-EMPTY db (rows=0 => allow, the
+     * dangerous direction); /run is unveiled in neither lane. */
+    {
+        char *rd = ctrl_run_dir();
+        if (!rd || !*rd)
+            ops_die("cannot resolve the run dir for the policy scratch db");
+        char parent[PATH_MAX];
+        int n = snprintf(parent, sizeof parent, "%s/ops", rd);
+        free(rd);
+        if (n <= 0 || n >= (int)sizeof parent)
+            ops_die("run dir too long for the policy scratch db");
+        for (char *s = parent + 1; *s; s++) {
+            if (*s != '/') continue;
+            *s = '\0';
+            if (mkdir(parent, 0700) != 0 && errno != EEXIST)
+                ops_die("cannot create %s for the policy scratch db: %s — "
+                        "a present policy must be loadable, never silently "
+                        "skipped", parent, strerror(errno));
+            *s = '/';
+        }
+        if (mkdir(parent, 0700) != 0 && errno != EEXIST)
+            ops_die("cannot create %s for the policy scratch db: %s — "
+                    "a present policy must be loadable, never silently "
+                    "skipped", parent, strerror(errno));
+        n = snprintf(OPS.scratch, sizeof OPS.scratch, "%s/ops-XXXXXX", parent);
+        if (n <= 0 || n >= (int)sizeof OPS.scratch)
+            ops_die("run dir too long for the policy scratch db");
+    }
+    if (!mkdtemp(OPS.scratch))
+        ops_die("cannot create the policy scratch db under the run dir "
+                "(%s): %s — a present policy must be loadable, never "
+                "silently skipped", OPS.scratch, strerror(errno));
+    atexit(ops_policy_shutdown);
+    int derr = 0;
+    OPS.db = dl_open2(OPS.scratch, &derr);
+    if (!OPS.db)
+        ops_die("cannot open the policy scratch db %s (err %d)", OPS.scratch, derr);
+    /* THE CLOSED RELATION SET — exactly the ops lexicon's templates plus the
+     * one head (ops-lexicon.ini [predicates]).  A pinned artifact whose atoms
+     * fall outside it fails dl_load_rules by name (the engine refuses an
+     * undeclared predicate — MEASURED), so relation-level drift is loud. */
+    if (dl_declare_relation(OPS.db, "denied", 2) != 0 ||
+        dl_declare_relation(OPS.db, "touches", 2) != 0 ||
+        dl_declare_relation(OPS.db, "kind", 2) != 0 ||
+        dl_declare_relation(OPS.db, "class", 2) != 0 ||
+        dl_declare_relation(OPS.db, "protected", 1) != 0 ||
+        dl_declare_relation(OPS.db, "writable", 1) != 0 ||
+        dl_declare_relation(OPS.db, "boot_verdict", 1) != 0)
+        ops_die("cannot declare the closed relation set in %s", OPS.scratch);
+    if (dl_load_rules(OPS.db, OPS.dl_text) != 0)
+        ops_die("%s: the engine refused the pinned rules (see the engine's "
+                "diagnostic above) — a pinned artifact the engine cannot "
+                "load is a broken release, never a floor-only fallback", dl_path);
+
+    /* the rule lines, split for per-rule attribution (the head rename) */
+    for (char *p = OPS.dl_text; *p; ) {
+        while (*p == '\n' || *p == '\r' || *p == ' ' || *p == '\t') p++;
+        if (!*p) break;
+        char *end = p;
+        while (*end && *end != '\n' && *end != '\r') end++;
+        int ended = *end != '\0';
+        *end = '\0';
+        if (!ended) end = NULL;
+        char **nr = realloc(OPS.rule, (OPS.n_rule + 1) * sizeof *OPS.rule);
+        if (!nr) ops_die("out of memory");
+        OPS.rule = nr;
+        OPS.rule[OPS.n_rule++] = p;
+        if (!end) break;
+        p = end + 1;
+    }
+    if (OPS.n_rule == 0)
+        ops_die("%s carries no rules (policy-vacuous) — an artifact the "
+                "release path's lint refuses cannot be served as a policy",
+                dl_path);
+
+    ops_resolve_and_declare();
+
+    /* THE FOLDING CONTRACT, static half, machine-checked: the seat injects
+     * FOLDED symbols (Write -> write).  Per call, the canon path is always a
+     * served path (the floor passed => an exact writable-set member => it
+     * was in the resolve set), so its class fact exists by the resolve's
+     * checked adds — the per-call half of the contract holds by construction
+     * and is pinned by the gate's deny-direction arms. */
+    {
+        uint32_t k[2] = { dl_intern_str(OPS.db, "fx_write"),
+                          dl_intern_str(OPS.db, "write") };
+        if (!k[0] || !k[1] || dl_add_fact(OPS.db, "kind", k, 2) < 0)
+            ops_die("cannot inject the kind fact for fx_write (the folding "
+                    "contract is machine-checked)");
+    }
+
+    char sha[65] = "(none)";
+    snprintf(sha, sizeof sha, "%.16s…", OPS.sha); /* captured at verify (F4) */
+    fprintf(stderr, "fx-verbs: ops-policy: loaded %s (sha256 %s, %zu rule(s), "
+                    "%zu alias row(s), %zu served writable path(s), %zu class "
+                    "fact(s))\n",
+            dir, sha, OPS.n_rule, OPS.n_row, OPS.n_served, OPS.n_class);
+    OPS.present = 1; /* LAST: nothing above may observe a half-loaded policy */
+    free(dir);
+}
+
+/* THE BOOT VERDICT, computed FRESH PER CALL — the per-call facts are the
+ * only thing that moves (the R3 wrong-moment risk), so the verdict is never
+ * cached across calls.  The source is outcome.c's bootlog reader — the SAME
+ * read fx_outcome reports from — one reader, no drift.  ok => inject
+ * boot_verdict(ok); absent/unreadable/failed/in-progress/shutdown => inject
+ * NOTHING, and D2's negation (!boot_verdict(ok)) denies: fail-closed, the
+ * exact shape the pinned rule encodes ("it is not the case that Ok is the
+ * boot verdict" — a shutdown or in-flight last line is not ok either). */
+static int ops_boot_ok(void) {
+    char *store = store_if_present();
+    if (!store) return 0;
+    FxBootlog bl;
+    int rc = fx_outcome_bootlog_read(store, NULL, NULL, &bl);
+    free(store);
+    if (rc != 0 || bl.absent || !bl.have_last) return 0;
+    return strcmp(bl.last_status, "ok") == 0;
+}
+
+static int ops_collect_count_cb(const uint32_t *cols, uint8_t arity, void *u) {
+    (void)cols; (void)arity;
+    (*(size_t *)u)++;
+    return 0;
+}
+
+/* An engine fault on the decision path is fail-CLOSED: an unconsultable
+ * policy refuses, it never allows (deny-more-only's own direction). */
+static int ops_engine_fail(Capture *out, const char *why) {
+    cap_append_str(out, "fx-verbs: fx_write REFUSED: ops-policy engine error: ");
+    cap_append_str(out, why);
+    cap_append_str(out, " (fail-closed: an unconsultable policy refuses, "
+                        "it never allows)\n");
+    fprintf(stderr, "fx-verbs: ops-policy engine error: %s\n", why);
+    return 0;
+}
+
+/* THE PER-CALL DECISION.  Returns 1 when the policy is SILENT (the floor's
+ * verdict stands — it never permits), 0 when it DENIES (the refusal is
+ * appended to `out` and mirrored to stderr).  Injects the per-call facts,
+ * queries the pinned rules, retracts the facts (collect-then-mutate,
+ * runstore.h's discipline — MEASURED: the retraction also retracts the
+ * derived denied rows, so nothing LATCHES across calls). */
+static int ops_write_allowed(const char *canon, Capture *out) {
+    if (!OPS.present) return 1;
+
+    char *apath = ops_abs_of(canon); /* the policy's guest-absolute spelling */
+    uint32_t w = dl_intern_str(OPS.db, "fx_write");
+    uint32_t p = dl_intern_str(OPS.db, apath);
+    uint32_t tp[2] = { w, p };
+    uint32_t pp[1] = { p };
+    if (!w || !p ||
+        dl_add_fact(OPS.db, "touches", tp, 2) < 0 ||
+        dl_add_fact(OPS.db, "writable", pp, 1) < 0) {
+        free(apath);
+        return ops_engine_fail(out, "cannot inject the per-call facts");
+    }
+
+    int boot_ok = ops_boot_ok();
+    uint32_t ok = dl_intern_str(OPS.db, "ok");
+    uint32_t bv[1] = { ok };
+    int have_bv = 0;
+    if (boot_ok) {
+        if (!ok || dl_add_fact(OPS.db, "boot_verdict", bv, 1) < 0) {
+            free(apath);
+            return ops_engine_fail(out, "cannot inject the boot verdict");
+        }
+        have_bv = 1;
+    }
+
+    size_t rows = 0;
+    if (dl_query(OPS.db, "denied", ops_collect_count_cb, &rows) < 0) {
+        free(apath);
+        return ops_engine_fail(out, "dl_query(denied) failed");
+    }
+
+    /* PER-RULE ATTRIBUTION (denial path only): the derived relation holds
+     * DEDUPLICATED TUPLES with no rule provenance (MEASURED: D1+D2 on one
+     * path is ONE row), so "which rule fired" is re-asked per rule line:
+     * each artifact rule is evaluated on a SHALLOW CLONE (dl_query_rules_ro
+     * — read-only, the live db untouched) with its HEAD RENAMED, because the
+     * clone carries this call's materialized denied rows and a same-head
+     * query would return them whatever the body (MEASURED).  Only the HEAD
+     * atom is renamed; a body reference to `denied` (a recursive policy —
+     * the pinned one has none) would read the clone's materialized rows, so
+     * a future recursive rule must come with its own attribution design. */
+    int fired[32];
+    size_t n_fired = 0;
+    if (rows > 0) {
+        for (size_t i = 0; i < OPS.n_rule && n_fired < 32; i++) {
+            const char *rl = OPS.rule[i];
+            if (strlen(rl) > 1024) continue;
+            if (memcmp(rl, "denied(", 7) != 0) continue; /* the lint's head */
+            char prog[1200], goal[32];
+            snprintf(goal, sizeof goal, "ops_r%zu", i + 1);
+            int n = snprintf(prog, sizeof prog, "%s%s", goal, rl + 6);
+            if (n <= 0 || n >= (int)sizeof prog) continue;
+            size_t rn = 0;
+            if (dl_query_rules_ro(OPS.db, prog, goal, ops_collect_count_cb, &rn) >= 0
+                && rn > 0)
+                fired[n_fired++] = (int)i;
+        }
+    }
+
+    /* retract the per-call facts; a failed retraction would LATCH this
+     * call's facts onto the next, so it refuses loudly (fail-closed). */
+    int delbad = 0;
+    if (dl_delete_fact(OPS.db, "touches", tp, 2) < 0 ||
+        dl_delete_fact(OPS.db, "writable", pp, 1) < 0 ||
+        (have_bv && dl_delete_fact(OPS.db, "boot_verdict", bv, 1) < 0))
+        delbad = 1;
+
+    if (rows == 0) {
+        free(apath);
+        if (delbad)
+            return ops_engine_fail(out, "cannot retract the per-call facts");
+        return 1;
+    }
+
+    /* THE DENIAL, in the floor-refusal's shape, one line per FIRED rule.
+     * The rule number is POSITIONAL over the artifact's own rule order —
+     * ops-policy.le names its rules D1..Dn in that order and the compile is
+     * deterministic (the gate re-compiles and demands byte-equality) — while
+     * the quoted text, the artifact's own rule, is the authority.  The same
+     * lines go to stderr: harness-driven, the client /dev/null's stderr and
+     * this tool result is the durable record (the transcript); stand-alone,
+     * stderr is the console. */
+    cap_append_str(out, "fx-verbs: fx_write REFUSED: the operator policy "
+                        "denies this write\n");
+    if (n_fired == 0) {
+        cap_append_str(out, "policy ops-policy: denied (no rule attributed — "
+                            "the artifact and the engine disagree; refusing, "
+                            "never allowing)\n");
+    }
+    for (size_t i = 0; i < n_fired; i++) {
+        char line[1400];
+        int n = snprintf(line, sizeof line,
+                         "policy ops-policy rule D%d: %s (verb fx_write, "
+                         "path %s, boot verdict %s)\n",
+                         fired[i] + 1, OPS.rule[fired[i]], apath,
+                         boot_ok ? "ok" : "not ok");
+        if (n > 0) {
+            cap_append_str(out, line);
+            fputs(line, stderr);
+        }
+    }
+    if (delbad) {
+        cap_append_str(out, "policy ops-policy: the per-call facts could not "
+                            "be retracted (fail-closed; the NEXT decision "
+                            "refuses until the engine is clean)\n");
+    }
+    free(apath);
+    return 0;
+}
+
 /* ── the PID1 control channel (fx_activate's route) ─────────────────────── */
 
 /* defined below the native verbs (the JSON reply senders) */
@@ -1159,6 +1969,18 @@ static int native_write(const char *path, const char *content, size_t clen,
                             "deliberately outside every default set); to grant "
                             "more, the operator must change FX_AGENT_WRITABLE — "
                             "the model cannot widen it\n");
+        *exitcode = 1;
+        free(full);
+        free(canon);
+        return 0;
+    }
+    /* THE OPERATOR POLICY (ops-policy, S2): consulted AFTER the floor passes
+     * and BEFORE open() — a denial is a commit-site fact and never creates
+     * the file.  DENY-MORE-ONLY: decision = floor_allows && !denied; the
+     * compiled-in set above stays the FLOOR and is never weakened by (or
+     * for) the policy.  The policy is SILENT here in floor-only mode (no
+     * policy dir at startup) — the floor's verdict is returned unchanged. */
+    if (!ops_write_allowed(canon, out)) {
         *exitcode = 1;
         free(full);
         free(canon);
@@ -2060,6 +2882,15 @@ static int handle_frame(const char *buf, size_t len) {
         yyjson_mut_obj_add_val(md, res, "capabilities", yyjson_mut_obj(md));
         yyjson_mut_obj_add_str(md, sinfo, "name", FXV_SERVER_NAME);
         yyjson_mut_obj_add_str(md, sinfo, "version", FXV_SERVER_VERSION);
+        /* F2: the ops-policy state rides the initialize reply — the channel
+         * the deployment actually reads (the harness /dev/null's this
+         * server's stderr, so the floor-only startup notice would otherwise
+         * leave NO durable marker: an EXPECTED-but-absent policy would
+         * downgrade to the floor silently).  The stderr line stays. */
+        yyjson_mut_obj_add_str(md, sinfo, "opsPolicy",
+                               OPS.present ? "loaded" : "floor-only");
+        if (OPS.present)
+            yyjson_mut_obj_add_str(md, sinfo, "opsPolicySha", OPS.sha);
         yyjson_mut_obj_add_val(md, res, "serverInfo", sinfo);
         yyjson_mut_obj_add_val(md, mroot, "result", res);
         ret = send_doc(md);
@@ -2222,6 +3053,7 @@ static int read_line(LineBuf *b) {
 }
 
 int main(void) {
+    ops_policy_startup(); /* the operator policy, or the named floor-only state */
     LineBuf lb = { NULL, 0, 0, 0, NULL, 0 };
     int rc = 0;
     for (;;) {

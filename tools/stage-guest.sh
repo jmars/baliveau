@@ -26,6 +26,10 @@
 #     usr/fx-agent/cfg/config.dhall      the harness's RUNTIME config (agents)
 #     usr/fx-agent/chardev.sse           the canned SSE stream (offline arm)
 #     usr/fx-agent/MARKER                the string that stream yields
+#     usr/fx-agent/policy/{ops-policy.dl,ops-aliases.tsv,
+#       ops-lexicon.ini,PINS}            the PINNED operator policy (ops-policy,
+#       S2): sha-verified by the fx-verbs server at startup; swapped/stale
+#       refuses the boot loudly
 #   fx-agent-service.dhall             the fx-init SERVICE config for the boot
 #   marker.txt / sentinel.txt          read back by tests/qemu-agent.sh
 #
@@ -224,14 +228,24 @@ assert_guest_elf "$BINDIR/fx-agent.i386" "i386"
 # source into the payload directory instead (the shared source is read-only).
 # src/agent/outcome.c is linked in too: it is the ONE reader of the store's
 # outcome files (<store>/.bootlog, <store>/.db/snapshots/CURRENT), shared with
-# the harness's own boot-time consume of its activation record.
-VS_SRC="tools/fx-verbs-server.c src/agent/outcome.c src/vendor/yyjson/yyjson.c"
+# the harness's own boot-time consume of its activation record.  The
+# ops-policy seat (S2) adds the vendored sha256 and the SIBLING datalog
+# engine — the STATIC x86_64-musl lib this script already built for fx-agent
+# ($DL64), linked statically like every other guest artifact.  The dl.h
+# include resolves through the SAME build/include shim discipline the
+# Makefile and tools/build.sh use (the engine's own headers, no src/ edit).
+VS_SRC="tools/fx-verbs-server.c src/agent/outcome.c src/vendor/yyjson/yyjson.c \
+        src/vendor/dhall-c/sha256.c"
 [ -f tools/fx-verbs-server.c ] || fail "tools/fx-verbs-server.c missing"
 [ -f src/agent/outcome.c ] || fail "src/agent/outcome.c missing (the outcome reader)"
+[ -f "$DL64/lib/libdatalog.a" ] || fail "the x86_64-musl libdatalog.a is missing (fx-agent's engine build should have produced it)"
+mkdir -p build/include/vendor/datalog-dafsa
+ln -sfn "$(cd "$DATALOG_DIR" && pwd)/src" build/include/vendor/datalog-dafsa/src
 echo "stage-guest: compiling fx-verbs-server for x86_64-linux-musl"
 zig cc -target x86_64-linux-musl -static -s -std=c11 -O2 -Wall -Wextra \
-    -Isrc -Isrc/vendor/yyjson -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
-    -o "$BINDIR/fx-verbs-server" $VS_SRC \
+    -Isrc -Isrc/vendor/yyjson -Isrc/vendor/dhall-c -Ibuild/include \
+    -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
+    -o "$BINDIR/fx-verbs-server" $VS_SRC "$DL64/lib/libdatalog.a" \
     || fail "x86_64-linux-musl fx-verbs-server build failed"
 assert_guest_elf "$BINDIR/fx-verbs-server" "x86-64"
 
@@ -345,6 +359,21 @@ printf '%s\n' "$MARKER"   > "$OUT/marker.txt"
 printf '%s\n' "$SENTINEL" > "$OUT/sentinel.txt"
 printf '%s\n' "$MARKER"   > "$ROOTDIR/usr/fx-agent/MARKER"
 echo "stage-guest: chardev.sse = $FIXTURE with $NSUB occurrence(s) of \"hello\" -> \"$MARKER\""
+
+# ─── the OPERATOR POLICY (ops-policy, S2) ────────────────────────────────
+# The pinned policy artifacts ride the image at /usr/fx-agent/policy/ — the
+# enforcement seat (fx-verbs-server) verifies their sha256s against PINS at
+# startup and refuses to start a swapped/stale set LOUDLY.  Copied from the
+# repo's policy/ops/ (the release rule: artifact + PINS in the SAME commit),
+# mode 444: /usr/fx-agent is in NO writable set, and the mode restates it.
+POLICYDIR="$ROOTDIR/usr/fx-agent/policy"
+mkdir -p "$POLICYDIR" || fail "cannot create $POLICYDIR"
+for pf in ops-policy.dl ops-aliases.tsv ops-lexicon.ini PINS; do
+    [ -f "$REPO/policy/ops/$pf" ] || fail "policy/ops/$pf missing (the pinned set is incomplete)"
+    cp "$REPO/policy/ops/$pf" "$POLICYDIR/$pf" || fail "cannot stage policy/ops/$pf"
+    chmod 444 "$POLICYDIR/$pf"
+done
+echo "stage-guest: policy -> $POLICYDIR (ops-policy.dl, ops-aliases.tsv, ops-lexicon.ini, PINS)"
 
 # ─── the fx-init SERVICE configs ─────────────────────────────────────────
 # Shape copied from fx-init/m3/config-console.dhall (the PROVEN console-service
