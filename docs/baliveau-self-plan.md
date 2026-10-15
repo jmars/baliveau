@@ -915,6 +915,69 @@ from these inputs does denote the same bytes here.
 
 ---
 
+## 7.6 The claim/policy layer, and the HOST PROXY as the tool-call gate
+
+**WHY IT EXISTS.** §1b's last open item was a change's INTENT — *what was ATTEMPTED and why* — which the
+substrate could never record because it only ever saw the resulting state; and §1a's AI-Act reading
+wants exactly that (Art. 11/Annex IV "changes made through the lifecycle" + Art. 12 recording). The
+answer is a **pre-registered claim**: the agent states, BEFORE acting, a justification in a checkable
+form; a **frozen, host-side policy** judges it; and **claim + verdict + outcome are one record**, with
+the **disagreement** between the claim and what the substrate then recorded as the instrument.
+
+**THE FORM, and it is the whole reason this is tractable.** *Logical English* (`~/logical-english`, the
+`le` compiler) → **datalog**, evaluated by the engine the stack already links. The agent gets **free
+LE** over a **closed, host-declared lexicon**; the soundness boundary is **the judgment predicate
+alone** — the agent's vocabulary excludes it, so the host's frozen policy is the only thing that can
+conclude *justified*. That keeps soundness provable while the agent's expressiveness is combinatorial,
+and vacuity falls out (an argument that never reaches the judgment rule justifies nothing). The same
+machinery carries the **operator's** allow/deny policy — a second, visibly distinct author: the
+operator says *"you may not do this"*, the host says *"this is not justified"*, and the two lexicons
+cannot name each other's predicate. **DENY-MORE-ONLY** (user, 2026-10-14): a policy may TIGHTEN a
+compiled-in floor and never loosen it, because the floors ARE the substrate's facts (§8.7).
+
+**THE ARCHITECTURE, CORRECTED (user, 2026-10-14) — and it moves the enforcement OFF the VM.**
+1. **The model GENERATION is host-side** — the model engine runs on the host.
+2. **The tool calls are already in the proxied model stream.** They are JSON in the turn; the host
+   owns the endpoint, so it sees them and their justifications *without any new protocol*. There is
+   nothing to "call" and nothing new to cross.
+3. **The host records them and runs the pinned policy against each call.**
+4. **A DENIAL IS THE CALL'S ORDINARY MCP TOOL RESULT** — `role=tool`, the same call_id, the content
+   being the denial and why — so **the model needs no special training and no schema change; it is just
+   MCP**. An ACCEPTED call is executed **inside the guest**, exactly as today.
+
+**MEASURED — THE DENIAL SHAPE IS ALREADY IN THE TREE:** `src/agent/agent_loop.c:800` — when
+`tool_policy_allowed()` refuses a call the harness returns `"(tool disabled)"` as the tool result and
+does **not** dispatch, precisely to keep the loop's invariant (*every assistant tool_call gets a
+matching role=tool result*). The host's denial is that same shape with a reason.
+
+**WHAT THIS SUPERSEDES — stated rather than silently re-used.** The machinery is right; the
+**placement** was wrong:
+- the claim riding in the config's `extraEtc` and gated at **fx-activate** — it should ride WITH THE
+  CALL, in the same model turn, which also makes "BEFORE" **structural** (nothing has executed when the
+  host judges);
+- the denial inside **`fx-verbs-server`** — an **in-VM lever** (§8.7: the agent is root and can walk
+  around it). The denial belongs in the host proxy, before the call exists in the guest;
+- **and the `le`→Osier→Lua port is DISSOLVED**: the evaluation is **host-side**, where `le` already
+  runs. In-guest LE execution was only ever needed if the *judgment* were in-guest. It is not.
+
+**THE OWED PIECE, and it is the one that does not exist: THE HOST PROXY.** Today the chardev is a
+**canned SSE file** (`usr/fx-agent/chardev.sse`, staged by `tools/stage-guest.sh` — the offline arm);
+the host end that owns the model endpoint, the headers, the credential and one log is designed here
+(§7.1a) but **not built**. It is the natural home for the model engine, the per-call policy, the record
+and the denial message — so this is not a new subsystem bolted on, it is the piece the design already
+owed, now with a job.
+
+**THE OPEN DESIGN DECISION.** (a) **The loop stays in the guest**, and the host MARKS the verdict in
+the response it proxies, with the harness taking the path it already has (denied → return the result,
+do not dispatch): smallest change, and it preserves §8.7's *"the loop belongs INSIDE the guest"*
+correction. (b) **The host owns the loop** — the literal MCP topology (host as client, guest as MCP
+server): cleaner, no marking at all, but it moves the loop out of the guest, which §8.7 reversed once —
+though §8.7's reason was that the *vocabulary* is a fact in-guest, and under (b) EXECUTION stays
+in-guest, so that reason may no longer bite. **INTERPRETATION: take (a) first; (b) is a deliberate
+second step.**
+
+---
+
 ## 8. Corrections carried (refuted claims must not propagate)
 
 1. **The store is NOT history-free.** It carries `.db/snapshots/N/{closure,dep,pkg,root,srcstore,store}.dafsa`

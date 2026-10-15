@@ -1268,6 +1268,70 @@ regulator** — §6b's audit stance is what makes these records evidentially usa
 
 ---
 
+## 8. The claim/policy layer, and the HOST PROXY as the tool-call gate
+
+**Design record: `docs/baliveau-self-plan.md` §7.6** (added 2026-10-14 — read it first; this section is
+the status, that one is the design). The layer answers §1b's last open item (**a change's INTENT**) and
+§1a's AI-Act gap 2. The shape: the agent **pre-registers a claim** (a free-*Logical English* argument
+over a closed, host-declared lexicon, compiled by `le` to datalog); a **frozen host-side policy**
+judges it; **claim + verdict + outcome are one record** and the **disagreement** is the instrument.
+
+- [x] **S0 — the lexicon, the frozen policy and the free-LE evaluator** (`baliveau 94f773b`). The
+      soundness boundary is **the judgment predicate alone**: the agent's lexicon declares no
+      `justified`, so only the host's policy can conclude it. Gate `make test-claim-policy`, 36 arms;
+      the boundary is proved by EXECUTING the breach (the mutant that adds `justified` *and* drops the
+      head check lets the agent derive it itself). **A measured seam finding carries**: LE constants are
+      letters-only, so a policy that naively spells a runtime symbol matches NOTHING = a silent
+      allow-all.
+- [x] **S1 — the judge seat** (`tools/fx-claim.c`; `baliveau f409025`). Five rounds, every one a
+      MEASURED blocker in the same class (*what counts as a LANDING*): first-appearance version joins;
+      the op-row half; the `activate`-only landing filter; the unjournaled landings. The last closed by
+      DECISION: `bound<TAB>unjournaled-landings` prints on every run — the seat judges JOURNALED
+      landings, and the AUTOMATIC `.recovery` roll-forward, host-side `fxstore rollback`, `--hard` and
+      a hand-edited CURRENT are NOT judged (M8 proves the bound can be missing). Gate `make test-claim`,
+      21 arms.
+- [x] **S2 — the reporter's claim class** (`baliveau fbc2316`): `claim-record`/`claim-verdict`/
+      `claim-disagreement`, absence meanings BOTH directions, and the **`claim-evaluator-location`**
+      bound row (host-side today / in-guest via a port is a DEPLOYMENT difference with identical
+      semantics — the row exists so the location can never silently become a reason to shrink the
+      language). A review found the parser's *stated* over-long-field property **false for the last
+      field** — a truncated value printed as `MEASURED` — now a full-exhaustion refusal.
+- [x] **S3b — the enforcement at fx-activate** (fx-init, **UNCOMMITTED**): the pinned policy embedded
+      byte-exact, the `claim : Optional Text` field arming it, the `refused-claim` outcome, and
+      `tests/claim_refuse.sh` 21/0 (absent, malformed, id-mismatch, spine-lie, differs-guard,
+      unknown-from-version each activate pre-fix and are refused BY NAME post-fix). `init.zig` was NOT
+      touched, so the four blob pins are unbroken. **⚠️ ITS PLACEMENT IS SUPERSEDED — see below.**
+- [x] **The operator allow/deny policy** (`policy/ops/`, `baliveau e2ebb39` + the C seat `ec4bc1d`):
+      a second, visibly distinct author — the operator says *"you may not do this"*, the host says
+      *"this is not justified"* — with **DENY-MORE-ONLY** (user, 2026-10-14) and the lexicon closure
+      enforced both ways. Its review found an **operator-reachable silent allow**: alias patterns were
+      exact-match globs while validation checked only absoluteness, so a rule that *looked* protective
+      never fired for any child — now a stated AND enforced two-form grammar. **⚠️ THE C SEAT'S
+      PLACEMENT IS SUPERSEDED — see below.**
+- [ ] **⚠️ THE ARCHITECTURE CORRECTION (user, 2026-10-14) — the enforcement moves OFF the VM.**
+      **The model generation is host-side; the tool calls are ALREADY IN THE PROXIED MODEL STREAM; the
+      HOST records them and runs the policy; and A DENIAL IS THE CALL'S ORDINARY MCP TOOL RESULT**
+      (`role=tool`, the same call_id, the content the denial and why) — so the model needs NO special
+      training and no schema change, it is just MCP. The shape is already in the tree:
+      `src/agent/agent_loop.c:800` returns `"(tool disabled)"` as the tool result and does not dispatch.
+      **SUPERSEDED AS PLACEMENT, NOT AS MACHINERY:** S3b's attachment (the claim should ride WITH THE
+      CALL, in the same model turn — which also makes "BEFORE" structural) and the C seat's in-VM
+      denial (an in-VM lever; the agent is root). **AND THE `le`→Osier→Lua PORT IS DISSOLVED**: the
+      evaluation is host-side, where `le` already runs.
+- [ ] **THE OWED PIECE: THE HOST PROXY.** It does NOT exist — the chardev today is a **canned SSE
+      file** (`usr/fx-agent/chardev.sse`, the offline arm, staged by `tools/stage-guest.sh`); the host
+      end that owns the model endpoint, the headers, the credential and one log is designed (§7.1a) but
+      not built. It is the natural home for the model engine, the per-call policy, the record and the
+      denial message.
+- [ ] **THE FIRST DESIGN DECISION**: (a) the loop stays in the guest and the host MARKS the verdict in
+      the response it proxies, the harness taking the path it already has — smallest, and it preserves
+      §8.7's *"the loop belongs INSIDE the guest"*; or (b) the host OWNS the loop (the literal MCP
+      topology: host as client, guest as MCP server) — cleaner, no marking, but it moves the loop out of
+      the guest (execution still stays in-guest, so §8.7's stated reason may no longer bite).
+      **Orchestrator recommendation: (a) first, (b) as a deliberate second step.**
+
+---
+
 ## House rules this session earned (each cost something real)
 
 - **A gate that has to be TOLD to re-measure is worth building, and a citation into a file that MOVED
