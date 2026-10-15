@@ -1,0 +1,4 @@
+prose-reader: reading the claim as text — the pre-fix world takes the claim's word
+prose-reader: claim row: claima	cfg-diff-1	gena	aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+prose-reader: with the landed config equal to s_from (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa), this is the vacuous-differs claim (S0 a4c)
+prose-reader: ACCEPTED — well-formed prose asserting a diff; nothing checked it (the before)

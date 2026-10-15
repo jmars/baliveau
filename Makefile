@@ -345,6 +345,45 @@ policy-artifact:
 
 .PHONY: test-claim-policy policy-artifact
 
+# THE CLAIM UNIT's S1 GATE (the judge seat; plan handoff-claim-rev-plan,
+# slice S1).  tools/fx-claim.c is the JUDGE: host-side, agent-unwritable, a
+# function of observable state (design record §7.1).  Per published
+# GENERATION it assembles the triple — the claim (the two extraEtc rows that
+# rode into the generation at /etc/fx-claim.tsv + /etc/fx-claim.le), the
+# VERDICT (ONE policy/eval_claim.py subprocess: the evaluation is free LE,
+# the seat owns the RECORD, not the reasoning) and the OUTCOME (the .operator
+# activate row + the generation facts) — and persists it in the host-side obs
+# file <store>.fx-claim-obs under fx-audit's observation discipline VERBATIM
+# (enroll-first, keyed obs outside the store, rewrite-after-coherent,
+# tmp+rename).  It never reimplements the store: versions and facts come from
+# `fxstore timeline` / `fxstore facts <rel> --as-of N` (the fx-report.c
+# pattern), and the seat keeps the comparisons the plan ranked most likely
+# silently wrong, each binding's direction stated in the source: --landed-
+# config is the STORE's generation_config fact for the riding generation
+# (never the row's S_from), the facts dumps are --as-of the ROW's
+# from_version (never the riding version), and the row's from_version must
+# match the .operator row's from-version (outcome-ok rows only).  le is
+# consumed as a dependency by the evaluator, never forked.  A DEPLOYMENT
+# STOPGAP, labelled: the committed target is in-guest (qemu lane, x64 via
+# QBE); the location must never become a reason to shrink the language.
+# tests/test_claim.sh is the acceptance: fixtures built by the REAL writers
+# (fx-activate activating configs that carry the two claim rows in extraEtc),
+# every named disagreement class armed, the four mutants each blind on
+# exactly its own fixture, obs stability (byte-identical re-run; a tampered
+# obs fires verdict-rewritten), and the pinned pre-fix control: the
+# prose-reader accepting the vacuous claim recorded as the before, the
+# judge's refusal as the after.
+BIN_CLAIM := build/fx-claim
+
+test-claim: $(BIN_CLAIM)
+	bash tests/test_claim.sh
+
+$(BIN_CLAIM): tools/fx-claim.c src/vendor/dhall-c/sha256.c src/vendor/dhall-c/dhall.h
+	@mkdir -p build
+	$(CC) $(CFLAGS) -Isrc/vendor/dhall-c $(LDFLAGS) -o $@ tools/fx-claim.c src/vendor/dhall-c/sha256.c
+
+.PHONY: test-claim
+
 # The slot ground for the first self-modification task (todo.md §5): the
 # deployment pre-declares ONE package whose src.path is a directory the
 # agent may write; the host-frozen recipe (a STUB — no Osier->Lua compiler

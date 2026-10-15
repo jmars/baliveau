@@ -1,0 +1,13 @@
+retry-before: the PRE-FIX op-row binding (the FIRST landing's row alone
+retry-before: decides the outcome) on the retry fixture:
+retry-before:   the claim's genhash:          ea8dc470eaaa6e2455c0b377dd83819b3a2b57fd3b4d4943045aab95bbf959a9
+retry-before:   its FIRST landing (version):  5
+retry-before:   the first landing's row:      dhake-failed (from 3)
+retry-before:   the ok re-landing (version):  7
+retry-before:   the ok row's from-version:    5 — the claim's OWN
+retry-before:   generation (the trap: binding 3 there false-fails)
+retry-before: the pre-fix binding answered verdict=skipped on exactly this
+retry-before: generation FOREVER — the live, ok-published one — zero eval
+retry-before: lines, exit 0, the seat never called.  The fixed rule spans
+retry-before: ALL landings; the arm asserts the claim IS judged (the
+retry-before: after, live below).

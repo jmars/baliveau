@@ -1,0 +1,9 @@
+binding3-before: the PRE-FIX BINDING 3 join (resolve_from_version + the version
+binding3-before: NUMBER comparison) on the rollback fixture:
+binding3-before:   the claim's from_version (genhash): 26f0636b045c565f339d696422ea98e7e6873cfcb74d81f97029b09c6b70bbf8
+binding3-before:   its FIRST appearance (version):    3
+binding3-before:   the op row's from-version:         7
+binding3-before:   3 != 7, so the pre-fix join answered stale-world on this
+binding3-before:   HONEST claim — it names the genhash live at version 7 (the
+binding3-before:   rollback re-landed it).  The fixed join is on CONTENT; the arm
+binding3-before:   asserts the claim DERIVES (the after, live below).
