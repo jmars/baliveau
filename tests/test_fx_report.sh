@@ -114,12 +114,15 @@
 #              FAIL: wall-clock, locale or order leaking into records.
 #   POLICY      the retention policy is DECIDED (UNBOUNDED, user,
 #              2026-10-12), and it PRINTS — so the frozen table and the
-#              bound are pinned where they print, on every run: all five
-#              retention rows state the decision, the `.bootlog` row
-#              names its COST, the bound id is
+#              bound are pinned where they print, on every run: all six
+#              retention rows state the decision (the claim-rows row is
+#              S2's), the `.bootlog` row names its COST, the bound id is
 #              `retention-unbounded-by-decision` printing NOTHING MAY BE
 #              DROPPED, and the OLD text ("NO growth policy exists", the
-#              id `retention-unpoliced`) is asserted ABSENT.  FAIL: the
+#              id `retention-unpoliced`) is asserted ABSENT; the bound
+#              table is COUNTED (12 rows) and S2's amended same-store-only
+#              row is asserted ON THE OUTPUT — the pin drops it on BOTH
+#              sides, so only this catches its loss or an id change.  FAIL: the
 #              table drifts back to the open gap and nobody notices —
 #              which only a grep for the old claim's ABSENCE can catch.
 #   LOUD        an over-long .bootlog is exit 2 NAMING the cap (a report
@@ -139,6 +142,42 @@
 #              mutant; MUT-REFUSE (the activation-refusal emission tag) ->
 #              the JOURNAL arm's refusal assertion fails on the mutant.  A
 #              taxonomy nobody can falsify is decoration.
+#   CLAIM (S2)  the judge seat's verdict record SURFACES: a store built by
+#              the REAL writers with a claim riding in via extraEtc, then
+#              judged by the REAL judge (fx-claim — its observation is a
+#              durable record like .bootlog; the fixture honesty is
+#              declared in-block), carries `claim-record` / `claim-verdict`
+#              records verbatim from <store>.fx-claim-obs (the claim-sha
+#              cross-checked against sha256(tsv||le), op-from against the
+#              .operator row), with the ABSENCE MEANINGS in BOTH
+#              directions: a claimless row inside the observation reads
+#              none-occurred MEASURED (direction (i)); the observation's
+#              ABSENCE reads not-durably-recorded and fabricates NO
+#              verdict (direction (ii)); a POST-enrollment claimless
+#              commit (a live generation the observation does not name)
+#              is claim-record ... NOT-RECORDED with its disjunction —
+#              NEVER none-occurred.  A tampered observation's verdict
+#              surfaces verbatim as claim-disagreement (a RECORD, not a
+#              reporter finding); an unknown verdict word is surfaced with
+#              a note, never classified; a corrupted observation is exit 2
+#              naming the grammar.  PIN-REPORT: the PRE-FIX report bytes
+#              over the claim-carrying store (tests/fixtures/claims/
+#              report-claims-before.txt) cmp'd every run against the
+#              post-fix report minus its claim class (the epoch fields of
+#              fx-activate's generation facts are masked on BOTH sides —
+#              they are the fixture's wall-clock) — proving the pin's
+#              DOMAIN (it is this store's report) and that S2 is ADDITIVE:
+#              the pre-fix account is preserved byte for byte.  FAIL: the
+#              pin drifted, the pin carries claim records (it would be the
+#              after, not the before), or any pre-fix line moved.
+#              MUT-CLAIM (the claim-verdict emission tag) and MUT-ENROLL
+#              (the NOT-RECORDED mark -> literally `claimless`: a
+#              post-enrollment claimless commit reported none-occurred,
+#              the §1a gap-3 error) blind exactly the CLAIM arms, as does
+#              MUT-LOUDLONG (the row-grammar %n exhaustion check) for
+#              CLAIM-LOUD-LONG: an over-long FINAL field — the one shape
+#              width limits cannot kill — is exit 2 naming the row shape,
+#              never a truncated MEASURED row.
 #   PINS        nothing depends on the position of HEAD: the citations in
 #              the tool's frozen retention table are pinned to FIXED
 #              revisions (fx-init ca9cb06, fxstore 0341650 — the trees the
@@ -223,6 +262,10 @@ grep -aq "no-operator-journal-this-store-predates-fx-init-ca9cb06" "$REPORT" \
     || fail "STALE BINARY: $REPORT does not contain this source's operator-journal absence record"
 grep -aq "not the writer's shape \"<epoch> <action> <arg> <outcome>" "$REPORT" \
     || fail "STALE BINARY: $REPORT does not contain this source's operator-journal shape refusal"
+grep -aq "no-observation-row-judge-not-run-since-publish" "$REPORT" \
+    || fail "STALE BINARY: $REPORT does not contain this source's claim-coverage (NOT-RECORDED) marker"
+grep -aq "claim-evaluator-location" "$REPORT" \
+    || fail "STALE BINARY: $REPORT does not contain this source's claim-evaluator-location bound row"
 
 TAB="$(printf '\t')"
 
@@ -552,9 +595,9 @@ cmp -s "$WORK/out-s1" "$WORK/out-s1b" || fail "DETERMINISM: two runs over the sa
 # which is false now that the policy IS stated, and only a grep for its
 # absence catches that.
 NRETROWS=$(grep -c "^retention${TAB}" "$WORK/out-s1")
-[ "$NRETROWS" = "7" ] || fail "POLICY: expected the seat's 7 retention rows on every run, got $NRETROWS (a row was silently dropped)"
+[ "$NRETROWS" = "8" ] || fail "POLICY: expected the seat's 8 retention rows on every run, got $NRETROWS (a row was silently dropped; 8 = the original 7 + S2's claim-rows row)"
 DECIDED=$(grep -c "^retention${TAB}.*${TAB}DECIDED (user, 2026-10-12): UNBOUNDED" "$WORK/out-s1")
-[ "$DECIDED" = "5" ] || fail "POLICY: the five frozen retention rows must state the DECISION (UNBOUNDED, user, 2026-10-12) in the policy column; $DECIDED of 5 do"
+[ "$DECIDED" = "6" ] || fail "POLICY: the six frozen retention rows must state the DECISION (UNBOUNDED, user, 2026-10-12) in the policy column; $DECIDED of 6 do"
 grep -q "^retention${TAB}\.bootlog${TAB}.*STATED COST" "$WORK/out-s1" \
     || fail "POLICY: the .bootlog row must name its COST (the full .bootlog rescan per boot)"
 grep -q "^bound${TAB}retention-unbounded-by-decision${TAB}.*NOTHING MAY BE DROPPED" "$WORK/out-s1" \
@@ -563,6 +606,14 @@ grep -q "^bound${TAB}retention-unpoliced" "$WORK/out-s1" \
     && fail "POLICY: the OLD bound id 'retention-unpoliced' still prints — the policy IS stated, so that id is a false claim"
 grep -q "NO growth policy exists" "$WORK/out-s1" \
     && fail "POLICY: a frozen retention row still says no growth policy exists — §1a gap 4 was DECIDED, not left open"
+# the bound table is counted like the retention table, and S2's amended
+# same-store-only row is asserted ON THE OUTPUT: the PIN-REPORT filter
+# drops that row on BOTH sides (its text was amended in S2), so the row's
+# complete loss or an id change would otherwise pass the pin silently.
+NBOUNDROWS=$(grep -c "^bound${TAB}" "$WORK/out-s1")
+[ "$NBOUNDROWS" = "12" ] || fail "POLICY: expected the seat's 12 bound rows on every run, got $NBOUNDROWS (a row was silently dropped; 12 = the 8 pre-S2 rows + S2's 4 claim bounds)"
+grep -q "^bound${TAB}same-store-only${TAB}.*the ONE in-domain exception" "$WORK/out-s1" \
+    || fail "POLICY: the amended same-store-only row must print on every run — the pin drops it on BOTH sides, so its loss or an id change is caught only here"
 
 # ══ OPERATOR: the derived class on the unattributed store ═══════════════
 report "$WORK/s2" "$WORK/out-s2"
@@ -837,9 +888,332 @@ FXSTORE_BIN="$FXSTORE" "$REPO/build/fx-report-refuse" --store "$WORK/s2j" > "$WO
 grep -q "^event${TAB}activation-refusal${TAB}MEASURED" "$WORK/out-mutrefuse" \
     && fail "MUT-REFUSE: the JOURNAL arm's refusal assertion still passes with the refusal emission disabled"
 
+# ══ CLAIM (S2): the judge seat's verdict record SURFACES ════════════════
+# The claim class is MEASURED from <store>.fx-claim-obs — fx-claim's own
+# durable record, the same standing as .bootlog/.operator.  The fixture is
+# built by the REAL writers (activate_paths, fx-activate with the two claim
+# rows riding extraEtc — tests/test_claim.sh's exact construction) and
+# judged by the REAL judge (build/fx-claim; le + dlb are consumed as
+# dependencies, never forked).  FIXTURE HONESTY: .operator is fx-init's
+# file and fx-init does not run host-side — the gate writes it in the
+# writer's exact shape (as test_claim.sh and the JOURNAL arm do), with the
+# args as fixed literals; the observation is fx-claim's OWN output (the
+# real seat, no hand-writing), except where an arm TAMPERS it and says so.
+CLAIM_READY=1
+LE_ROOT="${LE_DIR:-}"
+if [ -z "$LE_ROOT" ]; then
+    for _cand in "$SIBS/logical-english" "$REPO/../logical-english" "$HOME/logical-english"; do
+        if [ -f "$_cand/le/__init__.py" ]; then LE_ROOT="$_cand"; break; fi
+    done
+fi
+DLB_PY="${DLB_PATH:-}"
+if [ -z "$DLB_PY" ]; then
+    for _cand in "$SIBS/datalog-dafsa/python" "$REPO/../datalog-dafsa/python" "$HOME/fixpoint-linux/datalog-dafsa/python"; do
+        if [ -f "$_cand/dlb/__init__.py" ]; then DLB_PY="$_cand"; break; fi
+    done
+fi
+if [ ! -f "$LE_ROOT/le/__init__.py" ] || [ ! -f "$DLB_PY/dlb/__init__.py" ] || [ ! -f "$REPO/policy/claims-policy.dl" ]; then
+    echo "test_fx_report: CLAIM ARMS SKIPPED — no le checkout / dlb binding / policy artifact (set LE_DIR and DLB_PATH; run make policy-artifact): the claim class cannot be judged without the frozen policy, and this gate does not fake a verdict"
+    CLAIM_READY=0
+fi
+make -s build/fx-claim >/dev/null 2>&1 || CLAIM_READY=0
+if [ "$CLAIM_READY" = 1 ]; then
+    export LE_DIR="$LE_ROOT" DLB_PATH="$DLB_PY"
+    CLAIM="$REPO/build/fx-claim"
+    [ "$CLAIM" -nt "$REPO/tools/fx-claim.c" ] || fail "CLAIM: build/fx-claim is older than tools/fx-claim.c — a stale judge answered"
+    grep -aq "fx-claim-observation 1" "$CLAIM" || fail "CLAIM: STALE JUDGE — no observation-format marker"
+    POLICY_CLAIM="$REPO/policy/claims-policy.dl"
+    FIXC="$REPO/tests/fixtures/claims"
+
+    # ── the fixture: root (claimless) -> the deriving claim -> enrollment,
+    # then a POST-enrollment claimless commit (the coverage arm's gap).
+    # write_cfg/write_cfg_nc: tests/test_claim.sh's writers verbatim — the
+    # two claim rows ride INTO the config's extraEtc (BEFORE, structural).
+    write_cfg() {
+        python3 - "$1" "$2" "$3" "$4" <<'PYEOF'
+import sys
+out, host, tsv_path, le_path = sys.argv[1:5]
+def dh(s):
+    return s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+tsv = open(tsv_path).read()
+le = open(le_path).read()
+extra = ('Some [ { path = "fx-claim.tsv", content = "%s" }\n'
+         '             , { path = "fx-claim.le", content = "%s" } ]' % (dh(tsv), dh(le)))
+cfg = '''let Probe = < Tcp : Natural | Unix : Text | File : Text >
+let Service = { name : Text, argv : List Text, pkg : Optional Text, on : Text,
+                restart : Optional Text, backoffMs : Optional Natural,
+                probe : Optional Probe,
+                env : Optional (List { key : Text, value : Text }),
+                console : Optional Text }
+let User = { name : Text, uid : Natural, groups : List Text }
+in  { hostname = "%s"
+    , packages = [] : List Text
+    , users = [ { name = "root", uid = 0, groups = [] : List Text } ] : List User
+    , services = [] : List Service
+    , extraEtc = %s
+    , bootGraceMs = Some 30000
+    , agentService = None Text
+    }
+''' % (host, extra)
+open(out, "w").write(cfg)
+PYEOF
+    }
+    write_cfg_nc() {
+        python3 - "$1" "$2" <<'PYEOF'
+import sys
+out, host = sys.argv[1:3]
+cfg = '''let Probe = < Tcp : Natural | Unix : Text | File : Text >
+let Service = { name : Text, argv : List Text, pkg : Optional Text, on : Text,
+                restart : Optional Text, backoffMs : Optional Natural,
+                probe : Optional Probe,
+                env : Optional (List { key : Text, value : Text }),
+                console : Optional Text }
+let User = { name : Text, uid : Natural, groups : List Text }
+in  { hostname = "%s"
+    , packages = [] : List Text
+    , users = [ { name = "root", uid = 0, groups = [] : List Text } ] : List User
+    , services = [] : List Service
+    , extraEtc = None (List { path : Text, content : Text })
+    , bootGraceMs = Some 30000
+    , agentService = None Text
+    }
+''' % host
+open(out, "w").write(cfg)
+PYEOF
+    }
+    mkdir -p "$WORK/claim-store" || fail mkdir
+    P=$(LD_LIBRARY_PATH="$DL" "$ZB/activate_paths" --store "$WORK/claim-store" --package-set "$PS" \
+        dhake fx-init fxctl fx-activate) || fail "activate_paths failed: $P"
+    for _pd in $P; do mkdir -p "$WORK/claim-store/$_pd" || fail "cannot create $_pd"; done
+    claimact() { # claimact CFGFILE -> "<version> <genhash>" on stdout; LOUD on failure
+        _o=$(LD_LIBRARY_PATH="$DL" "$ZB/fx-activate" --store "$WORK/claim-store" --package-set "$PS" \
+            --config "$1" 2>&1) || { echo "fx-activate failed: $_o" >&2; return 1; }
+        _r=$(echo "$_o" | sed -n 's/.*activated \([0-9a-f]*\) as version \([0-9][0-9]*\).*/\2 \1/p' | head -1)
+        [ -n "$_r" ] || { echo "no version from fx-activate: $_o" >&2; return 1; }
+        echo "$_r"
+    }
+    write_cfg_nc "$WORK/cfg-croot.dhall" repbox-root
+    write_cfg_nc "$WORK/cfg-cnoclaim.dhall" repbox-noclaim
+    claimact "$WORK/cfg-croot.dhall" > "$WORK/act-croot" || fail "claimact failed for the root"
+    read _VR CGR < "$WORK/act-croot"
+    SHACROOT=$(sha256sum "$WORK/cfg-croot.dhall" | cut -d' ' -f1)
+    printf 'claima\tcfg-diff-ok\t%s\t%s\n' "$CGR" "$SHACROOT" > "$WORK/rows-cok.tsv"
+    write_cfg "$WORK/cfg-cok.dhall" repbox-ok "$WORK/rows-cok.tsv" "$FIXC/good.le"
+    claimact "$WORK/cfg-cok.dhall" > "$WORK/act-cok" || fail "claimact failed for the claim"
+    read _VB CGB < "$WORK/act-cok"
+    # the writer's .operator shape (fixture honesty as declared above)
+    cat > "$WORK/claim-store/.operator" <<'OPHDR'
+# fx-init operator journal. One DATA line per OPERATOR intervention
+# on the generation plane: per control-channel `activate`, `rollback`
+# or `shutdown` — INCLUDING the ones that FAILED or were REFUSED; an
+# intervention that did not take effect is still one — AND, since the
+# runtime-record closure, one row for each publish fx-activate committed
+# OUTSIDE that handler.  The count of interventions is the number of
+# lines starting with a digit.
+# line: <epoch-s> <action> <arg> <outcome> <from-version|-> <to-version|-> <boot-nonce|none>
+# (the rest of OPERATOR_HEADER, operator_journal.zig:122, is abridged here: every "#"
+# line is the writer's header and the reader skips them ALL.)
+OPHDR
+    echo "100 activate /fx/src/cfg-root.dhall ok - $_VR gatenonce" >> "$WORK/claim-store/.operator"
+    echo "110 activate /fx/src/cfg-ok.dhall ok $_VR $_VB gatenonce" >> "$WORK/claim-store/.operator"
+
+    run_claimrep() { # run_claimrep OUTFILE [extra judge args...] -> the judge's rc on stdout
+        _out=$1; shift
+        "$CLAIM" --store "$WORK/claim-store" --policy "$POLICY_CLAIM" --fxstore "$FXSTORE" "$@" \
+            >"$_out" 2>"$_out.err"
+        echo $?
+    }
+    _rc=$(run_claimrep "$WORK/claim-j1")
+    [ "$_rc" = 0 ] || fail "CLAIM fixture: the enroll run must exit 0, got $_rc ($(head -3 "$WORK/claim-j1.err"))"
+    grep -q "ENROLLMENT" "$WORK/claim-j1" || fail "CLAIM fixture: the judge's enrollment is not stated"
+    # the POST-enrollment claimless commit, judged: the judge fires no-claim
+    # and the observation is NOT rewritten (the two seats agree on the gap)
+    claimact "$WORK/cfg-cnoclaim.dhall" > "$WORK/act-cnoclaim" || fail "claimact failed for the post-enrollment commit"
+    read _VH CGH3 < "$WORK/act-cnoclaim"
+    echo "120 activate /fx/src/cfg-noclaim.dhall ok $_VB $_VH gatenonce" >> "$WORK/claim-store/.operator"
+    _rc=$(run_claimrep "$WORK/claim-j2")
+    [ "$_rc" = 1 ] || fail "CLAIM fixture: the post-enrollment claimless run must exit 1 (no-claim), got $_rc"
+    grep -q "^finding${TAB}no-claim${TAB}$CGH3" "$WORK/claim-j2" || fail "CLAIM fixture: the judge did not name no-claim for $CGH3"
+    cp "$WORK/claim-store.fx-claim-obs" "$WORK/obs-pinned"
+    _rc=$(run_claimrep "$WORK/claim-j3")
+    cmp -s "$WORK/obs-pinned" "$WORK/claim-store.fx-claim-obs" || fail "CLAIM fixture: the observation changed under the no-claim disagreement"
+    # the claim identity the record carries: sha256(tsv bytes || le bytes)
+    CLAIMSHA=$(cat "$WORK/rows-cok.tsv" "$FIXC/good.le" | sha256sum | cut -d' ' -f1)
+
+    # report() with a FIXED RELATIVE store name: the report's own store
+    # field is then a constant, which the PIN comparison below relies on.
+    report_rel() { # report_rel OUTFILE
+        ( cd "$WORK" && FXSTORE_BIN="$FXSTORE" "$REPORT" --store claim-store > "$1" 2>"$1.err" )
+    }
+
+    # CLAIM-REC: the surfaces, verbatim from the observation
+    report_rel "$WORK/out-claim"
+    [ $? -eq 0 ] || fail "CLAIM: the judged store must report cleanly (a disagreement is a record, not a finding), got $?"
+    grep -q "^claim-record${TAB}$CGR${TAB}version${TAB}$_VR${TAB}claim-sha${TAB}-${TAB}op-from${TAB}-${TAB}MEASURED$" "$WORK/out-claim" \
+        || fail "CLAIM: the claimless root generation's record is not surfaced verbatim"
+    grep -q "^claim-verdict${TAB}$CGR${TAB}verdict${TAB}claimless${TAB}MEASURED$" "$WORK/out-claim" \
+        || fail "CLAIM (direction i): the claimless row INSIDE the observation must read none-occurred MEASURED — a judge that ran measured it"
+    grep -q "^claim-record${TAB}$CGB${TAB}version${TAB}$_VB${TAB}claim-sha${TAB}$CLAIMSHA${TAB}op-from${TAB}$_VR${TAB}MEASURED$" "$WORK/out-claim" \
+        || fail "CLAIM: the deriving claim's record is not surfaced — or its identity chain broke (claim-sha must be sha256(tsv||le) = $CLAIMSHA, op-from the .operator row's from-version $_VR)"
+    grep -q "^claim-verdict${TAB}$CGB${TAB}verdict${TAB}ok${TAB}MEASURED$" "$WORK/out-claim" \
+        || fail "CLAIM: the honest claim's verdict ok is not surfaced"
+    grep -q "^claim-disagreement" "$WORK/out-claim" \
+        && fail "CLAIM: a disagreement fabricated on a coherent record"
+    grep -q "^claim-record${TAB}$CGR.*NOT-RECORDED" "$WORK/out-claim" \
+        && fail "CLAIM: a COVERED generation (the observation names it) emitted NOT-RECORDED — the coverage comparison is inverted"
+    grep -q "^claim-verdict${TAB}$CGH3${TAB}" "$WORK/out-claim" \
+        && fail "CLAIM: a verdict fabricated for a generation the observation does not cover"
+    # the enrollment comparison: the post-enrollment claimless commit is
+    # NOT-RECORDED with its disjunction — NEVER none-occurred
+    grep -q "^claim-record${TAB}$CGH3${TAB}version${TAB}$_VH${TAB}claim-sha${TAB}-${TAB}op-from${TAB}-${TAB}NOT-RECORDED${TAB}bound${TAB}no-observation-row-judge-not-run-since-publish-or-its-run-disagreed-and-the-observation-kept-its-baseline (NOT 'none occurred')$" "$WORK/out-claim" \
+        || fail "CLAIM (the enrollment comparison): the post-enrollment claimless commit $CGH3 must be NOT-RECORDED with its disjunction stated, never read as none-occurred"
+    grep -q "^# claim records: 2 row(s) in the observation — 2 live generation(s) covered, 1 NOT covered" "$WORK/out-claim" \
+        || fail "CLAIM: the summary must single-source the coverage counts"
+
+    # CLAIM-ABSENT (direction ii): the observation's ABSENCE is its own
+    # state — not-durably-recorded, and NO verdict fabricated anywhere.
+    cp -a "$WORK/claim-store" "$WORK/cs2" || fail cp
+    report "$WORK/cs2" "$WORK/out-cs2"
+    [ $? -eq 0 ] || fail "CLAIM-ABSENT: an unjudged store must still report cleanly, got $?"
+    grep -q "^absence${TAB}\.fx-claim-obs${TAB}not-durably-recorded-no-judge-observation" "$WORK/out-cs2" \
+        || fail "CLAIM-ABSENT: a store with no observation must say not-durably-recorded, not none-occurred"
+    grep -q "^claim-verdict" "$WORK/out-cs2" \
+        && fail "CLAIM-ABSENT: a verdict fabricated from NO record — the §1a gap-3 error in the other direction"
+    grep -q "^claim-record${TAB}$CGB.*NOT-RECORDED" "$WORK/out-cs2" \
+        || fail "CLAIM-ABSENT: the uncovered claim-bearing generation must still be named NOT-RECORDED"
+    grep -q "^# claim records: NO observation" "$WORK/out-cs2" \
+        || fail "CLAIM-ABSENT: the summary must refuse to count from nothing"
+
+    # CLAIM-DISAGREE: a tampered observation's verdict surfaces VERBATIM as
+    # claim-disagreement — a RECORD, not a reporter finding (exit 0); the
+    # audit of the observation is the judge's own next run.
+    cp -a "$WORK/claim-store" "$WORK/cs3" || fail cp
+    cp "$WORK/claim-store.fx-claim-obs" "$WORK/cs3.fx-claim-obs"
+    sed -i -e "s/verdict ok claim-sha/verdict stale-world claim-sha/" "$WORK/cs3.fx-claim-obs"
+    grep -aq "stale-world" "$WORK/cs3.fx-claim-obs" || fail "CLAIM-DISAGREE setup: the sed matched nothing"
+    report "$WORK/cs3" "$WORK/out-cs3"
+    [ $? -eq 0 ] || fail "CLAIM-DISAGREE: a disagreement in the record is a record — exit 0, got $?"
+    grep -q "^claim-disagreement${TAB}$CGB${TAB}verdict${TAB}stale-world${TAB}DERIVED" "$WORK/out-cs3" \
+        || fail "CLAIM-DISAGREE: the disagreement class in the observation is not surfaced by name"
+    grep -q "^claim-verdict${TAB}$CGB${TAB}verdict${TAB}stale-world${TAB}MEASURED$" "$WORK/out-cs3" \
+        || fail "CLAIM-DISAGREE: the verdict itself must surface verbatim beside the disagreement"
+
+    # CLAIM-UNKNOWN: a verdict word this report does not know is surfaced
+    # verbatim with a note — never silently classified (a newer judge's
+    # vocabulary must not read as coherent here).
+    cp -a "$WORK/claim-store" "$WORK/cs4" || fail cp
+    cp "$WORK/claim-store.fx-claim-obs" "$WORK/cs4.fx-claim-obs"
+    sed -i -e "s/verdict ok claim-sha/verdict ok-rewritten claim-sha/" "$WORK/cs4.fx-claim-obs"
+    report "$WORK/cs4" "$WORK/out-cs4"
+    grep -q "^claim-verdict${TAB}$CGB${TAB}verdict${TAB}ok-rewritten${TAB}MEASURED${TAB}note${TAB}verdict-vocabulary-not-known-to-this-report-surfaced-verbatim-never-classified$" "$WORK/out-cs4" \
+        || fail "CLAIM-UNKNOWN: an unknown verdict word must surface verbatim with the not-classified note"
+    grep -q "^claim-disagreement${TAB}$CGB" "$WORK/out-cs4" \
+        && fail "CLAIM-UNKNOWN: an unknown word classified as a disagreement — the report must not guess"
+
+    # CLAIM-LOUD: a corrupted observation is exit 2 naming the grammar (a
+    # report over a misparsed record would be a lie).
+    cp -a "$WORK/claim-store" "$WORK/cs5" || fail cp
+    cp "$WORK/claim-store.fx-claim-obs" "$WORK/cs5.fx-claim-obs"
+    sed -i -e '1s/.*/tampered header/' "$WORK/cs5.fx-claim-obs"
+    report "$WORK/cs5" "$WORK/out-cs5"
+    [ $? -eq 2 ] || fail "CLAIM-LOUD: an observation that is not the judge's format must be exit 2, got $?"
+    grep -q "format-1 observation header" "$WORK/out-cs5.err" \
+        || fail "CLAIM-LOUD: the refusal does not name the observation format"
+
+    # CLAIM-LOUD-LONG: an over-long FINAL field is the one shape width
+    # limits cannot kill (no following literal to mismatch) — the %n
+    # exhaustion check is what refuses it; a truncated op-from printed as
+    # MEASURED would be a lying record.  MUT-LOUDLONG below removes exactly
+    # that check and must make THIS arm go blind (the row parses,
+    # truncated): the arm can fail.
+    cp -a "$WORK/claim-store" "$WORK/cs6" || fail cp
+    cp "$WORK/claim-store.fx-claim-obs" "$WORK/cs6.fx-claim-obs"
+    sed -i -e "s/^\(claim $CGR .*\)op-from -$/\1op-from aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/" "$WORK/cs6.fx-claim-obs"
+    grep -aq "op-from aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" "$WORK/cs6.fx-claim-obs" \
+        || fail "CLAIM-LOUD-LONG setup: the sed matched nothing ($CGR's op-from must become a 37-char token)"
+    report "$WORK/cs6" "$WORK/out-cs6"
+    [ $? -eq 2 ] || fail "CLAIM-LOUD-LONG: an over-long FINAL field must be exit 2 (width limits alone cannot kill it — the exhaustion check must), got $?"
+    grep -q "not the judge seat's row shape" "$WORK/out-cs6.err" \
+        || fail "CLAIM-LOUD-LONG: the refusal does not name the row shape"
+    grep -q "^claim-record${TAB}$CGR" "$WORK/out-cs6" \
+        && fail "CLAIM-LOUD-LONG: a TRUNCATED op-from printed as MEASURED — the seat lied"
+
+    # MUT-LOUDLONG: the exhaustion check removed — the over-long final
+    # field parses with the op-from truncated to the destination width and
+    # the report exits 0: exactly the pre-fix lie the arm above refuses.
+    mutbuild loudlong 's/|| pos < 0 || line\[6 + (size_t)pos\] != 0)/\&\& 0)/'
+    FXSTORE_BIN="$FXSTORE" "$REPO/build/fx-report-loudlong" --store "$WORK/cs6" > "$WORK/out-mutloudlong" 2>/dev/null
+    [ $? -eq 2 ] \
+        && fail "MUT-LOUDLONG: the mutant still refuses the over-long final field — the sed removed nothing (the arm is not load-bearing)"
+    grep -q "^claim-record${TAB}$CGR${TAB}version.*op-from${TAB}aaa" "$WORK/out-mutloudlong" \
+        || fail "MUT-LOUDLONG: the mutant must PARSE the row with the op-from truncated (the pre-fix behaviour this arm exists to refuse)"
+
+    # PIN-REPORT: the PINNED PRE-FIX CONTROL.  The pin is the PRE-FIX
+    # report's bytes over THIS claim-carrying store, with the epoch fields
+    # of fx-activate's generation facts masked (they are the fixture's
+    # wall-clock; everything else is content).  The filter below drops the
+    # lines S2 ADDS (the claim class) and masks the same fields on BOTH
+    # sides, so cmp proves two things at once: the pin's DOMAIN (it is
+    # byte-for-byte this store's pre-fix report — a vacuous pin over some
+    # other store cannot reproduce) and that S2 is ADDITIVE (the pre-fix
+    # account is preserved byte for byte, only extended).
+    PIN="$REPO/tests/fixtures/claims/report-claims-before.txt"
+    [ -f "$PIN" ] || fail "PIN-REPORT: missing $PIN (the pre-fix report over the claim store — re-record it consciously)"
+    grep -q "^claim-record" "$PIN" \
+        && fail "PIN-REPORT: the pin carries claim records — it is the AFTER, not the BEFORE"
+    grep -q "the ONE in-domain exception" "$PIN" \
+        && fail "PIN-REPORT: the pin carries the post-fix same-store-only amendment — it is not the pre-fix bytes"
+    pinfilter() { # pinfilter IN OUT
+        awk '
+            BEGIN { FS = OFS = "\t" }
+            /^version\t/ { $5 = "EPOCH"; print; next }
+            /^fact\tgeneration\t/ { $7 = "EPOCH"; print; next }
+            /^event\tactivation\t/ { for (i = 1; i < NF; i++) if ($i == "epoch") $(i + 1) = "EPOCH"; print; next }
+            /^claim-record\t/ { next }
+            /^claim-verdict\t/ { next }
+            /^claim-disagreement\t/ { next }
+            /^absence\t\.fx-claim-obs\t/ { next }
+            /^bound\tclaim-/ { next }
+            /^taxonomy\tclaim\t/ { next }
+            /^retention\tclaim rows/ { next }
+            /^# claim records:/ { next }
+            /^bound\tsame-store-only\t/ { next }
+            { print }
+        ' "$1" > "$2"
+    }
+    pinfilter "$WORK/out-claim" "$WORK/out-claim.filtered"
+    pinfilter "$PIN" "$WORK/pin.filtered"
+    cmp -s "$WORK/pin.filtered" "$WORK/out-claim.filtered" \
+        || fail "PIN-REPORT: the pin is not byte-identical to the live report minus its claim class — the pin drifted, the fixture moved, or S2 is no longer ADDITIVE (a pre-existing line changed); re-record the pin consciously only after reading the diff"
+    # ... and the AFTER is real: the live report names the claim the
+    # pre-fix bytes could not see.
+    grep -q "^claim-record${TAB}$CGB${TAB}version${TAB}$_VB" "$WORK/out-claim" \
+        || fail "PIN-REPORT: the live report lost the claim record — the asymmetry is broken"
+
+    # MUT-CLAIM: the claim-verdict emission disabled — the CLAIM-REC arm's
+    # verdict assertions must go blind on exactly the claim fixture.
+    mutbuild claim 's/claim-verdict\\t%s\\tverdict/disabled-claim-verdict\\t%s\\tverdict/'
+    FXSTORE_BIN="$FXSTORE" "$REPO/build/fx-report-claim" --store "$WORK/claim-store" > "$WORK/out-mutclaim" 2>/dev/null
+    grep -q "^claim-verdict${TAB}$CGB${TAB}verdict${TAB}ok${TAB}MEASURED" "$WORK/out-mutclaim" \
+        && fail "MUT-CLAIM: the CLAIM arm still passes with the verdict emission disabled — the assertion is not load-bearing"
+
+    # MUT-ENROLL: the enrollment comparison deleted — the NOT-RECORDED mark
+    # becomes literally `claimless`, and the post-enrollment claimless
+    # commit reads none-occurred: the §1a gap-3 error, reproduced.
+    mutbuild enroll 's/\\tNOT-RECORDED\\tbound\\tno-observation-row/\\tclaimless\\tbound\\tno-observation-row/'
+    FXSTORE_BIN="$FXSTORE" "$REPO/build/fx-report-enroll" --store "$WORK/claim-store" > "$WORK/out-mutenroll" 2>/dev/null
+    grep -q "^claim-record${TAB}$CGH3.*NOT-RECORDED" "$WORK/out-mutenroll" \
+        && fail "MUT-ENROLL: the mutant still emits NOT-RECORDED — the sed deleted nothing (the arm is not load-bearing)"
+    grep -q "^claim-record${TAB}$CGH3.*${TAB}claimless${TAB}bound${TAB}no-observation-row" "$WORK/out-mutenroll" \
+        || fail "MUT-ENROLL: the mutant did not reproduce the gap-3 error (an uncovered claimless commit must read claimless on it)"
+    grep -q "^claim-verdict${TAB}$CGB${TAB}verdict${TAB}ok" "$WORK/out-mutenroll" \
+        || fail "MUT-ENROLL: the mutant must leave the COVERED generations untouched (the enrollment comparison is blind on exactly the uncovered one)"
+fi
+
 # the mutants are gate artifacts, not seats — remove them so no stale
 # binary can later answer for the seat
 rm -f "$REPO/build/fx-report-class" "$REPO/build/fx-report-attrib" "$REPO/build/fx-report-finding" \
-    "$REPO/build/fx-report-ops" "$REPO/build/fx-report-refuse"
+    "$REPO/build/fx-report-ops" "$REPO/build/fx-report-refuse" \
+    "$REPO/build/fx-report-claim" "$REPO/build/fx-report-enroll" "$REPO/build/fx-report-loudlong"
 
 echo "test_fx_report: PASS — the reconstruction is answerable from the report alone (both inputs readable, the diff, the generation each produced), the taxonomy separates none-occurred from not-durably-recorded (a never-booted store says so; refusals cannot be counted), the operator class is MEASURED from the .operator journal where the journal exists and DERIVED only where it does not (the .recovery row, or the missing file) with the derivation RETAINED beside the journal for its own blind spots (and the mutations blind exactly their own arms), the gc retention carve-out is re-measured every run (a surviving snapshot's dir is retained, a pruned one's is reaped), the retention policy is the user's DECISION (UNBOUNDED, 2026-10-12) pinned where it prints — every row, its named cost, and the old 'NO policy exists' claim asserted ABSENT, and the output is byte-deterministic and independent of any self-report."

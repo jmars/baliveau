@@ -1,0 +1,270 @@
+# fx-report — the REPORTER seat (host-side, agent-unwritable, a function
+# of observable system state; design record §1a/§7.1).  Machine records
+# are the non-'#' lines: tab-separated, frozen column order per tag.
+# Every record is marked MEASURED / DERIVED / ABSENT, and every ABSENT
+# says WHICH kind of absence it is.  The taxonomy and retention tables
+# below are printed on every run — they are the grammar, not commentary.
+taxonomy	activation	fxstore snapshots + facts:generation per version (every publish IS a snapshot)	absence=none-occurred (within what survived gc --retain / renumber; a pruned activation is absence=not-recorded-ANYMORE)
+taxonomy	activation-input	facts:generation_config(genhash,sha,origin) + the retained copy <store>/<origin> (fx-init 1399dbd)	no-fact=absent-pre-link (a store-bootstrap snapshot or a pre-1399dbd activation: legitimate); fact+copy-gone=FINDING (the input is no longer readable)
+taxonomy	boot-verdict	<store>/.bootlog line <v> ok|failed <epoch> <nonce> (fx-init bootlog_append)	no-.bootlog=no-boot-ever-recorded; .bootlog-with-no-failed=none-failed-within-what-the-log-retains (the log is append-only and never pruned by the store)
+taxonomy	boot-start	<store>/.bootlog line <v> in-progress <epoch> <nonce>	a boot that started; a version with no line never started a recorded boot
+taxonomy	shutdown	<store>/.bootlog line <v> shutdown <epoch> <nonce> (the SIGTERM path only)	absence=no-RECORDED-clean-shutdown (a crash is indistinguishable from never shutting down — the log cannot say 'no shutdown happened')
+taxonomy	roll-forward-automatic	<store>/.recovery data row <epoch> <published> <from-failed> <genhash> <nonce> (fx-init, once per successful roll-forward)	no-file=no-automatic-roll-forward-ever-recorded; no-row-naming-v=v-was-not-published-by-the-automatic-path (within the file's retention)
+taxonomy	operator-intervention	MEASURED — <store>/.operator rows: one line per intervention on the generation plane, written by PID1's control handler (fx-init ca9cb06) or, since the runtime-record closure, by fx-activate ITSELF for a publish it committed OUTSIDE that handler on a boot carrying an fx.bootnonce= (the file's own OPERATOR_HEADER, operator_journal.zig:122, IS the definition — ONE definition, imported by both writers): <epoch> <action> <arg> <outcome> <from-version|-> <to-version|-> <boot-nonce|none>, appended + fsync'd BEFORE the reply is flushed (operator_append: shutdown :3556, activate-failed :3665, unverified :3705, refused-config :3730, dhake-failed :3816, ok :3829, rollback unverified :3849, refused :3858, refused-config :3877, ok :3920).  SECOND WRITER (the runtime-record closure): fx-activate records the publish IT committed OUTSIDE that handler — one row, activate/ok or activate/unverified, on a boot carrying an fx.bootnonce= — through the SAME grammar and header (selfRecord, fx-init activate.zig:898/:1769/:1755; the writer itself, operator_journal.zig:235).  action = the ctrl arm that wrote it, arg = the operator's operand VERBATIM, outcome = ok | failed:<rc> | refused | refused-config | dhake-failed | unverified.  The journal records the GENERATION PLANE ONLY — its header names what it does NOT record (the reads, file transfers, the shell, per-service commands, probe) and what it cannot record AND cannot DETECT: the paths that bypass PID1's handler (host-side `fxstore rollback`, `rollback --hard`, a hand-edited CURRENT).  DERIVED — the RETAINED FALLBACK, for a store with NO .operator and for exactly those bypass paths: two signatures. (restore) version r whose genhash matches a version TWO-OR-MORE back (a duplicate of only the IMMEDIATELY-PRECEDING generation is fx-activate's own publish-of-live — MEASURED: every activation after the first leaves that benign pair — or gc's publish-first, and is NOT this class) and no .recovery row publishes r — the ctrl rollback arm (init.zig:3853) and host `fxstore rollback` drive the SAME soft rollback and append NOTHING to .recovery; (current-repoint) CURRENT != newest. Both are DERIVED, never a verdict.	TWO DIFFERENT STATES, never conflated: (i) .operator PRESENT with zero rows = no generation-plane intervention in the retained journal — a MEASUREMENT, not a gap; (ii) .operator ABSENT = a store PREDATING ca9cb06 (or one never booted under it) — NOT 'none occurred' (see absence/.operator).  For (ii), and for the bypass paths the journal's own header lists as NOT-RECORDED-AND-NOT-DETECTABLE, the DERIVED signature is the fallback and it is a DISJUNCTION: an operator rollback OR a deliberate re-activation of an older config — either way content moved back without the automatic .recovery row — OR a removed .recovery row, which the AUDIT seat's previous-observation comparison, not this seat, is built to catch.  The derived signature is only a backward move or a stale CURRENT, and gc/renumber can destroy both.  A journal row does NOT suppress the derived row: it can EXPLAIN a backward move but cannot prove the journal saw every path that produced one.
+taxonomy	activation-refusal	MEASURED — <store>/.operator rows whose outcome is a refusal (fx-init ca9cb06): failed:<rc> (the activate executor exited rc; nothing landed — init.zig:3665), refused-config (the generation DID land in the store but PID1 REFUSED it — the declared service set past its bound, or a configuration read_store_facts could not read: :3730 from the activate arm, :3877 from the rollback arm, the writer's own 'same durable record from the other direction'), refused (the STORE rejected a rollback target — :3858).  Recorded in the SAME journal and NOT this class: dhake-failed (:3816 — the generation DID land, the live-root reapply failed) and unverified (:3705 — the store could not be re-opened to confirm, i.e. AMBIGUOUS, which is not the same as refused).  The tmpfs runtime log that held these (rt_effect activate failed|dhake-failed, init.zig:3667/:3818, DEFAULT_RUN :32) still dies at every reboot and is NOT read by this seat.	no-row-with-a-refusal-outcome-in-the-retained-journal = no RECORDED refusal within the journal (a count of RECORDED refusals, never of attempts).  This absence-meaning WAS 'NOT-DURABLY-RECORDED' before ca9cb06 — a refused activation left NOTHING in the store (fx-activate refuses before touching it) and PID1's record of it lived in /run's tmpfs — and it is that again EXACTLY WHEN .operator IS ABSENT: a store predating the journal CANNOT answer this class, and the report says so via absence/.operator instead of printing a zero.  Bounds carried INTO the class: a REFUSAL row is written by PID1's control handler alone (a direct exec records only a publish that reached commit), so an fx-activate that refuses outside that handler is invisible; `unverified` rows are ambiguity, not refusals; and root in-guest can forge or truncate the file exactly as it can .bootlog — a row is CHECKABLE against the store's version/genhash history, not authoritative over it.
+taxonomy	content-recurrence	DERIVED: .recovery data rows whose trailing genhash is IDENTICAL (the .recovery header's own semantics: the same content re-failing)	no-repeated-genhash=no-recurrence-within-the-surviving-rows
+retention	snapshots (versions+facts)	<store>/.db/snapshots/<v>/ (the disk store)	survives (disk)	survives (a roll-forward PUBLISHES a new version)	NOT-surviving: `fxstore gc --retain N` prunes at publish; after `rollback --hard` a later publish renumbers from CURRENT+1 (the gc --retain guard's own statement, store.zig) and can destroy the versions between	DECIDED (user, 2026-10-12): UNBOUNDED by default — `gc --retain N` is the OPERATOR's deliberate knob and NOTHING SETS IT, the same decision as the journals below: every published version survives unless an operator asks otherwise (§1a gap 4 is now this DECISION, not a gap)
+retention	.bootlog	<store>/.bootlog (fx-init, append-only, fsync+syncfs per append)	survives (disk)	survives (append)	survives (fxstore does not know the file; it outlives pruned versions)	DECIDED (user, 2026-10-12): UNBOUNDED, and NOTHING MAY BE DROPPED — bootlog_last/bootlog_newest_ok_below need the newest `ok` below CURRENT (that IS the roll-forward TARGET), and fx-audit's append accounting + its previous-observation comparison need the record INTACT (a rotation reads as a REWRITE of a previously observed record and fires on a HEALTHY machine).  Growth is linear in events that really happened: the guardrail bounds it to real boots, one in-progress line per in-guest activation and one verdict per boot.  THE STATED COST, not hidden: the file is FULLY RESCANNED on every boot (bootlog_last/bootlog_newest_ok_below), so per-boot work is linear in its length (§1a gap 4 is now this DECISION, not a gap)
+retention	.recovery	<store>/.recovery (fx-init, '#'-header + one data row per automatic roll-forward)	survives (disk)	survives (append)	survives (fxstore does not know the file)	DECIDED (user, 2026-10-12): UNBOUNDED, and NOTHING MAY BE DROPPED — one row per AUTOMATIC roll-forward and the record stays INTACT (fx-audit's append accounting + its previous-observation comparison: a rotation reads as a REWRITE of a previously observed record and fires on a HEALTHY machine).  Growth is linear in roll-forwards that really happened (§1a gap 4 is now this DECISION, not a gap)
+retention	retained config (the INPUT)	<store>/<genhash>-system-generation/config.dhall (fx-activate, per activation)	survives (disk)	survives (each activation writes its own gen dir)	RETAINED-WHILE-NAMED (MEASURED on this tree, store.zig pinned blob 30dce7cb: `fxstore gc <root>` keeps every <genhash>-system-generation dir named by a SURVIVING snapshot's generation fact — the dir sweep's carve-out, logged per dir on stderr; a dir whose snapshot was pruned by `gc --retain N` IS reaped, with its facts)	DECIDED (user, 2026-10-12): UNBOUNDED by default — no pruning-by-age policy exists to state, because the copy is exactly as durable as the snapshot that names it (`gc --retain N` prunes version and dir together, and NOTHING sets that default): retention is bounded only by an operator's deliberate gc, never by time.  A GENUINELY missing copy (hand-deleted, or a dir a surviving fact names that is gone) still fires config-retained-copy-gone
+retention	.operator	<store>/.operator (fx-init ca9cb06, '#'-header + one data row per intervention on the generation plane — a control-channel REQUEST (appended+fsync'd by the handler BEFORE the reply is flushed, INCLUDING the ones that FAILED or were REFUSED) or, since the runtime-record closure, ONE row for a publish fx-activate committed OUTSIDE the handler on a boot carrying an fx.bootnonce= (a self-recorded row never carries "none"))	survives (disk)	survives (append — one row per ctrl request whatever its outcome, plus one per direct-exec publish where the boot carries a nonce)	survives (fxstore does not know the file; it outlives pruned versions AND keeps rows naming versions gc has since pruned — a row records the move the operator asked for, it is not a promise the version is still there)	DECIDED (user, 2026-10-12): UNBOUNDED, and NOTHING MAY BE DROPPED — one row per control-channel intervention and fx-audit's append accounting + its previous-observation comparison need the record INTACT (a rotation reads as a REWRITE of a previously observed record and fires on a HEALTHY machine).  Growth is linear in interventions that really happened, whose rate is the OPERATOR's own (§1a gap 4 is now this DECISION, not a gap).  NOT tamper-proof: PID1's control handler owns it and fx-activate adds one row for a publish committed outside that handler on a boot carrying a nonce (its TWO writers, in the file's own header), but root in-guest can forge or truncate it exactly as it can .bootlog
+retention	runtime datalog rt_effect/rt_control	/run/fx/log.db (fx-init init.zig:33 DEFAULT_RUN; path built :4856, opened :4857 by fx_log_open) — read by NOBODY here	DOES NOT SURVIVE (post-pivot '/' is tmpfs, init.zig M4 pivot — the log dies at every reboot)	n/a (dies with the boot that wrote it)	n/a	death-by-construction for the RUNTIME view only: the tmpfs log holds the live ctrl/effect stream, but every operator intervention it carried (activate, refused activate, dhake-failed, rollback, shutdown) is durably recorded SINCE fx-init ca9cb06 in <store>/.operator — and this seat reads THAT, never /run. What survives is what .bootlog/.recovery/.operator/snapshots hold/snapshots
+retention	CURRENT	<store>/.db/snapshots/CURRENT (atomic tmp+rename per publish/rollback)	survives (disk)	rewritten per publish (the roll-forward's own CURRENT)	kept (gc --retain REFUSES a non-newest CURRENT rather than prune it)	-
+bound	rt-log-tmpfs	the runtime datalog's live ctrl/effect stream (activations, refused activations, rollbacks, shutdowns) lived at /run/fx/log.db and is GONE at every reboot (tmpfs post-pivot) — this report never reads it.  Since fx-init ca9cb06 those same interventions are ALSO written durably to <store>/.operator, and THIS seat reads that file instead (operator_append is called BEFORE the reply is flushed, so the row outlives a machine killed right after the answer).  The bound is therefore now a property of the STORE, not of the report: without .operator (a store predating the journal) nothing durable can say whether an activation was refused.
+bound	pre-first-snapshot	nothing before the store's first snapshot is representable; a .bootlog line naming a version not in the timeline is reported as such (pruned by gc, or written by a store history this disk no longer holds)
+bound	operator-journal-bounds	<store>/.operator is the durable operator record SINCE fx-init ca9cb06, and it is bounded on every side: it holds the GENERATION PLANE only, and only what PID1's control handler saw — plus, since the RUNTIME-RECORD CLOSURE, the publishes fx-activate committed OUTSIDE that handler (a direct exec: the harness's channel-less fallback, or a command in the interactive shell) on a boot carrying an fx.bootnonce=, ONE row each and only when the publish REACHED COMMIT (a pre-publish failure records nothing: there is no request to attribute it to).  The file's own header (OPERATOR_HEADER, operator_journal.zig:122) names what it does NOT record — the reads (status/q/grep/search), file transfers (put/rm), per-service commands (start/stop/restart), probe, and a malformed request no arm executed; the `shell` REQUEST is still not recorded, although a DIRECT exec FROM that shell now records its own publish — and what is NOT recorded AND NOT DETECTABLE: a host-side `fxstore rollback`, `rollback --hard`, a hand-edited store CURRENT.  Root in-guest can forge or truncate the file exactly as it can .bootlog: a row is CHECKABLE against the store's version/genhash history, not authoritative over it.  A store predating the journal has NO file at all — absence of the FILE is a state of the store, never 'no interventions occurred'.
+bound	operator-bypass-paths	the paths that bypass PID1's control handler have NO record: host-side `fxstore rollback`, `rollback --hard`, and a hand-edited store CURRENT.  A DIRECT EXEC of fx-activate is no longer one of them — it records its own publish on a boot carrying an fx.bootnonce= (the runtime-record closure) — but that row covers exactly its OWN publish, so these three remain the unrecorded set.  Their only durable trace is a generation move the automatic .recovery row does not attribute, so the DERIVED operator-intervention signature is RETAINED as the fallback for them — and it is a DISJUNCTION: an operator rollback, a deliberate re-activation of an older config, or a REMOVED .recovery row (which the AUDIT seat's previous-observation comparison, not this seat, is built to catch).  A rollback to the content that is ALREADY current moves nothing and is invisible in this class by construction.  A journal row can EXPLAIN a derived backward move; it never suppresses the derived row, because the journal cannot prove it saw every path that produced one.
+bound	gc-config-loss	MEASURED on this tree: `fxstore gc <root>` RETAINS every <genhash>-system-generation dir a SURVIVING snapshot's generation fact names (the dir sweep's carve-out) and REAPS a dir whose snapshot was pruned by `gc --retain N` — with its facts, so the pruned generation's input is not reportable at all (the version is gone from the timeline: absence-by-retention, not a finding). config-retained-copy-gone therefore requires a GENUINELY missing copy (a hand-deleted file, or a dir a surviving fact names that is gone) — the post-gc store itself is COHERENT
+bound	renumber-after-hard	after `rollback --hard` (CURRENT < newest), a later publish renumbers from CURRENT+1 and can destroy the versions between (stated by the gc --retain guard, store.zig; not reproduced here) — the CURRENT!=newest signature is therefore TRANSIENT, visible only until that next publish
+bound	retention-unbounded-by-decision	BY DECISION, NOT BY OMISSION (user, 2026-10-12; §1a gap 4 is now a policy): `.bootlog`, `.recovery` and `.operator` grow WITHOUT BOUND and NOTHING MAY BE DROPPED — `bootlog_last`/`bootlog_newest_ok_below` need the newest `ok` below CURRENT (that IS the roll-forward TARGET), and fx-audit's append accounting + its previous-observation comparison need the record INTACT (a rotation reads as a REWRITE of a previously observed record and would fire on a HEALTHY machine).  Growth is linear in events that really happened: real boots, one in-progress line per in-guest activation, one `.recovery` row per automatic roll-forward, one `.operator` row per intervention.  THE STATED COST, not hidden: `.bootlog` is FULLY RESCANNED on every boot, so per-boot work is linear in its length.  The snapshots keep their knob (`gc --retain N`) and NOTHING sets a default — the same decision
+report	fx-report/1	store	claim-store	versions	7
+current	7	MEASURED	newest	7
+absence	.bootlog	no-boot-ever-recorded	ABSENT
+absence	.recovery	no-automatic-roll-forward-recorded	ABSENT
+absence	rt-log	/run/fx/log.db-not-durably-recorded-tmpfs	ABSENT
+version	1	-	-	EPOCH	-	-	absent-no-generation-facts	facts	0	boots	0	rollforwards	0	MEASURED
+version	2	-	-	EPOCH	-	-	absent-no-generation-facts	facts	0	boots	0	rollforwards	0	MEASURED
+version	3	-	63733eeb82ea475c1e827b2d1e6c8fa82ca0f7df4ef6e2588ae6ecd09f570970	EPOCH	63733eeb82ea475c1e827b2d1e6c8fa82ca0f7df4ef6e2588ae6ecd09f570970-system-generation/Dhakefile.dhall	fb8b4f0e66053d5b115333dee1cef2ce063753ca334d2ee167ccb5740088c9e2-dhake/dhake.com	retained	facts	21	boots	0	rollforwards	0	MEASURED
+config	3	339a67306639bcd556f7a88c9f555de0ff78af03da8422559dc7cf6965854ec6	63733eeb82ea475c1e827b2d1e6c8fa82ca0f7df4ef6e2588ae6ecd09f570970-system-generation/config.dhall	retained	MEASURED
+config-line	3	1	let Probe = < Tcp : Natural | Unix : Text | File : Text >
+config-line	3	2	let Service = { name : Text, argv : List Text, pkg : Optional Text, on : Text,
+config-line	3	3	                restart : Optional Text, backoffMs : Optional Natural,
+config-line	3	4	                probe : Optional Probe,
+config-line	3	5	                env : Optional (List { key : Text, value : Text }),
+config-line	3	6	                console : Optional Text }
+config-line	3	7	let User = { name : Text, uid : Natural, groups : List Text }
+config-line	3	8	in  { hostname = "repbox-root"
+config-line	3	9	    , packages = [] : List Text
+config-line	3	10	    , users = [ { name = "root", uid = 0, groups = [] : List Text } ] : List User
+config-line	3	11	    , services = [] : List Service
+config-line	3	12	    , extraEtc = None (List { path : Text, content : Text })
+config-line	3	13	    , bootGraceMs = Some 30000
+config-line	3	14	    , agentService = None Text
+config-line	3	15	    }
+fact	generation	3	63733eeb82ea475c1e827b2d1e6c8fa82ca0f7df4ef6e2588ae6ecd09f570970	63733eeb82ea475c1e827b2d1e6c8fa82ca0f7df4ef6e2588ae6ecd09f570970-system-generation/Dhakefile.dhall	fb8b4f0e66053d5b115333dee1cef2ce063753ca334d2ee167ccb5740088c9e2-dhake/dhake.com	EPOCH
+fact	generation_config	3	63733eeb82ea475c1e827b2d1e6c8fa82ca0f7df4ef6e2588ae6ecd09f570970	339a67306639bcd556f7a88c9f555de0ff78af03da8422559dc7cf6965854ec6	63733eeb82ea475c1e827b2d1e6c8fa82ca0f7df4ef6e2588ae6ecd09f570970-system-generation/config.dhall
+fact	install	3	/bin/fx-activate	3614e06434f798f6a36161a7dea215739b08a17be27ef39bc1906a6942b24d99-fx-activate/fx-activate	0	63733eeb82ea475c1e827b2d1e6c8fa82ca0f7df4ef6e2588ae6ecd09f570970
+fact	install	3	/etc/group	63733eeb82ea475c1e827b2d1e6c8fa82ca0f7df4ef6e2588ae6ecd09f570970-system-generation/etc/group	420	63733eeb82ea475c1e827b2d1e6c8fa82ca0f7df4ef6e2588ae6ecd09f570970
+fact	install	3	/etc/hostname	63733eeb82ea475c1e827b2d1e6c8fa82ca0f7df4ef6e2588ae6ecd09f570970-system-generation/etc/hostname	420	63733eeb82ea475c1e827b2d1e6c8fa82ca0f7df4ef6e2588ae6ecd09f570970
+fact	install	3	/etc/passwd	63733eeb82ea475c1e827b2d1e6c8fa82ca0f7df4ef6e2588ae6ecd09f570970-system-generation/etc/passwd	420	63733eeb82ea475c1e827b2d1e6c8fa82ca0f7df4ef6e2588ae6ecd09f570970
+fact	install	3	/bin/dhake	fb8b4f0e66053d5b115333dee1cef2ce063753ca334d2ee167ccb5740088c9e2-dhake/dhake.com	0	63733eeb82ea475c1e827b2d1e6c8fa82ca0f7df4ef6e2588ae6ecd09f570970
+fact	install	3	/bin/fxctl	0284d3aa502f37c55fb48e743df2d7fd43fa973c969851e87b6666037987946f-fxctl/fxctl	0	63733eeb82ea475c1e827b2d1e6c8fa82ca0f7df4ef6e2588ae6ecd09f570970
+fact	install	3	/bin/init	3372d23e33be6b4e2bbbd0d61731c61d33fa664b364c8b77ab039b16367e319d-fx-init/fx-init	0	63733eeb82ea475c1e827b2d1e6c8fa82ca0f7df4ef6e2588ae6ecd09f570970
+fact	provides	3	dhake	fb8b4f0e66053d5b115333dee1cef2ce063753ca334d2ee167ccb5740088c9e2-dhake
+fact	provides	3	fx-init	3372d23e33be6b4e2bbbd0d61731c61d33fa664b364c8b77ab039b16367e319d-fx-init
+fact	provides	3	fxctl	0284d3aa502f37c55fb48e743df2d7fd43fa973c969851e87b6666037987946f-fxctl
+fact	provides	3	fx-activate	3614e06434f798f6a36161a7dea215739b08a17be27ef39bc1906a6942b24d99-fx-activate
+fact	src_of	3	fb8b4f0e66053d5b115333dee1cef2ce063753ca334d2ee167ccb5740088c9e2	60fd5ecb26fd4527b6655edfa83ee172a5d1c3749911e5b59e9c7af0a40f5841	dhake
+fact	src_of	3	3372d23e33be6b4e2bbbd0d61731c61d33fa664b364c8b77ab039b16367e319d	60fd5ecb26fd4527b6655edfa83ee172a5d1c3749911e5b59e9c7af0a40f5841	fx-init
+fact	src_of	3	0284d3aa502f37c55fb48e743df2d7fd43fa973c969851e87b6666037987946f	60fd5ecb26fd4527b6655edfa83ee172a5d1c3749911e5b59e9c7af0a40f5841	fxctl
+fact	src_of	3	3614e06434f798f6a36161a7dea215739b08a17be27ef39bc1906a6942b24d99	60fd5ecb26fd4527b6655edfa83ee172a5d1c3749911e5b59e9c7af0a40f5841	fx-activate
+fact	store	3	fb8b4f0e66053d5b115333dee1cef2ce063753ca334d2ee167ccb5740088c9e2	dhake
+fact	store	3	3372d23e33be6b4e2bbbd0d61731c61d33fa664b364c8b77ab039b16367e319d	fx-init
+fact	store	3	0284d3aa502f37c55fb48e743df2d7fd43fa973c969851e87b6666037987946f	fxctl
+fact	store	3	3614e06434f798f6a36161a7dea215739b08a17be27ef39bc1906a6942b24d99	fx-activate
+version	4	-	63733eeb82ea475c1e827b2d1e6c8fa82ca0f7df4ef6e2588ae6ecd09f570970	EPOCH	63733eeb82ea475c1e827b2d1e6c8fa82ca0f7df4ef6e2588ae6ecd09f570970-system-generation/Dhakefile.dhall	fb8b4f0e66053d5b115333dee1cef2ce063753ca334d2ee167ccb5740088c9e2-dhake/dhake.com	retained	facts	21	boots	0	rollforwards	0	MEASURED
+config	4	339a67306639bcd556f7a88c9f555de0ff78af03da8422559dc7cf6965854ec6	63733eeb82ea475c1e827b2d1e6c8fa82ca0f7df4ef6e2588ae6ecd09f570970-system-generation/config.dhall	retained	MEASURED
+config-line	4	1	let Probe = < Tcp : Natural | Unix : Text | File : Text >
+config-line	4	2	let Service = { name : Text, argv : List Text, pkg : Optional Text, on : Text,
+config-line	4	3	                restart : Optional Text, backoffMs : Optional Natural,
+config-line	4	4	                probe : Optional Probe,
+config-line	4	5	                env : Optional (List { key : Text, value : Text }),
+config-line	4	6	                console : Optional Text }
+config-line	4	7	let User = { name : Text, uid : Natural, groups : List Text }
+config-line	4	8	in  { hostname = "repbox-root"
+config-line	4	9	    , packages = [] : List Text
+config-line	4	10	    , users = [ { name = "root", uid = 0, groups = [] : List Text } ] : List User
+config-line	4	11	    , services = [] : List Service
+config-line	4	12	    , extraEtc = None (List { path : Text, content : Text })
+config-line	4	13	    , bootGraceMs = Some 30000
+config-line	4	14	    , agentService = None Text
+config-line	4	15	    }
+fact	generation	4	63733eeb82ea475c1e827b2d1e6c8fa82ca0f7df4ef6e2588ae6ecd09f570970	63733eeb82ea475c1e827b2d1e6c8fa82ca0f7df4ef6e2588ae6ecd09f570970-system-generation/Dhakefile.dhall	fb8b4f0e66053d5b115333dee1cef2ce063753ca334d2ee167ccb5740088c9e2-dhake/dhake.com	EPOCH
+fact	generation_config	4	63733eeb82ea475c1e827b2d1e6c8fa82ca0f7df4ef6e2588ae6ecd09f570970	339a67306639bcd556f7a88c9f555de0ff78af03da8422559dc7cf6965854ec6	63733eeb82ea475c1e827b2d1e6c8fa82ca0f7df4ef6e2588ae6ecd09f570970-system-generation/config.dhall
+fact	install	4	/bin/fx-activate	3614e06434f798f6a36161a7dea215739b08a17be27ef39bc1906a6942b24d99-fx-activate/fx-activate	0	63733eeb82ea475c1e827b2d1e6c8fa82ca0f7df4ef6e2588ae6ecd09f570970
+fact	install	4	/etc/group	63733eeb82ea475c1e827b2d1e6c8fa82ca0f7df4ef6e2588ae6ecd09f570970-system-generation/etc/group	420	63733eeb82ea475c1e827b2d1e6c8fa82ca0f7df4ef6e2588ae6ecd09f570970
+fact	install	4	/etc/hostname	63733eeb82ea475c1e827b2d1e6c8fa82ca0f7df4ef6e2588ae6ecd09f570970-system-generation/etc/hostname	420	63733eeb82ea475c1e827b2d1e6c8fa82ca0f7df4ef6e2588ae6ecd09f570970
+fact	install	4	/etc/passwd	63733eeb82ea475c1e827b2d1e6c8fa82ca0f7df4ef6e2588ae6ecd09f570970-system-generation/etc/passwd	420	63733eeb82ea475c1e827b2d1e6c8fa82ca0f7df4ef6e2588ae6ecd09f570970
+fact	install	4	/bin/dhake	fb8b4f0e66053d5b115333dee1cef2ce063753ca334d2ee167ccb5740088c9e2-dhake/dhake.com	0	63733eeb82ea475c1e827b2d1e6c8fa82ca0f7df4ef6e2588ae6ecd09f570970
+fact	install	4	/bin/fxctl	0284d3aa502f37c55fb48e743df2d7fd43fa973c969851e87b6666037987946f-fxctl/fxctl	0	63733eeb82ea475c1e827b2d1e6c8fa82ca0f7df4ef6e2588ae6ecd09f570970
+fact	install	4	/bin/init	3372d23e33be6b4e2bbbd0d61731c61d33fa664b364c8b77ab039b16367e319d-fx-init/fx-init	0	63733eeb82ea475c1e827b2d1e6c8fa82ca0f7df4ef6e2588ae6ecd09f570970
+fact	provides	4	dhake	fb8b4f0e66053d5b115333dee1cef2ce063753ca334d2ee167ccb5740088c9e2-dhake
+fact	provides	4	fx-init	3372d23e33be6b4e2bbbd0d61731c61d33fa664b364c8b77ab039b16367e319d-fx-init
+fact	provides	4	fxctl	0284d3aa502f37c55fb48e743df2d7fd43fa973c969851e87b6666037987946f-fxctl
+fact	provides	4	fx-activate	3614e06434f798f6a36161a7dea215739b08a17be27ef39bc1906a6942b24d99-fx-activate
+fact	src_of	4	fb8b4f0e66053d5b115333dee1cef2ce063753ca334d2ee167ccb5740088c9e2	60fd5ecb26fd4527b6655edfa83ee172a5d1c3749911e5b59e9c7af0a40f5841	dhake
+fact	src_of	4	3372d23e33be6b4e2bbbd0d61731c61d33fa664b364c8b77ab039b16367e319d	60fd5ecb26fd4527b6655edfa83ee172a5d1c3749911e5b59e9c7af0a40f5841	fx-init
+fact	src_of	4	0284d3aa502f37c55fb48e743df2d7fd43fa973c969851e87b6666037987946f	60fd5ecb26fd4527b6655edfa83ee172a5d1c3749911e5b59e9c7af0a40f5841	fxctl
+fact	src_of	4	3614e06434f798f6a36161a7dea215739b08a17be27ef39bc1906a6942b24d99	60fd5ecb26fd4527b6655edfa83ee172a5d1c3749911e5b59e9c7af0a40f5841	fx-activate
+fact	store	4	fb8b4f0e66053d5b115333dee1cef2ce063753ca334d2ee167ccb5740088c9e2	dhake
+fact	store	4	3372d23e33be6b4e2bbbd0d61731c61d33fa664b364c8b77ab039b16367e319d	fx-init
+fact	store	4	0284d3aa502f37c55fb48e743df2d7fd43fa973c969851e87b6666037987946f	fxctl
+fact	store	4	3614e06434f798f6a36161a7dea215739b08a17be27ef39bc1906a6942b24d99	fx-activate
+version	5	-	f9ece85482aa662f8a9bfbd242d380a007cb71e40747ada292d1950c79a0fe86	EPOCH	f9ece85482aa662f8a9bfbd242d380a007cb71e40747ada292d1950c79a0fe86-system-generation/Dhakefile.dhall	fb8b4f0e66053d5b115333dee1cef2ce063753ca334d2ee167ccb5740088c9e2-dhake/dhake.com	retained	facts	23	boots	0	rollforwards	0	MEASURED
+config	5	c4e61fd25a03577197653cb9ec9f251a72c73aa420db0b63ff9dad811d3a1140	f9ece85482aa662f8a9bfbd242d380a007cb71e40747ada292d1950c79a0fe86-system-generation/config.dhall	retained	MEASURED
+config-line	5	1	let Probe = < Tcp : Natural | Unix : Text | File : Text >
+config-line	5	2	let Service = { name : Text, argv : List Text, pkg : Optional Text, on : Text,
+config-line	5	3	                restart : Optional Text, backoffMs : Optional Natural,
+config-line	5	4	                probe : Optional Probe,
+config-line	5	5	                env : Optional (List { key : Text, value : Text }),
+config-line	5	6	                console : Optional Text }
+config-line	5	7	let User = { name : Text, uid : Natural, groups : List Text }
+config-line	5	8	in  { hostname = "repbox-ok"
+config-line	5	9	    , packages = [] : List Text
+config-line	5	10	    , users = [ { name = "root", uid = 0, groups = [] : List Text } ] : List User
+config-line	5	11	    , services = [] : List Service
+config-line	5	12	    , extraEtc = Some [ { path = "fx-claim.tsv", content = "claima\tcfg-diff-ok\t63733eeb82ea475c1e827b2d1e6c8fa82ca0f7df4ef6e2588ae6ecd09f570970\t339a67306639bcd556f7a88c9f555de0ff78af03da8422559dc7cf6965854ec6\\n" }
+config-line	5	13	             , { path = "fx-claim.le", content = "# The argument that DERIVES: the claim is grounded in the generation it comes\\n# from (claim_from is injected from the claim row by the evaluator) as soon as\\n# that generation was produced from some config by some origin -- a store\\n# template consumed in the BODY, which the agent may never conclude.\\nClaimA is grounded in a generation G1 if ClaimA comes from the generation and the generation was produced from a config C1 by an origin O1.\\nClaimA contends for a generation G1 if ClaimA is grounded in the generation.\\n" } ]
+config-line	5	14	    , bootGraceMs = Some 30000
+config-line	5	15	    , agentService = None Text
+config-line	5	16	    }
+fact	generation	5	f9ece85482aa662f8a9bfbd242d380a007cb71e40747ada292d1950c79a0fe86	f9ece85482aa662f8a9bfbd242d380a007cb71e40747ada292d1950c79a0fe86-system-generation/Dhakefile.dhall	fb8b4f0e66053d5b115333dee1cef2ce063753ca334d2ee167ccb5740088c9e2-dhake/dhake.com	EPOCH
+fact	generation_config	5	f9ece85482aa662f8a9bfbd242d380a007cb71e40747ada292d1950c79a0fe86	c4e61fd25a03577197653cb9ec9f251a72c73aa420db0b63ff9dad811d3a1140	f9ece85482aa662f8a9bfbd242d380a007cb71e40747ada292d1950c79a0fe86-system-generation/config.dhall
+fact	install	5	/bin/fx-activate	3614e06434f798f6a36161a7dea215739b08a17be27ef39bc1906a6942b24d99-fx-activate/fx-activate	0	f9ece85482aa662f8a9bfbd242d380a007cb71e40747ada292d1950c79a0fe86
+fact	install	5	/etc/group	f9ece85482aa662f8a9bfbd242d380a007cb71e40747ada292d1950c79a0fe86-system-generation/etc/group	420	f9ece85482aa662f8a9bfbd242d380a007cb71e40747ada292d1950c79a0fe86
+fact	install	5	/etc/hostname	f9ece85482aa662f8a9bfbd242d380a007cb71e40747ada292d1950c79a0fe86-system-generation/etc/hostname	420	f9ece85482aa662f8a9bfbd242d380a007cb71e40747ada292d1950c79a0fe86
+fact	install	5	/etc/passwd	f9ece85482aa662f8a9bfbd242d380a007cb71e40747ada292d1950c79a0fe86-system-generation/etc/passwd	420	f9ece85482aa662f8a9bfbd242d380a007cb71e40747ada292d1950c79a0fe86
+fact	install	5	/bin/dhake	fb8b4f0e66053d5b115333dee1cef2ce063753ca334d2ee167ccb5740088c9e2-dhake/dhake.com	0	f9ece85482aa662f8a9bfbd242d380a007cb71e40747ada292d1950c79a0fe86
+fact	install	5	/bin/fxctl	0284d3aa502f37c55fb48e743df2d7fd43fa973c969851e87b6666037987946f-fxctl/fxctl	0	f9ece85482aa662f8a9bfbd242d380a007cb71e40747ada292d1950c79a0fe86
+fact	install	5	/bin/init	3372d23e33be6b4e2bbbd0d61731c61d33fa664b364c8b77ab039b16367e319d-fx-init/fx-init	0	f9ece85482aa662f8a9bfbd242d380a007cb71e40747ada292d1950c79a0fe86
+fact	install	5	/etc/fx-claim.le	f9ece85482aa662f8a9bfbd242d380a007cb71e40747ada292d1950c79a0fe86-system-generation/etc/fx-claim.le	420	f9ece85482aa662f8a9bfbd242d380a007cb71e40747ada292d1950c79a0fe86
+fact	install	5	/etc/fx-claim.tsv	f9ece85482aa662f8a9bfbd242d380a007cb71e40747ada292d1950c79a0fe86-system-generation/etc/fx-claim.tsv	420	f9ece85482aa662f8a9bfbd242d380a007cb71e40747ada292d1950c79a0fe86
+fact	provides	5	dhake	fb8b4f0e66053d5b115333dee1cef2ce063753ca334d2ee167ccb5740088c9e2-dhake
+fact	provides	5	fx-init	3372d23e33be6b4e2bbbd0d61731c61d33fa664b364c8b77ab039b16367e319d-fx-init
+fact	provides	5	fxctl	0284d3aa502f37c55fb48e743df2d7fd43fa973c969851e87b6666037987946f-fxctl
+fact	provides	5	fx-activate	3614e06434f798f6a36161a7dea215739b08a17be27ef39bc1906a6942b24d99-fx-activate
+fact	src_of	5	fb8b4f0e66053d5b115333dee1cef2ce063753ca334d2ee167ccb5740088c9e2	60fd5ecb26fd4527b6655edfa83ee172a5d1c3749911e5b59e9c7af0a40f5841	dhake
+fact	src_of	5	3372d23e33be6b4e2bbbd0d61731c61d33fa664b364c8b77ab039b16367e319d	60fd5ecb26fd4527b6655edfa83ee172a5d1c3749911e5b59e9c7af0a40f5841	fx-init
+fact	src_of	5	0284d3aa502f37c55fb48e743df2d7fd43fa973c969851e87b6666037987946f	60fd5ecb26fd4527b6655edfa83ee172a5d1c3749911e5b59e9c7af0a40f5841	fxctl
+fact	src_of	5	3614e06434f798f6a36161a7dea215739b08a17be27ef39bc1906a6942b24d99	60fd5ecb26fd4527b6655edfa83ee172a5d1c3749911e5b59e9c7af0a40f5841	fx-activate
+fact	store	5	fb8b4f0e66053d5b115333dee1cef2ce063753ca334d2ee167ccb5740088c9e2	dhake
+fact	store	5	3372d23e33be6b4e2bbbd0d61731c61d33fa664b364c8b77ab039b16367e319d	fx-init
+fact	store	5	0284d3aa502f37c55fb48e743df2d7fd43fa973c969851e87b6666037987946f	fxctl
+fact	store	5	3614e06434f798f6a36161a7dea215739b08a17be27ef39bc1906a6942b24d99	fx-activate
+version	6	-	f9ece85482aa662f8a9bfbd242d380a007cb71e40747ada292d1950c79a0fe86	EPOCH	f9ece85482aa662f8a9bfbd242d380a007cb71e40747ada292d1950c79a0fe86-system-generation/Dhakefile.dhall	fb8b4f0e66053d5b115333dee1cef2ce063753ca334d2ee167ccb5740088c9e2-dhake/dhake.com	retained	facts	23	boots	0	rollforwards	0	MEASURED
+config	6	c4e61fd25a03577197653cb9ec9f251a72c73aa420db0b63ff9dad811d3a1140	f9ece85482aa662f8a9bfbd242d380a007cb71e40747ada292d1950c79a0fe86-system-generation/config.dhall	retained	MEASURED
+config-line	6	1	let Probe = < Tcp : Natural | Unix : Text | File : Text >
+config-line	6	2	let Service = { name : Text, argv : List Text, pkg : Optional Text, on : Text,
+config-line	6	3	                restart : Optional Text, backoffMs : Optional Natural,
+config-line	6	4	                probe : Optional Probe,
+config-line	6	5	                env : Optional (List { key : Text, value : Text }),
+config-line	6	6	                console : Optional Text }
+config-line	6	7	let User = { name : Text, uid : Natural, groups : List Text }
+config-line	6	8	in  { hostname = "repbox-ok"
+config-line	6	9	    , packages = [] : List Text
+config-line	6	10	    , users = [ { name = "root", uid = 0, groups = [] : List Text } ] : List User
+config-line	6	11	    , services = [] : List Service
+config-line	6	12	    , extraEtc = Some [ { path = "fx-claim.tsv", content = "claima\tcfg-diff-ok\t63733eeb82ea475c1e827b2d1e6c8fa82ca0f7df4ef6e2588ae6ecd09f570970\t339a67306639bcd556f7a88c9f555de0ff78af03da8422559dc7cf6965854ec6\\n" }
+config-line	6	13	             , { path = "fx-claim.le", content = "# The argument that DERIVES: the claim is grounded in the generation it comes\\n# from (claim_from is injected from the claim row by the evaluator) as soon as\\n# that generation was produced from some config by some origin -- a store\\n# template consumed in the BODY, which the agent may never conclude.\\nClaimA is grounded in a generation G1 if ClaimA comes from the generation and the generation was produced from a config C1 by an origin O1.\\nClaimA contends for a generation G1 if ClaimA is grounded in the generation.\\n" } ]
+config-line	6	14	    , bootGraceMs = Some 30000
+config-line	6	15	    , agentService = None Text
+config-line	6	16	    }
+fact	generation	6	f9ece85482aa662f8a9bfbd242d380a007cb71e40747ada292d1950c79a0fe86	f9ece85482aa662f8a9bfbd242d380a007cb71e40747ada292d1950c79a0fe86-system-generation/Dhakefile.dhall	fb8b4f0e66053d5b115333dee1cef2ce063753ca334d2ee167ccb5740088c9e2-dhake/dhake.com	EPOCH
+fact	generation_config	6	f9ece85482aa662f8a9bfbd242d380a007cb71e40747ada292d1950c79a0fe86	c4e61fd25a03577197653cb9ec9f251a72c73aa420db0b63ff9dad811d3a1140	f9ece85482aa662f8a9bfbd242d380a007cb71e40747ada292d1950c79a0fe86-system-generation/config.dhall
+fact	install	6	/bin/fx-activate	3614e06434f798f6a36161a7dea215739b08a17be27ef39bc1906a6942b24d99-fx-activate/fx-activate	0	f9ece85482aa662f8a9bfbd242d380a007cb71e40747ada292d1950c79a0fe86
+fact	install	6	/etc/group	f9ece85482aa662f8a9bfbd242d380a007cb71e40747ada292d1950c79a0fe86-system-generation/etc/group	420	f9ece85482aa662f8a9bfbd242d380a007cb71e40747ada292d1950c79a0fe86
+fact	install	6	/etc/hostname	f9ece85482aa662f8a9bfbd242d380a007cb71e40747ada292d1950c79a0fe86-system-generation/etc/hostname	420	f9ece85482aa662f8a9bfbd242d380a007cb71e40747ada292d1950c79a0fe86
+fact	install	6	/etc/passwd	f9ece85482aa662f8a9bfbd242d380a007cb71e40747ada292d1950c79a0fe86-system-generation/etc/passwd	420	f9ece85482aa662f8a9bfbd242d380a007cb71e40747ada292d1950c79a0fe86
+fact	install	6	/bin/dhake	fb8b4f0e66053d5b115333dee1cef2ce063753ca334d2ee167ccb5740088c9e2-dhake/dhake.com	0	f9ece85482aa662f8a9bfbd242d380a007cb71e40747ada292d1950c79a0fe86
+fact	install	6	/bin/fxctl	0284d3aa502f37c55fb48e743df2d7fd43fa973c969851e87b6666037987946f-fxctl/fxctl	0	f9ece85482aa662f8a9bfbd242d380a007cb71e40747ada292d1950c79a0fe86
+fact	install	6	/bin/init	3372d23e33be6b4e2bbbd0d61731c61d33fa664b364c8b77ab039b16367e319d-fx-init/fx-init	0	f9ece85482aa662f8a9bfbd242d380a007cb71e40747ada292d1950c79a0fe86
+fact	install	6	/etc/fx-claim.le	f9ece85482aa662f8a9bfbd242d380a007cb71e40747ada292d1950c79a0fe86-system-generation/etc/fx-claim.le	420	f9ece85482aa662f8a9bfbd242d380a007cb71e40747ada292d1950c79a0fe86
+fact	install	6	/etc/fx-claim.tsv	f9ece85482aa662f8a9bfbd242d380a007cb71e40747ada292d1950c79a0fe86-system-generation/etc/fx-claim.tsv	420	f9ece85482aa662f8a9bfbd242d380a007cb71e40747ada292d1950c79a0fe86
+fact	provides	6	dhake	fb8b4f0e66053d5b115333dee1cef2ce063753ca334d2ee167ccb5740088c9e2-dhake
+fact	provides	6	fx-init	3372d23e33be6b4e2bbbd0d61731c61d33fa664b364c8b77ab039b16367e319d-fx-init
+fact	provides	6	fxctl	0284d3aa502f37c55fb48e743df2d7fd43fa973c969851e87b6666037987946f-fxctl
+fact	provides	6	fx-activate	3614e06434f798f6a36161a7dea215739b08a17be27ef39bc1906a6942b24d99-fx-activate
+fact	src_of	6	fb8b4f0e66053d5b115333dee1cef2ce063753ca334d2ee167ccb5740088c9e2	60fd5ecb26fd4527b6655edfa83ee172a5d1c3749911e5b59e9c7af0a40f5841	dhake
+fact	src_of	6	3372d23e33be6b4e2bbbd0d61731c61d33fa664b364c8b77ab039b16367e319d	60fd5ecb26fd4527b6655edfa83ee172a5d1c3749911e5b59e9c7af0a40f5841	fx-init
+fact	src_of	6	0284d3aa502f37c55fb48e743df2d7fd43fa973c969851e87b6666037987946f	60fd5ecb26fd4527b6655edfa83ee172a5d1c3749911e5b59e9c7af0a40f5841	fxctl
+fact	src_of	6	3614e06434f798f6a36161a7dea215739b08a17be27ef39bc1906a6942b24d99	60fd5ecb26fd4527b6655edfa83ee172a5d1c3749911e5b59e9c7af0a40f5841	fx-activate
+fact	store	6	fb8b4f0e66053d5b115333dee1cef2ce063753ca334d2ee167ccb5740088c9e2	dhake
+fact	store	6	3372d23e33be6b4e2bbbd0d61731c61d33fa664b364c8b77ab039b16367e319d	fx-init
+fact	store	6	0284d3aa502f37c55fb48e743df2d7fd43fa973c969851e87b6666037987946f	fxctl
+fact	store	6	3614e06434f798f6a36161a7dea215739b08a17be27ef39bc1906a6942b24d99	fx-activate
+version	7	current	a2b35da280a8a4e6a5cd2bf6c32e0b5847b0422c0949b4d0585fda7e9c22580b	EPOCH	a2b35da280a8a4e6a5cd2bf6c32e0b5847b0422c0949b4d0585fda7e9c22580b-system-generation/Dhakefile.dhall	fb8b4f0e66053d5b115333dee1cef2ce063753ca334d2ee167ccb5740088c9e2-dhake/dhake.com	retained	facts	21	boots	0	rollforwards	0	MEASURED
+config	7	f504141c8069cff2bb46ffe8db3a74f3b3f2f0500852bc72af9f2fe7caa827f1	a2b35da280a8a4e6a5cd2bf6c32e0b5847b0422c0949b4d0585fda7e9c22580b-system-generation/config.dhall	retained	MEASURED
+config-line	7	1	let Probe = < Tcp : Natural | Unix : Text | File : Text >
+config-line	7	2	let Service = { name : Text, argv : List Text, pkg : Optional Text, on : Text,
+config-line	7	3	                restart : Optional Text, backoffMs : Optional Natural,
+config-line	7	4	                probe : Optional Probe,
+config-line	7	5	                env : Optional (List { key : Text, value : Text }),
+config-line	7	6	                console : Optional Text }
+config-line	7	7	let User = { name : Text, uid : Natural, groups : List Text }
+config-line	7	8	in  { hostname = "repbox-noclaim"
+config-line	7	9	    , packages = [] : List Text
+config-line	7	10	    , users = [ { name = "root", uid = 0, groups = [] : List Text } ] : List User
+config-line	7	11	    , services = [] : List Service
+config-line	7	12	    , extraEtc = None (List { path : Text, content : Text })
+config-line	7	13	    , bootGraceMs = Some 30000
+config-line	7	14	    , agentService = None Text
+config-line	7	15	    }
+fact	generation	7	a2b35da280a8a4e6a5cd2bf6c32e0b5847b0422c0949b4d0585fda7e9c22580b	a2b35da280a8a4e6a5cd2bf6c32e0b5847b0422c0949b4d0585fda7e9c22580b-system-generation/Dhakefile.dhall	fb8b4f0e66053d5b115333dee1cef2ce063753ca334d2ee167ccb5740088c9e2-dhake/dhake.com	EPOCH
+fact	generation_config	7	a2b35da280a8a4e6a5cd2bf6c32e0b5847b0422c0949b4d0585fda7e9c22580b	f504141c8069cff2bb46ffe8db3a74f3b3f2f0500852bc72af9f2fe7caa827f1	a2b35da280a8a4e6a5cd2bf6c32e0b5847b0422c0949b4d0585fda7e9c22580b-system-generation/config.dhall
+fact	install	7	/bin/fx-activate	3614e06434f798f6a36161a7dea215739b08a17be27ef39bc1906a6942b24d99-fx-activate/fx-activate	0	a2b35da280a8a4e6a5cd2bf6c32e0b5847b0422c0949b4d0585fda7e9c22580b
+fact	install	7	/etc/group	a2b35da280a8a4e6a5cd2bf6c32e0b5847b0422c0949b4d0585fda7e9c22580b-system-generation/etc/group	420	a2b35da280a8a4e6a5cd2bf6c32e0b5847b0422c0949b4d0585fda7e9c22580b
+fact	install	7	/etc/hostname	a2b35da280a8a4e6a5cd2bf6c32e0b5847b0422c0949b4d0585fda7e9c22580b-system-generation/etc/hostname	420	a2b35da280a8a4e6a5cd2bf6c32e0b5847b0422c0949b4d0585fda7e9c22580b
+fact	install	7	/etc/passwd	a2b35da280a8a4e6a5cd2bf6c32e0b5847b0422c0949b4d0585fda7e9c22580b-system-generation/etc/passwd	420	a2b35da280a8a4e6a5cd2bf6c32e0b5847b0422c0949b4d0585fda7e9c22580b
+fact	install	7	/bin/dhake	fb8b4f0e66053d5b115333dee1cef2ce063753ca334d2ee167ccb5740088c9e2-dhake/dhake.com	0	a2b35da280a8a4e6a5cd2bf6c32e0b5847b0422c0949b4d0585fda7e9c22580b
+fact	install	7	/bin/fxctl	0284d3aa502f37c55fb48e743df2d7fd43fa973c969851e87b6666037987946f-fxctl/fxctl	0	a2b35da280a8a4e6a5cd2bf6c32e0b5847b0422c0949b4d0585fda7e9c22580b
+fact	install	7	/bin/init	3372d23e33be6b4e2bbbd0d61731c61d33fa664b364c8b77ab039b16367e319d-fx-init/fx-init	0	a2b35da280a8a4e6a5cd2bf6c32e0b5847b0422c0949b4d0585fda7e9c22580b
+fact	provides	7	dhake	fb8b4f0e66053d5b115333dee1cef2ce063753ca334d2ee167ccb5740088c9e2-dhake
+fact	provides	7	fx-init	3372d23e33be6b4e2bbbd0d61731c61d33fa664b364c8b77ab039b16367e319d-fx-init
+fact	provides	7	fxctl	0284d3aa502f37c55fb48e743df2d7fd43fa973c969851e87b6666037987946f-fxctl
+fact	provides	7	fx-activate	3614e06434f798f6a36161a7dea215739b08a17be27ef39bc1906a6942b24d99-fx-activate
+fact	src_of	7	fb8b4f0e66053d5b115333dee1cef2ce063753ca334d2ee167ccb5740088c9e2	60fd5ecb26fd4527b6655edfa83ee172a5d1c3749911e5b59e9c7af0a40f5841	dhake
+fact	src_of	7	3372d23e33be6b4e2bbbd0d61731c61d33fa664b364c8b77ab039b16367e319d	60fd5ecb26fd4527b6655edfa83ee172a5d1c3749911e5b59e9c7af0a40f5841	fx-init
+fact	src_of	7	0284d3aa502f37c55fb48e743df2d7fd43fa973c969851e87b6666037987946f	60fd5ecb26fd4527b6655edfa83ee172a5d1c3749911e5b59e9c7af0a40f5841	fxctl
+fact	src_of	7	3614e06434f798f6a36161a7dea215739b08a17be27ef39bc1906a6942b24d99	60fd5ecb26fd4527b6655edfa83ee172a5d1c3749911e5b59e9c7af0a40f5841	fx-activate
+fact	store	7	fb8b4f0e66053d5b115333dee1cef2ce063753ca334d2ee167ccb5740088c9e2	dhake
+fact	store	7	3372d23e33be6b4e2bbbd0d61731c61d33fa664b364c8b77ab039b16367e319d	fx-init
+fact	store	7	0284d3aa502f37c55fb48e743df2d7fd43fa973c969851e87b6666037987946f	fxctl
+fact	store	7	3614e06434f798f6a36161a7dea215739b08a17be27ef39bc1906a6942b24d99	fx-activate
+event	activation	MEASURED	version	1	genhash	-	epoch	EPOCH	kind	no-generation-facts	republish-of	-
+event	activation	MEASURED	version	2	genhash	-	epoch	EPOCH	kind	no-generation-facts	republish-of	-
+event	activation	MEASURED	version	3	genhash	63733eeb82ea475c1e827b2d1e6c8fa82ca0f7df4ef6e2588ae6ecd09f570970	epoch	EPOCH	kind	activation	republish-of	-
+event	activation	MEASURED	version	4	genhash	63733eeb82ea475c1e827b2d1e6c8fa82ca0f7df4ef6e2588ae6ecd09f570970	epoch	EPOCH	kind	republish-live	republish-of	3
+event	activation	MEASURED	version	5	genhash	f9ece85482aa662f8a9bfbd242d380a007cb71e40747ada292d1950c79a0fe86	epoch	EPOCH	kind	activation	republish-of	-
+event	activation	MEASURED	version	6	genhash	f9ece85482aa662f8a9bfbd242d380a007cb71e40747ada292d1950c79a0fe86	epoch	EPOCH	kind	republish-live	republish-of	5
+event	activation	MEASURED	version	7	genhash	a2b35da280a8a4e6a5cd2bf6c32e0b5847b0422c0949b4d0585fda7e9c22580b	epoch	EPOCH	kind	activation	republish-of	-
+event	operator-intervention	MEASURED	file	.operator	line	11	epoch	100	action	activate	arg	/fx/src/cfg-root.dhall	outcome	ok	from-version	-	to-version	3	nonce	gatenonce
+event	operator-intervention	MEASURED	file	.operator	line	12	epoch	110	action	activate	arg	/fx/src/cfg-ok.dhall	outcome	ok	from-version	3	to-version	5	nonce	gatenonce
+event	operator-intervention	MEASURED	file	.operator	line	13	epoch	120	action	activate	arg	/fx/src/cfg-noclaim.dhall	outcome	ok	from-version	5	to-version	7	nonce	gatenonce
+config-diff-summary	1	2	not-comparable	input-absent	input-absent
+config-diff-summary	2	3	not-comparable	input-absent	input-readable
+config-diff-summary	3	4	identical
+config-diff	4	5	-	8	in  { hostname = "repbox-root"
+config-diff	4	5	-	12	    , extraEtc = None (List { path : Text, content : Text })
+config-diff	4	5	+	8	in  { hostname = "repbox-ok"
+config-diff	4	5	+	12	    , extraEtc = Some [ { path = "fx-claim.tsv", content = "claima	cfg-diff-ok	63733eeb82ea475c1e827b2d1e6c8fa82ca0f7df4ef6e2588ae6ecd09f570970	339a67306639bcd556f7a88c9f555de0ff78af03da8422559dc7cf6965854ec6\n" }
+config-diff	4	5	+	13	             , { path = "fx-claim.le", content = "# The argument that DERIVES: the claim is grounded in the generation it comes\n# from (claim_from is injected from the claim row by the evaluator) as soon as\n# that generation was produced from some config by some origin -- a store\n# template consumed in the BODY, which the agent may never conclude.\nClaimA is grounded in a generation G1 if ClaimA comes from the generation and the generation was produced from a config C1 by an origin O1.\nClaimA contends for a generation G1 if ClaimA is grounded in the generation.\n" } ]
+config-diff-summary	4	5	2	3
+config-diff-summary	5	6	identical
+config-diff	6	7	-	8	in  { hostname = "repbox-ok"
+config-diff	6	7	-	12	    , extraEtc = Some [ { path = "fx-claim.tsv", content = "claima	cfg-diff-ok	63733eeb82ea475c1e827b2d1e6c8fa82ca0f7df4ef6e2588ae6ecd09f570970	339a67306639bcd556f7a88c9f555de0ff78af03da8422559dc7cf6965854ec6\n" }
+config-diff	6	7	-	13	             , { path = "fx-claim.le", content = "# The argument that DERIVES: the claim is grounded in the generation it comes\n# from (claim_from is injected from the claim row by the evaluator) as soon as\n# that generation was produced from some config by some origin -- a store\n# template consumed in the BODY, which the agent may never conclude.\nClaimA is grounded in a generation G1 if ClaimA comes from the generation and the generation was produced from a config C1 by an origin O1.\nClaimA contends for a generation G1 if ClaimA is grounded in the generation.\n" } ]
+config-diff	6	7	+	8	in  { hostname = "repbox-noclaim"
+config-diff	6	7	+	12	    , extraEtc = None (List { path : Text, content : Text })
+config-diff-summary	6	7	3	2
+# — summary —
+# store claim-store: 7 published version(s), CURRENT 7.
+# generations with activation facts: 5; store-bootstrap snapshots (no generation facts): 2.
+# boots: NO .bootlog — no boot has ever been recorded for this store.
+# automatic roll-forwards: 0 row(s) in .recovery (no .recovery — none ever recorded).
+# operator interventions: 3 MEASURED from the .operator journal (3 row(s); 0 of them a refusal — see event/activation-refusal), plus 0 DERIVED for what the journal CANNOT see (a bypass path or a store-side history it has no row for: backward moves / stale CURRENT it does not attribute — the disjunction is the bound, never a verdict).
+# activation refusals: 0 MEASURED in the .operator journal (outcome failed:<rc> | refused | refused-config, out of 3 row(s)) — a count of RECORDED refusals, never of attempts.  Absence in the retained journal means NONE-IN-THE-JOURNAL, not 'none occurred': a REFUSAL row is written by PID1's control handler alone (an fx-activate that refuses outside the handler is invisible — a direct exec records only a publish that REACHED COMMIT), `unverified` rows are AMBIGUITY not refusal, and root in-guest can forge or truncate the file exactly as it can .bootlog (bound/operator-journal-bounds).
+# the reconstruction question — 'what changed between N and N+1, and from
+# which input?' — is answered by the config/config-line/config-diff records
+# above; pairs whose input is absent say which kind of absence.
+# findings: none.
+verdict	documented

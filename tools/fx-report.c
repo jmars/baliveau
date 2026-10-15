@@ -60,7 +60,21 @@
  *                                     RETAINED INPUT (fx-init 1399dbd),
  *                                     named by the generation_config fact
  *                                     (genhash, config_sha256, origin —
- *                                     origin store-relative)
+ *                                     origin store-relative).  The claim
+ *                                     unit's two extraEtc rows ride INTO
+ *                                     that dir: etc/fx-claim.tsv + .le (the
+ *                                     claim BYTES; RETAINED-WHILE-NAMED)
+ *   <store>.fx-claim-obs              fx-claim, the claim unit's judge seat
+ *                                     (S1): the host-side VERDICT record —
+ *                                     format-1 observation, ONE writer, the
+ *                                     format header in the file IS the
+ *                                     definition: "fx-claim-observation 1" /
+ *                                     "store <abs>" / "claim <genhash>
+ *                                     version <N> verdict <cls> claim-sha
+ *                                     <sha|-> op-from <v|->" / "end".  This
+ *                                     is the claim class's record (S2); the
+ *                                     reporter relies on it and derives
+ *                                     nothing about justification
  *
  * IT NEVER OPENS attempts.jsonl OR ANY OTHER HARNESS SELF-REPORT, and it
  * never consults the runtime datalog (see the rt-log bound below).
@@ -123,6 +137,21 @@
  * CHECKABLE against the store's version history, not authoritative over
  * it.
  *
+ * THE CLAIM CLASS (the claim unit's S2) is MEASURED the same way.  The
+ * judge seat fx-claim assembles the TRIPLE per generation — the claim
+ * that rode in via the two extraEtc rows, the VERDICT the frozen policy's
+ * evaluator reached, the OUTCOME cross-check — and persists it in
+ * <store>.fx-claim-obs.  This seat reads that record: claim-record /
+ * claim-verdict / claim-disagreement, with the §1a gap-3 discipline kept
+ * in BOTH directions (a claimless row INSIDE the observation is a
+ * MEASURED none-occurred; the observation's ABSENCE is
+ * NOT-DURABLY-RECORDED, never a zero), plus the enrollment comparison: a
+ * live generation the observation does not name is emitted NOT-RECORDED
+ * with its disjunction stated — the judge has not run since the publish,
+ * or its run disagreed (no-claim) and the observation kept its baseline.
+ * The verdicts' vocabulary is the judge's; a word this report does not
+ * know is surfaced verbatim with a note, never silently classified.
+ *
  * ── THE BOUND, printed on every run (the audit seat's discipline) ──────
  * See the frozen BOUNDS[] table at the bottom of the tables below: the
  * runtime log's tmpfs death; the operator journal's own bounds (its two
@@ -182,6 +211,9 @@
 #define MAX_BOOTLOG_LINES 8192
 #define MAX_RECOVERY_ROWS 2048
 #define MAX_OPERATOR_ROWS 4096
+#define MAX_CLAIM_ROWS 4096   /* the observation's claim rows (fx-claim caps
+                               * its own at MAX_GENERATIONS=256; this cap is
+                               * the report's own loud bound) */
 /* fx-init REQ_MAX is 4096: the control channel's request token (the arg)
  * cannot exceed it, and operator_append's own line buffer is
  * REQ_MAX + 256.  OP_ARG_MAX is the sscanf field width for that field. */
@@ -315,6 +347,23 @@ typedef struct {
 
 static factrow_t g_facts[MAX_FACT_ROWS];
 static unsigned g_nfacts;
+
+/* One <store>.fx-claim-obs row (the judge seat's observation, format 1):
+ *   claim <genhash> version <N> verdict <cls> claim-sha <sha|-> op-from <v|->
+ * The sha is sha256(tsv bytes || le bytes) — the CLAIM's identity as the
+ * seat recorded it; the reporter surfaces it, never recomputes it. */
+typedef struct {
+    char genhash[96];
+    unsigned version;
+    char verdict[80];
+    char sha[80];       /* "-" when the generation was claimless */
+    char opfrom[32];    /* the outcome cross-check's from-version, "-" */
+    unsigned lineno;
+} crow_t;
+
+static crow_t g_crows[MAX_CLAIM_ROWS];
+static unsigned g_ncrows;
+static int g_clob_present; /* the observation file existed */
 
 /* ── running fxstore (read-only subcommands only; the osier-share seat's
  *    pattern) ──────────────────────────────────────────────────────────── */
@@ -626,6 +675,123 @@ static void read_operator(void) {
     g_op_empty = (g_nop == 0);
 }
 
+static crow_t *crow_find(const char *genhash) {
+    for (unsigned i = 0; i < g_ncrows; i++)
+        if (!strcmp(g_crows[i].genhash, genhash)) return &g_crows[i];
+    return NULL;
+}
+
+/* ── <store>.fx-claim-obs (fx-claim, the claim unit's S1): the judge ──────
+ *    seat's DURABLE verdict record — the observation fx-claim writes under
+ *    fx-audit's discipline (format-1 header, a store line, one claim row
+ *    per generation, an end marker; tmp+rename).  The shape is the
+ *    contract: a line that is not the judge's grammar is refused LOUDLY —
+ *    never skipped, exactly as .operator is — and the file's ABSENCE is
+ *    its own state: a store the judge never ran on legitimately has none,
+ *    and this seat must not turn that into "no claims occurred" (the
+ *    §1a gap-3 error).  The reporter does not re-verify the seat's
+ *    store-binding (fx-claim refuses a carried observation itself); the
+ *    rows are CHECKABLE against the timeline below, not authoritative
+ *    over it. */
+static void read_claimobs(void) {
+    char path[4200];
+    /* the judge binds the record to realpath(--store) (fx-claim.c:802,
+     * :838): resolve the same way, so a symlinked or trailing-slash alias
+     * of --store reads the record the judge wrote instead of missing it
+     * and claiming a false absence.  An unresolvable store keeps the path
+     * as given — the judge cannot have run on it, so the ENOENT below is
+     * the true absence. */
+    char rstore[4096];
+    if (realpath(g_store, rstore))
+        snprintf(path, sizeof path, "%s.fx-claim-obs", rstore);
+    else
+        snprintf(path, sizeof path, "%s.fx-claim-obs", g_store);
+    FILE *f = fopen(path, "r");
+    if (!f) {
+        if (errno == ENOENT) { g_clob_present = 0; return; }
+        die("cannot read %s: %s (a read error is not an absence)", path, strerror(errno));
+    }
+    g_clob_present = 1;
+    char line[LINE_MAX_];
+    unsigned ln = 0;
+    int have_store = 0, ended = 0;
+    while (fgets(line, sizeof line, f)) {
+        ln++;
+        size_t l = strlen(line);
+        if (l && line[l - 1] != '\n' && !feof(f))
+            die("%s:%u: line longer than %zu bytes — refusing to audit a truncated view",
+                path, ln, sizeof line - 1);
+        while (l && (line[l - 1] == '\n' || line[l - 1] == '\r')) line[--l] = 0;
+        if (!l) continue;
+        if (ln == 1) {
+            if (strcmp(line, "fx-claim-observation 1") != 0)
+                die("%s:1: not the judge seat's format-1 observation header — an "
+                    "observation fx-claim did not write is not a record; "
+                    "re-establish it with fx-claim --re-enroll", path);
+            continue;
+        }
+        if (!strncmp(line, "store ", 6)) { have_store = 1; continue; }
+        if (!strncmp(line, "claim ", 6)) {
+            if (g_ncrows >= MAX_CLAIM_ROWS)
+                die("%s: more than %u claim rows — raise MAX_CLAIM_ROWS (a report over a truncated view is a lie)",
+                    path, (unsigned)MAX_CLAIM_ROWS);
+            crow_t *C = &g_crows[g_ncrows];
+            char sha[80], opf[32];
+            int pos = -1;
+            /* %n pins where the row grammar ENDS: an over-long LAST field
+             * (op-from) or trailing content leaves bytes unconsumed and the
+             * row dies LOUDLY instead of parsing truncated — width limits
+             * alone only kill over-long NON-final fields (the following
+             * literal fails to match); the last field has none after it. */
+            if (sscanf(line + 6, "%95s version %u verdict %79s claim-sha %79s op-from %31s%n",
+                       C->genhash, &C->version, C->verdict, sha, opf, &pos) != 5
+                || pos < 0 || line[6 + (size_t)pos] != 0)
+                die("%s:%u: not the judge seat's row shape \"claim <genhash> version <N> "
+                    "verdict <cls> claim-sha <sha|-> op-from <v|->\" (fx-claim's "
+                    "observation, format 1): \"%s\"", path, ln, line);
+            /* a row repeating a genhash already parsed is not a judge record
+             * (fx-claim writes ONE row per generation — it dedupes on first
+             * appearance, fx-claim.c:930): half-read (crow_find takes the
+             * first, the shadowed row is skipped) is the "never skipped"
+             * discipline's own violation — refused, naming the genhash. */
+            if (crow_find(C->genhash))
+                die("%s:%u: duplicate observation row for generation %s — one row per "
+                    "generation is the record's grammar", path, ln, C->genhash);
+            snprintf(C->sha, sizeof C->sha, "%s", sha);
+            snprintf(C->opfrom, sizeof C->opfrom, "%s", opf);
+            C->lineno = ln;
+            g_ncrows++;
+            continue;
+        }
+        if (!strcmp(line, "end")) { ended = 1; break; }
+        die("%s:%u: not the judge seat's observation grammar (\"fx-claim-observation 1\" "
+            "| \"store <abs>\" | \"claim ...\" | \"end\"): \"%s\"", path, ln, line);
+    }
+    if (ferror(f)) die("read error on %s: %s", path, strerror(errno));
+    fclose(f);
+    if (!ended)
+        die("%s: no end marker (a torn observation — fx-claim's tmp+rename makes one "
+            "unreachable short of tampering)", path);
+    if (!have_store)
+        die("%s: records no store — an observation bound to no store is not a record", path);
+}
+
+/* The judge's verdict vocabulary, from fx-claim's own classes.  The
+ * STATED set: ok; claimless (none-occurred, measured); skipped (the
+ * outcome gate — no judgment).  The DISAGREEMENT set: refused-<name> (the
+ * evaluator's refusals — hostile-compile, head-forgery, premise-false,
+ * malformed-claim, justified-not-derived, ...), stale-world (the
+ * outcome cross-check), not-a-claim.  Anything else is a vocabulary this
+ * report does not know: surfaced verbatim with a note, never silently
+ * classified — a NEWER judge's word must not read as coherent here. */
+static int claim_verdict_disagrees(const char *v) {
+    return !strncmp(v, "refused-", 8) || !strcmp(v, "stale-world") || !strcmp(v, "not-a-claim");
+}
+static int claim_cls_known(const char *v) {
+    return !strcmp(v, "ok") || !strcmp(v, "claimless") || !strcmp(v, "skipped")
+        || claim_verdict_disagrees(v);
+}
+
 /* The writer's refusal vocabulary, read from the record rather than
  * assumed: an intervention the journal shows did NOT take effect as
  * asked.  `failed:<rc>` and `refused-config` are the activate arm's
@@ -892,6 +1058,9 @@ static const struct { const char *cls, *record, *absence; } TAXONOMY[] = {
     { "activation-refusal",
       "MEASURED — <store>/.operator rows whose outcome is a refusal (fx-init ca9cb06): failed:<rc> (the activate executor exited rc; nothing landed — init.zig:3665), refused-config (the generation DID land in the store but PID1 REFUSED it — the declared service set past its bound, or a configuration read_store_facts could not read: :3730 from the activate arm, :3877 from the rollback arm, the writer's own 'same durable record from the other direction'), refused (the STORE rejected a rollback target — :3858).  Recorded in the SAME journal and NOT this class: dhake-failed (:3816 — the generation DID land, the live-root reapply failed) and unverified (:3705 — the store could not be re-opened to confirm, i.e. AMBIGUOUS, which is not the same as refused).  The tmpfs runtime log that held these (rt_effect activate failed|dhake-failed, init.zig:3667/:3818, DEFAULT_RUN :32) still dies at every reboot and is NOT read by this seat.",
       "no-row-with-a-refusal-outcome-in-the-retained-journal = no RECORDED refusal within the journal (a count of RECORDED refusals, never of attempts).  This absence-meaning WAS 'NOT-DURABLY-RECORDED' before ca9cb06 — a refused activation left NOTHING in the store (fx-activate refuses before touching it) and PID1's record of it lived in /run's tmpfs — and it is that again EXACTLY WHEN .operator IS ABSENT: a store predating the journal CANNOT answer this class, and the report says so via absence/.operator instead of printing a zero.  Bounds carried INTO the class: a REFUSAL row is written by PID1's control handler alone (a direct exec records only a publish that reached commit), so an fx-activate that refuses outside that handler is invisible; `unverified` rows are ambiguity, not refusals; and root in-guest can forge or truncate the file exactly as it can .bootlog — a row is CHECKABLE against the store's version/genhash history, not authoritative over it." },
+    { "claim",
+      "MEASURED — <store>.fx-claim-obs rows (the JUDGE SEAT's observation — fx-claim's format-1 record of the TRIPLE per generation: the claim that rode into the activation as the two extraEtc rows /etc/fx-claim.tsv + /etc/fx-claim.le, the VERDICT the frozen policy's evaluator reached, and the OUTCOME cross-check against the .operator row, content-joined): claim <genhash> version <N> verdict <cls> claim-sha <sha|-> op-from <v|-> (the observation's format header IS the definition — ONE writer).  The claim BYTES live in the retained generation dir (the claim-rows retention row); this seat reads the VERDICT record and recomputes nothing (bound/claim-check-is-a-lever)",
+      "TWO DIRECTIONS, the §1a gap-3 discipline: (i) the observation PRESENT and a row's verdict claimless = NONE-OCCURRED for that generation — MEASURED by a judge that RAN, within the enrollment boundary the observation's existence sets; a LIVE generation the observation does NOT name is NOT 'none occurred' — the report emits claim-record ... NOT-RECORDED for it (the judge has not run since the publish, or its run disagreed — no-claim — and the observation kept its baseline); (ii) the observation ABSENT = NOT-DURABLY-RECORDED — no judge has ever run on this store (or the observation was removed): the report cannot say whether any claim rode in or any verdict was reached, and says so (absence/.fx-claim-obs) instead of printing a zero.  verdict-rewritten / claim-rewritten NEVER persist in the observation (the seat refuses to rewrite under them) — their audit is the judge's own next run, not this seat's" },
     { "content-recurrence",
       "DERIVED: .recovery data rows whose trailing genhash is IDENTICAL (the .recovery header's own semantics: the same content re-failing)",
       "no-repeated-genhash=no-recurrence-within-the-surviving-rows" },
@@ -918,6 +1087,10 @@ static const struct {
       "survives (disk)", "survives (each activation writes its own gen dir)",
       "RETAINED-WHILE-NAMED (MEASURED on this tree, store.zig pinned blob 30dce7cb: `fxstore gc <root>` keeps every <genhash>-system-generation dir named by a SURVIVING snapshot's generation fact — the dir sweep's carve-out, logged per dir on stderr; a dir whose snapshot was pruned by `gc --retain N` IS reaped, with its facts)",
       "DECIDED (user, 2026-10-12): UNBOUNDED by default — no pruning-by-age policy exists to state, because the copy is exactly as durable as the snapshot that names it (`gc --retain N` prunes version and dir together, and NOTHING sets that default): retention is bounded only by an operator's deliberate gc, never by time.  A GENUINELY missing copy (hand-deleted, or a dir a surviving fact names that is gone) still fires config-retained-copy-gone" },
+    { "claim rows (the INPUT + the VERDICT record)", "<store>/<genhash>-system-generation/etc/fx-claim.tsv + fx-claim.le (fx-activate: the two extraEtc rows, installed 0o644 into the generation dir) + <store>.fx-claim-obs (fx-claim, the host-side verdict record, format-1 observation)",
+      "survives (disk)", "survives (the rows ride in each activation's own gen dir; the observation is REWRITTEN per coherent run — tmp+rename, never appended)",
+      "RETAINED-WHILE-NAMED (the rows live INSIDE the retained generation dir — exactly the retained-config carve-out above; the observation file fxstore does not know, and it outlives pruned versions — its rows for reaped generations are noted pruned-or-foreign, not dropped)",
+      "DECIDED (user, 2026-10-12): UNBOUNDED by default — the claim bytes are exactly as durable as the snapshot that names them (gc prunes version and dir together); the observation's rewrite is the seat's own discipline, not a rotation: a rewritten verdict fires verdict-rewritten on the judge's next run, so the record cannot be silently rotated" },
     { ".operator", "<store>/.operator (fx-init ca9cb06, '#'-header + one data row per intervention on the generation plane — a control-channel REQUEST (appended+fsync'd by the handler BEFORE the reply is flushed, INCLUDING the ones that FAILED or were REFUSED) or, since the runtime-record closure, ONE row for a publish fx-activate committed OUTSIDE the handler on a boot carrying an fx.bootnonce= (a self-recorded row never carries \"none\"))",
       "survives (disk)", "survives (append — one row per ctrl request whatever its outcome, plus one per direct-exec publish where the boot carries a nonce)",
       "survives (fxstore does not know the file; it outlives pruned versions AND keeps rows naming versions gc has since pruned — a row records the move the operator asked for, it is not a promise the version is still there)",
@@ -949,8 +1122,16 @@ static const struct { const char *id, *text; } BOUNDS[] = {
       "after `rollback --hard` (CURRENT < newest), a later publish renumbers from CURRENT+1 and can destroy the versions between (stated by the gc --retain guard, store.zig; not reproduced here) — the CURRENT!=newest signature is therefore TRANSIENT, visible only until that next publish" },
     { "retention-unbounded-by-decision",
       "BY DECISION, NOT BY OMISSION (user, 2026-10-12; §1a gap 4 is now a policy): `.bootlog`, `.recovery` and `.operator` grow WITHOUT BOUND and NOTHING MAY BE DROPPED — `bootlog_last`/`bootlog_newest_ok_below` need the newest `ok` below CURRENT (that IS the roll-forward TARGET), and fx-audit's append accounting + its previous-observation comparison need the record INTACT (a rotation reads as a REWRITE of a previously observed record and would fire on a HEALTHY machine).  Growth is linear in events that really happened: real boots, one in-progress line per in-guest activation, one `.recovery` row per automatic roll-forward, one `.operator` row per intervention.  THE STATED COST, not hidden: `.bootlog` is FULLY RESCANNED on every boot, so per-boot work is linear in its length.  The snapshots keep their knob (`gc --retain N`) and NOTHING sets a default — the same decision" },
+    { "claim-rides-in-extraEtc",
+      "the claim rides INTO the activation as two PLAIN extraEtc rows (/etc/fx-claim.tsv — the row claim<TAB>contention<TAB>from_version<TAB>S_from — and /etc/fx-claim.le — the agent's own LE argument over the host's closed lexicon): a CONVENTION, not a schema — any extraEtc file at those paths reads as a claim, and one that does not parse is refused LOUD by the judge (malformed-claim / not-a-claim), never silently read as claimless.  The rows are CONTENT: they cannot change under a live genhash (different bytes are a different generation), and a claimless generation's dir that GAINS claim bytes is claim-rewritten.  The promotion to a real config field (the claim(...) relation at fx-activate's validation, S3) is named, not built" },
+    { "claim-obs-is-host-side",
+      "the verdict record <store>.fx-claim-obs is HOST-side by construction: fx-claim REFUSES an observation location inside the store, keys it to the store's ABSOLUTE path (a carried copy is refused — an observation between stores proves nothing) and rewrites it tmp+rename.  THIS report reads the default sibling path of the store's RESOLVED path (realpath — the same binding fx-claim writes the record under, fx-claim.c:802/:838), so a symlinked or trailing-slash alias of --store still reads the record that exists; an observation written via --obs-dir DIR is INVISIBLE here — stated, not guessed.  Its rows are CHECKABLE against the store's generation history, not authoritative over it: a row whose genhash no live generation carries is noted pruned-or-foreign" },
+    { "claim-check-is-a-lever",
+      "the claim check is AUDITING, not PROOFING (design record §6b's stance): the RECORD is what you rely on — the observation's verdicts and the named disagreement classes are the durable account — and the DENIAL (the frozen policy's does-not-derive, refused by name at a commit point) is the LEVER that makes the agent repair its world model.  This seat therefore derives NOTHING about justification: it surfaces the judge's verdicts verbatim, names the disagreement classes among them, and states the record's COVERAGE — it never re-runs the evaluation" },
+    { "claim-evaluator-location",
+      "the evaluator's LOCATION — host-side Python (policy/eval_claim.py over the le checkout) TODAY, a DEPLOYMENT STOPGAP; in-guest in the qemu lane (the le->Osier port emitting x64 via QBE) once the port lands — is a DEPLOYMENT DIFFERENCE WITH IDENTICAL SEMANTICS: the same closed agent lexicon (policy/claims-lexicon.ini), the same frozen policy (policy/claims-policy.dl, sha-pinned in policy/PINS), the same claim bytes, the same record format.  The verdict does not encode where the evaluator ran and the record does not say — because it does not matter: this row exists so the location can never silently become a reason to shrink the language again (round 1 chose a crippled template checker to avoid executing LE, and was overturned for exactly that)" },
     { "same-store-only",
-      "this report is a function of ONE store directory; anything recorded elsewhere (the runtime log, the harness's own transcript, the audit's observation file) is out of domain, and the report never guesses at it" },
+      "this report is a function of ONE store directory; anything recorded elsewhere (the runtime log, the harness's own transcript, the audit's observation file) is out of domain, and the report never guesses at it — the ONE in-domain exception is the judge seat's claim observation <store>.fx-claim-obs (bound/claim-obs-is-host-side), which is the claim class's record, not a harness self-report" },
 };
 #define NBOUND (sizeof BOUNDS / sizeof BOUNDS[0])
 
@@ -1003,6 +1184,7 @@ int main(int argc, char **argv) {
     read_bootlog();
     read_recovery();
     read_operator();
+    read_claimobs();
     read_configs();
 
     /* ── the human header ─────────────────────────────────────────────── */
@@ -1046,6 +1228,14 @@ int main(int argc, char **argv) {
     else if (g_op_empty)
         printf("absence\t.operator\tpresent-but-empty-no-intervention-recorded\tABSENT\n");
     printf("absence\trt-log\t/run/fx/log.db-not-durably-recorded-tmpfs\tABSENT\n");
+    /* the claim observation's absence is its OWN state, exactly as
+     * .operator's: no judge has ever enrolled this store (or the
+     * observation was removed) — 'none occurred' is NOT derivable from
+     * nothing, and the coverage pass below names what the record misses. */
+    if (!g_clob_present)
+        printf("absence\t.fx-claim-obs\tnot-durably-recorded-no-judge-observation-no-fx-claim-run-has-ever-enrolled-this-store-or-the-observation-was-removed\tABSENT\n");
+    else if (g_ncrows == 0)
+        printf("absence\t.fx-claim-obs\tpresent-but-empty-the-judge-enrolled-on-a-store-with-no-published-generation\tABSENT\n");
 
     /* versions, in chain order */
     for (unsigned i = 0; i < g_nvers; i++) {
@@ -1228,6 +1418,65 @@ int main(int argc, char **argv) {
         printf("event\toperator-intervention\tDERIVED\tshape\tcurrent-repoint\tcurrent\t%u\tnewest\t%u\tbound\tdisjunction: rollback-hard-OR-torn-publish (bound/renumber-after-hard; the signature is transient)\n",
                cur_v, newest);
 
+    /* ── the claim records — MEASURED from <store>.fx-claim-obs, the judge
+     * seat's observation (fx-claim's durable record of the TRIPLE: the
+     * claim that rode in via the extraEtc rows, the verdict the frozen
+     * policy's evaluator reached, the outcome cross-check).  The reporter
+     * RELIES ON the record and derives nothing about justification
+     * (bound/claim-check-is-a-lever): it surfaces the verdicts, names the
+     * DISAGREEMENT classes among them, and — the enrollment comparison —
+     * names every LIVE generation the observation does NOT cover, for
+     * which 'none occurred' is NOT derivable (the judge has not run since
+     * the publish, or its run disagreed and the observation kept its
+     * baseline).  First appearance is a generation's canonical version —
+     * the same canonicalization the judge seat states: a re-landing shares
+     * the genhash and the one record. */
+    for (unsigned i = 0; i < g_nvers; i++) {
+        version_t *V = &g_vers[i];
+        if (!strcmp(V->genhash, "-")) continue;
+        int seen = 0;
+        for (unsigned j = 0; j < i; j++)
+            if (!strcmp(g_vers[j].genhash, V->genhash)) { seen = 1; break; }
+        if (seen) continue;
+        crow_t *C = crow_find(V->genhash);
+        if (C) {
+            printf("claim-record\t%s\tversion\t%u\tclaim-sha\t%s\top-from\t%s\tMEASURED\n",
+                   C->genhash, C->version, C->sha, C->opfrom);
+            if (claim_cls_known(C->verdict))
+                printf("claim-verdict\t%s\tverdict\t%s\tMEASURED\n", C->genhash, C->verdict);
+            else
+                printf("claim-verdict\t%s\tverdict\t%s\tMEASURED\tnote\tverdict-vocabulary-not-known-to-this-report-surfaced-verbatim-never-classified\n",
+                       C->genhash, C->verdict);
+            if (claim_verdict_disagrees(C->verdict))
+                printf("claim-disagreement\t%s\tverdict\t%s\tDERIVED\tthe verdict names a disagreement between the claim's world model and the store (verbatim from the observation; the audit of the observation is the judge's own next run — this seat does not)\n",
+                       C->genhash, C->verdict);
+        } else {
+            printf("claim-record\t%s\tversion\t%u\tclaim-sha\t-\top-from\t-\tNOT-RECORDED\tbound\tno-observation-row-judge-not-run-since-publish-or-its-run-disagreed-and-the-observation-kept-its-baseline (NOT 'none occurred')\n",
+                   V->genhash, V->v);
+        }
+    }
+    /* observation rows naming NO live generation: the record outlives the
+     * store's snapshots (fxstore does not know the file) — kept and noted,
+     * never dropped: a row is checkable against the timeline, not
+     * authoritative over it. */
+    for (unsigned k = 0; k < g_ncrows; k++) {
+        crow_t *C = &g_crows[k];
+        int live = 0;
+        for (unsigned i = 0; i < g_nvers; i++)
+            if (!strcmp(g_vers[i].genhash, C->genhash)) { live = 1; break; }
+        if (live) continue;
+        printf("claim-record\t%s\tversion\t%u\tclaim-sha\t%s\top-from\t%s\tMEASURED\tnote\tgeneration-not-in-live-timeline-pruned-or-foreign\n",
+               C->genhash, C->version, C->sha, C->opfrom);
+        if (claim_cls_known(C->verdict))
+            printf("claim-verdict\t%s\tverdict\t%s\tMEASURED\n", C->genhash, C->verdict);
+        else
+            printf("claim-verdict\t%s\tverdict\t%s\tMEASURED\tnote\tverdict-vocabulary-not-known-to-this-report-surfaced-verbatim-never-classified\n",
+                   C->genhash, C->verdict);
+        if (claim_verdict_disagrees(C->verdict))
+            printf("claim-disagreement\t%s\tverdict\t%s\tDERIVED\tthe verdict names a disagreement between the claim's world model and the store (verbatim from the observation; the audit of the observation is the judge's own next run — this seat does not)\n",
+                   C->genhash, C->verdict);
+    }
+
     /* ── the reconstruction: adjacent pairs, both inputs, the diff ────── */
     for (unsigned i = 1; i < g_nvers; i++) {
         version_t *A = &g_vers[i - 1], *B = &g_vers[i];
@@ -1290,6 +1539,31 @@ int main(int argc, char **argv) {
     else
         h("activation refusals: %u MEASURED in the .operator journal (outcome failed:<rc> | refused | refused-config, out of %u row(s)) — a count of RECORDED refusals, never of attempts.  Absence in the retained journal means NONE-IN-THE-JOURNAL, not 'none occurred': a REFUSAL row is written by PID1's control handler alone (an fx-activate that refuses outside the handler is invisible — a direct exec records only a publish that REACHED COMMIT), `unverified` rows are AMBIGUITY not refusal, and root in-guest can forge or truncate the file exactly as it can .bootlog (bound/operator-journal-bounds).",
           (unsigned)op_count_refusals(), g_nop);
+    {
+        unsigned n_cov = 0, n_uncov = 0, n_ok = 0, n_cl = 0, n_sk = 0, n_dis = 0, n_unk = 0;
+        for (unsigned i = 0; i < g_nvers; i++) {
+            if (!strcmp(g_vers[i].genhash, "-")) continue;
+            int seen = 0;
+            for (unsigned j = 0; j < i; j++)
+                if (!strcmp(g_vers[j].genhash, g_vers[i].genhash)) { seen = 1; break; }
+            if (seen) continue;
+            if (crow_find(g_vers[i].genhash)) n_cov++; else n_uncov++;
+        }
+        for (unsigned k = 0; k < g_ncrows; k++) {
+            const char *v = g_crows[k].verdict;
+            if (!strcmp(v, "ok")) n_ok++;
+            else if (!strcmp(v, "claimless")) n_cl++;
+            else if (!strcmp(v, "skipped")) n_sk++;
+            else if (claim_verdict_disagrees(v)) n_dis++;
+            else n_unk++;
+        }
+        if (!g_clob_present)
+            h("claim records: NO observation — the judge seat has never run on this store; %u live generation(s) are uncovered (named NOT-RECORDED above): 'none occurred' is NOT derivable from nothing.", n_uncov);
+        else
+            h("claim records: %u row(s) in the observation — %u live generation(s) covered, %u NOT covered (named NOT-RECORDED above); verdicts ok %u, claimless %u (none-occurred, measured), skipped %u, disagreements %u%s.  A disagreement is a RECORD, not a reporter finding; the audit of the observation is the judge's own next run.",
+              g_ncrows, n_cov, n_uncov, n_ok, n_cl, n_sk, n_dis,
+              n_unk ? " (unknown verdict vocabulary: surfaced verbatim)" : "");
+    }
     h("the reconstruction question — 'what changed between N and N+1, and from");
     h("which input?' — is answered by the config/config-line/config-diff records");
     h("above; pairs whose input is absent say which kind of absence.");
