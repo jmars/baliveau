@@ -304,6 +304,99 @@
  *   SILENT ALLOW on exactly the equivalent spellings the in-guest seat does
  *   deny (build/fx-hostgate-opsnocanon).
  *
+ * P8 SCOPE — RESUME, AND THE ONE LOG AS THE JOIN STATE.  THE ONE LOG HAS
+ *   TWO ROLES: the audit record AND the per-run join state for BOTH rewrites
+ *   (the deny map).  P2-vintage code rendered the log from an in-memory state
+ *   array that started EMPTY on every process start and was never read back —
+ *   so a second run against the same `--log` REPLACED the first run's record
+ *   (MEASURED: run 1 wrote `call_RUN1 denied`; run 2 left only `call_RUN2
+ *   allowed`).  That is exactly the failure the writer's own rule forbids
+ *   ("a record that silently stops is the one failure mode this seat must
+ *   never have"), and it is worse than the plan's framing, which assumed the
+ *   log persisted and only the MAP needed rebuilding.  So: AT STARTUP AN
+ *   EXISTING LOG IS LOADED (parsed, carried, continued — never truncated,
+ *   never rewritten-empty), the DENY MAP IS REBUILT from its DENIED rows (so a
+ *   resumed run's OLD denials are restored and substituted on the outbound
+ *   leg instead of reaching the model as `fx_host_denied` + a generic
+ *   sentinel), the replay is IDEMPOTENT (the loader is a pure function of the
+ *   file, and load->flush neither duplicates nor rewords a carried row), and
+ *   A TRUNCATED OR CORRUPT LOG MAKES THE SEAT REFUSE, LOUDLY, LEAVING THE FILE
+ *   UNTOUCHED — a SILENT EMPTY MAP is the named failure direction and would
+ *   be silent degradation of every pre-restart denial.  THE WHOLE DESIGN (what
+ *   is carried verbatim, what is re-rendered, why a carried row must NOT be
+ *   counted into the resumed run's turn stats, and the pre-fix control) is at
+ *   the log loader ("P8: THE LOG IS LOADED AT STARTUP"), below.
+ *
+ * P8-fix SCOPE — WHAT THE P8 REVIEW FOUND, AND WHAT THIS SLICE CHANGES.  The
+ *   verdict was that the load path is SOUND FOR ENFORCEMENT (no loadable log
+ *   can make the seat ALLOW anything) but that "STRICTNESS STOPS AT STRUCTURE,
+ *   AND CONTENT IS TRUSTED".  Five should-fixes, each reproduced against the
+ *   real binaries, plus the cheap field-validation items:
+ *
+ *   (R1) THE TRUST BOUNDARY, STATED AND ENFORCED.  The log is TRUSTED INPUT:
+ *        its single writer is OPERATOR DISCIPLINE, and the loader checks
+ *        STRUCTURE, never CONTENT.  There is no signature and none that would
+ *        mean much — whoever can write this file can already write the seat's
+ *        own record — so what the loader does instead is refuse a log this
+ *        seat does not OWN (uid), refuse a `call_id` longer than a frame could
+ *        have carried (the bounding exemption's own argument, re-established
+ *        by hand), and APPLY THE WRITER'S OWN BOUND (bound_copy) to every
+ *        free-text field it loads.  MEASURED before: a crafted-but-valid
+ *        DENIED row with a 1 MB `denial_text` and `true_name` =
+ *        system_reboot_machine loaded cleanly, and the outbound leg restored
+ *        that name and emitted all 1,048,576 bytes, because FH_BOUND was
+ *        applied only at WRITE time.  A DENIED row is now only ever as long as
+ *        this seat writes one, whatever the file says.  The MODE is
+ *        deliberately NOT checked: this seat's own log is created with the
+ *        operator's umask, so a group-write check would let a umask alone lock
+ *        the seat out of its own record.
+ *   (R2) ONE ROW PER call_id — see the semantics block at row_call_record /
+ *        row_call_find.  The upstream can re-serve a call_id (every turn, in
+ *        the canned offline arm); the record must not inflate ONE call into
+ *        several rows and must not report a phantom UNRESOLVED at every exit.
+ *        The loader now REFUSES a duplicate call_id row, because this seat
+ *        cannot write one.
+ *   (R3) THE LOAD IS LINEAR, NOT QUADRATIC, AND THE OVER-CAP REFUSAL IS
+ *        RECOVERABLE.  MEASURED before: 50 K rows -> 11.3 s, 100 K -> 89.7 s,
+ *        200 K -> a refusal whose only named way out ("move it aside") LOST
+ *        the very join state the refusal protects — the seat locked out by its
+ *        own successful prior runs.  Both indexes (the deny map and the call
+ *        rows) are now hashed, and the over-cap message names a compaction
+ *        that PRESERVES the deny map (keep the DENIED rows and point --log at
+ *        them).  The cap stays: it guards against slurping an absurd file, and
+ *        what is fixed is that its failure mode is recoverable rather than
+ *        self-defeating.
+ *   (R4) THE DOOR IS CHECKED BEFORE IT IS OPENED: --log must be a REGULAR FILE
+ *        that this seat owns.  MEASURED before: a FIFO HUNG the seat at
+ *        startup with no message at all, /dev/null was accepted and a flush
+ *        would have renamed a temp over the device node, and a symlink was
+ *        silently replaced by the first flush (the record splitting in two).
+ *   (R5) A CARRIED ROW KEEPS THE READING IT WAS WRITTEN WITH: `allow_scope`
+ *        is parsed at load and re-emitted VERBATIM.  MEASURED before: the
+ *        flusher recomputed it from the CURRENT run's seats, so a row written
+ *        under "no operator denial at this seat" was silently REWORDED by a
+ *        later run to claim the claim seat judged a call it never saw.
+ *   (R6a) SESSION/RUN SCOPING IS NOT IMPLEMENTED, AND THIS IS THE BOUND,
+ *        STATED HONESTLY: rows carry `session`/`run` as constant nulls because
+ *        the WIRE carries no session/run identity (build_responses_request
+ *        sends model/stream/input only, agent_loop.c:68-104) and the
+ *        transcript is in-guest — the host has nothing to scope by.  A log
+ *        carried over from another session/run therefore contributes its
+ *        DENIED call_ids to this run's deny map.  That is what a RESUME needs,
+ *        and it is harmless otherwise because the map is only consulted for a
+ *        call_id the current conversation actually presents; what protects the
+ *        join is that call_id is the provider's own key and this seat writes
+ *        exactly ONE row per call_id (R2), enforced at load.  Imposing real
+ *        scoping would need a guest-side identity the host does not have on
+ *        the wire: the honest move is to state the bound, not to invent an id.
+ *   (R6b) `turn` is validated at load as a whole, non-negative number (a
+ *        `3.7` or a `1e100` used to load and then re-render differently).
+ *   (R7) CRLF IS ACCEPTED AND NORMALIZED, OUT LOUD.  A CRLF-terminated log is
+ *        not corruption (a Windows copy, an editor), so its rows parse
+ *        normally and the FIRST FLUSH rewrites them with LF — that is a
+ *        NORMALIZATION of the file, so the loader now SAYS SO, naming the line
+ *        count, instead of doing it silently.
+ *
  * TURN MECHANICS — the two things slice P1 was asked to MEASURE, not assume:
  *   (a) the guest OPENS the device per turn and CLOSES it at the turn
  *       boundary (openai_responses.c:226/:292): the slave path stays valid
@@ -501,6 +594,8 @@ enum {
     ROW_ANOM_ECHO = 3,     /* P3 telemetry: a denied call's output is not a known sentinel */
     ROW_ANOM_UNRESOLVED_SUBST = 4, /* P3-fix: a denied call whose outbound substitution never fired */
     ROW_TURNSTATS = 5,     /* P5: the denial-rate instrument, one row per armed turn */
+    ROW_RAW = 6,           /* P8: a loaded telemetry/terminal row, re-emitted
+                            * VERBATIM (raw) — see log_load */
 };
 
 enum {
@@ -524,6 +619,15 @@ struct row {
     char *refusal_name; /* the by-name refusal (P3's, or P5's) */
     char *reason;      /* raw in memory; bounded at write */
     char *denial_text; /* raw in memory; bounded at write */
+    /* P8-fix (R5): the ALLOWED row's OWN reading of its scope, carried in from
+     * the file VERBATIM.  The writer used to RECOMPUTE `allow_scope` at every
+     * flush from the CURRENT run's seats, so a row written under "no operator
+     * denial at this seat" was silently REWORDED by a later run to claim "no
+     * claim refusal … the justification was judged and derived" — for a call
+     * that later run never judged (MEASURED).  A carried row is emitted as it
+     * was written; NULL means "this process wrote the row", and only then is
+     * the scope computed from the seats that are live now. */
+    char *allow_scope;
     long turns_served;      /* ROW_EXIT */
     size_t *unresolved_idx; /* ROW_EXIT: indices of still-pending rows */
     size_t n_unresolved;
@@ -532,11 +636,28 @@ struct row {
      * text), pre-rendered so log_flush stays a pure writer. */
     size_t t_calls, t_denied, t_allowed;
     char *reasons_json;
+    /* P8: a row CARRIED IN from an existing log and preserved BYTE-FOR-BYTE
+     * (the file's own line, newline stripped).  Only rows this process
+     * neither re-renders nor mutates carry it: a call row is re-rendered (so
+     * its state changes — the join closing, the substitution firing — remain
+     * visible in the record), while a telemetry/terminal row is HISTORY and
+     * is never rewritten. */
+    char *raw;
+    size_t carried_rows; /* ROW_EXIT: how many rows preceded this run (P8) */
 };
 
 static struct row *g_rows;
 static size_t g_nrows, g_rowcap;
 static const char *g_log_path;
+/* P8: the rows loaded from an existing log occupy indices [0, g_load_rows) —
+ * the rows THIS process wrote start at g_load_rows.  The distinction is
+ * load-bearing for anything keyed on a TURN NUMBER, because `served` restarts
+ * at 1 in a new process: a carried row counted into the resumed run's turn 1
+ * would fabricate a denial rate for a turn that made no such calls. */
+static size_t g_load_rows;
+#ifndef FH_MUTANT_NO_LOG_LOAD /* the tallies are the loader's own */
+static size_t g_load_calls, g_load_denied, g_load_pending;
+#endif
 
 static struct row *row_alloc(void) {
     if (g_nrows == g_rowcap) {
@@ -549,10 +670,148 @@ static struct row *row_alloc(void) {
     return r;
 }
 
+/* ── P8-fix (R2): ONE ROW PER call_id — THE INVARIANT AND ITS SEMANTICS ────
+ *
+ * MEASURED (the review, in the gate's OWN phase-59 artifacts): the decode leg
+ * appended a FRESH row for every re-served call, so ONE guest-side tool call
+ * left THREE call rows for one call_id in the record — two of them resolved,
+ * one pending — plus a `proxy-exit` row at BOTH exits naming that call
+ * UNRESOLVED, forever, because the last duplicate could never be answered
+ * inside the run that wrote it.  The canned offline upstream re-emits the
+ * same item every turn, so the seat's own arm produced the duplicates; the
+ * loader then accepted them silently (map last-wins, one join, one row
+ * orphaned) — a record that inflates a call that never happened and a
+ * phantom every reader has to reason around.
+ *
+ * THE SEMANTICS, DECIDED HERE AND MATCHED BY THE LOADER (which now REFUSES a
+ * duplicate call_id row, because this seat cannot write one):
+ *   A call_id identifies ONE CALL.  The provider mints it per tool call and
+ *   this seat's join key IS the call_id, so a second observation of the same
+ *   call_id is the UPSTREAM REPEATING AN ITEM, not a second call.  So the
+ *   row is written ONCE — at the first observation — and a re-serve does NOT
+ *   get a second row.
+ *   A RE-SERVE NEITHER RE-OPENS NOR UN-ANSWERS THE ROW.  The row's
+ *   pending/outcome answer "has a function_call_output for this call_id been
+ *   seen", and a repeat cannot change what already happened to that call.
+ *   (fix-3's literal `r->pending = 1` on a repeat would RESURRECT a closed
+ *   call as unresolved — reproducing the phantom at the resumed run's exit,
+ *   which is the finding's own case: run 2 substitutes + joins the carried
+ *   row on turn 1 and then re-serves it in the same turn, so a re-open could
+ *   never be closed again — and it would ERASE the outcome the record
+ *   already holds.)
+ *   A RE-SERVE IS NOT SILENT: it is noted on stderr, naming the call_id and
+ *   the row's own state, so "the upstream replayed an item" is visible.
+ *   THE MAP IS ENFORCEMENT AND IS STILL (RE)ARMED ON EVERY DENIAL: a call
+ *   this run denied can never cross under its true name, repeat or not.
+ *   A RE-SERVE NEVER WEAKENS A CARRIED VERDICT: if the record says DENIED,
+ *   a later unarmed run's quiet observation leaves the row as it stands (a
+ *   later run's silence must not erase an earlier run's refusal) — only an
+ *   upgrade to DENIED rewrites a row, and it says so.
+ *
+ * FOUND BY INDEX, NOT SCAN (R3): rows are only ever appended, so an index
+ * into g_rows stays valid across the array's realloc.
+ */
+static size_t *g_rcall_idx; /* g_rows index + 1, 0 = empty */
+static size_t g_rcall_idx_cap;
+
+/* FNV-1a 64: the one hash both indexes use (the deny map's and the call
+ * rows').  Nothing depends on its quality beyond distribution — a collision
+ * costs a probe, never a wrong answer, because every candidate is compared by
+ * strcmp. */
+static uint64_t fh_hash(const char *s) {
+    uint64_t h = 1469598103934665603ULL;
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+        h ^= (uint64_t)*p;
+        h *= 1099511628211ULL;
+    }
+    return h;
+}
+
+static void rcall_reindex(void) {
+    size_t cap = 16;
+    while (cap < (g_nrows + 1) * 2) cap <<= 1;
+    free(g_rcall_idx);
+    g_rcall_idx = xmalloc(cap * sizeof *g_rcall_idx);
+    memset(g_rcall_idx, 0, cap * sizeof *g_rcall_idx);
+    g_rcall_idx_cap = cap;
+    for (size_t i = 0; i < g_nrows; i++) {
+        if (g_rows[i].kind != ROW_CALL || !g_rows[i].call_id) continue;
+        size_t j = (size_t)fh_hash(g_rows[i].call_id) & (cap - 1);
+        while (g_rcall_idx[j]) j = (j + 1) & (cap - 1);
+        g_rcall_idx[j] = i + 1;
+    }
+}
+
+/* idx must already be a complete ROW_CALL (kind and call_id set). */
+static void rcall_note(size_t idx) {
+    const char *cid = g_rows[idx].call_id;
+    if (!cid) return;
+    if (g_rcall_idx_cap < (g_nrows + 1) * 2) {
+        rcall_reindex(); /* rebuilds over every call row, this one included */
+        return;
+    }
+    size_t j = (size_t)fh_hash(cid) & (g_rcall_idx_cap - 1);
+    while (g_rcall_idx[j]) j = (j + 1) & (g_rcall_idx_cap - 1);
+    g_rcall_idx[j] = idx + 1;
+}
+
+/* The row this call_id is recorded on, or NULL.  ONE row per call_id is the
+ * writer's invariant, so "the row" is well defined. */
+static struct row *row_call_find(const char *call_id) {
+    if (!call_id || g_rcall_idx_cap == 0) return NULL;
+    size_t j = (size_t)fh_hash(call_id) & (g_rcall_idx_cap - 1);
+    while (g_rcall_idx[j]) {
+        struct row *r = &g_rows[g_rcall_idx[j] - 1];
+        if (r->call_id && strcmp(r->call_id, call_id) == 0) return r;
+        j = (j + 1) & (g_rcall_idx_cap - 1);
+    }
+    return NULL;
+}
+
+/* P8-fix (R5): THE READING AN ALLOWED ROW CARRIES.  A row THIS process wrote
+ * has no stored scope, so the text is computed from the seats that are live
+ * NOW — which is the only honest answer for a judgement this process just
+ * made.  A CARRIED row has its own (`r->allow_scope`, parsed by the loader)
+ * and keeps it byte-for-byte: recomputing it would make the record attribute
+ * to itself a judgement another run made.
+ *
+ * MEASURED before this fix: a row written under "no operator denial at this
+ * seat" (the ops author alone) was silently REWORDED by a later run's flush to
+ * claim "no operator denial and no claim refusal … the justification was
+ * judged and derived" — for a call that run never judged.
+ *
+ * THE CONTROL (build/fx-hostgate-noscopecarry, -DFH_MUTANT_NO_SCOPE_CARRY) is
+ * the pre-fix shape: the stored scope is ignored and the text is recomputed
+ * from the current seats, so the gate can catch the REWORD by content. */
+#ifdef FH_MUTANT_NO_SCOPE_CARRY
+static const char *row_scope_text(const struct row *r) {
+    (void)r; /* the pre-fix shape never looks at the row's own reading */
+    return calls_seat_present()
+               ? "seat-scoped: no operator denial and no claim refusal at "
+                 "this seat (the justification was judged and derived); "
+                 "the in-guest floor and D2 still govern"
+               : "seat-scoped: no operator denial at this seat; "
+                 "the in-guest floor and D2 still govern";
+}
+#else
+static const char *row_scope_text(const struct row *r) {
+    if (r->allow_scope) return r->allow_scope;
+    return calls_seat_present()
+               ? "seat-scoped: no operator denial and no claim refusal at "
+                 "this seat (the justification was judged and derived); "
+                 "the in-guest floor and D2 still govern"
+               : "seat-scoped: no operator denial at this seat; "
+                 "the in-guest floor and D2 still govern";
+}
+#endif
+
 /* Rewrite the whole log atomically (temp beside the log + fsync + rename).
  * The proxy is the file's SINGLE writer, so a reader never sees a torn
  * state.  A failed flush is fatal: a record that silently stops is the one
- * failure mode this seat must never have. */
+ * failure mode this seat must never have.  P8: the state this renders is
+ * SEEDED FROM THE FILE at startup (log_load), so a restart CONTINUES the
+ * record instead of replacing it — the atomic rewrite is unchanged, only its
+ * input is. */
 static void log_flush(void) {
     if (!g_log_path) return;
     size_t plen = strlen(g_log_path);
@@ -562,6 +821,15 @@ static void log_flush(void) {
     if (!f) die_errno("cannot write the one log");
     for (size_t i = 0; i < g_nrows; i++) {
         const struct row *r = &g_rows[i];
+        if (r->kind == ROW_RAW) {
+            /* P8: a row carried in from an existing log and preserved
+             * VERBATIM — this seat's record of an earlier run (or of a
+             * transcript that predates this process) is history; rewriting it
+             * through the renderers below could only lose or reword it. */
+            fputs(r->raw, f);
+            fputc('\n', f);
+            continue;
+        }
         if (r->kind == ROW_CALL) {
             /* call_id renders VERBATIM — it is THE JOIN KEY, not free text
              * (stated P2-fix decision, bounding exemption (b)): a
@@ -634,14 +902,19 @@ static void log_flush(void) {
                  * names IT as well — the same row then also reads "no claim
                  * refusal at this seat", which is exactly what an allowed row
                  * with author `...claim...` means.  The P6 text alone
-                 * under-described the seat's authority. */
-                char *jscope = json_str(
-                    calls_seat_present()
-                    ? "seat-scoped: no operator denial and no claim refusal at "
-                      "this seat (the justification was judged and derived); "
-                      "the in-guest floor and D2 still govern"
-                    : "seat-scoped: no operator denial at this seat; "
-                      "the in-guest floor and D2 still govern");
+                 * under-described the seat's authority.
+                 *
+                 * P8-fix (R5): A CARRIED ROW KEEPS THE READING IT WAS WRITTEN
+                 * WITH.  `r->allow_scope` is set only by the loader (from the
+                 * file's own `allow_scope`), so for a row THIS process wrote
+                 * — and only then — the scope is computed from the seats that
+                 * are live now.  Recomputing it for a carried row would make
+                 * the record attribute to itself a judgement another run made
+                 * (the P6/P2 honesty rule, broken by the systematic renderer:
+                 * MEASURED — a row written with the ops author alone was
+                 * reworded on the next run's flush to claim the claim seat
+                 * refused nothing, for a call that run never judged). */
+                char *jscope = json_str(row_scope_text(r));
                 fprintf(f,
                         ",\"verdict\":\"allowed\",\"author\":%s,"
                         "\"allow_scope\":%s,"
@@ -718,6 +991,15 @@ static void log_flush(void) {
                 free(jname);
             }
             fputc(']', f);
+            /* P8: how many rows of this file this run did NOT write (it
+             * carried them in from the log).  Rendered ONLY when non-zero, so
+             * a fresh run's exit row stays byte-identical to P2's.  It is the
+             * split a reader of a restarted log needs: `unresolved` and the
+             * call aggregate below describe THE LOG (carried rows included —
+             * they are in this file, so a reader cannot tell them apart
+             * otherwise); this field says how much of it predates the run. */
+            if (r->carried_rows > 0)
+                fprintf(f, ",\"carried_rows\":%zu", r->carried_rows);
             /* P5: the run aggregate, rendered ONLY when a policy ran — the
              * unarmed exit row stays byte-identical to P2's. */
             if (r->reasons_json) {
@@ -761,7 +1043,74 @@ static void row_call_append(const char *call_id, const char *name,
     r->refusal_name = xstrdup(refusal_name ? refusal_name : "");
     r->reason = xstrdup(reason ? reason : "");
     r->denial_text = xstrdup(denial_text ? denial_text : "");
+    /* P8-fix (R3): register the row in the call-row index.  The kind and key
+     * are complete by now, so the index can find it. */
+    rcall_note(g_nrows - 1);
     log_flush();
+}
+
+/* P8-fix (R2): RECORD A JUDGED CALL — one row per call_id, and a re-serve of
+ * a call_id already in the record does NOT get a second one.  See the
+ * semantics block above row_call_find.  Returns the row the call is recorded
+ * on (the existing one for a repeat, the fresh one otherwise). */
+static struct row *row_call_record(const char *call_id, const char *name,
+                                   const char *args, long turn, int verdict,
+                                   const char *author, const char *refusal_name,
+                                   const char *reason, const char *denial_text) {
+#ifdef FH_MUTANT_NO_CALL_DEDUP
+    /* P8-fix (R2) PRE-FIX CONTROL (build/fx-hostgate-nodedup): a fresh row is
+     * appended for EVERY observation of a call_id — the pre-fix shape.  The
+     * canned upstream re-serves the same item every turn, so ONE call inflates
+     * into several rows and the last one can never be answered inside its own
+     * run: a phantom UNRESOLVED at every exit.  The loader's duplicate refusal
+     * is left IN, so this control also shows the consequence: a log this
+     * writer produces is not a log this seat will load. */
+    row_call_append(call_id, name, args, turn, verdict, author, refusal_name,
+                    reason, denial_text);
+    return row_call_find(call_id);
+#else
+    struct row *r = row_call_find(call_id);
+    if (!r) {
+        row_call_append(call_id, name, args, turn, verdict, author,
+                        refusal_name, reason, denial_text);
+        return row_call_find(call_id);
+    }
+    if (verdict != VERDICT_DENIED || r->verdict == VERDICT_DENIED) {
+        note("turn %ld: call_id=%s is ALREADY recorded (turn %ld, %s%s) — the "
+             "upstream RE-SERVED an item; ONE row per call_id, so this is not "
+             "a second call and no second row is written (a repeat neither "
+             "re-opens nor un-answers the row: its pending/outcome stand)",
+             turn, call_id, r->turn,
+             r->pending ? "still pending" : "answered",
+             r->verdict == VERDICT_DENIED ? ", denied" : "");
+        return r;
+    }
+    /* The one rewrite a repeat MAY make: a call the record has not refused
+     * and this run refuses.  P8-fix keeps the row (no second row) but the
+     * record must not say `allowed`/no-verdict for a call this seat refused —
+     * so the verdict fields are refreshed IN PLACE and said out loud.  This
+     * is only reachable when the policy armed for this run differs from the
+     * run that wrote the row. */
+    note("turn %ld: call_id=%s was recorded WITHOUT a denial (turn %ld) and "
+         "THIS run refuses it — refreshing the row's verdict IN PLACE (still "
+         "one row per call_id): verdict %s -> denied by %s",
+         turn, call_id, r->turn,
+         r->verdict == VERDICT_ALLOWED ? "allowed" : "none",
+         author ? author : FH_AUTHOR_DENYLIST);
+    free(r->author);
+    free(r->refusal_name);
+    free(r->reason);
+    free(r->denial_text);
+    r->verdict = verdict;
+    r->author = xstrdup(author ? author : FH_AUTHOR_DENYLIST);
+    r->refusal_name = xstrdup(refusal_name ? refusal_name : "");
+    r->reason = xstrdup(reason ? reason : "");
+    r->denial_text = xstrdup(denial_text ? denial_text : "");
+    r->turn = turn;
+    now_ts(r->ts, sizeof r->ts);
+    log_flush();
+    return r;
+#endif /* FH_MUTANT_NO_CALL_DEDUP */
 }
 
 /* Append a P3 telemetry row (unjoined-output / echo-anomaly): the record
@@ -780,17 +1129,18 @@ static void row_anom_append(int kind, const char *call_id, const char *output,
 
 /* The JOIN: a request frame carried a function_call_output whose call_id
  * matches a pending row — attach the outcome (raw; bounded at write) and
- * mark the row resolved.  The OLDEST pending row wins: one output answers
- * one call, even when a canned upstream replays the same call_id on a later
- * turn.  An output matching NO pending row is noted on stderr; its anomaly
- * row is P9's (unjoined-output), not this slice's. */
+ * mark the row resolved.  ONE ROW PER call_id (P8-fix, R2) makes the join
+ * EXACT and O(1): the call_id has exactly one row, so there is no "oldest
+ * pending row" ambiguity left to resolve — a re-served call_id does not add a
+ * second row for the join to guess between.  An output matching NO pending
+ * row is noted on stderr; its anomaly row is P9's (unjoined-output), not this
+ * slice's. */
 #ifndef FH_MUTANT_NO_JOIN /* the mutant compiles the join out entirely */
 static void row_resolve(const char *call_id, const char *output, long turn) {
-    for (size_t i = 0; i < g_nrows; i++) {
-        struct row *r = &g_rows[i];
-        if (r->kind != ROW_CALL || !r->pending) continue;
-        if (strcmp(r->call_id, call_id) != 0) continue;
+    struct row *r = row_call_find(call_id);
+    if (r && r->pending) {
         r->pending = 0;
+        free(r->outcome);
         r->outcome = xstrdup(output ? output : "");
         log_flush();
         note("turn %ld: joined call_id=%s (true_name=%s) -> outcome recorded",
@@ -825,7 +1175,14 @@ static void turn_stats_emit(long turn) {
     const char *names[8];
     size_t counts[8];
     size_t n_names = 0;
-    for (size_t i = 0; i < g_nrows; i++) {
+    /* P8: this run's rows ONLY (i >= g_load_rows).  A turn number is
+     * PER-PROCESS — `served` restarts at 1 after a restart — so a carried row
+     * whose old turn happens to be this one would be counted into a turn that
+     * did not make it, fabricating exactly the number the dead-agent
+     * instrument exists to report honestly.  Carried rows are still in the
+     * record; they are reported by the exit row's `carried_rows`, not folded
+     * into a turn. */
+    for (size_t i = g_load_rows; i < g_nrows; i++) {
         const struct row *r = &g_rows[i];
         if (r->kind != ROW_CALL || r->turn != turn) continue;
         calls++;
@@ -887,6 +1244,13 @@ static void turn_stats_emit(long turn) {
  * that could be mistaken for a record hole.  P5 adds the RUN aggregate of the
  * denial-rate instrument (and the loud all-denied line) to the same row. */
 static void log_exit_report(long turns_served) {
+    /* P8 SCOPE NOTE: this report and the aggregate below describe THE LOG —
+     * every call row in the file, carried ones included (they ARE in this
+     * file, so a reader joining by call_id cannot tell them apart otherwise).
+     * The exit row says how many of them predate this run (`carried_rows`,
+     * rendered only when the load carried something), so the split is
+     * available without being assumed.  A per-run slice of the aggregate is
+     * the P9 reporter's job, not this row's. */
     size_t n_unres = 0, n_calls = 0;
     for (size_t i = 0; i < g_nrows; i++) {
         if (g_rows[i].kind != ROW_CALL) continue; /* exit/telemetry rows */
@@ -968,6 +1332,7 @@ static void log_exit_report(long turns_served) {
         }
     }
     r->n_unresolved = n_unres;
+    r->carried_rows = g_load_rows; /* P8; rendered only when non-zero */
 #ifndef FH_MUTANT_NO_DENIAL_RATE
     if (instrument) {
         r->t_calls = n_calls;
@@ -1059,15 +1424,63 @@ struct deny_key {
 static struct deny_key *g_dmap;
 static size_t g_ndmap, g_dmapcap;
 
-static struct deny_key *dmap_find(const char *call_id) {
+/* ── P8-fix (R3): THE MAP IS INDEXED, NOT SCANNED ──────────────────────────
+ *
+ * MEASURED (the review's probe 3, on the pre-fix binary): dmap_find was a
+ * LINEAR scan and log_load calls it once per denied row, so the LOAD was
+ * O(n^2) — 50,000 rows -> 11.3 s, 100,000 (42 MB, inside the 64 MiB cap) ->
+ * 89.7 s, 200,000 -> the over-cap refusal.  A record whose content is
+ * append-only by design made the seat's OWN SUCCESSFUL PRIOR RUNS the reason
+ * it slows down and then cannot start — the self-lockout the brief's probe-4
+ * property forbids ("the seat cannot be unable to start because of its own
+ * successful prior run").
+ *
+ * SO: an open-addressed index (FNV-1a, linear probing) of `index + 1` into
+ * g_dmap, 0 meaning empty.  Entries are only ever APPENDED (never removed),
+ * so an index stays valid across the array's own realloc — which is exactly
+ * why indices, and not pointers, are what the table holds.  The array keeps
+ * its insertion order, so --print-log-state and the exit aggregates (which
+ * walk it) are byte-stable.
+ *
+ * THE ROW INDEX (g_rcall) is the same structure over the CALL rows, because
+ * row_call_find() is on three hot per-item paths: the decode's one-row-per-
+ * call_id lookup (R2), the outbound pass's known-call scan for an output with
+ * no map entry, and the unopened-done dedup.  A resumed turn on a 100 K-row
+ * log would otherwise scan the whole row list per item.
+ */
+static size_t *g_dmap_idx; /* open addressing: g_dmap index + 1, 0 = empty */
+static size_t g_dmap_idx_cap;
+
+static void dmap_reindex(void) {
+    size_t cap = 16;
+    while (cap < (g_ndmap + 1) * 2) cap <<= 1;
+    free(g_dmap_idx);
+    g_dmap_idx = xmalloc(cap * sizeof *g_dmap_idx);
+    memset(g_dmap_idx, 0, cap * sizeof *g_dmap_idx);
+    g_dmap_idx_cap = cap;
     for (size_t i = 0; i < g_ndmap; i++) {
-        if (strcmp(g_dmap[i].call_id, call_id) == 0) return &g_dmap[i];
+        size_t j = (size_t)fh_hash(g_dmap[i].call_id) & (cap - 1);
+        while (g_dmap_idx[j]) j = (j + 1) & (cap - 1);
+        g_dmap_idx[j] = i + 1;
+    }
+}
+
+static struct deny_key *dmap_find(const char *call_id) {
+    if (!call_id || g_dmap_idx_cap == 0) return NULL;
+    size_t j = (size_t)fh_hash(call_id) & (g_dmap_idx_cap - 1);
+    while (g_dmap_idx[j]) {
+        struct deny_key *k = &g_dmap[g_dmap_idx[j] - 1];
+        if (strcmp(k->call_id, call_id) == 0) return k;
+        j = (j + 1) & (g_dmap_idx_cap - 1);
     }
     return NULL;
 }
 
-static void dmap_put(const char *call_id, const char *true_name,
-                     const char *reason, const char *denial_text, long turn) {
+/* Returns the (existing or fresh) key, so a caller that just put can use it
+ * without a second lookup — the load path used to scan twice per row. */
+static struct deny_key *dmap_put(const char *call_id, const char *true_name,
+                                 const char *reason, const char *denial_text,
+                                 long turn) {
     struct deny_key *k = dmap_find(call_id);
     if (!k) {
         if (g_ndmap == g_dmapcap) {
@@ -1078,6 +1491,13 @@ static void dmap_put(const char *call_id, const char *true_name,
         k = &g_dmap[g_ndmap++];
         memset(k, 0, sizeof *k);
         k->call_id = xstrdup(call_id);
+        if (g_dmap_idx_cap < (g_ndmap + 1) * 2) {
+            dmap_reindex(); /* rebuilds over every key, the new one included */
+        } else {
+            size_t j = (size_t)fh_hash(k->call_id) & (g_dmap_idx_cap - 1);
+            while (g_dmap_idx[j]) j = (j + 1) & (g_dmap_idx_cap - 1);
+            g_dmap_idx[j] = g_ndmap; /* g_dmap index g_ndmap-1, +1 */
+        }
     }
     free(k->true_name);
     free(k->reason);
@@ -1088,6 +1508,532 @@ static void dmap_put(const char *call_id, const char *true_name,
     /* P3-fix: a (re)denial opens a fresh substitution window for this turn */
     k->denied_turn = turn;
     k->subst_pending = 1;
+    return k;
+}
+
+/* ── P8: THE LOG IS LOADED AT STARTUP — IT IS THE JOIN STATE ────────────────
+ *
+ * WHY THIS EXISTS AT ALL.  The one log has TWO roles: the audit record and
+ * the per-run join state (the deny map) that both rewrites are keyed on.  The
+ * P2-vintage writer rendered the file from an in-memory array that started
+ * EMPTY on every process start and was never read back, so a SECOND RUN WITH
+ * THE SAME --log REPLACED THE FIRST RUN'S RECORD (measured: run 1 wrote
+ * `call_RUN1 denied`, run 2 left only `call_RUN2 allowed`) — the writer's own
+ * rule ("a record that silently stops is the one failure mode this seat must
+ * never have") broken by the writer itself, and silent degradation of every
+ * pre-restart denial on top of it.
+ *
+ * WHAT IS CARRIED, AND HOW EXACTLY:
+ *   - A CALL ROW is parsed into the same `struct row` the live path uses and
+ *     is RE-RENDERED by log_flush, not copied.  Re-rendering is deliberate:
+ *     the whole point is that its state CHANGES on this run (the join closes,
+ *     the substitution fires), and a byte-copied row could not.  The
+ *     round-trip is asserted by the gate (load -> flush with nothing mutated
+ *     must reproduce the carried lines byte-for-byte).
+ *   - A TELEMETRY/TERMINAL ROW (anything with a `type`) is HISTORY: it is
+ *     carried VERBATIM (`r->raw`) and never re-rendered — nothing in this
+ *     process will change it, and re-rendering it could only reword it.
+ *   - THE DENY MAP IS REBUILT from the DENIED rows, so a resumed run's old
+ *     denials are RESTORED (the true name) and SUBSTITUTED (the denial text)
+ *     on the outbound leg instead of reaching the model as `fx_host_denied`
+ *     plus a generic sentinel.  `subst_pending` is restored from the row's own
+ *     `pending`: a row whose join had NOT closed when the process died is
+ *     exactly the denial whose substitution window the resumed request must
+ *     close, and a resolved row is not.
+ *   - CARRIED ROWS ARE NOT COUNTED INTO A TURN (turn_stats_emit starts at
+ *     g_load_rows): turn numbers are per-process (`served` restarts at 1), so
+ *     folding a carried row into the resumed run's turn 1 would fabricate the
+ *     denial rate the dead-agent instrument exists to report honestly.
+ *
+ * REPLAY IS IDEMPOTENT — how, stated as a property and not as a hope:
+ *   `log_load` is a PURE FUNCTION OF THE FILE.  It reads no clock, keeps no
+ *   counter, and takes nothing from the environment; a row already present is
+ *   parsed into state that already holds its effect (a call row into the row
+ *   list, a denied row into the deny map by call_id), so loading the same
+ *   bytes twice yields the same state and there is no second application to
+ *   double.  The gate asserts it two ways: the same file loaded twice produces
+ *   an identical --print-log-state digest, and load->flush with nothing
+ *   mutated reproduces the carried lines byte-for-byte (no duplication, no
+ *   rewording).
+ *
+ * A CORRUPT LOG REFUSES — NEVER A SILENT EMPTY MAP:
+ *   an existing log that is not loadable in full (a TORN last line, a line
+ *   that is not JSON, a JSON line that is not a row this seat ever wrote, an
+ *   unknown verdict, an over-long ts) makes the seat REFUSE TO START, naming
+ *   the line, the reason and the salvage count, and states that serving would
+ *   silently un-restore every pre-restart denial.  The file is left UNTOUCHED
+ *   (the refusal happens before any flush).  The atomic temp+rename makes a
+ *   torn file unlikely from this seat's OWN writes — but the seat does not
+ *   control what it is pointed at, and "unlikely" is not "impossible".  A
+ *   PREFIX is never salvaged silently: there is no "skip the bad tail and
+ *   carry on" mode, because that mode IS the silent empty map with extra
+ *   steps.  The gate's pre-fix control (build/fx-hostgate-nologload,
+ *   -DFH_MUTANT_NO_LOG_LOAD) reads nothing at all: it starts with an empty
+ *   map and its first flush REPLACES the file — the wipe, which is what the
+ *   corruption arms and the restart arms must catch. */
+
+/* The loader's own machinery is compiled out WITH the load (the pre-fix
+ * control carries none of it — there is nothing to refuse with, which IS the
+ * mutant's shape). */
+#ifndef FH_MUTANT_NO_LOG_LOAD
+
+#define FH_LOG_MAX (64u << 20) /* refuse an absurd log rather than slurp it */
+
+static void log_refuse(const char *fmt, ...) {
+    va_list ap;
+    fprintf(stderr, "%s: FATAL: THE ONE LOG IS NOT LOADABLE: ", prog);
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+    fputc('\n', stderr);
+    fprintf(stderr,
+            "%s: the log is the JOIN STATE as well as the record: serving "
+            "with an empty map would silently un-restore and un-substitute "
+            "every pre-restart denial (the named failure direction), so this "
+            "seat REFUSES TO START and leaves the file untouched.  Move it "
+            "aside to start a fresh record — that loses the join state for "
+            "the denials it carries.\n",
+            prog);
+    exit(1);
+}
+
+/* P8-fix (R4): the SAME loud refusal for a --log that is not usable AT ALL —
+ * a different failure with a different way out, so it says so rather than
+ * borrowing the loadability trailer above ("move it aside" is not the fix for
+ * a FIFO or a device node).  Nothing has been written when this fires. */
+static void log_refuse_path(const char *fmt, ...) {
+    va_list ap;
+    fprintf(stderr, "%s: FATAL: --log IS NOT USABLE AS THE ONE LOG: ", prog);
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+    fputc('\n', stderr);
+    fprintf(stderr,
+            "%s: the log is the JOIN STATE as well as the audit record, and "
+            "this seat's flush is an ATOMIC TEMP+RENAME — so the path must be "
+            "a regular file this seat owns and can replace.  This seat "
+            "REFUSES TO START; nothing has been written and nothing was "
+            "changed.\n",
+            prog);
+    exit(1);
+}
+
+/* The row types this seat writes.  An unknown one is a hand-edited or
+ * foreign file: refusing is the loud direction. */
+#ifdef FH_MUTANT_NO_LOAD_BOUND
+/* P8-fix (R1) PRE-FIX CONTROL (build/fx-hostgate-loadunbound): the LOAD-time
+ * bound compiled OUT — the loader trusts every field of a loaded row
+ * VERBATIM, exactly the pre-fix shape.  A crafted-but-structurally-valid
+ * DENIED row's true_name/denial_text then reach the deny map (and so the
+ * outbound leg) at full length: the 1 MB name and the 1,048,576-byte denial
+ * text the review measured, with FH_BOUND applied only at WRITE time.  The
+ * gate must catch it BY CONTENT on exactly its own fixture. */
+#define LOAD_BOUND(s) xstrdup(s)
+#else
+#define LOAD_BOUND(s) bound_copy(s)
+#endif
+
+static int log_type_known(const char *ty) {
+    static const char *const known[] = {
+        "turn-stats", "proxy-exit", "unjoined-output", "echo-anomaly",
+        "unresolved-substitution",
+    };
+    for (size_t i = 0; i < sizeof known / sizeof *known; i++) {
+        if (strcmp(ty, known[i]) == 0) return 1;
+    }
+    return 0;
+}
+
+/* Read one field the loader expects to be a string.  JSON null is returned as
+ * NULL (the writer renders explicit nulls for fields that are absent by
+ * design — `outcome` on a pending row, `reason` on an allowed one), and
+ * anything ELSE (a number, an array, an object) refuses: the seat only ever
+ * writes strings there, so a different type is a hand-edited or foreign row. */
+static const char *log_str(const yyjson_val *root, const char *key,
+                           size_t lineno) {
+    yyjson_val *v = yyjson_obj_get(root, key);
+    if (yyjson_is_str(v)) return yyjson_get_str(v);
+    if (yyjson_is_null(v)) return NULL;
+    log_refuse("line %zu: `%s` is not a string (and the seat only ever "
+               "writes strings there)",
+               lineno, key);
+    return NULL; /* unreachable */
+}
+
+static const char *log_str_req(const yyjson_val *root, const char *key,
+                               size_t lineno) {
+    const char *s = log_str(root, key, lineno);
+    if (!s)
+        log_refuse("line %zu: a call row with a missing/null `%s` — not a row "
+                   "this seat ever wrote",
+                   lineno, key);
+    return s;
+}
+
+/* P8-fix: A FIELD THE WRITER RENDERS ONLY WHEN A POLICY RAN (verdict, author,
+ * allow_scope) is OPTIONAL at load, and its ABSENCE is exactly the UNARMED row
+ * this seat writes — `log_str` refuses an absent key, so the loader used to
+ * refuse the seat's OWN record from any run with no policy armed (MEASURED: an
+ * unarmed run's row, restarted against, died with "`verdict` is not a string").
+ * That is the self-lockout class the review's probe 4 names, and it is the
+ * writer/loader drift R2's "match the loader" forbids.  The tolerance is
+ * narrow: ABSENT or explicit null are accepted, anything ELSE (a number, an
+ * array, an object) still refuses — a hand-edited field type is still not a
+ * row this seat writes. */
+static const char *log_str_opt(const yyjson_val *root, const char *key,
+                               size_t lineno) {
+    if (!yyjson_obj_get(root, key)) return NULL; /* absent: no claim at all */
+    return log_str(root, key, lineno);
+}
+
+#endif /* !FH_MUTANT_NO_LOG_LOAD */
+
+static void log_load(void) {
+    if (!g_log_path) return;
+#ifdef FH_MUTANT_NO_LOG_LOAD
+    /* P8 PRE-FIX CONTROL (build/fx-hostgate-nologload): the load is compiled
+     * OUT — the pre-fix shape exactly.  The in-memory state starts EMPTY and
+     * the first flush REPLACES the existing record, so the gate's restart arm
+     * must catch it by content (the earlier run's rows are GONE and the
+     * earlier denials are not restored nor substituted).  A corrupt log is
+     * not even noticed here: it is overwritten — the silent empty map. */
+    note("log: LOAD COMPILED OUT (FH_MUTANT_NO_LOG_LOAD) — the PRE-FIX shape: "
+         "state starts EMPTY, the first flush REPLACES any existing record at "
+         "%s, and pre-restart denials are neither restored nor substituted",
+         g_log_path);
+    return;
+#else
+    /* ── P8-fix (R4): THE DOOR IS CHECKED BEFORE IT IS OPENED ────────────
+     *
+     * MEASURED (the review's probe 3) on the pre-fix binary:
+     *   FIFO      fopen("rb") BLOCKS in open() with no writer — the seat
+     *             hangs at startup FOREVER with ZERO log-related output
+     *             (timeout killed it, rc=124).  Not a refusal, not a wrong
+     *             state: a SILENT HANG, the worst shape this seat can have.
+     *   /dev/null accepted as "EMPTY (0 bytes)" with rc=0 — and a served run
+     *             would then rename a temp OVER the device node (as root:
+     *             destroy /dev/null), silently voiding the seat's own
+     *             "the log is mandatory" contract.
+     *   SYMLINK   the load follows the link, then the FIRST FLUSH REPLACES
+     *             it with a regular file (measured: link.log became a regular
+     *             file, real.log frozen at the old state) — the one log
+     *             silently SPLITS in two and a reader of the target sees a
+     *             stale record.
+     *   DIRECTORY dies loudly (errno 22) but with a bare die_errno, outside
+     *             the structured refusal the rest of this posture uses.
+     * All four are the same defect: the strictness stopped at the door.
+     *
+     * lstat, not stat: only lstat can see the SYMLINK itself (stat resolves
+     * it and would report the target).  A path this seat cannot lstat for any
+     * reason other than ENOENT is not a path it should write blind into. */
+    struct stat st;
+    if (lstat(g_log_path, &st) != 0) {
+        if (errno == ENOENT) {
+            note("log: no existing log at %s — starting a fresh record",
+                 g_log_path);
+            return;
+        }
+        die_errno("cannot lstat the log path");
+    }
+    if (S_ISLNK(st.st_mode))
+        log_refuse_path("%s is a SYMLINK.  This seat's flush writes a temp "
+                        "beside the log and RENAMES it over the path, so the "
+                        "FIRST FLUSH WOULD REPLACE THE LINK WITH A REGULAR "
+                        "FILE: the record would silently SPLIT — this path "
+                        "would hold this seat's rows while the old target "
+                        "stayed frozen, and a reader of the target would be "
+                        "reading a stale record",
+                        g_log_path);
+    if (!S_ISREG(st.st_mode))
+        log_refuse_path("%s is NOT A REGULAR FILE (mode 0%o).  A FIFO has no "
+                        "writer here, so open() would BLOCK this seat at "
+                        "startup with no message at all; a character or block "
+                        "device (e.g. /dev/null) would be REPLACED by the "
+                        "first flush's rename; a directory cannot be a "
+                        "record",
+                        g_log_path, (unsigned)(st.st_mode & S_IFMT));
+    /* P8-fix (R1): the log is TRUSTED INPUT (see the P8-fix header block), so
+     * the seat must at least own it.  The MODE is deliberately NOT checked:
+     * the file this seat writes is created by fopen with the operator's umask
+     * (0666 & ~umask), so enforcing "no group/other write" would make an
+     * operator's umask alone lock the seat out of ITS OWN record — the
+     * self-lockout class, reintroduced as a convenience check.  Ownership is
+     * the line that does not have that failure mode. */
+    if (st.st_uid != geteuid())
+        log_refuse_path("%s is owned by uid %u, not this seat's euid %u.  The "
+                        "log is TRUSTED INPUT: the loader checks STRUCTURE, "
+                        "never CONTENT, and a DENIED row's true_name and "
+                        "denial_text are what the outbound leg restores and "
+                        "substitutes — so a log this seat does not own is not "
+                        "a log it may carry",
+                        g_log_path, (unsigned)st.st_uid, (unsigned)geteuid());
+
+    FILE *f = fopen(g_log_path, "rb");
+    if (!f) die_errno("cannot read the existing one log");
+    if (fseek(f, 0, SEEK_END) != 0) die_errno("fseek the existing one log");
+    long fl = ftell(f);
+    if (fl < 0) die_errno("ftell the existing one log");
+    if ((unsigned long)fl > FH_LOG_MAX)
+        log_refuse("%s is %ld bytes, over this seat's %u-byte load cap.  The "
+                   "cap is a guard against slurping an absurd file — NOT a "
+                   "limit on how much this seat may have recorded (the load "
+                   "itself is linear: the deny map is INDEXED, not scanned) — "
+                   "and THE WAY OUT IS NOT LOSSY: the map is rebuilt from "
+                   "this file's DENIED rows alone, so compacting to them "
+                   "(grep -F '\"verdict\":\"denied\"' %s > %s.denied) and "
+                   "pointing --log at the result keeps every denial's "
+                   "restore/substitution intact",
+                   g_log_path, fl, (unsigned)FH_LOG_MAX, g_log_path,
+                   g_log_path);
+    rewind(f);
+    size_t len = (size_t)fl;
+    if (len == 0) {
+        fclose(f);
+        note("log: %s exists and is EMPTY (0 bytes) — nothing to carry",
+             g_log_path);
+        return;
+    }
+    char *buf = xmalloc(len + 1);
+    if (fread(buf, 1, len, f) != len) die_errno("fread the existing one log");
+    fclose(f);
+    buf[len] = '\0';
+
+    /* A TORN TAIL is the single most likely corruption (a crash mid-write, a
+     * copy that stopped short, a hand edit): the file must end in a newline,
+     * because every row this seat writes does.  Measured here, before any
+     * row is parsed, so the refusal can name the exact byte gap. */
+    if (buf[len - 1] != '\n') {
+        size_t last_nl = len;
+        while (last_nl > 0 && buf[last_nl - 1] != '\n') last_nl--;
+        size_t tail_gap = len - last_nl;
+        log_refuse("%s does not end in a newline: the last %zu byte(s) are a "
+                   "TORN row (a partial write, a truncated copy, or a hand "
+                   "edit).  Refusing rather than parsing an unfinished row",
+                   g_log_path, tail_gap);
+    }
+
+    size_t off = 0;
+    size_t lineno = 0;
+    size_t crlf_lines = 0; /* P8-fix (R7): made VISIBLE, not silent */
+    while (off < len) {
+        size_t eol = off;
+        while (eol < len && buf[eol] != '\n') eol++;
+        lineno++;
+        size_t llen = eol - off;
+        if (llen && buf[off + llen - 1] == '\r') {
+            /* P8-fix (R7): CRLF IS ACCEPTED AND NORMALIZED — see the P8-fix
+             * header block.  A Windows copy of the record is not corruption,
+             * so this is tolerance rather than refusal; but it is not SILENT
+             * either, which is what the pre-fix loader was (it stripped the
+             * \r and the first flush rewrote the line as LF with no note). */
+            llen--;
+            crlf_lines++;
+        }
+        if (llen == 0)
+            log_refuse("line %d is EMPTY.  This seat never writes a blank "
+                       "line, so a blank line is a row that was REMOVED — the "
+                       "gap is exactly what must not pass silently",
+                       lineno);
+        yyjson_doc *doc = yyjson_read(buf + off, llen, 0);
+        if (!doc)
+            log_refuse("line %d (byte offset %zu) is not JSON: %.*s…", lineno,
+                       off, (int)(llen > 60 ? 60 : llen), buf + off);
+        yyjson_val *root = yyjson_doc_get_root(doc);
+        if (!yyjson_is_obj(root))
+            log_refuse("line %d is JSON but not an OBJECT", lineno);
+        const char *ty = yyjson_is_str(yyjson_obj_get(root, "type"))
+                             ? yyjson_get_str(yyjson_obj_get(root, "type"))
+                             : NULL;
+        if (ty) {
+            if (!log_type_known(ty))
+                log_refuse("line %d carries the UNKNOWN row type \"%s\" — not "
+                           "a row this seat writes",
+                           lineno, ty);
+            struct row *r = row_alloc();
+            r->kind = ROW_RAW;
+            r->raw = xmalloc(llen + 1);
+            memcpy(r->raw, buf + off, llen);
+            r->raw[llen] = '\0';
+            yyjson_doc_free(doc);
+            off = eol + 1;
+            continue;
+        }
+        /* a CALL row */
+        const char *cid = log_str(root, "call_id", lineno);
+        if (!cid || !*cid)
+            log_refuse("line %d has neither a `type` nor a non-empty "
+                       "`call_id` — not a row this seat writes",
+                       lineno);
+        /* P8-fix (R1): the join key renders VERBATIM (the stated bounding
+         * exemption), and the WRITER's argument for that is transitive: a
+         * call_id cannot exceed FH_FRAME_MAX because it arrived in a frame.
+         * A LOADED row never arrived in a frame, so the load re-establishes
+         * the same bound by hand — otherwise the exemption is a hole a 64 MiB
+         * line can walk through. */
+        if (strlen(cid) > FH_FRAME_MAX)
+            log_refuse("line %d carries a `call_id` of %zu bytes, longer than "
+                       "a frame (%u) could have carried — the join key is "
+                       "exempt from the free-text bound only because the wire "
+                       "bounds it",
+                       lineno, strlen(cid), (unsigned)FH_FRAME_MAX);
+        /* P8-fix (R2): ONE ROW PER call_id — this seat cannot write a second
+         * row for a key, so a second one is a hand edit or a pre-fix record.
+         * MEASURED (the review, probe 3): the loader used to accept
+         * duplicates silently (map last-wins, the join closing one row,
+         * every other row left pending forever — a PHANTOM unresolved entry
+         * in the exit row at every run).  Refusing is the loud direction and
+         * it is what makes the writer's invariant checkable. */
+        if (row_call_find(cid))
+            log_refuse("line %d: call_id %s appears MORE THAN ONCE in this "
+                       "log.  This seat writes ONE row per call_id (a "
+                       "re-served call_id is the upstream repeating an item, "
+                       "not a second call), so a duplicate is not a record "
+                       "this seat writes — and carrying it would leave a row "
+                       "no output can ever close, reported UNRESOLVED at "
+                       "every exit.  (A log written by a PRE-FIX seat may "
+                       "contain duplicates: those rows are the inflation this "
+                       "seat no longer produces.)",
+                       lineno, cid);
+        yyjson_val *jturn = yyjson_obj_get(root, "turn");
+        /* P8-fix (R6b): `turn` must be a WHOLE number in range.  The pre-fix
+         * check was yyjson_is_num, which let `3.7` and `1e100` through — the
+         * former truncates under get_sint and the latter is undefined, and
+         * either way the row RE-RENDERS DIFFERENTLY on the next flush: a
+         * hand edit silently changing the record.  The seat writes a long. */
+        if (!yyjson_is_int(jturn))
+            log_refuse("line %d has a `turn` that is not an INTEGER — this "
+                       "seat only ever writes whole turn numbers, and a "
+                       "fractional or out-of-range one would silently render "
+                       "differently on the next flush",
+                       lineno);
+        long turn_v = (long)yyjson_get_sint(jturn);
+        if (turn_v < 0)
+            log_refuse("line %d carries a negative `turn` (%ld) — this seat "
+                       "counts served turns from 1",
+                       lineno, turn_v);
+        yyjson_val *jpend = yyjson_obj_get(root, "pending");
+        if (!yyjson_is_bool(jpend))
+            log_refuse("line %d has no boolean `pending`", lineno);
+        const char *ts = log_str_req(root, "ts", lineno);
+        if (strlen(ts) + 1 > sizeof(((struct row *)0)->ts))
+            log_refuse("line %d carries a `ts` of %zu chars, longer than any "
+                       "this seat writes (%zu) — a hand edit",
+                       lineno, strlen(ts), sizeof(((struct row *)0)->ts) - 1);
+        const char *ve = log_str_opt(root, "verdict", lineno);
+        int verdict = VERDICT_NONE;
+        if (ve) {
+            if (strcmp(ve, "denied") == 0) verdict = VERDICT_DENIED;
+            else if (strcmp(ve, "allowed") == 0) verdict = VERDICT_ALLOWED;
+            else log_refuse("line %d carries the UNKNOWN verdict \"%s\"",
+                            lineno, ve);
+        }
+        struct row *r = row_alloc();
+        r->kind = ROW_CALL;
+        snprintf(r->ts, sizeof r->ts, "%s", ts);
+        r->call_id = xstrdup(cid);
+        r->turn = turn_v;
+        const char *tn = log_str(root, "true_name", lineno);
+        const char *jargs = log_str(root, "args", lineno);
+        /* P8-fix (R1): THE WRITER'S OWN BOUND, APPLIED AT LOAD.  The writer
+         * caps every free-text field at FH_BOUND with an explicit marker, but
+         * the LOADER trusted the file: MEASURED (the review, probe 1) — a
+         * crafted-but-structurally-valid DENIED row carrying a 1 MB
+         * `denial_text` and `true_name` = system_reboot_machine loaded
+         * CLEANLY, and against a run with NO POLICY ARMED the outbound leg
+         * restored that name and emitted all 1,048,576 bytes: the marker
+         * invariant was bypassed on the load path, and the map (not the
+         * renderer) is what the outbound leg reads.  bound_copy is
+         * idempotent, so a row the seat itself wrote (already ≤ FH_BOUND)
+         * round-trips byte-for-byte — the gate asserts exactly that. */
+        r->true_name = LOAD_BOUND(tn ? tn : "");
+        r->args = LOAD_BOUND(jargs ? jargs : "");
+        r->pending = yyjson_get_bool(jpend) ? 1 : 0;
+        r->verdict = verdict;
+        const char *out = log_str(root, "outcome", lineno);
+        r->outcome = out ? LOAD_BOUND(out) : NULL;
+        if (verdict == VERDICT_DENIED) {
+            r->author = LOAD_BOUND(log_str_req(root, "author", lineno));
+            r->refusal_name =
+                LOAD_BOUND(log_str_req(root, "refusal_name", lineno));
+            r->reason = LOAD_BOUND(log_str_req(root, "reason", lineno));
+            r->denial_text =
+                LOAD_BOUND(log_str_req(root, "denial_text", lineno));
+            /* THE SECOND ROLE: the map the outbound leg is keyed on.  A
+             * denial carried in with its join still OPEN is exactly the one
+             * whose substitution window this run must close. */
+            struct deny_key *k =
+                dmap_put(cid, r->true_name, r->reason, r->denial_text, r->turn);
+            if (k) k->subst_pending = r->pending ? 1 : 0;
+            g_load_denied++;
+        } else {
+            /* P8-fix: absent for an UNARMED row (the writer renders no
+             * author when no policy ran) — see log_str_opt. */
+            const char *au = log_str_opt(root, "author", lineno);
+            r->author = xstrdup(au ? au : FH_AUTHOR_DENYLIST);
+            r->refusal_name = xstrdup("");
+            r->reason = xstrdup("");
+            r->denial_text = xstrdup("");
+            /* P8-fix (R5): the row's OWN reading of its own scope, carried
+             * VERBATIM.  Absent (an older row) -> NULL -> computed at flush,
+             * which is the best available answer for a row that never
+             * recorded one. */
+            const char *scope = log_str_opt(root, "allow_scope", lineno);
+            r->allow_scope = scope ? xstrdup(scope) : NULL;
+        }
+        /* P8-fix (R3): index the loaded call row, so the one-row-per-call_id
+         * check above and the per-item lookups below are O(1) — the linear
+         * version is what made a 100 K-row load take 89.7 s. */
+        rcall_note(g_nrows - 1);
+        if (r->pending) g_load_pending++;
+        g_load_calls++;
+        yyjson_doc_free(doc);
+        off = eol + 1;
+    }
+
+    free(buf);
+    if (crlf_lines)
+        note("log: %zu line(s) of %s ended CRLF — ACCEPTED (a Windows copy "
+             "of the record is not corruption) and NORMALIZED to LF by this "
+             "run's first flush",
+             crlf_lines, g_log_path);
+    g_load_rows = g_nrows;
+    note("log: LOADED %zu row(s) from %s — %zu call row(s) (%zu denied, %zu "
+         "still pending), %zu carried telemetry/terminal row(s); the deny map "
+         "is REBUILT with %zu key(s), so pre-restart denials are restored and "
+         "substituted on this run's outbound leg",
+         g_nrows, g_log_path, g_load_calls, g_load_denied, g_load_pending,
+         g_load_rows - g_load_calls, g_ndmap);
+#endif /* FH_MUTANT_NO_LOG_LOAD */
+}
+
+/* --print-log-state PATH — the CANONICAL REPLAY DIGEST: load exactly as the
+ * seat does, then print what came out of it.  It exists so "the replay is
+ * idempotent" is an assertable property rather than a claim: the same file
+ * twice must print the same bytes, and a flush that mutated nothing must not
+ * change the counts.  It reads the REAL loader (never a second parser), and
+ * it prints to stdout so the caller can diff it. */
+static void log_state_print(void) {
+    size_t calls = 0, denied = 0, pending = 0, hist = 0;
+    for (size_t i = 0; i < g_nrows; i++) {
+        const struct row *r = &g_rows[i];
+        if (r->kind == ROW_RAW) {
+            hist++;
+            continue;
+        }
+        if (r->kind != ROW_CALL) continue;
+        calls++;
+        if (r->verdict == VERDICT_DENIED) denied++;
+        if (r->pending) pending++;
+    }
+    printf("log-state rows=%zu calls=%zu denied=%zu pending=%zu history=%zu "
+           "dmap=%zu carried=%zu\n",
+           g_nrows, calls, denied, pending, hist, g_ndmap, g_load_rows);
+    for (size_t i = 0; i < g_ndmap; i++) {
+        printf("dmap %s\t%s\t%s\tpending=%d\n", g_dmap[i].call_id,
+               g_dmap[i].true_name ? g_dmap[i].true_name : "",
+               g_dmap[i].denial_text ? g_dmap[i].denial_text : "",
+               g_dmap[i].subst_pending);
+    }
 }
 
 /* ── JSON rebuild primitives (yyjson has no doc->mut-doc here, so denied
@@ -3911,8 +4857,13 @@ static unsigned char *serve_stream(const unsigned char *buf, size_t len,
                                 char *denial = xmalloc(strlen(reason) + 64);
                                 snprintf(denial, strlen(reason) + 64,
                                          "(denied by host policy: %s)", reason);
+                                /* P8-fix (R2): the MAP is enforcement and is
+                                 * (re)armed on every denial, repeat or not;
+                                 * the ROW is the record and is written once
+                                 * per call_id (row_call_record handles the
+                                 * repeat). */
                                 dmap_put(cid, nm, reason, denial, turn);
-                                row_call_append(cid, nm, jargs, turn,
+                                row_call_record(cid, nm, jargs, turn,
                                                 VERDICT_DENIED, author, refusal,
                                                 reason, denial);
                                 note("turn %ld: DENIED call_id=%s true_name=%s "
@@ -3928,7 +4879,7 @@ static unsigned char *serve_stream(const unsigned char *buf, size_t len,
 #endif
                                 free(denial);
                             } else {
-                                row_call_append(cid, nm, jargs, turn,
+                                row_call_record(cid, nm, jargs, turn,
                                                 policy_armed() ? VERDICT_ALLOWED
                                                                : VERDICT_NONE,
                                                 policy_armed() ? authors_ran()
@@ -3991,14 +4942,7 @@ static unsigned char *serve_stream(const unsigned char *buf, size_t len,
                              * unresolved-substitution anomaly.  The row is
                              * pending, by definition (nothing answered it),
                              * and the exit report names it unresolved. */
-                            int known = 0;
-                            for (size_t ri = 0; ri < g_nrows; ri++) {
-                                if (g_rows[ri].kind == ROW_CALL && fc_cid &&
-                                    strcmp(g_rows[ri].call_id, fc_cid) == 0) {
-                                    known = 1;
-                                    break;
-                                }
-                            }
+                            int known = row_call_find(fc_cid) != NULL;
                             if (known) {
                                 note("turn %ld: unopened denied done for "
                                      "call_id=%s is ALREADY recorded — not "
@@ -4301,14 +5245,7 @@ static char *outbound_pass(const unsigned char *body, size_t body_len,
                 /* telemetry: an output matching NO call the host ever
                  * decoded (denied or accepted) — the guest put words in the
                  * conversation for a call the model never made */
-                int known = 0;
-                for (size_t r = 0; r < g_nrows; r++) {
-                    if (g_rows[r].kind == ROW_CALL &&
-                        strcmp(g_rows[r].call_id, cid ? cid : "") == 0) {
-                        known = 1;
-                        break;
-                    }
-                }
+                int known = row_call_find(cid) != NULL;
                 if (!known && cid && *cid) {
                     row_anom_append(ROW_ANOM_UNJOINED, cid,
                                     out ? out : "", turn);
@@ -4542,7 +5479,16 @@ static void usage(void) {
     note("  --slave-file    where the pty slave path is published (one line)");
     note("  --log           THE ONE LOG: append-only JSONL, one row per call");
     note("                  (required — a proxy that records nothing is not");
-    note("                  this seat, it is a silent hole in the record)");
+    note("                  this seat, it is a silent hole in the record).");
+    note("                  Must be a REGULAR FILE this seat owns: a FIFO,");
+    note("                  device, directory or symlink is refused at startup");
+    note("                  (a FIFO would hang the open, a device would be");
+    note("                  replaced by the flush's rename, a symlink would be");
+    note("                  replaced by it and split the record).  An existing");
+    note("                  log is LOADED — it is the join state as well as the");
+    note("                  record — and a duplicate call_id row refuses: it is");
+    note("                  TRUSTED INPUT (single writer by operator discipline;");
+    note("                  STRUCTURE is checked, never CONTENT)");
     note("  --turns N       exit after serving N request frames (default: never)");
     note("  --deny NAME     the pinned placeholder denylist (repeatable).  With");
     note("                  none given and no --require-justification NO policy");
@@ -4573,6 +5519,12 @@ static void usage(void) {
     note("  --dump-requests PATH  append the REWRITTEN model-facing request");
     note("                  frame (one compact JSON line per turn) — the only");
     note("                  observable of the outbound substitution offline");
+    note("  --print-log-state PATH  load PATH exactly as the seat does and");
+    note("                  print the canonical state it yields (row counts");
+    note("                  + the rebuilt deny map) to stdout, then exit —");
+    note("                  the replay-idempotence instrument (P8).  It runs");
+    note("                  the REAL loader and refuses loudly on a corrupt");
+    note("                  log, exactly as a run would");
     note("  --print-catalog / --print-catalog-sha  print the pinned verb");
     note("                  catalog (one name per line) / its sha256, for the");
     note("                  gate's INDEPENDENT cross-check against the real");
@@ -4582,6 +5534,7 @@ static void usage(void) {
 int main(int argc, char **argv) {
     const char *upstream_path = NULL;
     const char *slave_file = NULL;
+    const char *print_log_state = NULL;
     long max_turns = -1; /* -1: serve forever */
 
     for (int i = 1; i < argc; i++) {
@@ -4614,6 +5567,8 @@ int main(int argc, char **argv) {
             g_calls_dir = argv[++i];
         } else if (!strcmp(argv[i], "--dump-requests") && i + 1 < argc) {
             g_dump_path = argv[++i];
+        } else if (!strcmp(argv[i], "--print-log-state") && i + 1 < argc) {
+            print_log_state = argv[++i];
         } else if (!strcmp(argv[i], "--print-catalog")) {
             /* The gate's INDEPENDENT cross-check of the pinned catalog against
              * the real VERBS[] table: one name per line on stdout, then exit —
@@ -4636,6 +5591,16 @@ int main(int argc, char **argv) {
             return 2;
         }
     }
+    /* P8's query mode: it runs the SAME loader a served run uses (never a
+     * second parser) and then prints the state — so a claim about the replay
+     * is a read of the real state, and a corrupt log refuses here too. */
+    if (print_log_state) {
+        g_log_path = print_log_state;
+        log_load();
+        log_state_print();
+        return 0;
+    }
+
     if (!upstream_path || !slave_file || !g_log_path) {
         usage();
         return 2;
@@ -4658,6 +5623,15 @@ int main(int argc, char **argv) {
      * a policy that fails its pin or its verb table has no later moment at
      * which the refusal could be early enough to be a gate. */
     calls_seat_startup(g_calls_dir);
+
+    /* P8 — THE ONE LOG IS LOADED, and it is loaded as a GATE: an existing log
+     * that cannot be read back in full refuses the start (before the slave
+     * path is published and before any flush could replace it), because the
+     * log is ALSO the join state — starting with an empty map would silently
+     * un-restore every pre-restart denial.  It runs AFTER the policy seats for
+     * the same reason they run in order: each refusal must be the earliest
+     * moment it can be loud, and none of them may be skipped. */
+    log_load();
 
     /* the upstream canned stream, read whole once — every turn replays it
      * from the start (the offline arm's provider is deterministic) */
@@ -4707,7 +5681,9 @@ int main(int argc, char **argv) {
     note("upstream: %s (%zu bytes); turns: %s",
          upstream_path, upstream_len,
          max_turns < 0 ? "unlimited" : "bounded");
-    note("log: %s (one JSONL row per call)", g_log_path);
+    note("log: %s (one JSONL row per call; %zu row(s) carried in, %zu deny-map "
+         "key(s) — the record CONTINUES, it is never replaced)",
+         g_log_path, g_load_rows, g_ndmap);
     /* The honesty lines: name what is ACTUALLY armed.  The denylist is a
      * placeholder author; the ops policy at THIS seat, the claim policy at
      * this seat and the justification check are real; the reserved name is

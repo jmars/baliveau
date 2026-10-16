@@ -310,6 +310,18 @@ BIN_HOSTGATE_NOCLAIM := build/fx-hostgate-noclaim
 # instrument is blind to the call).
 BIN_HOSTGATE_NOEVALPIN := build/fx-hostgate-noevalpin
 BIN_HOSTGATE_NOBOUND := build/fx-hostgate-nobound
+# P8 (resume + the one log as join state): the PRE-FIX CONTROL for the log's
+# second role.  nologload: the startup load compiled OUT — the in-memory state
+# starts EMPTY and the first flush REPLACES any existing record, so the prior
+# run's rows are GONE and its denials are neither restored nor substituted on
+# the outbound leg (the brief's measured wipe, and the silent empty map the
+# corruption arms exist to catch).
+BIN_HOSTGATE_NOLOGLOAD := build/fx-hostgate-nologload
+# P8-fix: three PRE-FIX CONTROLS for the P8 review's should-fixes, each the
+# SAME source with one behaviour compiled out (see the rules below).
+BIN_HOSTGATE_LOADUNBOUND := build/fx-hostgate-loadunbound
+BIN_HOSTGATE_NODEDUP := build/fx-hostgate-nodedup
+BIN_HOSTGATE_NOSCOPECARRY := build/fx-hostgate-noscopecarry
 
 test-hostgate: $(BIN_HOSTGATE) $(BIN_HOSTGATE_MUTANT) $(BIN_HOSTGATE_UNBOUND) \
                $(BIN_HOSTGATE_NOREWRITE) $(BIN_HOSTGATE_BLINDADD) \
@@ -320,7 +332,9 @@ test-hostgate: $(BIN_HOSTGATE) $(BIN_HOSTGATE_MUTANT) $(BIN_HOSTGATE_UNBOUND) \
                $(BIN_HOSTGATE_NODRATE) $(BIN_HOSTGATE_DONEARGS) \
                $(BIN_HOSTGATE_NOOPS) $(BIN_HOSTGATE_OPSFLOOR) \
                $(BIN_HOSTGATE_OPSNOCANON) $(BIN_HOSTGATE_NOCLAIM) \
-               $(BIN_HOSTGATE_NOEVALPIN) $(BIN_HOSTGATE_NOBOUND) $(BIN)
+               $(BIN_HOSTGATE_NOEVALPIN) $(BIN_HOSTGATE_NOBOUND) \
+               $(BIN_HOSTGATE_NOLOGLOAD) $(BIN_HOSTGATE_LOADUNBOUND) \
+               $(BIN_HOSTGATE_NODEDUP) $(BIN_HOSTGATE_NOSCOPECARRY) $(BIN)
 	bash tests/test_hostgate.sh
 
 # P6 THE OPS AUTHOR: the engine whose reasoning the seat evaluates is the
@@ -513,6 +527,46 @@ $(BIN_HOSTGATE_NOEVALPIN): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJ
 $(BIN_HOSTGATE_NOBOUND): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(DATALOG_DIR)/zig-out/lib/libdatalog.so | $(DATALOG_SHIM)
 	@mkdir -p build
 	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_MUTANT_NO_EVAL_BOUND -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(HOSTGATE_LIBS)
+
+# P8 PRE-FIX CONTROL: THE LOG LOAD COMPILED OUT.  This is the source as it
+# stood before P8 — the in-memory row array starts EMPTY on every process
+# start and the file is never read back, so a second run against the same
+# --log REPLACES the first run's record (MEASURED by the brief: run 1's
+# `denied` row gone, only run 2's left) and the deny map is empty, so the
+# resumed run's OLD denied items cross un-restored and un-substituted (the
+# model sees fx_host_denied plus a generic sentinel).  A corrupt log is not
+# noticed at all: it is overwritten.  The gate's restart and corruption arms
+# must CATCH this build — that is the asymmetry.
+$(BIN_HOSTGATE_NOLOGLOAD): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(DATALOG_DIR)/zig-out/lib/libdatalog.so | $(DATALOG_SHIM)
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_MUTANT_NO_LOG_LOAD -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(HOSTGATE_LIBS)
+
+# P8-fix (R1/R2/R5) PRE-FIX CONTROLS: three controls for the three P8-review
+# findings whose fix is a BEHAVIOUR rather than a refusal, each the SAME source
+# with exactly that behaviour compiled out — so the gate's new arms are proved
+# to be able to FAIL, on their own fixture, by content.
+#   loadunbound  (R1): the LOAD-time bound compiled out — a crafted-but-valid
+#                DENIED row's 1 MB true_name/denial_text reach the deny map and
+#                so the outbound leg at FULL LENGTH (FH_BOUND applied only at
+#                WRITE time: the reviewer's measured 1,048,576 bytes).
+#   nodedup      (R2): a fresh row per OBSERVATION of a call_id — one re-served
+#                call inflates into several rows and the last one can never be
+#                answered inside its own run (the phantom UNRESOLVED at every
+#                exit), and the log it writes is one this seat now refuses.
+#   noscopecarry (R5): an ALLOWED row's stored `allow_scope` is ignored and
+#                recomputed from the CURRENT run's seats — the silent REWORD of
+#                a row this process never judged.
+$(BIN_HOSTGATE_LOADUNBOUND): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(DATALOG_DIR)/zig-out/lib/libdatalog.so | $(DATALOG_SHIM)
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_MUTANT_NO_LOAD_BOUND -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(HOSTGATE_LIBS)
+
+$(BIN_HOSTGATE_NODEDUP): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(DATALOG_DIR)/zig-out/lib/libdatalog.so | $(DATALOG_SHIM)
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_MUTANT_NO_CALL_DEDUP -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(HOSTGATE_LIBS)
+
+$(BIN_HOSTGATE_NOSCOPECARRY): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(DATALOG_DIR)/zig-out/lib/libdatalog.so | $(DATALOG_SHIM)
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_MUTANT_NO_SCOPE_CARRY -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(HOSTGATE_LIBS)
 
 .PHONY: test-hostgate
 

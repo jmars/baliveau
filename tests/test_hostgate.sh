@@ -185,6 +185,12 @@ GATEOPSNOCANON="$ROOT/build/fx-hostgate-opsnocanon"  # raw path matching (canoni
 GATENOCLAIM="$ROOT/build/fx-hostgate-noclaim"        # the claim seat compiled out (P7 PRE-FIX control, fail-open)
 GATENOEVALPIN="$ROOT/build/fx-hostgate-noevalpin"    # P7-fix PRE-FIX control: the evaluator exempt from the pin
 GATENOBOUND="$ROOT/build/fx-hostgate-nobound"        # P7-fix PRE-FIX control: NO deadline on the per-call evaluator
+GATENOLOGLOAD="$ROOT/build/fx-hostgate-nologload"    # P8 PRE-FIX control: the startup log load compiled out (the WIPE)
+# P8-fix: three PRE-FIX CONTROLS for the P8 review's should-fixes, each the
+# SAME source with one behaviour compiled out.
+GATELOADUNB="$ROOT/build/fx-hostgate-loadunbound"    # R1: the LOAD-time bound compiled out (a loaded row trusted verbatim)
+GATENODEDUP="$ROOT/build/fx-hostgate-nodedup"        # R2: a fresh row per OBSERVATION (the inflation + the phantom)
+GATENOSCOPECARRY="$ROOT/build/fx-hostgate-noscopecarry"  # R5: the carried allow_scope ignored and recomputed (the reword)
 FIX="${FX_FIXTURE_DIR:-$ROOT/tests/fixtures}"
 MARKER="FX-GUEST-LOOP-OK-8f31"
 SENTINEL="hostgate-p1-probe"
@@ -212,7 +218,8 @@ fail() { echo "FAIL $*" >&2; exit 1; }
 for b in "$GATENONAME" "$GATENONAMEBAD" "$GATECOLLIDE" "$GATEBADNAME" "$GATEBADPIN" \
          "$GATENOTOOLS" "$GATENOJUST" "$GATENODRATE" "$GATEDONEARGS" \
          "$GATENOOPS" "$GATEOPSFLOOR" "$GATEOPSNOCANON" "$GATENOCLAIM" \
-         "$GATENOEVALPIN" "$GATENOBOUND"; do
+         "$GATENOEVALPIN" "$GATENOBOUND" "$GATENOLOGLOAD" \
+         "$GATELOADUNB" "$GATENODEDUP" "$GATENOSCOPECARRY"; do
     [ -x "$b" ] || fail "phase 0: $b missing — run make first"
 done
 [ -f "$FIX/responses_simple.sse" ] || fail "phase 0: fixture $FIX/responses_simple.sse missing"
@@ -586,9 +593,19 @@ echo "== phase 5: P2 POSITIVE — a real two-turn run RESOLVES the call_id (the 
 # dispatches it through the stub and replays the result as a
 # function_call_output in turn 2's request — down the SAME chardev — so the
 # proxy itself sees the join close.  The canned upstream replays identically
-# every turn, so turn 2 decodes the SAME call_id again and that second
-# instance legitimately stays pending (the run is capped at 2 turns): the
-# exactness asserts below pin that only the ANSWERED instance resolves.
+# every turn, so turn 2 decodes the SAME call_id again.
+#
+# P8-fix (R2) CHANGED WHAT THIS PHASE PINS, DELIBERATELY AND WITH THE REASON
+# STATED: it used to assert TWO rows for the one call_id ("one per turn's
+# decode") with the second "legitimately pending" and NAMED UNRESOLVED by the
+# exit report.  The P8 review measured that same shape in phase 59 — three
+# rows for one guest-side tool call and a phantom unresolved entry at every
+# exit — as a DEFECT, and it is the same defect here.  ONE call_id IS ONE
+# CALL: a re-serve by the upstream is a REPEAT, not a second call, so the row
+# is written once, a repeat neither re-opens nor un-answers it, and the exit
+# report names nothing.  The arm is otherwise unchanged (same fixture, same
+# two real turns, same guest), so the new asserts are the same measurements
+# against the same wire.
 mkdir -p "$TMP/data-join"
 "$GATE" --upstream "$TMP/upstream2.sse" --slave-file "$TMP/slave4" \
     --log "$TMP/log-join.jsonl" --turns 2 2> "$TMP/proxy4.err" &
@@ -611,25 +628,28 @@ L="$TMP/log-join.jsonl"
 [ -s "$L" ] || fail "phase 5: the one log is missing/empty"
 n=$(pyq "$L" "len([r for r in rows if r.get('call_id')=='$CALLID'])") \
     || fail "phase 5: $L is not JSONL"
-[ "$n" -eq 2 ] || fail "phase 5: expected 2 rows for $CALLID (one per turn's decode), got $n"
+[ "$n" -eq 1 ] || fail "phase 5: expected exactly 1 row for $CALLID (ONE ROW PER call_id — the upstream re-serves the same call every turn and a re-serve is a REPEAT of that call, not a second one; the pre-P8-fix semantics inflated it to one row per DECODE), got $n"
 n=$(pyq "$L" "len([r for r in rows if r.get('call_id')=='$CALLID' and r.get('pending') is False])")
 [ "$n" -eq 1 ] || fail "phase 5: expected exactly 1 RESOLVED row for $CALLID, got $n — THE JOIN DID NOT FIRE (the positive half)"
 n=$(pyq "$L" "len([r for r in rows if r.get('call_id')=='$CALLID' and r.get('pending') is False and r.get('turn')==1 and isinstance(r.get('outcome'),str) and 'stub-ok' in r['outcome']])")
 [ "$n" -eq 1 ] || fail "phase 5: the resolved row is not turn 1 with a stub-ok outcome — the join fired on the wrong leg"
 n=$(pyq "$L" "len([r for r in rows if r.get('call_id')=='$CALLID' and r.get('args')=='{\"city\": \"Paris\"}'])")
-[ "$n" -eq 2 ] || fail "phase 5: the decoded rows do not carry the call's arguments verbatim"
-n=$(pyq "$L" "len([r for r in rows if r.get('call_id')=='$CALLID' and r.get('turn')==2 and r.get('pending') is True and r.get('outcome') is None])")
-[ "$n" -eq 1 ] || fail "phase 5: the turn-2 instance should stay pending (it was never answered — the run is capped at 2 turns)"
+[ "$n" -eq 1 ] || fail "phase 5: the decoded row does not carry the call's arguments verbatim"
 n=$(pyq "$L" "len([r for r in rows if r.get('call_id')=='$CALLID' and r.get('session') is None and r.get('run') is None])")
-[ "$n" -eq 2 ] || fail "phase 5: session/run must be explicit nulls (the wire carries no identity — do not let them silently grow values)"
-n=$(pyq "$L" "len([r for r in rows if r.get('type')=='proxy-exit' and r.get('turns_served')==2 and any(u.get('call_id')=='$CALLID' for u in r.get('unresolved',[]))])")
-[ "$n" -eq 1 ] || fail "phase 5: the exit summary row must name the never-answered turn-2 instance"
-grep -q "UNRESOLVED" "$TMP/proxy4.err" \
-    || fail "phase 5: the proxy's stderr never reported the pending turn-2 instance"
-grep -q "$CALLID" "$TMP/proxy4.err" \
-    || fail "phase 5: the stderr report does not name $CALLID"
+[ "$n" -eq 1 ] || fail "phase 5: session/run must be explicit nulls (the wire carries no identity — do not let them silently grow values)"
+# THE P8-fix HALF, BOTH DIRECTIONS: the re-serve is SAID OUT LOUD (not a silent
+# dedup) and it leaves NO PHANTOM — no unresolved entry for a call that was
+# answered, on stderr or in the exit row.
+n=$(pyq "$L" "len([r for r in rows if r.get('type')=='proxy-exit' and any(u.get('call_id')=='$CALLID' for u in r.get('unresolved',[]))])")
+[ "$n" -eq 0 ] || fail "phase 5: the exit row reports $CALLID UNRESOLVED — the call was ANSWERED by turn 2's function_call_output, so a pending entry here is the PHANTOM the review measured (a re-serve must not un-answer a call)"
+grep -q "ALREADY recorded" "$TMP/proxy4.err" \
+    || fail "phase 5: the proxy's stderr does not report the re-served call_id — the dedup must be LOUD, not silent"
+grep -q "RE-SERVED an item" "$TMP/proxy4.err" \
+    || fail "phase 5: the stderr note does not say the item was RE-SERVED (the semantics the record now implements)"
+n=$(grep -c "UNRESOLVED" "$TMP/proxy4.err" || true)
+[ "$n" = "0" ] || fail "phase 5: the stderr still reports an unresolved call ($n line(s)) after a cleanly answered two-turn run"
 assert_no_policy_fields "$L"
-echo "   OK positive: turn 1's row RESOLVED by turn 2's function_call_output (outcome=stub-ok, args verbatim); the turn-2 instance is pending and NAMED by the exit report; no row carries a verdict field"
+echo "   OK positive: ONE row for the call_id, RESOLVED by turn 2's function_call_output (outcome=stub-ok, args verbatim); the re-serve is reported on stderr and leaves NO phantom unresolved entry; no row carries a verdict field"
 
 echo "== phase 6: P2 NEGATIVE — an unfireable join is REPORTED, by call_id"
 # --max-turns 1: the call is decoded on turn 1 and the run ends BEFORE any
@@ -1061,7 +1081,9 @@ n=$(pyq "$D" "len([r for r in rows if any(i.get('type')=='function_call_output' 
 # the policy RAN and said allowed, with null refusal fields
 L="$TMP/log-acc.jsonl"
 n=$(pyq "$L" "len([r for r in rows if r.get('call_id')=='$CALLID' and r.get('verdict')=='allowed' and r.get('author')=='denylist' and r.get('refusal_name') is None and r.get('reason') is None and r.get('denial_text') is None])")
-[ "$n" -eq 2 ] || fail "phase 12: expected 2 verdict=allowed rows with NULL refusal fields, got $n — the armed-policy allowed shape is wrong"
+# P8-fix (R2): ONE ROW PER call_id — this was 2 (one per turn's decode) before
+# the re-serve was deduped; the row itself is unchanged in shape.
+[ "$n" -eq 1 ] || fail "phase 12: expected 1 verdict=allowed row with NULL refusal fields (one row per call_id), got $n — the armed-policy allowed shape is wrong"
 n=$(pyq "$L" "len([1 for r in rows if r.get('type') in ('unjoined-output','echo-anomaly')])")
 [ "$n" -eq 0 ] || fail "phase 12: telemetry anomaly rows in a clean accepted run"
 echo "   OK accepted: the true name crossed verbatim, the marker IS touched (the call EXECUTED), the outgoing frame is un-rewritten (stub-ok-weather verbatim), the policy said allowed honestly"
@@ -3551,4 +3573,855 @@ grep -q 'denial_rate 1.0000' "$TMP/calls-noreq-err" \
 echo "   OK startup sentence: arming the claim author without --require-justification names the consequence (every call denied, denial_rate 1.0000) in ONE line — and not when the flag is given"
 
 
-echo "PASS hostgate: the transparent proxy is stream-transparent (arm == control) and a mangling proxy is caught; the per-turn open/close mechanics hold through one proxy process; the one log JOINS every answered call by call_id and REPORTS every call it could not join; a join compiled out flips the pass by content; every model-controlled free-text field arrives MARKED while the join key renders verbatim; the DECODE GATE holds the channel invariant for a denied call (the true name never crosses) in the presence of interleaves, duplicate/never-opened dones, open-at-completed items and over-cap streams, with a pinned pre-fix control for each; the RESERVED NAME is a CHECKED property (it passes the guest's charset, collides with no verb of a catalog pinned by sha256 and cross-checked against the verbs server's own table, and the proxy REFUSES TO START on a collision — while the same source with the check compiled out starts and DISPATCHES the colliding name: the silent allow); and the JUSTIFICATION is required in the injected tools schema, judged on the argument accumulator the guest actually dispatches (a done-args-only judge is pinned and caught), denied BY NAME through the existing substitution on the outbound leg, and REPORTED BY A DENIAL-RATE INSTRUMENT whose own compiled-out mutant leaves the dead-agent shape invisible; and THE OPERATOR IS A REAL AUTHOR AT THIS SEAT (P6: the pinned ops policy, its PINS check, its alias table with the TWO-FORM grammar re-run here, and its per-call fact injection with the path canonicalized before matching) with the D1/D2 split NAMED in the startup line — D1 evaluated here, D2 and the compiled-in FLOOR enforced IN-GUEST ONLY because this seat can see neither — the D2 bound ASSERTED in both directions, the ALLOWED row carrying its own seat-scoped allow_scope qualifier (so a durable record cannot read as a permission the seat never grants) with the LOADED-BUT-INERT branch pinned by its own D2-only arm, and the seat's three failure directions each pinned against a control of the SAME source (fail-open when the seat is compiled out, over-deny when it binds the floor it cannot see, silent allow when it matches the raw path); and THE CLAIM AUTHOR AT THIS SEAT (P7) pins the file that COMPUTES every verdict (a swapped always-derives eval_calls.py is REFUSED at startup, while the same source with the evaluator exempt from the pin arms and lets the forbidden call CROSS and EXECUTE), BOUNDS the per-call evaluator (a hung one becomes a RECORDED refusal with its row written, while the same source with no deadline HANGS and writes NOTHING — the dead-agent instrument's blind spot), and refuses a folded verb-SYMBOL mapped by TWO runtime verbs at both check sites (--check-verbs and the seat's loader), so no shared symbol can let one contention justify two runtime verbs"
+# ── P8: RESUME, AND THE ONE LOG AS THE JOIN STATE ─────────────────────────
+#
+# DIRECTION (stated up front): THE LOG IS ALSO THE JOIN STATE, so the failure
+# this slice must never have is a SILENTLY EMPTY MAP after a restart — the
+# process starts, serves, every line looks protective, and every pre-restart
+# denial has quietly lost its restore/substitution.  The MEASURED defect it
+# starts from is worse than that framing: the log used to be rendered from an
+# in-memory state array that started EMPTY on every process start and was
+# never read back, so a second run against the same --log REPLACED the first
+# run's RECORD (the writer's own rule — "a record that silently stops is the
+# one failure mode this seat must never have" — broken by the writer).  So the
+# arms below assert BOTH halves BY CONTENT: the earlier rows are still there,
+# and the earlier denial is restored + substituted on the outbound leg.
+#
+# THE ASYMMETRY: build/fx-hostgate-nologload is the SAME source with the load
+# compiled out (-DFH_MUTANT_NO_LOG_LOAD) — the pre-fix shape.  The SAME
+# scenario (one helper, two binaries) must show the prior rows GONE and the
+# old denied items crossing un-restored and un-substituted.  A gate that
+# cannot catch that build is not a gate.
+P8CALL_A="call_P8_A"  # get_weather — DENIED under --deny get_weather
+P8CALL_B="call_P8_B"  # fx_write    — allowed: run 2's own call, a distinct key
+
+# p8_frame <dest> [<kind> <name> <call-id> <payload>]... — a request frame in
+# the chardev contract: the user message first, then one item per 4-tuple.
+#   fc  : a function_call item (payload = its raw arguments JSON)
+#   out : a function_call_output item (payload = the output text; name = '-')
+# Hand-building the resumed conversation here is the point: the guest replays
+# exactly these items (agent_loop.c:91-104 serializes function_call /
+# function_call_output), so this is what the proxy would see after a resume —
+# and with real JSON encoding instead of hand-escaped literals.
+p8_frame() {
+    python3 - "$@" <<'PY'
+import json, sys
+dest = sys.argv[1]
+items = [{"type": "message", "role": "user", "content": "hi"}]
+rest = sys.argv[2:]
+for i in range(0, len(rest), 4):
+    kind, name, cid, payload = rest[i:i + 4]
+    if kind == "fc":
+        items.append({"type": "function_call", "name": name, "call_id": cid,
+                      "arguments": payload})
+    elif kind == "out":
+        items.append({"type": "function_call_output", "call_id": cid,
+                      "output": payload})
+    else:
+        raise SystemExit("p8_frame: unknown item kind " + kind)
+open(dest, "w").write(json.dumps({"model": "m", "stream": True, "input": items}))
+PY
+}
+
+# p8_drive <slave-path> <frame-file> — one request frame straight down the
+# chardev, drained to response.completed, then close (the proxy's turn-end
+# cue).  drive_frame's mechanics with the frame read from a file.
+p8_drive() {
+    python3 - "$1" "$2" <<'PY'
+import os, select, sys, time
+frame = open(sys.argv[2], "rb").read()
+fd = os.open(sys.argv[1], os.O_RDWR | os.O_APPEND)
+os.write(fd, b"%d\n" % len(frame) + frame)
+deadline = time.time() + 15
+while time.time() < deadline:
+    r, _, _ = select.select([fd], [], [], 2)
+    if not r:
+        continue
+    b = os.read(fd, 65536)
+    if not b or b.count(b"response.completed"):
+        break
+os.close(fd)
+PY
+}
+
+# p8_n <log> <predicate-over-r> — the number of rows matching (0, loudly
+# silent, when the file is unreadable — the asserts below add their own
+# messages).
+p8_n() {
+    local n
+    n=$(pyq "$1" "len([r for r in rows if $2])" 2>/dev/null) || n=0
+    [ -n "$n" ] || n=0
+    echo "$n"
+}
+
+# p8_restart_arm <gate> <tag> — THE P8 SCENARIO, ONCE, so both binaries run
+# the SAME arm and only the compile-time difference can explain a difference:
+#   run 1  — the proxy serves ONE turn (the canned upstream's denied call) and
+#            is SIGKILLed MID-MULTI-TURN (it is waiting for turn 2).  The
+#            row is written by the DECODE, which runs before the served bytes
+#            reach the driver, so the bounded wait below is not a race.
+#   run 2  — a fresh process against the SAME --log, whose FIRST request frame
+#            is the RESUMED conversation: the old call (as the guest
+#            serialized it — the reserved name) plus the guest's sentinel
+#            output for it.
+# Every proxy started here is kill -9'd or reaped by wait_for_proxy_exit
+# (bounded, loud) — none is left running.
+p8_restart_arm() {
+    local gate="$1" tag="$2" d="$P8/$2" i p1 p2
+    mkdir -p "$d"
+    "$gate" --upstream "$P8/upA.sse" --slave-file "$d/slave1" \
+        --log "$d/log.jsonl" --deny get_weather --turns 2 2> "$d/err1" &
+    p1=$!
+    PROXIES="$PROXIES $p1"
+    wait_for_slave "$d/slave1" "$p1" "$d/err1"
+    p8_drive "$(cat "$d/slave1")" "$P8/f1.json"
+    i=0
+    while [ "$(p8_n "$d/log.jsonl" "r.get('call_id')=='$P8CALL_A'")" -lt 1 ] \
+          && [ "$i" -lt 100 ]; do
+        sleep 0.05
+        i=$((i + 1))
+    done
+    [ "$(p8_n "$d/log.jsonl" "r.get('call_id')=='$P8CALL_A'")" -ge 1 ] \
+        || fail "p8_restart_arm($tag): run 1 never recorded the denied call — the arm is not the scenario"
+    kill -9 "$p1" 2>/dev/null
+    wait "$p1" 2>/dev/null
+    P8_TSTATS=$(grep -m1 '"type":"turn-stats"' "$d/log.jsonl")
+    [ -n "$P8_TSTATS" ] \
+        || fail "p8_restart_arm($tag): run 1 wrote no turn-stats row — the byte-preservation assert below would be vacuous"
+    cp "$d/log.jsonl" "$d/log.run1.jsonl"
+    "$gate" --upstream "$P8/upB.sse" --slave-file "$d/slave2" \
+        --log "$d/log.jsonl" --deny get_weather --turns 1 \
+        --dump-requests "$d/dump2.jsonl" 2> "$d/err2" &
+    p2=$!
+    PROXIES="$PROXIES $p2"
+    wait_for_slave "$d/slave2" "$p2" "$d/err2"
+    p8_drive "$(cat "$d/slave2")" "$P8/f2.json"
+    wait_for_proxy_exit "$p2" "$d/err2"
+    wait "$p2"
+    P8_RC2=$?
+    P8_LOG="$d/log.jsonl"
+    P8_DUMP="$d/dump2.jsonl"
+    P8_ERR1="$d/err1"
+    P8_ERR2="$d/err2"
+    P8_RUN1="$d/log.run1.jsonl"
+}
+
+echo "== phase 55: P8 THE LOG SURVIVES A RESTART — one --log, two runs, and the deny map REBUILT from it"
+# THE DEFECT, FIRST: run 1 is KILLED mid-multi-turn, run 2 starts against the
+# same --log.  Both halves are asserted BY CONTENT (never by exit status: both
+# runs exit 0 either way, and a wiped record exits 0 perfectly happily).
+P8="$TMP/p8"
+mkdir -p "$P8"
+ops_stream "$P8/upA.sse" get_weather /fx/disk/shared "$P8CALL_A"
+ops_stream "$P8/upB.sse" fx_write /fx/disk/agent-data "$P8CALL_B"
+p8_frame "$P8/f1.json"
+p8_frame "$P8/f2.json" \
+    fc fx_host_denied "$P8CALL_A" '{"path": "/fx/disk/shared"}' \
+    out - "$P8CALL_A" '(tool call failed)'
+# the two frames must be DIFFERENT, or "the resumed conversation" is a fiction
+cmp -s "$P8/f1.json" "$P8/f2.json" \
+    && fail "phase 55: the two request frames are identical — the resumed-conversation arm carries nothing"
+p8_restart_arm "$GATE" arm
+[ "$P8_RC2" -eq 0 ] || { tail -5 "$P8_ERR2" >&2; fail "phase 55: run 2 rc=$P8_RC2"; }
+# (1) THE LOAD IS ANNOUNCED — a proxy that silently did not load is visible
+grep -q "log: LOADED" "$P8_ERR2" \
+    || { tail -3 "$P8_ERR2" >&2; fail "phase 55: run 2 does not report loading the existing log"; }
+grep -q "REBUILT with 1 key" "$P8_ERR2" \
+    || fail "phase 55: run 2 does not report rebuilding the deny map from the log"
+grep -q "carried" "$P8_ERR2" \
+    || fail "phase 55: the startup line does not say how much record it carried in"
+echo "   OK loaded: $(grep -m1 'log: LOADED' "$P8_ERR2" | sed 's/^[^:]*: //')"
+# (2) THE PRIOR ROWS SURVIVE — the measured defect, now fixed
+n=$(p8_n "$P8_LOG" "r.get('call_id')=='$P8CALL_A' and r.get('verdict')=='denied' and r.get('true_name')=='get_weather'")
+[ "$n" -ge 1 ] || { sed -n '1,3p' "$P8_LOG" >&2; fail "phase 55: run 1's DENIED row is GONE after the restart — the log did not survive (the measured defect)"; }
+grep -qF "$P8_TSTATS" "$P8_LOG" \
+    || fail "phase 55: run 1's own turn-stats row is not in the log byte-for-byte — carried rows must not be reworded"
+echo "   OK survives: run 1's denied row for $P8CALL_A (true_name get_weather) is still in the log, and its telemetry row is there BYTE-FOR-BYTE"
+# (3) THE CARRIED ROW'S JOIN CLOSES ON THE RESUMED REQUEST — the re-render
+# path reflects state changes (a byte-copied row could not)
+n=$(p8_n "$P8_LOG" "r.get('call_id')=='$P8CALL_A' and r.get('verdict')=='denied' and r.get('pending') is False and r.get('outcome')=='(tool call failed)'")
+[ "$n" -ge 1 ] || fail "phase 55: the resumed request's function_call_output did not JOIN the carried row (pending/outcome unchanged)"
+# (4) THE JOIN STATE WAS NOT LOST — no unjoined-output anomaly for the old call
+n=$(p8_n "$P8_LOG" "r.get('type')=='unjoined-output' and r.get('call_id')=='$P8CALL_A'")
+[ "$n" -eq 0 ] || { grep unjoined "$P8_ERR2" >&2; fail "phase 55: the old call's output matched NO decoded call — the rebuilt map did not recognise it"; }
+# (5) THE REBUILT MAP DRIVES THE OUTBOUND LEG — restore + substitute
+n=$(pyq "$P8_DUMP" "len([i for r in rows for i in r.get('input',[]) if i.get('type')=='function_call' and i.get('call_id')=='$P8CALL_A' and i.get('name')=='get_weather'])")
+[ "$n" -ge 1 ] || { cat "$P8_DUMP" >&2; fail "phase 55: the model-facing frame does NOT restore the true name of a pre-restart denial"; }
+n=$(pyq "$P8_DUMP" "len([i for r in rows for i in r.get('input',[]) if i.get('type')=='function_call_output' and i.get('call_id')=='$P8CALL_A' and isinstance(i.get('output'),str) and i['output'].startswith('(denied by host policy:')])")
+[ "$n" -ge 1 ] || { cat "$P8_DUMP" >&2; fail "phase 55: the pre-restart denial's output was NOT substituted on the outbound leg"; }
+n=$(pyq "$P8_DUMP" "len([i for r in rows for i in r.get('input',[]) if i.get('name')=='fx_host_denied' or i.get('output')=='(tool call failed)'])")
+[ "$n" -eq 0 ] || { cat "$P8_DUMP" >&2; fail "phase 55: the reserved name / raw sentinel reached the MODEL — the rebuilt map did not fire"; }
+echo "   OK restored+substituted: the model-facing frame carries get_weather (the true name) and '(denied by host policy: …)' as the call's own result — the reserved name and the sentinel appear NOWHERE in it"
+# (6) BOTH RUNS ARE IN THE RECORD
+n=$(p8_n "$P8_LOG" "r.get('call_id')=='$P8CALL_B' and r.get('verdict')=='allowed'")
+[ "$n" -ge 1 ] || fail "phase 55: run 2's own call was not recorded — the file is not the CONTINUATION of the record"
+echo "   OK continuation: the same file now holds run 1's denied $P8CALL_A AND run 2's allowed $P8CALL_B"
+
+echo "== phase 56: P8 PRE-FIX CONTROL — the SAME scenario with the LOAD COMPILED OUT wipes the log (the gate MUST catch it)"
+p8_restart_arm "$GATENOLOGLOAD" ctl
+[ "$P8_RC2" -eq 0 ] || { tail -5 "$P8_ERR2" >&2; fail "phase 56: the control run rc=$P8_RC2"; }
+grep -q "LOAD COMPILED OUT (FH_MUTANT_NO_LOG_LOAD)" "$P8_ERR2" \
+    || { tail -3 "$P8_ERR2" >&2; fail "phase 56: the control does not say the load is compiled out"; }
+# THE ASYMMETRY, half 1: the prior record is GONE (the wipe the brief measured).
+# The count is over CALL rows (`type` absent — a telemetry row also carries the
+# call_id, and the control DOES emit one for this call, below).
+n=$(p8_n "$P8_LOG" "r.get('call_id')=='$P8CALL_A' and r.get('type') is None")
+[ "$n" -eq 0 ] || { sed -n '1,3p' "$P8_LOG" >&2; fail "phase 56: the pre-fix control did NOT wipe run 1's row — the control does not reproduce the defect, so phase 55's survival assert proves nothing"; }
+grep -qF "$P8_TSTATS" "$P8_LOG" \
+    && fail "phase 56: the control reproduced run 1's telemetry row — it did not wipe the record"
+echo "   OK wipe: with the load compiled out, run 2 REPLACED run 1's record — $P8CALL_A is gone and its telemetry row with it"
+# THE ASYMMETRY, half 2: the old denied items cross un-restored / un-substituted
+n=$(pyq "$P8_DUMP" "len([i for r in rows for i in r.get('input',[]) if i.get('type')=='function_call' and i.get('call_id')=='$P8CALL_A' and i.get('name')=='fx_host_denied'])")
+[ "$n" -ge 1 ] || { cat "$P8_DUMP" >&2; fail "phase 56: the control restored the true name without loading anything — the mechanism is not the load"; }
+n=$(pyq "$P8_DUMP" "len([i for r in rows for i in r.get('input',[]) if i.get('type')=='function_call_output' and i.get('call_id')=='$P8CALL_A' and i.get('output')=='(tool call failed)'])")
+[ "$n" -ge 1 ] || { cat "$P8_DUMP" >&2; fail "phase 56: the control substituted the denial text with an EMPTY map"; }
+n=$(p8_n "$P8_LOG" "r.get('type')=='unjoined-output' and r.get('call_id')=='$P8CALL_A'")
+[ "$n" -ge 1 ] || fail "phase 56: the control shows no unjoined-output anomaly — the LOST join state left no trace in its record"
+echo "   OK un-restored: the model would see fx_host_denied + '(tool call failed)' for a call IT made before the restart, and the control's own log carries the unjoined-output anomaly — the empty map is what makes phase 55's asserts load-bearing"
+# and the control's own silent-empty-map instrument: the digest of a GOOD log
+n=$("$GATENOLOGLOAD" --print-log-state "$P8_RUN1" 2>/dev/null | head -1)
+case "$n" in
+    "log-state rows=0 "*) : ;;
+    *) fail "phase 56: the control's --print-log-state did not report an EMPTY state (got '$n')";;
+esac
+echo "   OK silent empty map: the control's own state digest of a populated log reads '$n'"
+
+echo "== phase 57: P8 IDEMPOTENT REPLAY — the loader is a pure function of the file, and load->flush neither duplicates nor rewords"
+# The property, stated so it can FAIL: (a) loading the same bytes twice yields
+# the identical state; (b) a run that loads the log and mutates NOTHING
+# reproduces the carried lines BYTE-FOR-BYTE (no duplication, no rewording);
+# (c) that run does not change the counts the state digest reports.
+"$GATE" --print-log-state "$P8/arm/log.jsonl" > "$P8/st1.txt" 2> "$P8/st1.err"
+r1=$?
+"$GATE" --print-log-state "$P8/arm/log.jsonl" > "$P8/st2.txt" 2>/dev/null
+r2=$?
+[ "$r1" -eq 0 ] && [ "$r2" -eq 0 ] || fail "phase 57: --print-log-state rc=$r1/$r2"
+cmp -s "$P8/st1.txt" "$P8/st2.txt" \
+    || { diff "$P8/st1.txt" "$P8/st2.txt" >&2; fail "phase 57: loading the SAME file twice yielded DIFFERENT state — the replay is not idempotent"; }
+grep -q '^dmap ' "$P8/st1.txt" \
+    || { cat "$P8/st1.txt" >&2; fail "phase 57: the digest carries no deny-map entries — it cannot see the join state it is meant to describe"; }
+echo "   OK pure: the digest of the same log is byte-identical across two loads — $(head -1 "$P8/st1.txt")"
+# (b) NO-MUTATION ROUND TRIP: a run that loads the log, decodes a NO-CALL
+# upstream (responses_simple.sse) and joins nothing.  The only new line is the
+# exit row, so the carried bytes must come back exactly.
+cp "$P8/arm/log.jsonl" "$P8/roundtrip.jsonl"
+before=$(wc -c < "$P8/roundtrip.jsonl")
+"$GATE" --upstream "$FIX/responses_simple.sse" --slave-file "$P8/slave3" \
+    --log "$P8/roundtrip.jsonl" --turns 1 2> "$P8/err3" &
+P8C=$!
+PROXIES="$PROXIES $P8C"
+wait_for_slave "$P8/slave3" "$P8C" "$P8/err3"
+p8_drive "$(cat "$P8/slave3")" "$P8/f1.json"
+wait_for_proxy_exit "$P8C" "$P8/err3"
+wait "$P8C" || fail "phase 57: the no-call round-trip run exited nonzero"
+[ "$(wc -c < "$P8/roundtrip.jsonl")" -gt "$before" ] \
+    || fail "phase 57: the round-trip run wrote nothing — the flush never happened, so the round trip is untested"
+head -c "$before" "$P8/roundtrip.jsonl" > "$P8/roundtrip.pfx"
+cmp -s "$P8/roundtrip.pfx" "$P8/arm/log.jsonl" \
+    || { diff <(head -c "$before" "$P8/roundtrip.jsonl") "$P8/arm/log.jsonl" >&2; fail "phase 57: load->flush did not reproduce the carried rows byte-for-byte (duplication or rewording)"; }
+echo "   OK round trip: a load-and-flush with nothing mutated reproduces all $before carried byte(s) EXACTLY, then appends this run's exit row"
+# (c) the state digest's counts are unchanged by that run
+"$GATE" --print-log-state "$P8/roundtrip.jsonl" > "$P8/st3.txt" 2>/dev/null
+d1=$(grep -o 'calls=[0-9]* denied=[0-9]* pending=[0-9]*' "$P8/st1.txt")
+d3=$(grep -o 'calls=[0-9]* denied=[0-9]* pending=[0-9]*' "$P8/st3.txt")
+[ "$d1" = "$d3" ] || { cat "$P8/st1.txt" "$P8/st3.txt" >&2; fail "phase 57: the round trip changed the call/deny/pending counts ($d1 -> $d3) — a carried row was re-applied"; }
+diff <(grep '^dmap ' "$P8/st1.txt") <(grep '^dmap ' "$P8/st3.txt") >/dev/null \
+    || { diff <(grep '^dmap ' "$P8/st1.txt") <(grep '^dmap ' "$P8/st3.txt") >&2; fail "phase 57: the round trip changed the deny map — replay double-applied"; }
+echo "   OK counts: '$d1' and the deny map are IDENTICAL before and after the round trip (no row was re-applied)"
+
+echo "== phase 58: P8 A CORRUPT LOG REFUSES LOUDLY AND IS LEFT UNTOUCHED (silence is the failure)"
+# Four corruptions, each measured on the REAL build (refusal + the file
+# UNCHANGED — a refusal that also clobbered the file would be silent data
+# loss) and then on the pre-fix control, where they are not noticed at all and
+# the file is REPLACED.  Exits alone are not the assertion: the loudness is.
+p8_corrupt() { # <tag> <file-that-must-stay-untouched> <stderr-substring>
+    local tag="$1" file="$2" want="$3"
+    cp "$file" "$P8/$tag.before"
+    timeout 20 "$GATE" --upstream "$FIX/responses_simple.sse" \
+        --slave-file "$P8/$tag.slave" --log "$file" --turns 1 \
+        2> "$P8/$tag.err"
+    local rc=$?
+    [ "$rc" -ne 0 ] || { tail -3 "$P8/$tag.err" >&2; fail "phase 58: a $tag log was ACCEPTED (rc=$rc) — the seat served with an unloadable record"; }
+    grep -q "THE ONE LOG IS NOT LOADABLE" "$P8/$tag.err" \
+        || { tail -3 "$P8/$tag.err" >&2; fail "phase 58: the $tag refusal does not name the cause (the log is not loadable)"; }
+    grep -q "$want" "$P8/$tag.err" \
+        || { tail -3 "$P8/$tag.err" >&2; fail "phase 58: the $tag refusal does not say WHAT was wrong (want '$want')"; }
+    grep -q "REFUSES TO START" "$P8/$tag.err" \
+        || fail "phase 58: the $tag refusal does not say the empty map would silently un-restore the pre-restart denials"
+    cmp -s "$file" "$P8/$tag.before" \
+        || fail "phase 58: the $tag refusal ALSO modified the log — a refusal that clobbers the record is silent data loss"
+    [ -e "$P8/$tag.slave" ] && fail "phase 58: the $tag refusal still published a slave path — it did not stop before serving"
+    echo "   OK $tag: refused rc=$rc, named the cause and the gap, and left the file byte-identical"
+}
+printf 'not json at all\n' > "$P8/nonjson.log"
+p8_corrupt nonjson "$P8/nonjson.log" "is not JSON"
+head -c -1 "$P8/arm/log.jsonl" > "$P8/torn.log"   # drop the final newline
+[ "$(tail -c1 "$P8/torn.log" | wc -l)" -eq 0 ] || fail "phase 58: the torn fixture still ends in a newline"
+p8_corrupt torn "$P8/torn.log" "TORN row"
+printf '{"hello":1}\n' > "$P8/notarow.log"
+p8_corrupt notarow "$P8/notarow.log" "call_id"
+head -1 "$P8/arm/log.jsonl" > "$P8/blank.log"
+printf '\n' >> "$P8/blank.log"
+cat "$P8/arm/log.jsonl" | head -2 >> "$P8/blank.log"
+p8_corrupt removed "$P8/blank.log" "EMPTY"
+# THE CONTROL: the same corruption on the pre-fix build is NOT NOTICED — the
+# seat starts (rc 0 on a served turn) and its first flush REPLACES the file,
+# so the corrupt evidence is gone.  That is the silent empty map, and it is
+# why the four arms above are load-bearing rather than decoration.
+printf 'not json at all\n' > "$P8/ctl-nonjson.log"
+"$GATENOLOGLOAD" --upstream "$FIX/responses_simple.sse" --slave-file "$P8/ctl-slave" \
+    --log "$P8/ctl-nonjson.log" --turns 1 2> "$P8/ctl-nonjson.err" &
+P8D=$!
+PROXIES="$PROXIES $P8D"
+wait_for_slave "$P8/ctl-slave" "$P8D" "$P8/ctl-nonjson.err"
+p8_drive "$(cat "$P8/ctl-slave")" "$P8/f1.json"
+wait_for_proxy_exit "$P8D" "$P8/ctl-nonjson.err"
+grep -q "THE ONE LOG IS NOT LOADABLE" "$P8/ctl-nonjson.err" \
+    && fail "phase 58: the control refused a corrupt log — it does not reproduce the silent path"
+# NOTE: `grep -c … | grep -qx 0` is a TRAP under this file's `set -o pipefail`
+# — grep -c exits 1 when the count is 0, so the pipeline is nonzero exactly
+# when the assertion HOLDS.  Captured instead (measured: that pipeline failed
+# this phase on a control that had behaved correctly).
+n=$(grep -c "not json at all" "$P8/ctl-nonjson.log" || true)
+[ "$n" = "0" ] \
+    || fail "phase 58: the control left the corrupt bytes in place ($n line(s)) — it did not REPLACE the file (the wipe)"
+echo "   OK control: the same corrupt log makes the pre-fix build START and then REPLACE it silently — no refusal, no gap named, the evidence gone"
+
+echo "== phase 59: P8 THE REBUILT MAP DRIVES A REAL RESUMED GUEST RUN (--resume through the restarted proxy)"
+# The frame-driven arms above hand-build the resumed conversation; this arm
+# makes the GUEST produce it: run 1 leaves a denied call in the guest's
+# transcript (the reserved name + the guest's sentinel), then the SAME session
+# is RESUMED through a FRESH proxy against the SAME --log, and the host's
+# outbound leg must hand the model the true name and the real reason — while
+# the guest's own transcript stays exactly what crossed the gate (the stated
+# record-fidelity residual, restated rather than changed).
+mkdir -p "$P8/data1" "$P8/cfg"
+make_calls_stub "$P8/calls-stub.py" "$P8/marker-write" "$P8/marker-activate"
+cat > "$P8/cfg/config.dhall" <<DHALL
+{ agents =
+  [ { name = "fx"
+    , agent_type = "agent"
+    , mcp_servers = [ { command = "$P8/calls-stub.py", args = [] : List Text } ]
+    }
+  ]
+}
+DHALL
+cp "$FIX/responses_tool.sse" "$P8/gup.sse"
+"$GATE" --upstream "$P8/gup.sse" --slave-file "$P8/gslave1" \
+    --log "$P8/glog.jsonl" --deny get_weather --turns 2 2> "$P8/gerr1" &
+P8E=$!
+PROXIES="$PROXIES $P8E"
+wait_for_slave "$P8/gslave1" "$P8E" "$P8/gerr1"
+FX_CHARDEV="$(cat "$P8/gslave1")" FX_AGENT_CONFIG_DIR="$P8/cfg" \
+FX_AGENT_DATA="$P8/data1" HOME="$TMP" \
+    "$BIN" -p "$SENTINEL" --agent fx --max-turns 2 --output text \
+    > "$P8/gout1" 2> "$P8/gstderr1"
+g1rc=$?
+[ "$g1rc" -eq 0 ] || { sed -n '1,5p' "$P8/gstderr1" >&2; fail "phase 59: run 1 rc=$g1rc"; }
+wait_for_proxy_exit "$P8E" "$P8/gerr1"
+wait "$P8E" || fail "phase 59: proxy A exited nonzero"
+P8GTR=$(ls "$P8"/data1/sessions/*/messages.jsonl 2>/dev/null)
+[ -f "$P8GTR" ] || fail "phase 59: run 1 left no transcript — the arm is not the real scenario"
+n=$(pyq "$P8GTR" "len([1 for r in rows for tc in (r.get('tool_calls') or []) if tc.get('name')=='fx_host_denied' and tc.get('id')=='$CALLID'])")
+[ "$n" -eq 1 ] || { cat "$P8GTR" >&2; fail "phase 59: the denied call is not in the guest's transcript under the reserved name"; }
+n=$(pyq "$P8GTR" "len([1 for r in rows if r.get('role')=='tool' and r.get('tool_call_id')=='$CALLID' and r.get('content')=='(tool call failed)'])")
+[ "$n" -eq 1 ] || { cat "$P8GTR" >&2; fail "phase 59: run 1 recorded no sentinel tool result — nothing for the outbound leg to substitute"; }
+P8SID=$(ls "$P8/data1/sessions" | grep -v '^\.' | head -1)
+[ -n "$P8SID" ] || fail "phase 59: no session id under $P8/data1/sessions"
+n=$(p8_n "$P8/glog.jsonl" "r.get('call_id')=='$CALLID' and r.get('verdict')=='denied'")
+[ "$n" -ge 1 ] || fail "phase 59: run 1's denial was not recorded"
+echo "   OK run 1: the guest called get_weather, the gate denied it, the transcript holds fx_host_denied + the sentinel, and the log holds the denial (sid=$P8SID)"
+"$GATE" --upstream "$P8/gup.sse" --slave-file "$P8/gslave2" \
+    --log "$P8/glog.jsonl" --deny get_weather --turns 1 \
+    --dump-requests "$P8/gdump2.jsonl" 2> "$P8/gerr2" &
+P8F=$!
+PROXIES="$PROXIES $P8F"
+wait_for_slave "$P8/gslave2" "$P8F" "$P8/gerr2"
+FX_CHARDEV="$(cat "$P8/gslave2")" FX_AGENT_CONFIG_DIR="$P8/cfg" \
+FX_AGENT_DATA="$P8/data1" HOME="$TMP" \
+    "$BIN" -p "$SENTINEL" --agent fx --max-turns 1 --output text --resume "$P8SID" \
+    > "$P8/gout2" 2> "$P8/gstderr2"
+g2rc=$?
+[ "$g2rc" -eq 0 ] || { sed -n '1,5p' "$P8/gstderr2" >&2; fail "phase 59: the resumed run rc=$g2rc"; }
+wait_for_proxy_exit "$P8F" "$P8/gerr2"
+wait "$P8F" || fail "phase 59: proxy B exited nonzero"
+grep -q "log: LOADED" "$P8/gerr2" \
+    || { tail -3 "$P8/gerr2" >&2; fail "phase 59: the restarted proxy did not load the log"; }
+grep -q "RESTORED call_id=$CALLID" "$P8/gerr2" \
+    || { tail -20 "$P8/gerr2" >&2; fail "phase 59: the resumed request did not trigger a name RESTORE"; }
+grep -q "SUBSTITUTED call_id=$CALLID" "$P8/gerr2" \
+    || fail "phase 59: the resumed request did not trigger an output SUBSTITUTION"
+n=$(pyq "$P8/gdump2.jsonl" "len([i for r in rows for i in r.get('input',[]) if i.get('type')=='function_call' and i.get('call_id')=='$CALLID' and i.get('name')=='get_weather'])")
+[ "$n" -ge 1 ] || { cat "$P8/gdump2.jsonl" >&2; fail "phase 59: the model-facing frame does not restore the true name of the resumed call"; }
+n=$(pyq "$P8/gdump2.jsonl" "len([i for r in rows for i in r.get('input',[]) if i.get('type')=='function_call_output' and i.get('call_id')=='$CALLID' and isinstance(i.get('output'),str) and i['output'].startswith('(denied by host policy:')])")
+[ "$n" -ge 1 ] || { cat "$P8/gdump2.jsonl" >&2; fail "phase 59: the reason did not reach the model as the call's own result after the resume"; }
+# the guest's view is UNCHANGED (what crossed the gate), and run 1's row is
+# still in the record: the fidelity residual restated, and the defect fixed
+n=$(pyq "$P8GTR" "len([1 for r in rows for tc in (r.get('tool_calls') or []) if tc.get('name')=='fx_activate' or tc.get('name')=='get_weather'])")
+[ "$n" -eq 0 ] || fail "phase 59: the TRUE name reached the guest's transcript — zilch guest change means the transcript shows the reserved name"
+n=$(p8_n "$P8/glog.jsonl" "r.get('call_id')=='$CALLID' and r.get('verdict')=='denied' and r.get('true_name')=='get_weather'")
+[ "$n" -ge 1 ] || fail "phase 59: run 1's row is gone after the resumed run"
+[ ! -e "$P8/marker-write" ] && [ ! -e "$P8/marker-activate" ] \
+    || fail "phase 59: a stub marker fired — the denied call executed"
+echo "   OK resumed guest: the restarted proxy loaded the record, restored + substituted the pre-restart denial on the frame the model sees, kept the transcript as what crossed the gate (fx_host_denied + sentinel), and nothing executed"
+
+# ── P8-fix: THE FIVE SHOULD-FIXES FROM THE P8 REVIEW ────────────────────────
+#
+# DIRECTION: the review's verdict was that the load path is SOUND FOR
+# ENFORCEMENT but that STRICTNESS STOPS AT STRUCTURE — CONTENT IS TRUSTED.
+# Every arm below is a MEASURED defect with a PRE-FIX CONTROL built from the
+# SAME source (build/fx-hostgate-loadunbound | -nodedup | -noscopecarry), so
+# each new assertion is proved able to FAIL on exactly its own fixture.  The
+# two ends of the log are both here: what a loaded row may make the seat DO
+# (R1's unbounded restore, R5's reword), and what the seat itself WRITES (R2's
+# duplicate rows and the phantom exit entry they produce).  Nothing here
+# changes the guest: the crafted rows are host-side files and the frames are
+# built by the harness (p8_frame), never by a run.
+
+echo "== phase 60: P8-fix R1 — THE LOAD APPLIES THE WRITER'S OWN BOUND (a crafted-but-valid DENIED row is NOT trusted verbatim)"
+# THE DEFECT (the review's probe 1, the input with teeth): FH_BOUND was applied
+# only at WRITE time, so a DENIED row arriving from the FILE reached the deny
+# map at full length and the outbound leg restored its true_name and emitted
+# its denial_text whole.  MEASURED by the reviewer: 1,048,576 bytes, against a
+# run with NO POLICY ARMED.  The row below is STRUCTURALLY VALID (every field
+# the writer renders, correct types) — the fix is a BOUND, not a refusal, so
+# this arm asserts the bound AND that the row still loads.
+mkdir -p "$P8/fix"
+python3 - "$P8/fix/crafted.jsonl" <<'PY'
+import json, sys
+long = "E" * (1024 * 1024)
+row = {"ts": "2026-01-01T00:00:00Z", "session": None, "run": None, "turn": 1,
+       "call_id": "call_R1", "true_name": long, "args": "{}",
+       "pending": True, "outcome": None, "verdict": "denied", "author": "ops",
+       "refusal_name": "denied-by-ops", "reason": long, "denial_text": long}
+open(sys.argv[1], "w").write(json.dumps(row) + "\n")
+PY
+p8_frame "$P8/fix/r1frame.json" \
+    fc fx_host_denied call_R1 '{"path": "/etc"}' \
+    out - call_R1 '(tool call failed)'
+cp "$P8/fix/crafted.jsonl" "$P8/fix/r1.log"
+"$GATE" --upstream "$FIX/responses_simple.sse" --slave-file "$P8/fix/r1.slave" \
+    --log "$P8/fix/r1.log" --turns 1 --dump-requests "$P8/fix/r1.dump" \
+    2> "$P8/fix/r1.err" &
+P8G=$!
+PROXIES="$PROXIES $P8G"
+wait_for_slave "$P8/fix/r1.slave" "$P8G" "$P8/fix/r1.err"
+p8_drive "$(cat "$P8/fix/r1.slave")" "$P8/fix/r1frame.json"
+wait_for_proxy_exit "$P8G" "$P8/fix/r1.err"
+wait "$P8G"
+r1rc=$?
+[ "$r1rc" -eq 0 ] || { tail -3 "$P8/fix/r1.err" >&2; fail "phase 60: rc=$r1rc — the crafted row is structurally VALID, so the bound must apply to it, not refuse it"; }
+grep -q "log: LOADED" "$P8/fix/r1.err" \
+    || fail "phase 60: the crafted row did not load — the arm is not the scenario (nothing was carried)"
+# (a) the MODEL-FACING frame: the restored name and the substituted output are
+#     bounded with the explicit marker, and NOT one byte over FH_BOUND
+n=$(pyq "$P8/fix/r1.dump" "max([len(i.get('name') or '') for r in rows for i in r.get('input',[]) if i.get('type')=='function_call'] or [0])")
+[ "$n" -le 512 ] || { head -c 200 "$P8/fix/r1.dump" >&2; fail "phase 60: the outbound leg restored a $n-byte true_name — the loader trusted the file (FH_BOUND is 512)"; }
+n=$(pyq "$P8/fix/r1.dump" "max([len(i.get('output') or '') for r in rows for i in r.get('input',[]) if i.get('type')=='function_call_output' and i.get('call_id')=='call_R1'] or [0])")
+[ "$n" -gt 0 ] || { cat "$P8/fix/r1.dump" >&2; fail "phase 60: the crafted denial was NOT substituted into the output — the arm proves nothing (the row's denial_text is attacker-chosen text, so it is found by call_id, never by the host's own prefix)"; }
+[ "$n" -le 512 ] || { head -c 200 "$P8/fix/r1.dump" >&2; fail "phase 60: the outbound leg emitted $n bytes of the loaded denial text (the reviewer measured 1,048,576) — the load did not apply the writer's bound"; }
+n=$(pyq "$P8/fix/r1.dump" "len([1 for r in rows for i in r.get('input',[]) if isinstance(i.get('name'),str) and 'TRUNCATED from 1048576 bytes' in i['name']])")
+[ "$n" -ge 1 ] || { head -c 300 "$P8/fix/r1.dump" >&2; fail "phase 60: the cut is NOT marked — a silent truncation is the lie the writer's bound exists to prevent"; }
+n=$(pyq "$P8/fix/r1.dump" "len([1 for r in rows for i in r.get('input',[]) if i.get('type')=='function_call_output' and i.get('call_id')=='call_R1' and 'TRUNCATED from 1048576 bytes' in (i.get('output') or '')])")
+[ "$n" -ge 1 ] || fail "phase 60: the substituted OUTPUT is not marked — the bound must carry its marker on both fields the outbound leg writes"
+# (b) and the RECORD says the same thing: the carried row re-renders bounded
+n=$(pyq "$P8/fix/r1.log" "len([r for r in rows if r.get('call_id')=='call_R1' and 'TRUNCATED from 1048576 bytes' in (r.get('denial_text') or '') and len(r['denial_text'])<=512 and len(r['true_name'])<=512])")
+[ "$n" -eq 1 ] || { head -2 "$P8/fix/r1.log" >&2; fail "phase 60: the log's own row is not bounded+marked — the bound must hold in the record too"; }
+echo "   OK bounded at load: a 1 MB true_name/denial_text loaded, the outbound frame carries at most 512 bytes with the explicit marker, and the row re-renders bounded"
+# (c) THE BOUNDING EXEMPTION'S OWN ARGUMENT, RE-ESTABLISHED BY HAND: call_id
+#     renders verbatim because the WIRE bounds it (it arrived in a frame); a
+#     LOADED row never arrived in a frame, so the load checks the same bound.
+python3 - "$P8/fix/longcid.log" <<'PY'
+import json, sys
+row = {"ts": "2026-01-01T00:00:00Z", "session": None, "run": None, "turn": 1,
+       "call_id": "c" * (16 * 1024 * 1024 + 1), "true_name": "get_weather",
+       "args": "{}", "pending": False, "outcome": None, "verdict": None}
+with open(sys.argv[1], "w") as fh:
+    fh.write(json.dumps(row) + "\n")
+PY
+timeout 30 "$GATE" --print-log-state "$P8/fix/longcid.log" > /dev/null 2> "$P8/fix/longcid.err"
+rc=$?
+[ "$rc" -ne 0 ] || fail "phase 60: an over-frame-length call_id LOADED (rc=0) — the join key's bounding exemption has no load-side argument"
+grep -q "longer than a frame" "$P8/fix/longcid.err" \
+    || { tail -2 "$P8/fix/longcid.err" >&2; fail "phase 60: the over-long call_id refusal does not name the wire bound it re-establishes"; }
+echo "   OK join key: a $(wc -c < "$P8/fix/longcid.log")-byte file whose call_id exceeds a frame is REFUSED (the exemption is transitive, so the load re-establishes it)"
+
+echo "== phase 61: P8-fix R1 PRE-FIX CONTROL — the SAME fixture with the LOAD-TIME bound compiled out (the reviewer's 1,048,576 bytes)"
+# build/fx-hostgate-loadunbound is THIS source with LOAD_BOUND compiled to
+# xstrdup: every loaded free-text field is trusted verbatim, exactly the
+# pre-fix shape.  The flip is BY CONTENT on the same crafted row: the model
+# sees the full 1 MB.  (The control still exits 0 — a wrong record, not a
+# crash — which is why the assertion must be on the bytes.)
+cp "$P8/fix/crafted.jsonl" "$P8/fix/r1ctl.log"
+"$GATELOADUNB" --upstream "$FIX/responses_simple.sse" --slave-file "$P8/fix/r1ctl.slave" \
+    --log "$P8/fix/r1ctl.log" --turns 1 --dump-requests "$P8/fix/r1ctl.dump" \
+    2> "$P8/fix/r1ctl.err" &
+P8H=$!
+PROXIES="$PROXIES $P8H"
+wait_for_slave "$P8/fix/r1ctl.slave" "$P8H" "$P8/fix/r1ctl.err"
+p8_drive "$(cat "$P8/fix/r1ctl.slave")" "$P8/fix/r1frame.json"
+wait_for_proxy_exit "$P8H" "$P8/fix/r1ctl.err"
+wait "$P8H"
+[ "$?" -eq 0 ] || fail "phase 61: the control exited nonzero — the wrong record must be silent to the exit status, not a crash"
+n=$(pyq "$P8/fix/r1ctl.dump" "max([len(i.get('output') or '') for r in rows for i in r.get('input',[]) if i.get('type')=='function_call_output' and i.get('call_id')=='call_R1'] or [0])")
+[ "$n" -eq 1048576 ] || { head -c 200 "$P8/fix/r1ctl.dump" >&2; fail "phase 61: the control emitted $n bytes, not the reviewer's measured 1,048,576 — the mutation did not take, so phase 60's bound is not proven"; }
+n=$(pyq "$P8/fix/r1ctl.dump" "max([len(i.get('name') or '') for r in rows for i in r.get('input',[]) if i.get('type')=='function_call'] or [0])")
+[ "$n" -gt 512 ] || fail "phase 61: the control's restored name is only $n bytes — the load-time bound was NOT the thing phase 60 measured"
+echo "   OK control caught: with the load-time bound compiled out the same row drives the outbound leg unbounded (name $n bytes, denial text 1,048,576) — phase 60 asserts a bound the pre-fix shape does not have"
+
+echo "== phase 62: P8-fix R2 — ONE ROW PER call_id: the re-serve is a REPEAT, and the PHANTOM is gone"
+# THE DEFECT (the review, probes 2+3+5): the decode appended a fresh row for
+# every re-served call, so ONE guest-side tool call left THREE call rows for
+# one call_id in the gate's own phase-59 log, with a phantom UNRESOLVED entry
+# reported at every exit.  Semantics NOW (stated at row_call_record in
+# tools/fx-hostgate.c): a call_id identifies ONE CALL; a re-serve by the
+# upstream is the upstream repeating an item, so the row is written once and a
+# repeat neither re-opens nor un-answers it.  This arm drives the SAME wire
+# twice (two turns carrying one call_id, then a restart) with no guest.
+"$GATE" --upstream "$P8/upA.sse" --slave-file "$P8/fix/r2a.slave" \
+    --log "$P8/fix/r2.log" --deny get_weather --turns 2 2> "$P8/fix/r2a.err" &
+P8I=$!
+PROXIES="$PROXIES $P8I"
+wait_for_slave "$P8/fix/r2a.slave" "$P8I" "$P8/fix/r2a.err"
+p8_drive "$(cat "$P8/fix/r2a.slave")" "$P8/f1.json"
+p8_drive "$(cat "$P8/fix/r2a.slave")" "$P8/f2.json"
+wait_for_proxy_exit "$P8I" "$P8/fix/r2a.err"
+wait "$P8I"
+[ "$?" -eq 0 ] || fail "phase 62: run 1 (two turns over one call_id) exited nonzero"
+n=$(p8_n "$P8/fix/r2.log" "r.get('call_id')=='$P8CALL_A' and r.get('type') is None")
+[ "$n" -eq 1 ] || { sed -n '1,4p' "$P8/fix/r2.log" >&2; fail "phase 62: expected exactly 1 call row for $P8CALL_A after two turns that re-served the SAME call_id, got $n — ONE call_id is ONE CALL"; }
+n=$(p8_n "$P8/fix/r2.log" "r.get('call_id')=='$P8CALL_A' and r.get('verdict')=='denied' and r.get('pending') is False")
+[ "$n" -eq 1 ] || fail "phase 62: the single row is not RESOLVED — a re-serve must not un-answer a call the join already closed"
+grep -q "RE-SERVED an item" "$P8/fix/r2a.err" \
+    || { tail -3 "$P8/fix/r2a.err" >&2; fail "phase 62: the re-serve was deduped SILENTLY — the semantics must be visible on stderr"; }
+# THE RESTART: the same call_id is served again by a fresh process against the
+# SAME log.  Nothing may inflate, and nothing may be left looking unanswered.
+"$GATE" --upstream "$P8/upA.sse" --slave-file "$P8/fix/r2b.slave" \
+    --log "$P8/fix/r2.log" --deny get_weather --turns 1 2> "$P8/fix/r2b.err" &
+P8J=$!
+PROXIES="$PROXIES $P8J"
+wait_for_slave "$P8/fix/r2b.slave" "$P8J" "$P8/fix/r2b.err"
+p8_drive "$(cat "$P8/fix/r2b.slave")" "$P8/f2.json"
+wait_for_proxy_exit "$P8J" "$P8/fix/r2b.err"
+wait "$P8J"
+[ "$?" -eq 0 ] || fail "phase 62: the resumed run exited nonzero"
+n=$(p8_n "$P8/fix/r2.log" "r.get('call_id')=='$P8CALL_A' and r.get('type') is None")
+[ "$n" -eq 1 ] || { sed -n '1,6p' "$P8/fix/r2.log" >&2; fail "phase 62: the restarted run added a row for an already-recorded call_id (now $n rows) — the inflation the review measured"; }
+n=$(pyq "$P8/fix/r2.log" "len([r for r in rows if r.get('type')=='proxy-exit'])")
+[ "$n" -eq 2 ] || fail "phase 62: expected 2 proxy-exit rows to judge (one per run), got $n — the phantom assert below would be vacuous"
+n=$(pyq "$P8/fix/r2.log" "len([r for r in rows if r.get('type')=='proxy-exit' and any(u.get('call_id')=='$P8CALL_A' for u in r.get('unresolved',[]))])")
+[ "$n" -eq 0 ] || { sed -n '1,6p' "$P8/fix/r2.log" >&2; fail "phase 62: an exit row reports $P8CALL_A UNRESOLVED — the call was answered by the resumed run's own request, so this is the PHANTOM the review measured at every exit"; }
+n=$(grep -c "UNRESOLVED" "$P8/fix/r2b.err" || true)
+[ "$n" = "0" ] || fail "phase 62: the resumed run's stderr reports an unresolved call ($n line(s)) for a call it just substituted"
+# THE REVIEWER'S OWN ARTIFACT: the phase-59 log was the measured 3-rows-plus-
+# phantom case, so the same two properties are asserted on it directly.
+n=$(p8_n "$P8/glog.jsonl" "r.get('call_id')=='$CALLID'")
+[ "$n" -eq 1 ] || { sed -n '1,6p' "$P8/glog.jsonl" >&2; fail "phase 62: the phase-59 log holds $n call rows for ONE guest-side tool call (the review measured THREE before this fix)"; }
+n=$(pyq "$P8/glog.jsonl" "len([r for r in rows if r.get('type')=='proxy-exit'])")
+[ "$n" -eq 2 ] || fail "phase 62: phase 59's log does not carry 2 proxy-exit rows ($n) — the phantom assert would be vacuous"
+n=$(pyq "$P8/glog.jsonl" "len([r for r in rows if r.get('type')=='proxy-exit' and any(u.get('call_id')=='$CALLID' for u in r.get('unresolved',[]))])")
+[ "$n" -eq 0 ] || { sed -n '1,6p' "$P8/glog.jsonl" >&2; fail "phase 62: phase 59's exits still report the answered call unresolved (the review measured it at BOTH exits)"; }
+# and the LOADER now matches the writer: a duplicate call_id row is refused,
+# loudly, leaving the file untouched
+printf '%s\n%s\n' "$(head -1 "$P8/fix/r2.log")" "$(head -1 "$P8/fix/r2.log")" > "$P8/fix/dup.log"
+cp "$P8/fix/dup.log" "$P8/fix/dup.before"
+timeout 20 "$GATE" --upstream "$FIX/responses_simple.sse" --slave-file "$P8/fix/dup.slave" \
+    --log "$P8/fix/dup.log" --turns 1 2> "$P8/fix/dup.err"
+rc=$?
+[ "$rc" -ne 0 ] || fail "phase 62: a log with a DUPLICATE call_id row was ACCEPTED (rc=0) — the loader does not match the writer's one-row-per-call_id invariant"
+grep -q "MORE THAN ONCE" "$P8/fix/dup.err" \
+    || { tail -2 "$P8/fix/dup.err" >&2; fail "phase 62: the duplicate refusal does not name the invariant"; }
+grep -q "REFUSES TO START" "$P8/fix/dup.err" || fail "phase 62: the duplicate refusal is not the loud refusal"
+cmp -s "$P8/fix/dup.log" "$P8/fix/dup.before" || fail "phase 62: the duplicate refusal clobbered the file"
+[ -e "$P8/fix/dup.slave" ] && fail "phase 62: the duplicate refusal still published a slave path"
+echo "   OK one row per call_id: two turns and a restart over ONE call_id leave exactly 1 row, no exit row reports it unresolved (.stderr neither), phase 59's own log holds 1 row for its one guest-side call, and the loader REFUSES a duplicate row"
+
+echo "== phase 63: P8-fix R2 PRE-FIX CONTROL — one row per OBSERVATION (the inflation + the phantom return)"
+# build/fx-hostgate-nodedup is THIS source with the dedup compiled out: the
+# pre-fix shape.  Same upstream, same two turns, same log shape — so the
+# phase-62 assertions flip BY CONTENT.
+"$GATENODEDUP" --upstream "$P8/upA.sse" --slave-file "$P8/fix/r2c.slave" \
+    --log "$P8/fix/r2c.log" --deny get_weather --turns 2 2> "$P8/fix/r2c.err" &
+P8K=$!
+PROXIES="$PROXIES $P8K"
+wait_for_slave "$P8/fix/r2c.slave" "$P8K" "$P8/fix/r2c.err"
+p8_drive "$(cat "$P8/fix/r2c.slave")" "$P8/f1.json"
+p8_drive "$(cat "$P8/fix/r2c.slave")" "$P8/f2.json"
+wait_for_proxy_exit "$P8K" "$P8/fix/r2c.err"
+wait "$P8K"
+[ "$?" -eq 0 ] || fail "phase 63: the control exited nonzero — the wrong record must be silent to the exit status"
+n=$(p8_n "$P8/fix/r2c.log" "r.get('call_id')=='$P8CALL_A' and r.get('type') is None")
+[ "$n" -ge 2 ] || { sed -n '1,4p' "$P8/fix/r2c.log" >&2; fail "phase 63: the control recorded $n row(s) for a call_id it served twice — the mutation did not take, so phase 62's single-row assert proves nothing"; }
+n=$(pyq "$P8/fix/r2c.log" "len([r for r in rows if r.get('type')=='proxy-exit' and any(u.get('call_id')=='$P8CALL_A' for u in r.get('unresolved',[]))])")
+[ "$n" -ge 1 ] || { sed -n '1,4p' "$P8/fix/r2c.log" >&2; fail "phase 63: the control reports NO unresolved entry — the phantom phase 62 measures absent is not reproduced, so the mutation is vacuous"; }
+grep -q "UNRESOLVED" "$P8/fix/r2c.err" \
+    || fail "phase 63: the control's stderr never reported the phantom"
+# THE CONSEQUENCE, measured: the log this writer produces is not one this seat
+# will LOAD (the loader refuses duplicates), so the pre-fix shape is now
+# self-inconsistent — it cannot be resumed against its own record.
+timeout 20 "$GATE" --upstream "$P8/upA.sse" --slave-file "$P8/fix/r2d.slave" \
+    --log "$P8/fix/r2c.log" --deny get_weather --turns 1 2> "$P8/fix/r2d.err"
+rc=$?
+[ "$rc" -ne 0 ] || fail "phase 63: the main build LOADED the control's duplicated log — the writer's invariant and the loader's check have drifted apart again"
+grep -q "MORE THAN ONCE" "$P8/fix/r2d.err" || fail "phase 63: the refusal of the control's log does not name the duplicate"
+echo "   OK control caught: the pre-fix writer inflates one call into $n+ rows and reports a phantom UNRESOLVED at exit — and the record it writes is now one this seat REFUSES to load"
+
+echo "== phase 64: P8-fix R3 — THE LOAD IS LINEAR, AND THE OVER-CAP WAY OUT IS NOT LOSSY"
+# THE DEFECT (the review, probes 3+4): dmap_put/dmap_find were LINEAR scans, so
+# the LOAD was O(n^2) — the reviewer MEASURED 50 K rows -> 11.3 s, 100 K -> 89.7
+# s on their fixture, 200 K -> the over-cap refusal.  A record whose whole point
+# is to accumulate made the seat's own successful prior runs the reason it
+# cannot start.  THE DISCRIMINATOR IS MEASURED HERE, not assumed: on a 26.3 MB
+# / 100,000-Row log THIS host gives 0.188 s on the build under test and 29.7 s
+# on a one-off scratch build of the SAME source with only dmap_find reverted to
+# the linear scan (identical output, and the reviewer's direction reproduced) —
+# so the 20 s bound below fails the pre-fix shape by ~1.5x and the fixed one by
+# ~100x, and the arm cannot pass by accident.
+mkdir -p "$P8/fix/big"
+python3 - "$P8/fix/big/log.jsonl" <<'PY'
+import sys
+with open(sys.argv[1], "w") as fh:
+    for i in range(100000):
+        fh.write('{"ts":"2026-01-01T00:00:00Z","session":null,"run":null,"turn":1,'
+                 '"call_id":"call_big_%06d","true_name":"get_weather","args":"{}",'
+                 '"pending":false,"outcome":"ok","verdict":"denied","author":"ops",'
+                 '"refusal_name":"denied-by-ops","reason":"denied",'
+                 '"denial_text":"(denied by host policy: denied)"}\n' % i)
+PY
+bytes=$(wc -c < "$P8/fix/big/log.jsonl")
+[ "$bytes" -gt 20000000 ] || fail "phase 64: the big-log fixture is only $bytes bytes — the arm is not the review's shape"
+timeout 20 "$GATE" --print-log-state "$P8/fix/big/log.jsonl" > "$P8/fix/big/state.txt" 2> "$P8/fix/big/state.err"
+rc=$?
+[ "$rc" -eq 0 ] || { tail -2 "$P8/fix/big/state.err" >&2; fail "phase 64: rc=$rc on a 100,000-row ($bytes-byte) log — the reviewer measured 89.7 s at this size on the pre-fix binary and the cap is 64 MiB, so a load inside 20 s is the linearity claim"; }
+grep -q "rows=100000 calls=100000" "$P8/fix/big/state.txt" \
+    || { head -1 "$P8/fix/big/state.txt" >&2; fail "phase 64: the digest does not report all 100,000 rows — the load did not do the work it is timed on"; }
+echo "   OK linear: $bytes bytes / 100,000 rows load and digest inside the 20 s bound (the same fixture measured 0.188 s here, against 29.7 s for a scratch build with only the linear scan restored — and the reviewer measured 89.7 s on the pre-fix binary)"
+# THE OVER-CAP REFUSAL MUST NAME A WAY OUT THAT KEEPS THE JOIN STATE.  A sparse
+# file is enough: the cap is a SIZE check, taken before the file is read.
+cp "$P8/fix/big/log.jsonl" "$P8/fix/big/over.log"
+python3 - "$P8/fix/big/over.log" <<'PY'
+import os, sys
+with open(sys.argv[1], "ab") as fh:
+    fh.truncate(64 * 1024 * 1024 + 1)
+PY
+timeout 60 "$GATE" --print-log-state "$P8/fix/big/over.log" > /dev/null 2> "$P8/fix/big/over.err"
+rc=$?
+[ "$rc" -ne 0 ] || fail "phase 64: an over-cap log LOADED (rc=0) — the size guard is gone"
+grep -q "load cap" "$P8/fix/big/over.err" || fail "phase 64: the over-cap refusal does not name the cap"
+grep -q "THE WAY OUT IS NOT LOSSY" "$P8/fix/big/over.err" \
+    || { tail -2 "$P8/fix/big/over.err" >&2; fail "phase 64: the over-cap refusal does not name a recovery that PRESERVES the join state — the review's finding was that its only named way out LOST it"; }
+# AND THE NAMED RECOVERY IS RUN, not merely printed: the compacted form (the
+# DENIED rows alone, the predicate the refusal names) is a log this seat loads,
+# with every denial's map entry intact — that is what makes the bound
+# RECOVERABLE rather than self-defeating.
+grep -F '"verdict":"denied"' "$P8/fix/big/log.jsonl" > "$P8/fix/big/compacted.jsonl"
+n=$(wc -l < "$P8/fix/big/compacted.jsonl")
+[ "$n" -eq 100000 ] || fail "phase 64: the compaction kept $n of 100000 denied rows — the named way out does not preserve the join state it is for"
+timeout 20 "$GATE" --print-log-state "$P8/fix/big/compacted.jsonl" > "$P8/fix/big/cstate.txt" 2> /dev/null
+rc=$?
+[ "$rc" -eq 0 ] || fail "phase 64: the compacted log does not load (rc=$rc) — the refusal names a way out that does not exist"
+grep -q "dmap=100000" "$P8/fix/big/cstate.txt" \
+    || { head -1 "$P8/fix/big/cstate.txt" >&2; fail "phase 64: the compacted log reloaded with a different deny map — the recovery lost join state"; }
+echo "   OK recoverable: the over-cap refusal names the DENIED-row compaction, and the gate RUNS it — all 100,000 denials are still in the rebuilt map"
+
+echo "== phase 65: P8-fix R4 — A NON-REGULAR --log IS REFUSED AT THE DOOR (a FIFO used to HANG the seat silently)"
+# THE DEFECT (the review, probe 3): log_load fopen'd whatever --log named.
+# MEASURED by the reviewer: a FIFO blocked the open FOREVER with zero
+# log-related output; /dev/null was accepted and a flush would have renamed a
+# temp over the device node; a SYMLINK was replaced by the first flush, the
+# record silently splitting in two; a directory died with a bare errno.
+# EVERY proxy started here is TIME-BOUNDED (timeout -k), because the failure
+# mode being gated IS a silent hang: an unbounded arm would hang the gate.
+mkdir -p "$P8/fix/r4dir"
+mkfifo "$P8/fix/r4fifo"
+printf '{"ts":"2026-01-01T00:00:00Z","session":null,"run":null,"turn":1,"call_id":"call_L","true_name":"get_weather","args":"{}","pending":true,"outcome":null,"verdict":null}\n' > "$P8/fix/r4target.log"
+cp "$P8/fix/r4target.log" "$P8/fix/r4target.before"
+ln -sf "$P8/fix/r4target.log" "$P8/fix/r4link.log"
+p8_r4() { # <tag> <log-path> <stderr-substring>
+    local tag="$1" path="$2" want="$3"
+    timeout -k 2 10 "$GATE" --upstream "$FIX/responses_simple.sse" \
+        --slave-file "$P8/fix/r4-$tag.slave" --log "$path" --turns 1 \
+        2> "$P8/fix/r4-$tag.err"
+    local rc=$?
+    [ "$rc" -eq 1 ] || { tail -2 "$P8/fix/r4-$tag.err" >&2; fail "phase 65: --log $tag gave rc=$rc (124 would be the HANG this check exists to remove; 0 would mean the seat served against it)"; }
+    grep -q "IS NOT USABLE AS THE ONE LOG" "$P8/fix/r4-$tag.err" \
+        || { tail -2 "$P8/fix/r4-$tag.err" >&2; fail "phase 65: the $tag refusal does not name the door check"; }
+    grep -q "$want" "$P8/fix/r4-$tag.err" \
+        || { tail -2 "$P8/fix/r4-$tag.err" >&2; fail "phase 65: the $tag refusal does not say WHAT is wrong (want '$want')"; }
+    grep -q "REFUSES TO START" "$P8/fix/r4-$tag.err" || fail "phase 65: the $tag refusal is not the loud refusal"
+    [ -e "$P8/fix/r4-$tag.slave" ] && fail "phase 65: the $tag refusal still published a slave path — it did not stop before serving"
+    echo "   OK $tag: rc=$rc, named at the door, nothing served"
+}
+p8_r4 fifo "$P8/fix/r4fifo" "NOT A REGULAR FILE"
+p8_r4 dir "$P8/fix/r4dir" "NOT A REGULAR FILE"
+p8_r4 link "$P8/fix/r4link.log" "SYMLINK"
+p8_r4 null /dev/null "NOT A REGULAR FILE"
+# THE TWO SILENT CATASTROPHES THE DOOR CHECK EXISTS FOR, each measured after:
+[ -p "$P8/fix/r4fifo" ] || fail "phase 65: the FIFO is gone — a refusal must not touch the object it refuses"
+[ -c /dev/null ] || fail "phase 65: /dev/null is no longer a character device — a flush renamed a temp over it (the device-node catastrophe the review named)"
+[ -L "$P8/fix/r4link.log" ] || fail "phase 65: the symlink was REPLACED by a regular file — the record would have split in two"
+cmp -s "$P8/fix/r4target.log" "$P8/fix/r4target.before" \
+    || fail "phase 65: the symlink's TARGET was modified by a refused run"
+# THE CONTROL: the SAME FIFO against the pre-fix-shaped build (the load
+# compiled out — it never looks at the path at all).  BOUNDED, so the gate
+# itself never hangs on it: rc 124 IS the defect, and it is the asymmetry.
+timeout -k 2 5 "$GATENOLOGLOAD" --upstream "$FIX/responses_simple.sse" \
+    --slave-file "$P8/fix/r4ctl.slave" --log "$P8/fix/r4fifo" --turns 1 \
+    2> "$P8/fix/r4ctl.err"
+rc=$?
+[ "$rc" -eq 124 ] || { cat "$P8/fix/r4ctl.err" >&2; fail "phase 65: the pre-fix-shaped build did NOT hang on the FIFO (rc=$rc) — the door check is not what removed the hang, so this arm proves nothing"; }
+n=$(grep -c "IS NOT USABLE" "$P8/fix/r4ctl.err" || true)
+[ "$n" = "0" ] || fail "phase 65: the control refused the FIFO — it does not reproduce the silent path"
+echo "   OK control caught: the FIFO hangs the pre-fix-shaped build with ZERO log-related output (rc=124 under a 5 s bound, no message) — the door check is exactly what turns that silent hang into a loud refusal"
+
+echo "== phase 66: P8-fix R5/R6b/R7 — a CARRIED row keeps its own reading, the fields are validated, and the CRLF normalization is SAID OUT LOUD"
+# R5 (the review's probe 5): log_flush RECOMPUTED allow_scope from the CURRENT
+# run's seats, so a row written under "no operator denial at this seat" was
+# silently REWORDED by a later run — the record claiming a judgement another
+# run made.  The arm below flushes the carried row with the CLAIM SEAT ARMED
+# (the reviewer's exact direction: ops-only written, claim-armed flush).
+python3 - "$P8/fix/allow.jsonl" <<'PY'
+import json, sys
+OPSSCOPE = ("seat-scoped: no operator denial at this seat; "
+            "the in-guest floor and D2 still govern")
+row = {"ts": "2026-01-01T00:00:00Z", "session": None, "run": None, "turn": 1,
+       "call_id": "call_S", "true_name": "get_weather", "args": "{}",
+       "pending": False, "outcome": "ok", "verdict": "allowed", "author": "ops",
+       "allow_scope": OPSSCOPE, "refusal_name": None, "reason": None,
+       "denial_text": None}
+open(sys.argv[1], "w").write(json.dumps(row) + "\n")
+PY
+cp "$P8/fix/allow.jsonl" "$P8/fix/r5.log"
+"$GATE" --upstream "$FIX/responses_simple.sse" --slave-file "$P8/fix/r5.slave" \
+    --log "$P8/fix/r5.log" --calls-policy-dir "$CALLS_DIR" --turns 1 \
+    2> "$P8/fix/r5.err" &
+P8L=$!
+PROXIES="$PROXIES $P8L"
+wait_for_slave "$P8/fix/r5.slave" "$P8L" "$P8/fix/r5.err"
+grep -q "seat ARMED" "$P8/fix/r5.err" \
+    || { tail -3 "$P8/fix/r5.err" >&2; fail "phase 66: the claim seat did not arm — the recompute this phase exists to catch would be a no-op and the assert vacuous"; }
+p8_drive "$(cat "$P8/fix/r5.slave")" "$P8/f1.json"
+wait_for_proxy_exit "$P8L" "$P8/fix/r5.err"
+wait "$P8L"
+[ "$?" -eq 0 ] || fail "phase 66: the flush run exited nonzero"
+grep -qF '"allow_scope":"seat-scoped: no operator denial at this seat; the in-guest floor and D2 still govern"' "$P8/fix/r5.log" \
+    || { head -1 "$P8/fix/r5.log" >&2; fail "phase 66: the carried row's allow_scope was REWORDED by a run that judged nothing — the record now claims a claim-seat judgement that never happened"; }
+n=$(grep -c "no claim refusal" "$P8/fix/r5.log" || true)
+[ "$n" = "0" ] || fail "phase 66: the carried row now claims a claim-seat reading ($n row(s)) — the reword the review measured"
+echo "   OK carried verbatim: with the claim seat ARMED, the carried row still reads exactly what its own run wrote"
+# THE CONTROL: the same fixture, the same armed flush, the scope recomputed
+cp "$P8/fix/allow.jsonl" "$P8/fix/r5ctl.log"
+"$GATENOSCOPECARRY" --upstream "$FIX/responses_simple.sse" --slave-file "$P8/fix/r5ctl.slave" \
+    --log "$P8/fix/r5ctl.log" --calls-policy-dir "$CALLS_DIR" --turns 1 \
+    2> "$P8/fix/r5ctl.err" &
+P8M=$!
+PROXIES="$PROXIES $P8M"
+wait_for_slave "$P8/fix/r5ctl.slave" "$P8M" "$P8/fix/r5ctl.err"
+p8_drive "$(cat "$P8/fix/r5ctl.slave")" "$P8/f1.json"
+wait_for_proxy_exit "$P8M" "$P8/fix/r5ctl.err"
+wait "$P8M"
+[ "$?" -eq 0 ] || fail "phase 66: the R5 control exited nonzero"
+grep -q "no claim refusal" "$P8/fix/r5ctl.log" \
+    || { head -1 "$P8/fix/r5ctl.log" >&2; fail "phase 66: the R5 control did NOT reword the carried scope — the mutation did not take, so the assert above proves nothing"; }
+echo "   OK control caught: with the scope-carry compiled out the same flush REWORDS the row to claim the claim seat judged it — the reviewer's measured defect, reproduced on demand"
+# R6b: `turn` is a whole number or the log refuses (3.7 used to load and then
+# re-render differently; 1e100 was undefined through get_sint)
+for bad in 3.7 1e100 -1 '"1"'; do
+    python3 - "$P8/fix/turn.log" "$bad" <<'PY'
+import json, sys
+row = {"ts": "2026-01-01T00:00:00Z", "session": None, "run": None, "turn": 0,
+       "call_id": "call_T", "true_name": "get_weather", "args": "{}",
+       "pending": False, "outcome": None, "verdict": None}
+raw = json.dumps(row).replace('"turn": 0', '"turn": ' + sys.argv[2])
+open(sys.argv[1], "w").write(raw + "\n")
+PY
+    timeout 20 "$GATE" --print-log-state "$P8/fix/turn.log" > /dev/null 2> "$P8/fix/turn.err"
+    rc=$?
+    [ "$rc" -ne 0 ] || fail "phase 66: a row with turn=$bad LOADED (rc=0) — a field the writer only ever writes whole is accepted from the file"
+done
+grep -q "not an INTEGER\|negative" "$P8/fix/turn.err" \
+    || fail "phase 66: the turn refusal does not name what a turn must be"
+echo "   OK turn validated: 3.7, 1e100, -1 and a string are each REFUSED (the writer only ever writes a whole, non-negative turn)"
+# R7: CRLF is ACCEPTED (a Windows copy is not corruption) and the
+# normalization is REPORTED, not silent
+python3 - "$P8/fix/crlf.log" <<'PY'
+import sys
+row = (b'{"ts":"2026-01-01T00:00:00Z","session":null,"run":null,"turn":1,'
+       b'"call_id":"call_CR","true_name":"get_weather","args":"{}",'
+       b'"pending":false,"outcome":null,"verdict":null}')
+open(sys.argv[1], "wb").write(row + b"\r\n")
+PY
+cp "$P8/fix/crlf.log" "$P8/fix/crlf.before"
+timeout 20 "$GATE" --print-log-state "$P8/fix/crlf.log" > "$P8/fix/crlf.out" 2> "$P8/fix/crlf.err"
+rc=$?
+[ "$rc" -eq 0 ] || { tail -2 "$P8/fix/crlf.err" >&2; fail "phase 66: a CRLF log was REFUSED (rc=$rc) — a Windows copy of the record is not corruption"; }
+grep -q "ended CRLF" "$P8/fix/crlf.err" \
+    || { cat "$P8/fix/crlf.err" >&2; fail "phase 66: the CRLF row was accepted SILENTLY — the loader must say that the file will be normalized"; }
+grep -q "NORMALIZED to LF" "$P8/fix/crlf.err" || fail "phase 66: the CRLF notice does not say what happens on the next flush"
+cmp -s "$P8/fix/crlf.log" "$P8/fix/crlf.before" || fail "phase 66: --print-log-state MODIFIED the file — it must only read"
+echo "   OK CRLF: accepted, announced (line count + what the next flush does), and the read-only path leaves the file alone"
+# THE TRUST BOUNDARY IS STATED WHERE A READER MEETS IT (the review's demand):
+# in the --log usage the seat prints, not only in a source comment.
+timeout 10 "$GATE" --nonsense 2> "$P8/fix/usage.err" > /dev/null
+grep -q "TRUSTED INPUT" "$P8/fix/usage.err" \
+    || { tail -5 "$P8/fix/usage.err" >&2; fail "phase 66: the seat's own usage does not state that the log is TRUSTED INPUT — the trust boundary must be stated where it is met"; }
+grep -q "REGULAR FILE" "$P8/fix/usage.err" \
+    || fail "phase 66: the usage does not state the regular-file requirement"
+echo "   OK trust boundary stated: the seat's usage names the log as TRUSTED INPUT (structure checked, content trusted) and the regular-file rule"
+
+echo "== phase 67: P8-fix EXTRA — THE WRITER/LOADER DRIFT: the seat could not load its OWN record from an UNARMED run"
+# FOUND WHILE IMPLEMENTING R5 (not in the review's list, and NOT visible to it
+# because every P8 arm reloads an ARMED log): the loader called log_str on
+# `verdict`, which REFUSES AN ABSENT KEY — but the writer renders no
+# verdict/author at all when no policy ran (the P2 row shape).  MEASURED before
+# this fix: a log written by an unarmed run died on restart with "`verdict` is
+# not a string", so the seat REFUSED TO START against its own successful
+# record.  That is the self-lockout class the review's probe-4 property names,
+# and it is exactly the writer/loader drift R2 requires to be gone.  The arm
+# below uses a REAL unarmed run (never a hand-built row): the record is the
+# seat's own output, and the property is that the seat can continue it.
+# responses_tool.sse carries a real call, so the UNARMED row (verdict/author
+# absent) is exercised: with responses_simple.sse there would be no call row at
+# all and the arm would pass vacuously.
+"$GATE" --upstream "$FIX/responses_tool.sse" --slave-file "$P8/fix/u1.slave" \
+    --log "$P8/fix/unarmed.log" --turns 1 2> "$P8/fix/u1.err" &
+P8N=$!
+PROXIES="$PROXIES $P8N"
+wait_for_slave "$P8/fix/u1.slave" "$P8N" "$P8/fix/u1.err"
+drive_frame "$(cat "$P8/fix/u1.slave")"
+wait_for_proxy_exit "$P8N" "$P8/fix/u1.err"
+wait "$P8N"
+[ "$?" -eq 0 ] || fail "phase 67: the unarmed run exited nonzero"
+n=$(pyq "$P8/fix/unarmed.log" "len([r for r in rows if 'verdict' not in r and 'author' not in r and r.get('type') is None])")
+[ "$n" -eq 1 ] || { head -2 "$P8/fix/unarmed.log" >&2; fail "phase 67: the unarmed run did not write the P2 row shape (no verdict/author) — the arm is not the drift it exists for"; }
+before=$(wc -c < "$P8/fix/unarmed.log")
+"$GATE" --upstream "$FIX/responses_tool.sse" --slave-file "$P8/fix/u2.slave" \
+    --log "$P8/fix/unarmed.log" --turns 1 2> "$P8/fix/u2.err" &
+P8O=$!
+PROXIES="$PROXIES $P8O"
+wait_for_slave "$P8/fix/u2.slave" "$P8O" "$P8/fix/u2.err"
+drive_frame "$(cat "$P8/fix/u2.slave")"
+wait_for_proxy_exit "$P8O" "$P8/fix/u2.err"
+wait "$P8O"
+rc2=$?
+[ "$rc2" -eq 0 ] || { tail -3 "$P8/fix/u2.err" >&2; fail "phase 67: rc=$rc2 — the seat REFUSES TO START against its own UNARMED record (the drift: the writer omits verdict/author when no policy ran, and an absent key is not a shape log_str accepts)"; }
+grep -q "log: LOADED 2 row(s)" "$P8/fix/u2.err" \
+    || { tail -3 "$P8/fix/u2.err" >&2; fail "phase 67: the restart did not carry the unarmed record (its own row + the previous exit row)"; }
+[ "$(wc -c < "$P8/fix/unarmed.log")" -gt "$before" ] \
+    || fail "phase 67: the restart wrote nothing — the record did not continue"
+# AND THE TOLERANCE IS NARROW: absent-or-null is accepted, a WRONG TYPE is not
+python3 - "$P8/fix/badtype.log" <<'PY'
+import sys
+row = ('{"ts":"2026-01-01T00:00:00Z","session":null,"run":null,"turn":1,'
+       '"call_id":"call_BT","true_name":"get_weather","args":"{}",'
+       '"pending":false,"outcome":null,"verdict":5}')
+open(sys.argv[1], "w").write(row + "\n")
+PY
+timeout 20 "$GATE" --print-log-state "$P8/fix/badtype.log" > /dev/null 2> "$P8/fix/badtype.err"
+rc=$?
+[ "$rc" -ne 0 ] || fail "phase 67: a row carrying a NUMBER in the verdict field LOADED — the optionality must be absent-or-null, not anything-goes"
+grep -q "is not a string" "$P8/fix/badtype.err" \
+    || { tail -2 "$P8/fix/badtype.err" >&2; fail "phase 67: the wrong-type refusal does not name the field type rule"; }
+echo "   OK writer/loader drift closed: an unarmed run's own record loads and CONTINUES on restart (while a wrong-typed field still refuses) — the seat can no longer be locked out by its own successful run"
+
+echo "PASS hostgate: the transparent proxy is stream-transparent (arm == control) and a mangling proxy is caught; the per-turn open/close mechanics hold through one proxy process; the one log JOINS every answered call by call_id and REPORTS every call it could not join; a join compiled out flips the pass by content; every model-controlled free-text field arrives MARKED while the join key renders verbatim; the DECODE GATE holds the channel invariant for a denied call (the true name never crosses) in the presence of interleaves, duplicate/never-opened dones, open-at-completed items and over-cap streams, with a pinned pre-fix control for each; the RESERVED NAME is a CHECKED property (it passes the guest's charset, collides with no verb of a catalog pinned by sha256 and cross-checked against the verbs server's own table, and the proxy REFUSES TO START on a collision — while the same source with the check compiled out starts and DISPATCHES the colliding name: the silent allow); and the JUSTIFICATION is required in the injected tools schema, judged on the argument accumulator the guest actually dispatches (a done-args-only judge is pinned and caught), denied BY NAME through the existing substitution on the outbound leg, and REPORTED BY A DENIAL-RATE INSTRUMENT whose own compiled-out mutant leaves the dead-agent shape invisible; and THE OPERATOR IS A REAL AUTHOR AT THIS SEAT (P6: the pinned ops policy, its PINS check, its alias table with the TWO-FORM grammar re-run here, and its per-call fact injection with the path canonicalized before matching) with the D1/D2 split NAMED in the startup line — D1 evaluated here, D2 and the compiled-in FLOOR enforced IN-GUEST ONLY because this seat can see neither — the D2 bound ASSERTED in both directions, the ALLOWED row carrying its own seat-scoped allow_scope qualifier (so a durable record cannot read as a permission the seat never grants) with the LOADED-BUT-INERT branch pinned by its own D2-only arm, and the seat's three failure directions each pinned against a control of the SAME source (fail-open when the seat is compiled out, over-deny when it binds the floor it cannot see, silent allow when it matches the raw path); and THE CLAIM AUTHOR AT THIS SEAT (P7) pins the file that COMPUTES every verdict (a swapped always-derives eval_calls.py is REFUSED at startup, while the same source with the evaluator exempt from the pin arms and lets the forbidden call CROSS and EXECUTE), BOUNDS the per-call evaluator (a hung one becomes a RECORDED refusal with its row written, while the same source with no deadline HANGS and writes NOTHING — the dead-agent instrument's blind spot), and refuses a folded verb-SYMBOL mapped by TWO runtime verbs at both check sites (--check-verbs and the seat's loader), so no shared symbol can let one contention justify two runtime verbs; and the ONE LOG SURVIVES A KILL/RESTART (the load is a gate: a corrupt log refuses LOUDLY and is left untouched) with its second role as the JOIN STATE rebuilt from it — a pre-restart denial is restored and substituted on the frame the model sees — while the SAME source with the load compiled out WIPES the record and leaves the denial un-restored, the replay is IDEMPOTENT (same bytes twice, and load->flush reproduces the carried lines exactly), and a REAL RESUMED GUEST RUN gets the true name and the reason back on the outbound leg; and the FIVE SHOULD-FIXES THE P8 REVIEW FOUND ARE CLOSED, each against its own PRE-FIX CONTROL of the SAME source: a crafted-but-valid DENIED row can no longer drive the outbound leg unbounded (the loader applies the writer's bound at LOAD, so a 1 MB denial_text is restored as 512 MARKED bytes, while the control emits the reviewer's 1,048,576 and a call_id longer than the wire could carry is refused); the seat writes ONE ROW PER call_id (a re-serve is a repeat, not a second call — no phantom UNRESOLVED at any exit, phase 59's own log holding 1 row for its one guest-side call — the control inflating it and reporting the phantom), with the LOADER matching the writer by REFUSING a duplicate row; the LOAD is LINEAR rather than quadratic (100,000 rows in well under a 20 s bound where the pre-fix binary measured 89.7 s) and the over-cap refusal names a way out the gate RUNS — the DENIED-row compaction, whose rebuilt map still holds every denial; --log is REFUSED AT THE DOOR unless it is a regular file this seat owns (a FIFO that hung the pre-fix shape silently under a bounded control, a device node a flush would have renamed over, a symlink that would have split the record, a directory, all loud before anything is served or written); and a CARRIED row keeps the reading it was written with (its own allow_scope, byte-for-byte, where the control REWORDS it to claim a seat that judged nothing), while the turn field is validated as a whole non-negative number and the CRLF normalization is announced instead of silent"

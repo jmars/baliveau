@@ -1389,6 +1389,36 @@ judges it; **claim + verdict + outcome are one record** and the **disagreement**
       and the three earlier fail-opens remain closed.
 - [ ] **THE STATED RESIDUAL:** this closes the **tool-call channel** only — a root agent in the guest
       can still run things directly, outside any tool call (§6b: *auditing, not proofing*).
+- [x] **P8 — RESUME, AND THE ONE LOG AS JOIN STATE** (**COMMITTED**; `coder`, then a review round and a fix
+      round). **THE DEFECT I MEASURED FIRST, and it was not what the plan expected:** the log was rendered
+      by an atomic whole-file rewrite from an in-memory array that started **empty and was never read
+      back** — so **a second run with the same `--log` WIPED the first run's record** (reproduced: run 1
+      wrote `call_RUN1 denied`, run 2 left only `call_RUN2 allowed`). That contradicted the code's own rule
+      at `log_flush`: *"a record that silently stops is the one failure mode this seat must never have."*
+      **Fixed:** `log_load()` parses an existing log at startup as a **gate before the slave path is
+      published**, prior rows survive, the **deny map is rebuilt** so a resumed run's old denied items are
+      restored and substituted on the outbound leg, replay is idempotent, and a corrupt/truncated log is a
+      **loud refusal leaving the file byte-identical**. *Orchestrator-verified:* both rows now survive a
+      restart; a non-JSONL file, a torn tail and a hand-edited row each exit rc=1 with a precise diagnosis
+      and no slave published.
+      **THE REVIEW: the load path is SOUND FOR ENFORCEMENT** (no loadable log can make the seat *allow*
+      anything — the decode-leg judge never consults the log), but *structure* was strict while *content*
+      was trusted. **Five reproduced should-fixes**, all now fixed: a crafted 1 MB `denial_text` +
+      `true_name` loaded verbatim with no policy armed (**R1**); the seat's **own** arm appending a row per
+      re-served call, leaving three rows for one `call_id` and a phantom unresolved entry (**R2** — and
+      phase 5/12's pins had to move, since they pinned the old semantics; arms intact, only the expected
+      counts changed); **quadratic load** (100 K rows → 89.7 s, 200 K → a refusal whose recovery *lost* the
+      join state it protected — now 0.188 s) (**R3**); non-regular `--log` (**R4** — a FIFO **silently
+      hung**); and the loader **re-
+      wording a carried row's `allow_scope`** from the *current* run's seats,
+      making the record claim a judgement another run made (**R5**).
+      **HONEST MISMATCH, REPORTED NOT RECONCILED:** my own probe of R1's headline — a crafted 1 MB log row
+      reaching the model — shows the model-facing output bounded and **marked**
+      (`...[TRUNCATED from 1048576 bytes]`, 512 B) in **both** the fixed build *and* the `loadunbound`
+      mutant, so I could **not** reproduce the reviewer's 1,048,576 through that path: the bound that
+      matters is applied at *substitution* time, and the load bound must address a different consumer (the
+      held field / the re-rendered row). The property that mattered holds; the mutant's claim is narrower
+      than I can confirm.
 - [x] **P7 — THE CLAIM AUTHOR** (**COMMITTED**; `engineer`, then a review round). The second and last
       policy author: `policy/calls/` mirrors S0 ([`calls-lexicon.ini`] closed over the agent's vocabulary
       with **no judgment predicate**, `calls-policy.le` frozen/host-authored as the **only concluder**,
