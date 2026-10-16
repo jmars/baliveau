@@ -1,0 +1,6 @@
+# The premise is ASSERTED, not derived: the seat injects call_purpose(calla,
+# alter) for a write, so a premise naming Inspect (call_purpose(calla, inspect))
+# is false and the evaluator refuses before any rule is queried.
+CallA serves Inspect.
+CallA is grounded in a verb W1 if CallA is named W1.
+CallA contends for a verb W1 if CallA is grounded in W1.

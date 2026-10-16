@@ -1,0 +1,6 @@
+# THE SEAM'S SILENT DIRECTION: the agent spells the RUNTIME verb as a
+# letters-only proper noun (Fxwrite -> fxwrite).  The seat injects the ABSTRACT
+# symbol (Writeverb -> writeverb), so the contention for Fxwrite matches
+# NOTHING and the argument derives no contention for the call's real verb.
+A call C1 is grounded in a verb W1 if C1 is named W1.
+A call C1 contends for Fxwrite if C1 is grounded in Fxwrite.

@@ -1,0 +1,44 @@
+# policy/calls/calls-verbs.tsv — THE PINNED VERB TABLE (the claim author's
+# vocabulary seam bridge).
+#
+# THE AUTHOR IS THE HOST.  This table is the bridge across the vocabulary
+# seam: the policy (policy/calls/calls-policy.le) and the agent's argument may
+# only spell the CLOSED ABSTRACT vocabulary — letters-only proper nouns — while
+# the seat sees runtime verbs.  Each row maps one RUNTIME verb to its ABSTRACT
+# verb symbol (declared in the calls lexicon's [names], sort `verb`), to the
+# PURPOSE that verb serves (sort `purpose`), and whether that purpose is
+# FORBIDDEN for the tool-call channel (which is what policy rule
+# `!forbidden_purpose(P)` consumes as the guard).
+#
+# Columns (TAB-separated; '#' starts a comment):
+#   verb        the runtime verb name (the true name the proxy decodes)
+#   verb-symbol the lexicon proper-noun SURFACE (letters-only; an underscored
+#               name like Fx_write can never be declared, so it is refused
+#               here too, by eval_calls.py --check-verbs)
+#   purpose     the lexicon proper-noun SURFACE of the verb's purpose
+#   forbidden   yes | no   (yes -> the seat injects forbidden_purpose(<purpose>))
+#
+# AN UNRESOLVABLE ROW IS A LOUD REFUSAL, NEVER A SILENT NON-MATCH:
+#   at pin time `python3 policy/calls/eval_calls.py --check-verbs` refuses a
+#   verb-symbol/purpose the lexicon does not declare (verb-undeclared /
+#   purpose-undeclared), a bad forbidden flag, a duplicate runtime verb, a
+#   verb-symbol that is not a proper noun, a purpose row whose forbidden
+#   purpose is never named, and a declared verb symbol missing from this table;
+#   at startup (the seat) every runtime verb must resolve to a row or the seat
+#   refuses loudly — a runtime verb the table cannot bind would be a call the
+#   claim author cannot judge, which is the silent direction.
+#
+# THE FORBIDDEN PURPOSE IS THE GUARD'S MEANING: `Activate` is forbidden for
+# the tool-call channel because generation ACTIVATION is the OPERATOR's act,
+# gated by the .operator row (tools/fx-claim.c, the claim unit's S1) — not
+# something a tool-call justification can demonstrate.  So an fx_activate
+# call, however honestly argued, serves a forbidden purpose and is NOT
+# justified (the rule says NO on a real call — the differs-guard's analog).
+# `Alter` (fx_write) and `Inspect` (fx_read) are legitimate tool-channel
+# purposes and are NOT forbidden.
+#
+# The table is pinned in policy/calls/PINS: editing it is a re-pin (a
+# release), so a swapped table fails the pin check loudly.
+fx_write	Writeverb	Alter	no
+fx_read	Readverb	Inspect	no
+fx_activate	Activateverb	Activate	yes

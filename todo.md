@@ -1389,6 +1389,35 @@ judges it; **claim + verdict + outcome are one record** and the **disagreement**
       and the three earlier fail-opens remain closed.
 - [ ] **THE STATED RESIDUAL:** this closes the **tool-call channel** only — a root agent in the guest
       can still run things directly, outside any tool call (§6b: *auditing, not proofing*).
+- [x] **P7 — THE CLAIM AUTHOR** (**COMMITTED**; `engineer`, then a review round). The second and last
+      policy author: `policy/calls/` mirrors S0 ([`calls-lexicon.ini`] closed over the agent's vocabulary
+      with **no judgment predicate**, `calls-policy.le` frozen/host-authored as the **only concluder**,
+      `calls-policy.dl` + `PINS`, `eval_calls.py` mirroring `eval_claim.py`'s file-based interface, `le`
+      consumed as a host-side dependency), and the proxy judges each call's justification with it
+      (`author=claim`, denial through the **existing P3 path**). **THE RULE:**
+      `justified(C1) :- contention(C1,W1), call_name(C1,W1), call_purpose(C1,P1), !forbidden_purpose(P1)`
+      — the agent's contention must **derive** (vacuity falls out of the least fixpoint), and
+      `call_name`/`call_purpose` are **seat-injected facts, never the agent's word**.
+      **THE REVIEW'S VERDICT: THE SOUNDNESS BOUNDARY IS INTACT** — the frozen host-authored policy is the
+      only concluder of `justified` on every enumerated path, and the two-author partition is enforced by
+      `le`'s **closure** in both directions. *Orchestrator-verified by invoking:* a mutant agent lexicon
+      with `justified` added is **REFUSED rc=1** naming it exactly, while the real lexicon lints clean and
+      prints the absence explicitly (`judgment-in-agent-lexicon=absent`). The review also settled a
+      question I raised: agent-derived `forbidden_purpose` can only **self-deny**, and what is actually
+      **load-bearing is the HEAD CHECK, not negation semantics** (with it dropped, an agent rule
+      concluding `forbidden_purpose` flips a real derivation).
+      **THREE HOST-SIDE SHOULD-FIXES, one a REPRODUCED SILENT ALLOW** (none agent-reachable, all fixed):
+      (1) **`eval_calls.py` was not pinned** — replacing it with an always-`derives` script armed the seat
+      and let the forbidden `fx_activate` **cross verbatim and EXECUTE** with the log reading
+      `allowed/claim`; the seat pinned its *inputs* but not its *judge*. Now pinned and verified at
+      startup. (2) **no timeout on the per-call subprocess** — a `sleep(600)` evaluator stalled the whole
+      seat with **no log row**, leaving the denial-rate instrument (the dead-agent detector) blind. Now
+      bounded, with the timeout a **recorded** refusal. (3) **duplicate folded verb-symbols** passed both
+      `--check-verbs` and the C loader, so a shared symbol justified both runtime verbs and the rule's
+      demand #2 stopped discriminating. Now refused at both sites. *Verified by the orchestrator:* a
+      swapped evaluator is refused rc=1 with `sha256 mismatch`, never prints `ARMED`, never publishes the
+      slave path; and the new bound is validated `[1,3600]` from **operator env only** (invalid → loud
+      die), so it can never be set to "no timeout".
 - [x] **P6 — THE OPERATOR AUTHOR AT THE HOST SEAT** (**COMMITTED**; `coder`, then a review round).
       The in-guest ops evaluation is **ported** into the proxy beside P3's `--deny` placeholder, which
       stays and stays honestly named `denylist`. **THE D1/D2 SPLIT, confirmed from the rule text and

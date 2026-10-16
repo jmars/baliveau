@@ -1,0 +1,6 @@
+# HEAD FORGERY: the agent tries to MANUFACTURE the seat spine by concluding a
+# seat template as a rule head.  It COMPILES (call_purpose is a declared
+# predicate) and the evaluator's head check refuses it by name.
+CallA serves Inspect if CallA is named a verb W1.
+CallA is grounded in a verb W1 if CallA is named W1 and CallA serves Inspect.
+CallA contends for a verb W1 if CallA is grounded in W1.

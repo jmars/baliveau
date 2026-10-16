@@ -1,0 +1,4 @@
+# A policy that concludes something other than the judgment predicate: every
+# head of the frozen calls policy is `justified` (refused by name,
+# policy-foreign-head).
+A call C1 contends for a verb W1 if C1 is named W1.

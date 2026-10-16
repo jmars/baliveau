@@ -1,0 +1,5 @@
+# A well-formed argument that never reaches the judgment rule: it concludes the
+# intermediate `noted` (a valid agent-conclusion predicate) and never the
+# contention, so the policy consumes nothing it derives.
+A call C1 is grounded in a verb W1 if C1 is named W1.
+A call C1 notes a purpose P1 if C1 serves the purpose.

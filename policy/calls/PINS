@@ -1,0 +1,19 @@
+# policy/calls/PINS -- the frozen-table pin (the claim/calls unit's
+# policy/PINS discipline; fx-select/fx-report family).  name<TAB>sha256.
+# policy/calls/calls-policy.dl is produced ONLY by
+# 'python3 policy/calls/eval_calls.py --compile-policy' (make
+# calls-policy-artifact, the same call lints it), and
+# policy/calls/calls-verbs.tsv is validated by eval_calls.py --check-verbs.
+# A stale or swapped artifact fails LOUDLY: the release is artifact + PINS in
+# the SAME commit.
+#
+# eval_calls.py IS PINNED TOO (P7-fix).  It is the file that COMPUTES every
+# verdict, so leaving it merely stat()ed let a swapped always-`derives`
+# evaluator cross a forbidden call silently; the seat now verifies it at
+# startup with the same per-file sha256 loop (calls_verify_pins).  Editing
+# eval_calls.py is therefore a re-pin exactly like editing the artifact.
+calls-lexicon.ini	6591e7ceb06bde980d00ed10f79f295e2988732c6e3f785087ce0157359dd694
+calls-policy-lexicon.ini	4e578a5716399262b787e6a4ebca8cabb153335061becfa12c72025654fa8630
+calls-policy.dl	12aa7b533188143f69798350ff90fe5ada44ce7616db0d6cc5dc71a9977a9b33
+calls-verbs.tsv	622dbdaf32f3b364d2a9ac2132a0c935d8643ec9588b8ba2050d23043a3c25c1
+eval_calls.py	f0e9f13938b058bdfb0470c9b4301a9a72edfc9af87f90a5abff8a413625bbce

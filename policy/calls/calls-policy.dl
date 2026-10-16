@@ -1,0 +1,1 @@
+justified(C1) :- contention(C1, W1), call_name(C1, W1), call_purpose(C1, P1), !forbidden_purpose(P1).

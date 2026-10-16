@@ -1,0 +1,3 @@
+# "I contend because I contend": the contention defined only in terms of
+# itself, no base case, least fixpoint EMPTY.
+A call C1 contends for a verb W1 if C1 contends for the verb.

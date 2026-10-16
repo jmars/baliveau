@@ -1,0 +1,5 @@
+# The argument that DERIVES: the call is grounded in the verb it is named
+# (call_name is injected from the call row by the evaluator), and it contends
+# for that verb.  The least fixpoint binds W1 to the call's actual verb.
+A call C1 is grounded in a verb W1 if C1 is named W1.
+A call C1 contends for a verb W1 if C1 is grounded in W1.

@@ -298,6 +298,18 @@ BIN_HOSTGATE_DONEARGS := build/fx-hostgate-doneargs
 BIN_HOSTGATE_NOOPS := build/fx-hostgate-noops
 BIN_HOSTGATE_OPSFLOOR := build/fx-hostgate-opsfloor
 BIN_HOSTGATE_OPSNOCANON := build/fx-hostgate-opsnocanon
+# P7 (the claim author at the host seat): the PRE-FIX CONTROL (the claim seat
+# compiled out — fail-open: a call the pinned policy refuses crosses verbatim
+# and EXECUTES), mirroring the P6 noops control.
+BIN_HOSTGATE_NOCLAIM := build/fx-hostgate-noclaim
+# P7-fix: two PRE-FIX controls for the seat's own defence, each the SAME source
+# with one hardening compiled out.  noevalpin: the evaluator that COMPUTES the
+# verdict is exempt from the pin (a swapped always-derives evaluator arms and a
+# forbidden call crosses).  nobound: NO deadline on the per-call subprocess (a
+# hung evaluator stalls the whole seat and writes NO row — the dead-agent
+# instrument is blind to the call).
+BIN_HOSTGATE_NOEVALPIN := build/fx-hostgate-noevalpin
+BIN_HOSTGATE_NOBOUND := build/fx-hostgate-nobound
 
 test-hostgate: $(BIN_HOSTGATE) $(BIN_HOSTGATE_MUTANT) $(BIN_HOSTGATE_UNBOUND) \
                $(BIN_HOSTGATE_NOREWRITE) $(BIN_HOSTGATE_BLINDADD) \
@@ -307,7 +319,8 @@ test-hostgate: $(BIN_HOSTGATE) $(BIN_HOSTGATE_MUTANT) $(BIN_HOSTGATE_UNBOUND) \
                $(BIN_HOSTGATE_NOJUSTIFY) $(BIN_HOSTGATE_NOTOOLS) \
                $(BIN_HOSTGATE_NODRATE) $(BIN_HOSTGATE_DONEARGS) \
                $(BIN_HOSTGATE_NOOPS) $(BIN_HOSTGATE_OPSFLOOR) \
-               $(BIN_HOSTGATE_OPSNOCANON) $(BIN)
+               $(BIN_HOSTGATE_OPSNOCANON) $(BIN_HOSTGATE_NOCLAIM) \
+               $(BIN_HOSTGATE_NOEVALPIN) $(BIN_HOSTGATE_NOBOUND) $(BIN)
 	bash tests/test_hostgate.sh
 
 # P6 THE OPS AUTHOR: the engine whose reasoning the seat evaluates is the
@@ -473,6 +486,33 @@ $(BIN_HOSTGATE_OPSFLOOR): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJS
 $(BIN_HOSTGATE_OPSNOCANON): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(DATALOG_DIR)/zig-out/lib/libdatalog.so | $(DATALOG_SHIM)
 	@mkdir -p build
 	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_MUTANT_OPS_NO_CANON -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(HOSTGATE_LIBS)
+
+# ── P7 (THE CLAIM AUTHOR AT THE HOST SEAT) ──────────────────────────────────
+#
+# THE PRE-FIX CONTROL — FH_MUTANT_NO_CLAIM_SEAT compiles the whole claim seat
+# out while --calls-policy-dir is still accepted and IGNORED: exactly the
+# P6-era proxy.  Its failure DIRECTION is FAIL-OPEN — a call the pinned policy
+# refuses (a forbidden purpose) crosses verbatim and EXECUTES.  The gate
+# requires the armed build to deny it and this build to run it, so the denial
+# cannot be an artifact of the scenario.
+$(BIN_HOSTGATE_NOCLAIM): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(DATALOG_DIR)/zig-out/lib/libdatalog.so | $(DATALOG_SHIM)
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_MUTANT_NO_CLAIM_SEAT -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(HOSTGATE_LIBS)
+
+# P7-fix PRE-FIX CONTROL 1: the evaluator pin compiled OUT — the file that
+# computes the verdict is only stat()ed, exactly the P7 pre-fix shape.  With a
+# swapped always-`derives` evaluator the seat arms happily and a forbidden call
+# crosses and EXECUTES; the real build refuses at startup.
+$(BIN_HOSTGATE_NOEVALPIN): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(DATALOG_DIR)/zig-out/lib/libdatalog.so | $(DATALOG_SHIM)
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_MUTANT_NO_EVAL_PIN -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(HOSTGATE_LIBS)
+
+# P7-fix PRE-FIX CONTROL 2: the per-call deadline compiled OUT — the seat
+# blocks on the evaluator forever, the turn ends with the call never judged,
+# and NO row is written (the reviewer's whole-seat stall with a silent record).
+$(BIN_HOSTGATE_NOBOUND): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(DATALOG_DIR)/zig-out/lib/libdatalog.so | $(DATALOG_SHIM)
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_MUTANT_NO_EVAL_BOUND -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(HOSTGATE_LIBS)
 
 .PHONY: test-hostgate
 
@@ -648,6 +688,37 @@ ops-policy-artifact:
 	@printf 'policy/ops/PINS must carry exactly that value for ops-policy.dl\n'
 
 .PHONY: test-ops-policy ops-policy-artifact
+
+# THE CALLS-POLICY UNIT (P7 — the claim author at the host seat).  Three
+# host-authored inputs under policy/calls/ — the AGENT-FACING CLOSED LEXICON
+# (calls-lexicon.ini: NO `justified`, NO `denied` — that double absence IS the
+# two-author boundary and the soundness boundary), the FROZEN POLICY
+# (calls-policy.le + calls-policy-lexicon.ini, compiled into the sha-pinned
+# rule-text artifact calls-policy.dl) and the PINNED VERB TABLE
+# (calls-verbs.tsv: runtime verb -> abstract verb/purpose symbol, the bridge
+# across the letters-only-proper-noun seam; the `forbidden` column is what the
+# policy's `!forbidden_purpose` guard consumes) — compiled + linted + validated
+# by policy/calls/eval_calls.py (a thin sibling of eval_claim.py; `le`
+# consumed as a dependency, never forked).  The proxy (tools/fx-hostgate.c)
+# SHELLS eval_calls.py per call exactly as fx-claim.c shells eval_claim.py —
+# the reasoning is never reimplemented.  The artifact-level gate arms (the
+# boundary mutant, vacuity, the letters-only seam, the two-author boundary)
+# and the end-to-end justified=allow / not-justified=deny arms live in
+# tests/test_hostgate.sh (P7 phases).
+#
+# The calls policy release path (the policy-artifact pattern): regenerating the
+# pinned artifact is a HOST release — it rewrites policy/calls/calls-policy.dl,
+# and policy/calls/PINS' sha must be updated in the same commit (the gate
+# fails until both agree).
+calls-policy-artifact:
+	LE_DIR=$(abspath $(LE_ROOT)) python3 policy/calls/eval_calls.py --compile-policy \
+	    --policy-le policy/calls/calls-policy.le \
+	    --policy-lexicon policy/calls/calls-policy-lexicon.ini > policy/calls/calls-policy.dl.tmp
+	mv policy/calls/calls-policy.dl.tmp policy/calls/calls-policy.dl
+	@printf 'policy/calls/calls-policy.dl sha256: '; sha256sum policy/calls/calls-policy.dl | cut -d' ' -f1
+	@printf 'policy/calls/PINS must carry exactly that value for calls-policy.dl\n'
+
+.PHONY: calls-policy-artifact
 
 # The slot ground for the first self-modification task (todo.md §5): the
 # deployment pre-declares ONE package whose src.path is a directory the

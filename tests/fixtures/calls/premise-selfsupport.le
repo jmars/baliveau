@@ -1,0 +1,7 @@
+# A premise the agent asserts about the CALL'S OWN NAME.  call_name is injected
+# by the evaluator AFTER premise verification, so this is premise-false — an
+# agent cannot certify its own identity.  (If the two ever swapped order, this
+# arm is what would catch it.)
+CallA is named Writeverb.
+CallA is grounded in a verb W1 if CallA is named W1.
+CallA contends for a verb W1 if CallA is grounded in W1.

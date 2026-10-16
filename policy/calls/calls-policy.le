@@ -1,0 +1,85 @@
+# policy/calls/calls-policy.le — THE FROZEN CALLS POLICY.  Host-authored.
+# Never writable by a calling agent, and the ONLY place `justified` is ever
+# concluded for the tool-call channel.
+#
+# ONE judgment rule, and the three things it demands of a call's
+# justification:
+#
+#   1. THE AGENT'S CONTENTION DERIVES.  `contention` is the agent's own
+#      conclusion; it is a fact only if the agent's argument (its premises +
+#      its intermediate rules, compiled against policy/calls/calls-lexicon.ini)
+#      actually derives it.  The engine is a LEAST FIXPOINT, so an argument
+#      that never reaches this rule — a rule about an intermediate the policy
+#      never consumes, or a self-loop with no base case — derives ZERO rows,
+#      and zero rows IS does-not-derive: vacuity falls out, it is not policed
+#      (the gate's vacuity arm).
+#
+#   2. THE CALL SPINE HOLDS.  The call's own bindings are injected as FACTS BY
+#      THE SEAT, never taken on the agent's word: `call_name(C, V)` is the
+#      runtime verb the call ACTUALLY IS (the proxy's decode of the true name,
+#      folded to its abstract symbol through the pinned calls-verbs.tsv), and
+#      `call_purpose(C, P)` is the PURPOSE the host's pinned table assigns
+#      that verb.  So `contention(C, V), call_name(C, V)` binds the SAME V:
+#      the agent must contend for the verb the call really is, and the purpose
+#      is a machine fact the agent cannot manufacture (its head check refuses a
+#      seat template as a rule head).  An agent that contends for a different
+#      verb — or that never reaches the contention at all — cannot derive.
+#
+#   3. THE FORBIDDEN-PURPOSE GUARD HOLDS.  `!forbidden_purpose(P)`: it is not
+#      the case that the call's purpose is forbidden.  The seat injects
+#      `forbidden_purpose` at startup for every purpose the pinned table marks
+#      forbidden.  The guard is a NEGATED ATOM, not a comparison: le's built-in
+#      copulas are the ordering ones, and there is no inequality copula over
+#      symbol constants, so "this purpose is not in the forbidden set" is
+#      stated as absence of the forbidden_purpose fact — stratified negation,
+#      which the engine supports, and which makes the guard FALSE exactly when
+#      the purpose is forbidden.  This is the rule saying NO on a REAL call: a
+#      call whose purpose is forbidden (activation, the operator's act) is not
+#      justified however honestly it argues.
+#
+# THE VERDICT IS THEREFORE HOST-COMPUTED: pinned policy + seat facts + the
+# agent's argument.  Never the agent's assertions.
+#
+# ─── THE SOUNDNESS ARGUMENT, STATED ───────────────────────────────────────
+# The agent gets FREE LE over a CLOSED, host-declared lexicon
+# (policy/calls/calls-lexicon.ini) that declares NO judgment predicate —
+# `justified` is declared only in policy/calls/calls-policy-lexicon.ini, which
+# the agent never compiles against.  Therefore no agent sentence can name
+# `justified` (le refuses it by GAP_CLOSED_LEXICON), no agent rule can conclude
+# it (the head check refuses any head outside {contention, grounded, noted}),
+# and the ONLY rule that concludes `justified` is this frozen policy's.  The
+# agent's expressiveness is combinatorial (it may compose premises and its own
+# intermediate rules), while soundness stays provable: a `justified` row can
+# only arise through THIS rule, whose body demands a derived contention
+# anchored to the seat's binding facts and a purpose that is not forbidden.
+#
+# ─── THE LETTERS-ONLY SEAM ────────────────────────────────────────────────
+# le proper nouns are letters-only and fold to lowercase (le/lexicon.py:157-159,
+# le/binding.py:144-159), so this policy is written over an ABSTRACT vocabulary
+# and the SEAT injects the binding facts — a policy that spelled a runtime verb
+# (Fxwrite -> fxwrite) would match NOTHING the seat ever injects = a silent
+# allow-all.  The verbs table (policy/calls/calls-verbs.tsv) is the bridge; an
+# unresolvable row is a loud refusal at pin time and at seat startup, never a
+# silent non-match.
+#
+# ─── WHAT THIS RULE DELIBERATELY DOES NOT JUDGE ───────────────────────────
+#   * The PATH a write touches.  That is the OPERATOR author's rule
+#     (policy/ops/ops-policy.le D1/D2, denied(verb, path)); the two authors
+#     judge different dimensions of the same call, and the verdict is DENY IF
+#     EITHER REFUSES.
+#   * Whether the call is schema-well-formed or carries a justification at
+#     all — that is the P5 justification check's (absent-/malformed-
+#     justification), which runs BEFORE this seat and whose refusal is its
+#     own author.
+#   * The generated claim's store spine (policy/claims-policy.le).  That is a
+#     different subject (generation/activation claims), not a tool call.
+#
+# Compiled at pin time (see the Makefile's `calls-policy-artifact` target) with
+# the EXISTING compiler, as a dependency, never forked:
+#   PYTHONPATH=<le> python3 -m le policy/calls/calls-policy.le \
+#       --lexicon policy/calls/calls-policy-lexicon.ini
+# Emitted dl (the pinned artifact, policy/calls/calls-policy.dl):
+#   justified(C1) :- contention(C1, W1), call_name(C1, W1),
+#                    call_purpose(C1, P1), !forbidden_purpose(P1).
+
+A call C1 is justified if the call contends for a verb W1 and the call is named the verb and the call serves a purpose P1 and it is not the case that the purpose is forbidden.

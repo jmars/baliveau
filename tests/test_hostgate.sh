@@ -182,6 +182,9 @@ GATEDONEARGS="$ROOT/build/fx-hostgate-doneargs"      # the judge reads the done 
 GATENOOPS="$ROOT/build/fx-hostgate-noops"            # the ops seat compiled out (PRE-FIX control, fail-open)
 GATEOPSFLOOR="$ROOT/build/fx-hostgate-opsfloor"      # the seat binds the floor fact it cannot see (D2-bound control)
 GATEOPSNOCANON="$ROOT/build/fx-hostgate-opsnocanon"  # raw path matching (canonicalization blind)
+GATENOCLAIM="$ROOT/build/fx-hostgate-noclaim"        # the claim seat compiled out (P7 PRE-FIX control, fail-open)
+GATENOEVALPIN="$ROOT/build/fx-hostgate-noevalpin"    # P7-fix PRE-FIX control: the evaluator exempt from the pin
+GATENOBOUND="$ROOT/build/fx-hostgate-nobound"        # P7-fix PRE-FIX control: NO deadline on the per-call evaluator
 FIX="${FX_FIXTURE_DIR:-$ROOT/tests/fixtures}"
 MARKER="FX-GUEST-LOOP-OK-8f31"
 SENTINEL="hostgate-p1-probe"
@@ -208,7 +211,8 @@ fail() { echo "FAIL $*" >&2; exit 1; }
 [ -x "$GATENOS" ] || fail "phase 0: $GATENOS missing — run make first"
 for b in "$GATENONAME" "$GATENONAMEBAD" "$GATECOLLIDE" "$GATEBADNAME" "$GATEBADPIN" \
          "$GATENOTOOLS" "$GATENOJUST" "$GATENODRATE" "$GATEDONEARGS" \
-         "$GATENOOPS" "$GATEOPSFLOOR" "$GATEOPSNOCANON"; do
+         "$GATENOOPS" "$GATEOPSFLOOR" "$GATEOPSNOCANON" "$GATENOCLAIM" \
+         "$GATENOEVALPIN" "$GATENOBOUND"; do
     [ -x "$b" ] || fail "phase 0: $b missing — run make first"
 done
 [ -f "$FIX/responses_simple.sse" ] || fail "phase 0: fixture $FIX/responses_simple.sse missing"
@@ -3012,4 +3016,539 @@ n=$(pyq "$RT_LOG" "len([r for r in rows if r.get('verdict')=='denied' and 'allow
 [ "$n" -eq 0 ] || fail "phase 44: a DENIED row carries allow_scope — the allow qualifier leaked onto the denial shape"
 
 
-echo "PASS hostgate: the transparent proxy is stream-transparent (arm == control) and a mangling proxy is caught; the per-turn open/close mechanics hold through one proxy process; the one log JOINS every answered call by call_id and REPORTS every call it could not join; a join compiled out flips the pass by content; every model-controlled free-text field arrives MARKED while the join key renders verbatim; the DECODE GATE holds the channel invariant for a denied call (the true name never crosses) in the presence of interleaves, duplicate/never-opened dones, open-at-completed items and over-cap streams, with a pinned pre-fix control for each; the RESERVED NAME is a CHECKED property (it passes the guest's charset, collides with no verb of a catalog pinned by sha256 and cross-checked against the verbs server's own table, and the proxy REFUSES TO START on a collision — while the same source with the check compiled out starts and DISPATCHES the colliding name: the silent allow); and the JUSTIFICATION is required in the injected tools schema, judged on the argument accumulator the guest actually dispatches (a done-args-only judge is pinned and caught), denied BY NAME through the existing substitution on the outbound leg, and REPORTED BY A DENIAL-RATE INSTRUMENT whose own compiled-out mutant leaves the dead-agent shape invisible; and THE OPERATOR IS A REAL AUTHOR AT THIS SEAT (P6: the pinned ops policy, its PINS check, its alias table with the TWO-FORM grammar re-run here, and its per-call fact injection with the path canonicalized before matching) with the D1/D2 split NAMED in the startup line — D1 evaluated here, D2 and the compiled-in FLOOR enforced IN-GUEST ONLY because this seat can see neither — the D2 bound ASSERTED in both directions, the ALLOWED row carrying its own seat-scoped allow_scope qualifier (so a durable record cannot read as a permission the seat never grants) with the LOADED-BUT-INERT branch pinned by its own D2-only arm, and the seat's three failure directions each pinned against a control of the SAME source (fail-open when the seat is compiled out, over-deny when it binds the floor it cannot see, silent allow when it matches the raw path)"
+
+# ── P7: THE CLAIM AUTHOR at the HOST SEAT (policy/calls/, free LE, the S0 mirror) ─
+# `le` and the engine are HARD deps of this slice (free LE over a closed
+# lexicon IS the judgment), so their absence FAILS here rather than skipping.
+SIBS="${FX_SIBLINGS:-$(cd "$ROOT/.." && pwd)}"
+[ -d "$SIBS/fx-init" ] || [ -n "${FX_SIBLINGS:-}" ] || SIBS="$HOME/fixpoint-linux"
+LE_ROOT="${LE_DIR:-}"
+if [ -z "$LE_ROOT" ]; then
+    for cand in "$SIBS/logical-english" "$ROOT/../logical-english" "$HOME/logical-english"; do
+        if [ -f "$cand/le/__init__.py" ]; then LE_ROOT="$cand"; break; fi
+    done
+fi
+[ -f "$LE_ROOT/le/__init__.py" ] || fail "phase 45: no le checkout (set LE_DIR)"
+export LE_DIR="$LE_ROOT"
+DLB_PY="${DLB_PATH:-}"
+if [ -z "$DLB_PY" ]; then
+    for cand in "$SIBS/datalog-dafsa/python" "$ROOT/../datalog-dafsa/python" "$HOME/fixpoint-linux/datalog-dafsa/python"; do
+        if [ -f "$cand/dlb/__init__.py" ]; then DLB_PY="$cand"; break; fi
+    done
+fi
+[ -f "$DLB_PY/dlb/__init__.py" ] || fail "phase 45: no dlb python binding (set DLB_PATH)"
+export DLB_PATH="$DLB_PY"
+
+CALLS_DIR="$ROOT/policy/calls"
+CALLS_EVAL="$CALLS_DIR/eval_calls.py"
+CALLS_LEX="$CALLS_DIR/calls-lexicon.ini"
+CALLS_PLEX="$CALLS_DIR/calls-policy-lexicon.ini"
+CALLS_ART="$CALLS_DIR/calls-policy.dl"
+CALLS_PINS="$CALLS_DIR/PINS"
+CALLS_VERBS="$CALLS_DIR/calls-verbs.tsv"
+CALLS_FIX="$ROOT/tests/fixtures/calls"
+OPS_EVAL="$ROOT/policy/ops/eval_ops.py"
+OPS_LEX="$ROOT/policy/ops/ops-lexicon.ini"
+for f in "$CALLS_EVAL" "$CALLS_LEX" "$CALLS_PLEX" "$CALLS_ART" "$CALLS_PINS" "$CALLS_VERBS" \
+         "$CALLS_FIX/good.le" "$CALLS_FIX/hostile.le" "$CALLS_FIX/vacuous-unconnected.le" \
+         "$CALLS_FIX/vacuous-selfloop.le" "$CALLS_FIX/premise-false.le" \
+         "$CALLS_FIX/premise-selfsupport.le" "$CALLS_FIX/head-forgery.le" \
+         "$CALLS_FIX/seam.le" "$CALLS_FIX/policy-vacuous.le" "$CALLS_FIX/policy-foreign-head.le" \
+         "$CALLS_FIX/calls-sentence-denied.le" "$OPS_EVAL" "$OPS_LEX" \
+         "$ROOT/tests/fixtures/ops/ops-sentence-justified.le"; do
+    [ -f "$f" ] || fail "phase 45: missing $f"
+done
+
+# the call row (a write) and the seat facts the write call's world carries
+cat > "$TMP/calls-call.tsv" <<'TSV'
+CallA	Writeverb
+TSV
+cat > "$TMP/calls-facts.tsv" <<'TSV'
+call_purpose	calla	alter
+forbidden_purpose	activate
+TSV
+# the SAME call, but serving the FORBIDDEN purpose (fx_activate)
+cat > "$TMP/calls-call-activate.tsv" <<'TSV'
+CallA	Activateverb
+TSV
+cat > "$TMP/calls-facts-activate.tsv" <<'TSV'
+call_purpose	calla	activate
+forbidden_purpose	activate
+TSV
+
+# the common argument sets: PINNED (the honest arms, pin-verified) and the
+# plain set for the mutant arms (whose lexicons carry a different sha).
+CALLS_PINNED=(--lexicon "$CALLS_LEX" --policy "$CALLS_ART" --facts "$TMP/calls-facts.tsv" --pins "$CALLS_PINS")
+CALLS_CL=(--lexicon "$CALLS_LEX" --policy "$CALLS_ART" --facts "$TMP/calls-facts.tsv")
+
+calls_arm() { # NAME WANT_RC PATTERN ARGS...
+    name=$1; want=$2; pat=$3; shift 3
+    out="$TMP/calls-$name.txt"
+    python3 "$CALLS_EVAL" "$@" >"$out" 2>&1
+    rc=$?
+    [ "$rc" = "$want" ] || fail "calls arm $name: exit $rc, expected $want; record: $(grep -m1 verdict "$out" || head -2 "$out")"
+    grep -q "$pat" "$out" || fail "calls arm $name: '$pat' absent from the record ($(grep -m1 verdict "$out"))"
+    echo "   OK $name (exit $rc, /$pat/)"
+}
+
+echo "== phase 45: P7 THE ARTIFACT — pin determinism, lint, verb table, the two-author boundary"
+# (a) THE PIN: two compiles byte-identical; the artifact and the two lexicons
+# and the verb table all match PINS.
+python3 "$CALLS_EVAL" --compile-policy --policy-le "$CALLS_DIR/calls-policy.le" --policy-lexicon "$CALLS_PLEX" >"$TMP/calls-policy.1" 2>"$TMP/calls-policy.err" \
+    || fail "phase 45: compiling the calls policy failed: $(cat "$TMP/calls-policy.err")"
+python3 "$CALLS_EVAL" --compile-policy --policy-le "$CALLS_DIR/calls-policy.le" --policy-lexicon "$CALLS_PLEX" >"$TMP/calls-policy.2" 2>>"$TMP/calls-policy.err" \
+    || fail "phase 45: the second calls policy compile failed: $(cat "$TMP/calls-policy.err")"
+cmp -s "$TMP/calls-policy.1" "$TMP/calls-policy.2" || fail "phase 45: two calls policy compiles are NOT byte-identical"
+grep -q '^justified(' "$TMP/calls-policy.1" || fail "phase 45: the calls artifact does not conclude justified"
+cmp -s "$TMP/calls-policy.1" "$CALLS_ART" || fail "phase 45: calls-policy.dl is NOT the artifact a fresh compile produces — regenerate with 'make calls-policy-artifact' and update policy/calls/PINS in the same commit"
+for pair in 'calls-policy.dl' 'calls-lexicon.ini' 'calls-policy-lexicon.ini' 'calls-verbs.tsv' 'eval_calls.py'; do
+    case $pair in
+        calls-policy.dl) sf=$(sha256sum "$TMP/calls-policy.1" | cut -d' ' -f1) ;;
+        calls-lexicon.ini) sf=$(sha256sum "$CALLS_LEX" | cut -d' ' -f1) ;;
+        calls-policy-lexicon.ini) sf=$(sha256sum "$CALLS_PLEX" | cut -d' ' -f1) ;;
+        calls-verbs.tsv) sf=$(sha256sum "$CALLS_VERBS" | cut -d' ' -f1) ;;
+        eval_calls.py) sf=$(sha256sum "$CALLS_EVAL" | cut -d' ' -f1) ;;
+    esac
+    sp=$(grep "^$pair" "$CALLS_PINS" | cut -f2)
+    [ "$sf" = "$sp" ] || fail "phase 45: $pair pinned sha $sp != actual $sf — the pin and the artifact have drifted"
+done
+echo "   OK calls-policy pin: two compiles byte-identical; artifact + both lexicons + verb table + the EVALUATOR all match PINS"
+# (b) THE LINT: the agent lexicon's boundary (no justified, no denied, the
+# conclusion subset), and each reopened boundary refused by name.
+calls_arm lint-lexicon-ok 0 'judgment-in-agent-lexicon=absent' --lint-lexicon "$CALLS_LEX"
+sed -e 's@^\[predicates\]$@[predicates]\n<a call C> is justified | justified | call@' "$CALLS_LEX" > "$TMP/calls-mutant-lex.ini"
+cmp -s "$CALLS_LEX" "$TMP/calls-mutant-lex.ini" && fail "phase 45: the lexicon sed matched NOTHING"
+calls_arm lint-mutant-justified 1 'boundary-reopened' --lint-lexicon "$TMP/calls-mutant-lex.ini"
+sed -e 's@^\[predicates\]$@[predicates]\n<a call C> is denied | denied | call@' "$CALLS_LEX" > "$TMP/calls-mutant-denied.ini"
+cmp -s "$CALLS_LEX" "$TMP/calls-mutant-denied.ini" && fail "phase 45: the denied-seam sed matched NOTHING"
+calls_arm lint-mutant-denied 1 'boundary-reopened' --lint-lexicon "$TMP/calls-mutant-denied.ini"
+# (c) THE VERB TABLE (the seam bridge): validated, and an underscored
+# verb-symbol (a runtime verb spelled as a proper noun) is refused LOUDLY.
+calls_arm verbs-ok 0 'verb table OK' --check-verbs --verbs "$CALLS_VERBS" --policy-lexicon "$CALLS_LEX"
+sed -e 's@^fx_write	Writeverb@fx_write	Write_verb@' "$CALLS_VERBS" > "$TMP/calls-verbs-seam.tsv"
+cmp -s "$CALLS_VERBS" "$TMP/calls-verbs-seam.tsv" && fail "phase 45: the verbs sed matched NOTHING"
+calls_arm verbs-seam-underscore 1 'verb-not-proper' --check-verbs --verbs "$TMP/calls-verbs-seam.tsv" --policy-lexicon "$CALLS_LEX"
+# (c2) THE SHARE FORM (P7-fix): TWO runtime verbs mapped to ONE folded
+# verb-symbol.  `verb-table-missing` catches only a symbol mapped by NONE, so
+# this needs its own named refusal — the call spine is per-symbol, and one
+# contention would otherwise justify BOTH runtime verbs.
+awk -F'\t' 'BEGIN{OFS="\t"} {print} $1=="fx_write"{print "fx_ls","Writeverb","Inspect","no"}' \
+    "$CALLS_VERBS" > "$TMP/calls-verbs-dup.tsv"
+cmp -s "$CALLS_VERBS" "$TMP/calls-verbs-dup.tsv" && fail "phase 45: the verbs-dup rewrite matched NOTHING"
+grep -q '^fx_ls	Writeverb' "$TMP/calls-verbs-dup.tsv" || fail "phase 45: the dup table does not carry the shared symbol"
+calls_arm verbs-dup-symbol 1 'verb-symbol-duplicate' --check-verbs --verbs "$TMP/calls-verbs-dup.tsv" --policy-lexicon "$CALLS_LEX"
+# (d) THE TWO-AUTHOR BOUNDARY, both directions: the calls lexicon refuses
+# `denied`; the ops lexicon refuses `justified`.
+calls_arm twoauthor-calls-refuses-denied 1 'sentence-foreign-predicate' \
+    --compile-sentence --policy-lexicon "$CALLS_LEX" --sentence "$CALLS_FIX/calls-sentence-denied.le"
+python3 "$OPS_EVAL" --compile-sentence --policy-lexicon "$OPS_LEX" --sentence "$ROOT/tests/fixtures/ops/ops-sentence-justified.le" >"$TMP/calls-ops-refuses-justified.txt" 2>&1
+rc=$?
+[ "$rc" = 1 ] || fail "phase 45: the ops lexicon did NOT refuse justified (rc=$rc)"
+grep -q 'sentence-foreign-predicate' "$TMP/calls-ops-refuses-justified.txt" || fail "phase 45: the ops refusal is not by name"
+# THE BOUNDARY IS THE CLOSURE, shown for the calls direction: add `denied` to a
+# COPY of the calls lexicon and the same sentence compiles — the refusal was
+# the lexicon's, not the sentence's or the tool's.
+sed -e 's@^\[predicates\]$@[predicates]\n<a call C> is denied | denied | call@' "$CALLS_LEX" > "$TMP/calls-mutant-denied2.ini"
+cmp -s "$CALLS_LEX" "$TMP/calls-mutant-denied2.ini" && fail "phase 45: the denied-mutant sed matched NOTHING"
+python3 "$CALLS_EVAL" --compile-sentence --policy-lexicon "$TMP/calls-mutant-denied2.ini" --sentence "$CALLS_FIX/calls-sentence-denied.le" >"$TMP/calls-twoauthor-mutant.txt" 2>&1
+rc=$?
+[ "$rc" = 0 ] || fail "phase 45: the denied-mutant lexicon did not let the sentence compile (rc=$rc) — the closure is not what refuses it"
+grep -q '^denied(' "$TMP/calls-twoauthor-mutant.txt" || fail "phase 45: the denied-mutant compile did not produce the denied rule"
+echo "   OK two-author: calls refuses denied, ops refuses justified — each by le's own named gap, and adding the foreign predicate to a copy lets it compile (the closure is the boundary)"
+
+echo "== phase 46: P7 THE BOUNDARY MUTANT (A6a/A6b) — the lexicon closure AND the head check"
+# A6a: the mutant lexicon (justified declared) lets the HOSTILE justification
+# compile — what refuses it now is the HEAD CHECK.
+calls_arm a6a-mutant-lexicon-hostile 1 'head-forgery' \
+    --call "$TMP/calls-call.tsv" --le "$CALLS_FIX/hostile.le" \
+    --lexicon "$TMP/calls-mutant-lex.ini" --policy "$CALLS_ART" --facts "$TMP/calls-facts.tsv"
+# A6b: THE BREACH, EXECUTED — both checks gone, the agent derives `justified`
+# itself.  This is why both checks exist.
+sed -e 's@if pred not in AGENT_CONCLUSIONS:@if False:@' "$CALLS_EVAL" > "$TMP/calls-mutant-eval.py"
+cmp -s "$CALLS_EVAL" "$TMP/calls-mutant-eval.py" && fail "phase 46: the evaluator sed matched NOTHING"
+grep -q 'if False:' "$TMP/calls-mutant-eval.py" || fail "phase 46: the evaluator mutant does not drop the head check"
+python3 "$TMP/calls-mutant-eval.py" --call "$TMP/calls-call.tsv" --le "$CALLS_FIX/hostile.le" \
+    --lexicon "$TMP/calls-mutant-lex.ini" --policy "$CALLS_ART" --facts "$TMP/calls-facts.tsv" >"$TMP/calls-a6b.txt" 2>&1
+rc=$?
+[ "$rc" = 0 ] || fail "phase 46: the double mutant did NOT derive justified (exit $rc) — the breach could not be executed"
+grep -q 'verdict	derives	justified(calla)' "$TMP/calls-a6b.txt" || fail "phase 46: no derives row from the double mutant"
+echo "   OK a6b-double-mutant-breach: the agent derived justified ITSELF — the breach is executable, not hypothetical"
+# the honest arm stays derives under BOTH mutants (blind on exactly the hostile fixture)
+calls_arm a6c-mutant-lexicon-honest 0 'verdict	derives' \
+    --call "$TMP/calls-call.tsv" --le "$CALLS_FIX/good.le" \
+    --lexicon "$TMP/calls-mutant-lex.ini" --policy "$CALLS_ART" --facts "$TMP/calls-facts.tsv"
+python3 "$TMP/calls-mutant-eval.py" --call "$TMP/calls-call.tsv" --le "$CALLS_FIX/good.le" \
+    --lexicon "$CALLS_LEX" --policy "$CALLS_ART" --facts "$TMP/calls-facts.tsv" >"$TMP/calls-a6d.txt" 2>&1
+[ "$?" = 0 ] || fail "phase 46: the evaluator mutant changed the honest arm's answer"
+grep -q 'verdict	derives' "$TMP/calls-a6d.txt" || fail "phase 46: no derives row (honest + eval mutant)"
+
+echo "== phase 47: P7 VACUITY + PREMISES — four arguments that justify NOTHING"
+calls_arm a-good-derives 0 'verdict	derives	justified(calla)	rows=1' \
+    --call "$TMP/calls-call.tsv" --le "$CALLS_FIX/good.le" "${CALLS_PINNED[@]}"
+calls_arm a-vacuous-unconnected 1 'justified-not-derived' \
+    --call "$TMP/calls-call.tsv" --le "$CALLS_FIX/vacuous-unconnected.le" \
+    --lexicon "$CALLS_LEX" --policy "$CALLS_ART" --facts "$TMP/calls-facts.tsv"
+calls_arm a-vacuous-selfloop 1 'justified-not-derived' \
+    --call "$TMP/calls-call.tsv" --le "$CALLS_FIX/vacuous-selfloop.le" \
+    --lexicon "$CALLS_LEX" --policy "$CALLS_ART" --facts "$TMP/calls-facts.tsv"
+calls_arm a-premise-false 1 'premise-false' \
+    --call "$TMP/calls-call.tsv" --le "$CALLS_FIX/premise-false.le" \
+    --lexicon "$CALLS_LEX" --policy "$CALLS_ART" --facts "$TMP/calls-facts.tsv"
+calls_arm a-premise-selfsupport 1 'premise-false' \
+    --call "$TMP/calls-call.tsv" --le "$CALLS_FIX/premise-selfsupport.le" \
+    --lexicon "$CALLS_LEX" --policy "$CALLS_ART" --facts "$TMP/calls-facts.tsv"
+calls_arm a-head-forgery 1 'head-forgery' \
+    --call "$TMP/calls-call.tsv" --le "$CALLS_FIX/head-forgery.le" \
+    --lexicon "$CALLS_LEX" --policy "$CALLS_ART" --facts "$TMP/calls-facts.tsv"
+echo "   OK vacuity + premises: an argument that never reaches the judgment rule, or asserts a false/self-supporting premise, justifies NOTHING"
+
+echo "== phase 48: P7 THE LETTERS-ONLY SEAM — spelling a runtime verb matches NOTHING"
+# THE SILENT DIRECTION, executed: the agent spells the RUNTIME verb as a
+# letters-only proper noun (Fxwrite -> fxwrite) while the seat injects the
+# ABSTRACT symbol (Writeverb -> writeverb).  The contention for Fxwrite matches
+# NOTHING, so the argument derives no contention for the call's real verb.
+sed -e 's@^Writeverb = verb$@Writeverb = verb\nFxwrite = verb@' "$CALLS_LEX" > "$TMP/calls-seam-lex.ini"
+cmp -s "$CALLS_LEX" "$TMP/calls-seam-lex.ini" && fail "phase 48: the seam lexicon sed matched NOTHING"
+grep -q '^Fxwrite = verb' "$TMP/calls-seam-lex.ini" || fail "phase 48: the seam lexicon does not declare Fxwrite"
+calls_arm a-seam-silent 1 'justified-not-derived' \
+    --call "$TMP/calls-call.tsv" --le "$CALLS_FIX/seam.le" \
+    --lexicon "$TMP/calls-seam-lex.ini" --policy "$CALLS_ART" --facts "$TMP/calls-facts.tsv"
+echo "   OK seam silent: the spelled runtime verb (Fxwrite) matches nothing the seat injects — the justification cannot derive"
+# the LOUD direction is already covered by phase 45's verbs-seam-underscore
+# (an underscored verb-symbol is refused at pin time by name, never silently
+# unmatched).
+
+echo "== phase 49: P7 JUSTIFIED=ALLOW / NOT-JUSTIFIED=DENY, end to end on served bytes"
+calls_stream() { # <dest> <name> <justification-file> <call-id> [<name> <just-file> <call-id>]...
+    python3 - "$@" <<'PY'
+import json, sys
+dest = sys.argv[1]
+triples = [tuple(sys.argv[i:i + 3]) for i in range(2, len(sys.argv), 3)]
+ev = []
+seq = 0
+completed = []
+for n, (name, jfile, cid) in enumerate(triples, start=1):
+    just = open(jfile).read()
+    iid = "item_CM_%d" % n
+    args = json.dumps({"path": "/fx/disk/agent-data", "justification": just})
+    def fc(status):
+        return {"type": "function_call", "id": iid, "status": status,
+                "arguments": args, "call_id": cid, "name": name}
+    seq += 1
+    ev.append(("response.output_item.added", json.dumps({
+        "type": "response.output_item.added",
+        "item": {"type": "function_call", "id": iid, "status": "in_progress",
+                 "arguments": "", "call_id": cid, "name": name},
+        "output_index": n, "sequence_number": seq})))
+    seq += 1
+    ev.append(("response.function_call_arguments.delta", json.dumps({
+        "type": "response.function_call_arguments.delta", "delta": args,
+        "item_id": iid, "output_index": n, "sequence_number": seq})))
+    seq += 1
+    ev.append(("response.function_call_arguments.done", json.dumps({
+        "type": "response.function_call_arguments.done", "arguments": args,
+        "item_id": iid, "output_index": n, "sequence_number": seq})))
+    seq += 1
+    ev.append(("response.output_item.done", json.dumps({
+        "type": "response.output_item.done", "item": fc("completed"),
+        "output_index": n, "sequence_number": seq})))
+    completed.append(fc("completed"))
+ev.append(("response.completed", json.dumps({
+    "type": "response.completed",
+    "response": {"id": "p", "status": "completed", "output": completed}})))
+open(dest, "w").write("".join("event: %s\ndata: %s\n\n" % (e, p) for e, p in ev))
+PY
+}
+make_calls_stub() { # <script-path> <write-marker> <activate-marker>
+    cat > "$1" <<PY
+#!/usr/bin/env python3
+# Two-verb dispatch-recording stub: fx_write and fx_activate each touch their
+# OWN marker; anything else -> -32602 (the verbs server's unknown-name shape).
+import json
+import sys
+MARKERS = {"fx_write": "$2", "fx_activate": "$3"}
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        req = json.loads(line)
+    except ValueError:
+        continue
+    m = req.get("method")
+    if m == "initialize":
+        print(json.dumps({"jsonrpc": "2.0", "id": req.get("id"), "result": {
+            "protocolVersion": req.get("params", {}).get("protocolVersion"),
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": "hostgate-calls-stub", "version": "0"}}}),
+            flush=True)
+    elif m == "tools/call":
+        name = (req.get("params") or {}).get("name")
+        if name in MARKERS:
+            with open(MARKERS[name], "a") as f:
+                f.write("dispatched %s\\n" % name)
+            print(json.dumps({"jsonrpc": "2.0", "id": req.get("id"),
+                              "result": {"content": [{"type": "text",
+                                                      "text": "ok-" + name}]}}),
+                  flush=True)
+        else:
+            print(json.dumps({"jsonrpc": "2.0", "id": req.get("id"),
+                              "error": {"code": -32602,
+                                        "message": "unknown tool: %s" % name}}),
+                  flush=True)
+PY
+    chmod +x "$1"
+}
+# calls_guest_arm: the whole guest loop THROUGH the proxy with the calls stub;
+# exports CC_TR CC_LOG CC_DUMP CC_ERR CC_MW CC_MA CC_RC.
+calls_guest_arm() { # <gate> <upstream> <tag> <calls-dir>
+    local gate="$1" upstream="$2" tag="$3" cdir="$4"
+    shift 4
+    local data="$TMP/calls-data-$tag"
+    local cfg="$TMP/calls-cfg-$tag"
+    local mw="$TMP/calls-marker-$tag-write"
+    local ma="$TMP/calls-marker-$tag-activate"
+    mkdir -p "$data" "$cfg"
+    make_calls_stub "$TMP/calls-stub-$tag.py" "$mw" "$ma"
+    cat > "$cfg/config.dhall" <<DHALL
+{ agents =
+  [ { name = "fx"
+    , agent_type = "agent"
+    , mcp_servers = [ { command = "$TMP/calls-stub-$tag.py", args = [] : List Text } ]
+    }
+  ]
+}
+DHALL
+    "$gate" --upstream "$upstream" --slave-file "$TMP/calls-slave-$tag" \
+        --log "$TMP/calls-log-$tag.jsonl" --dump-requests "$TMP/calls-dump-$tag.jsonl" \
+        --calls-policy-dir "$cdir" --require-justification "$@" --turns 2 2> "$TMP/calls-err-$tag" &
+    local p=$!
+    PROXIES="$PROXIES $p"
+    wait_for_slave "$TMP/calls-slave-$tag" "$p" "$TMP/calls-err-$tag"
+    local dev
+    dev=$(cat "$TMP/calls-slave-$tag")
+    FX_CHARDEV="$dev" FX_AGENT_CONFIG_DIR="$cfg" \
+    FX_AGENT_DATA="$data" HOME="$TMP" \
+        "$BIN" -p "$SENTINEL" --agent fx --max-turns 2 --output text \
+        > "$TMP/calls-stdout-$tag" 2> "$TMP/calls-guesterr-$tag"
+    CC_RC=$?
+    wait_for_proxy_exit "$p" "$TMP/calls-err-$tag"
+    CC_TR=$(ls "$data"/sessions/*/messages.jsonl 2>/dev/null)
+    CC_LOG="$TMP/calls-log-$tag.jsonl"
+    CC_DUMP="$TMP/calls-dump-$tag.jsonl"
+    CC_ERR="$TMP/calls-err-$tag"
+    CC_MW="$mw"
+    CC_MA="$ma"
+}
+# (a) JUSTIFIED: fx_write with an honest argument — the call crosses VERBATIM
+# and EXECUTES, and the row names the claim author (with the justification).
+calls_stream "$TMP/calls-justified.sse" fx_write "$CALLS_FIX/good.le" call_CM_0001
+calls_guest_arm "$GATE" "$TMP/calls-justified.sse" justified "$CALLS_DIR"
+[ "$CC_RC" -eq 0 ] || { sed -n '1,10p' "$CC_ERR" >&2; fail "phase 49: the justified run rc=$CC_RC"; }
+[ -f "$CC_TR" ] || fail "phase 49: no guest transcript — the arm is not the real scenario"
+n=$(pyq "$CC_TR" "len([1 for r in rows for tc in (r.get('tool_calls') or []) if tc.get('name')=='fx_write' and tc.get('id')=='call_CM_0001'])")
+[ "$n" -eq 1 ] || fail "phase 49: the justified call did not cross as fx_write"
+n=$(pyq "$CC_TR" "len([1 for r in rows for tc in (r.get('tool_calls') or []) if tc.get('name')=='fx_host_denied'])")
+[ "$n" -eq 0 ] || fail "phase 49: the justified call was denied"
+[ -f "$CC_MW" ] || fail "phase 49: the justified call did NOT execute (marker absent)"
+n=$(pyq "$CC_LOG" "len([r for r in rows if r.get('call_id')=='call_CM_0001' and r.get('verdict')=='allowed' and 'claim' in (r.get('author') or '')])")
+[ "$n" -ge 1 ] || { sed -n '1,3p' "$CC_LOG" >&2; fail "phase 49: no allowed row naming the claim author"; }
+# P7-fix: the ALLOWED row's allow_scope names the seat that ACTED — with the
+# claim author live and deriving, the qualifier must say so, not carry the P6
+# operator-only text.
+n=$(pyq "$CC_LOG" "len([r for r in rows if r.get('call_id')=='call_CM_0001' and r.get('verdict')=='allowed' and 'claim refusal' in (r.get('allow_scope') or '')])")
+[ "$n" -ge 1 ] || { sed -n '1,3p' "$CC_LOG" >&2; fail "phase 49: the allowed row's allow_scope does not name the claim seat that acted"; }
+echo "   OK justified=allow: fx_write crosses and EXECUTES; the row is verdict=allowed author includes claim, allow_scope names the claim refusal it passed"
+# (b) NOT-JUSTIFIED: fx_activate serves the FORBIDDEN purpose — denied by the
+# claim author, the true name never crosses, nothing executes, and the denial
+# reaches the model through the existing P3 path.
+calls_stream "$TMP/calls-forbidden.sse" fx_activate "$CALLS_FIX/good.le" call_CM_0002
+calls_guest_arm "$GATE" "$TMP/calls-forbidden.sse" forbidden "$CALLS_DIR"
+[ "$CC_RC" -eq 0 ] || { sed -n '1,10p' "$CC_ERR" >&2; fail "phase 49: the forbidden run rc=$CC_RC"; }
+[ -f "$CC_TR" ] || fail "phase 49: no guest transcript for the forbidden arm"
+n=$(pyq "$CC_TR" "len([1 for r in rows for tc in (r.get('tool_calls') or []) if tc.get('name')=='fx_host_denied' and tc.get('id')=='call_CM_0002'])")
+[ "$n" -eq 1 ] || fail "phase 49: the forbidden call was not rewritten to fx_host_denied"
+n=$(pyq "$CC_TR" "len([1 for r in rows for tc in (r.get('tool_calls') or []) if tc.get('name')=='fx_activate'])")
+[ "$n" -eq 0 ] || fail "phase 49: THE TRUE NAME fx_activate reached the guest as a call name"
+[ ! -e "$CC_MA" ] || fail "phase 49: the forbidden call EXECUTED (activate marker present)"
+n=$(pyq "$CC_LOG" "len([r for r in rows if r.get('call_id')=='call_CM_0002' and r.get('verdict')=='denied' and r.get('author')=='claim' and r.get('refusal_name')=='denied-by-claim'])")
+[ "$n" -ge 1 ] || { sed -n '1,3p' "$CC_LOG" >&2; fail "phase 49: no row naming author=claim refusal_name=denied-by-claim"; }
+n=$(pyq "$CC_DUMP" "len([r for r in rows if any(i.get('type')=='function_call' and i.get('call_id')=='call_CM_0002' and i.get('name')=='fx_activate' for i in r.get('input',[]))])")
+[ "$n" -ge 1 ] || fail "phase 49: the dumped outbound frame does not RESTORE the true name"
+n=$(pyq "$CC_DUMP" "len([r for r in rows if any(i.get('type')=='function_call_output' and i.get('call_id')=='call_CM_0002' and isinstance(i.get('output'),str) and i['output'].startswith('(denied by host policy:') for i in r.get('input',[]))])")
+[ "$n" -ge 1 ] || fail "phase 49: the denial text did not reach the model as the call's own result"
+echo "   OK not-justified=deny: fx_host_denied on the wire (never fx_activate), NO dispatch, restored name + denial text on the outbound leg, row author=claim"
+
+echo "== phase 50: P7 PRE-FIX CONTROL — FAIL-OPEN (the claim seat compiled out)"
+# The SAME forbidden-purpose stream AND the SAME flags on build/fx-hostgate-
+# noclaim: the claim seat does not exist, so the call crosses VERBATIM and
+# EXECUTES (the justification author — still armed — allows a valid
+# justification; the claim author, the ONLY thing that would deny this call, is
+# gone).  The asymmetry — phase 49's rewrite and marker-absence are the seat's
+# doing, not the scenario's.
+calls_guest_arm "$GATENOCLAIM" "$TMP/calls-forbidden.sse" noclaim "$CALLS_DIR"
+[ "$CC_RC" -eq 0 ] || fail "phase 50: the pre-fix control run rc=$CC_RC"
+grep -qF "SEAT COMPILED OUT (FH_MUTANT_NO_CLAIM_SEAT)" "$CC_ERR" \
+    || fail "phase 50: the build does not say the claim seat is compiled out"
+[ -f "$CC_MA" ] || fail "phase 50: the pre-fix control did NOT execute the call the policy refuses — the arm does not reproduce the fail-open"
+n=$(pyq "$CC_TR" "len([1 for r in rows for tc in (r.get('tool_calls') or []) if tc.get('name')=='fx_activate'])")
+[ "$n" -ge 1 ] || fail "phase 50: the true name never reached the guest in the control"
+# THE HONESTY ASSERTION: the row names ONLY the author that actually ran.  With
+# the claim seat compiled out (and --require-justification still armed), that is
+# the JUSTIFICATION author — never `claim`.
+n=$(pyq "$CC_LOG" "len([r for r in rows if r.get('call_id')=='call_CM_0002' and 'claim' in (r.get('author') or '')])")
+[ "$n" -eq 0 ] || fail "phase 50: the control's log names the claim author, which did NOT run — a claim wider than the evidence"
+n=$(pyq "$CC_LOG" "len([r for r in rows if r.get('call_id')=='call_CM_0002' and r.get('verdict')=='allowed' and r.get('author')=='justification'])")
+[ "$n" -ge 1 ] || fail "phase 50: the control's log does not name author=justification — the SAME flags ran, only the claim seat was compiled out"
+# P7-fix, the SAME honesty rule on the allow_scope: it must NOT name a claim
+# seat that did not run (the P6 text, unchanged, is what the control carries).
+n=$(pyq "$CC_LOG" "len([r for r in rows if r.get('call_id')=='call_CM_0002' and r.get('verdict')=='allowed' and 'claim' not in (r.get('allow_scope') or '')])")
+[ "$n" -ge 1 ] || fail "phase 50: the control's allow_scope names a claim seat that did NOT run — a claim wider than the evidence"
+echo "   OK pre-fix fail-open: with the claim seat compiled out the SAME pinned policy refuses nothing — the forbidden call crosses and EXECUTES, and the row names ONLY justification (never claim)"
+
+
+echo "== phase 51: P7-fix THE EVALUATOR IS PINNED — a swapped always-derives evaluator is REFUSED at startup"
+# The reviewer's REPRODUCED SILENT ALLOW, end to end: replace eval_calls.py —
+# the file that COMPUTES every verdict — with an always-`derives` script.  The
+# seat must refuse BEFORE it serves; arming with an unpinned evaluator is the
+# silent allow (a stale pre-head-check evaluator is the A6b bug shipped).
+cp -r "$CALLS_DIR" "$TMP/calls-swap"
+cat > "$TMP/calls-swap/eval_calls.py" <<'PY'
+import sys
+print("verdict\tderives\tjustified(calla)\trows=1")
+sys.exit(0)
+PY
+cmp -s "$CALLS_DIR/eval_calls.py" "$TMP/calls-swap/eval_calls.py" \
+    && fail "phase 51: the evaluator swap matched NOTHING"
+"$GATE" --upstream "$FIX/responses_simple.sse" --slave-file "$TMP/calls-swap-slave" \
+    --log "$TMP/calls-swap-log.jsonl" --calls-policy-dir "$TMP/calls-swap" \
+    --require-justification 2> "$TMP/calls-swap-err"
+src=$?
+[ "$src" -ne 0 ] || fail "phase 51: the swapped evaluator did NOT refuse at startup (rc=$src)"
+grep -q 'eval_calls.py sha256 mismatch' "$TMP/calls-swap-err" \
+    || { tail -3 "$TMP/calls-swap-err" >&2; fail "phase 51: the refusal does not name eval_calls.py's pin mismatch"; }
+grep -q 'seat ARMED' "$TMP/calls-swap-err" \
+    && fail "phase 51: the seat ARMED with a swapped evaluator — the pin is not yet a gate"
+echo "   OK swapped evaluator REFUSED: the seat dies before serving, naming eval_calls.py's sha mismatch"
+# PRE-FIX CONTROL (the SAME source, the evaluator exempt from the pin): the
+# seat arms happily and the forbidden call CROSSES and EXECUTES — the reproduced
+# silent allow, so the refusal above is the pin's doing and not the scenario's.
+calls_guest_arm "$GATENOEVALPIN" "$TMP/calls-forbidden.sse" evalpin "$TMP/calls-swap"
+[ "$CC_RC" -eq 0 ] || fail "phase 51: the pre-fix control run rc=$CC_RC"
+grep -q 'seat ARMED' "$CC_ERR" || fail "phase 51: the pre-fix control did NOT arm with the swapped evaluator"
+[ -f "$CC_MA" ] || fail "phase 51: the pre-fix control did NOT execute the forbidden call — the swap is not the silent allow it claims to be"
+n=$(pyq "$CC_LOG" "len([r for r in rows if r.get('call_id')=='call_CM_0002' and r.get('verdict')=='allowed'])")
+[ "$n" -ge 1 ] || fail "phase 51: the pre-fix control's log does not show the swapped evaluator ALLOWING the forbidden call"
+echo "   OK pre-fix control: with the evaluator exempt from the pin the swapped always-derives script ARMS and lets fx_activate CROSS and EXECUTE (verdict=allowed) — the pin is what refuses it"
+
+echo "== phase 52: P7-fix THE PER-CALL EVALUATOR IS BOUNDED — a hung one is a RECORDED refusal, not a silent stall"
+# A sleeper evaluator (RE-PINNED, so the pin check passes and the bound is what
+# is under test) and a tightened bound via FX_HOSTGATE_EVAL_TIMEOUT so the arm
+# runs in seconds.  The forbidden call is driven straight down the chardev (the
+# property — a judged call and its row — is guest-independent).
+cp -r "$CALLS_DIR" "$TMP/calls-slow"
+printf 'import time\ntime.sleep(600)\n' > "$TMP/calls-slow/eval_calls.py"
+cmp -s "$CALLS_DIR/eval_calls.py" "$TMP/calls-slow/eval_calls.py" \
+    && fail "phase 52: the sleeper write matched NOTHING"
+sha=$(sha256sum "$TMP/calls-slow/eval_calls.py" | cut -d' ' -f1)
+awk -F'\t' -v f="eval_calls.py" 'BEGIN{OFS="\t"} $1!=f' "$TMP/calls-slow/PINS" > "$TMP/calls-slow/PINS.new"
+printf 'eval_calls.py\t%s\n' "$sha" >> "$TMP/calls-slow/PINS.new"
+mv "$TMP/calls-slow/PINS.new" "$TMP/calls-slow/PINS"
+FX_HOSTGATE_EVAL_TIMEOUT=2 "$GATE" --upstream "$TMP/calls-forbidden.sse" \
+    --slave-file "$TMP/calls-slow-slave" --log "$TMP/calls-slow-log.jsonl" \
+    --calls-policy-dir "$TMP/calls-slow" --require-justification --turns 1 \
+    2> "$TMP/calls-slow-err" &
+PSLOW=$!
+PROXIES="$PROXIES $PSLOW"
+wait_for_slave "$TMP/calls-slow-slave" "$PSLOW" "$TMP/calls-slow-err"
+drive_frame "$(cat "$TMP/calls-slow-slave")"
+wait_for_proxy_exit "$PSLOW" "$TMP/calls-slow-err"
+wait "$PSLOW"; prc=$?
+[ "$prc" -eq 0 ] || { tail -3 "$TMP/calls-slow-err" >&2; fail "phase 52: the bounded seat exited rc=$prc — it must survive a hung evaluator"; }
+n=$(pyq "$TMP/calls-slow-log.jsonl" "len([r for r in rows if r.get('call_id')=='call_CM_0002' and r.get('verdict')=='denied' and r.get('author')=='claim' and r.get('refusal_name')=='denied-by-claim'])")
+[ "$n" -ge 1 ] || { tail -2 "$TMP/calls-slow-log.jsonl" >&2; fail "phase 52: NO row for the stalled call — the dead-agent instrument is blind (the pre-fix shape)"; }
+n=$(pyq "$TMP/calls-slow-log.jsonl" "len([r for r in rows if r.get('call_id')=='call_CM_0002' and 'did not finish within the seat' in (r.get('reason') or '') and '(2 s)' in (r.get('reason') or '')])")
+[ "$n" -ge 1 ] || fail "phase 52: the refusal does not name the timeout and the EFFECTIVE bound"
+echo "   OK bounded evaluator: the seat survives, the call is refused BY NAME and the row is WRITTEN — the dead-agent instrument sees the call"
+# PRE-FIX CONTROL (the SAME source, NO deadline): the seat blocks on the
+# evaluator forever, the turn ends with the call never judged, and NOTHING is
+# written — the reviewer's whole-seat stall with a silent record.  Bounded here
+# by `timeout`, because the control is a hang and the gate must always end.
+rm -f "$TMP/calls-nob-slave" "$TMP/calls-nob-log.jsonl"
+timeout 8 "$GATENOBOUND" --upstream "$TMP/calls-forbidden.sse" \
+    --slave-file "$TMP/calls-nob-slave" --log "$TMP/calls-nob-log.jsonl" \
+    --calls-policy-dir "$TMP/calls-slow" --require-justification --turns 1 \
+    2> "$TMP/calls-nob-err" &
+PNOB=$!
+PROXIES="$PROXIES $PNOB"
+wait_for_slave "$TMP/calls-nob-slave" "$PNOB" "$TMP/calls-nob-err"
+drive_frame "$(cat "$TMP/calls-nob-slave")"
+wait "$PNOB"; nrc=$?
+[ "$nrc" -eq 124 ] || fail "phase 52: the unbounded control did NOT hang (rc=$nrc) — the sleeper did not stall the seat"
+[ ! -s "$TMP/calls-nob-log.jsonl" ] || fail "phase 52: the unbounded control WROTE a log row — the instrument was not blind to the stalled call"
+echo "   OK pre-fix control: with NO bound the seat HANGS (reaped by timeout, rc 124) and writes NO row — the stall the bound turns into a recorded refusal"
+
+echo "== phase 53: P7-fix A SHARED FOLDED VERB-SYMBOL IS REFUSED BY THE SEAT'S OWN LOADER"
+# --check-verbs refuses it (phase 45's verbs-dup-symbol); the C loader must too,
+# or a deployment that bypasses the check would accept a table where one
+# contention justifies TWO runtime verbs.  The table is RE-PINNED first, so the
+# pin check passes and the refusal under test is the loader's.
+cp -r "$CALLS_DIR" "$TMP/calls-dup"
+awk -F'\t' 'BEGIN{OFS="\t"} {print} $1=="fx_write"{print "fx_ls","Writeverb","Inspect","no"}' \
+    "$CALLS_DIR/calls-verbs.tsv" > "$TMP/calls-dup/calls-verbs.tsv"
+cmp -s "$CALLS_DIR/calls-verbs.tsv" "$TMP/calls-dup/calls-verbs.tsv" \
+    && fail "phase 53: the loader dup rewrite matched NOTHING"
+sha=$(sha256sum "$TMP/calls-dup/calls-verbs.tsv" | cut -d' ' -f1)
+awk -F'\t' -v f="calls-verbs.tsv" 'BEGIN{OFS="\t"} $1!=f' "$TMP/calls-dup/PINS" > "$TMP/calls-dup/PINS.new"
+printf 'calls-verbs.tsv\t%s\n' "$sha" >> "$TMP/calls-dup/PINS.new"
+mv "$TMP/calls-dup/PINS.new" "$TMP/calls-dup/PINS"
+"$GATE" --upstream "$FIX/responses_simple.sse" --slave-file "$TMP/calls-dup-slave" \
+    --log "$TMP/calls-dup-log.jsonl" --calls-policy-dir "$TMP/calls-dup" \
+    --require-justification 2> "$TMP/calls-dup-err"
+drc=$?
+[ "$drc" -ne 0 ] || fail "phase 53: the seat ACCEPTED a table whose verb-symbol is mapped by two runtime verbs (rc=$drc)"
+grep -q "mapped by BOTH 'fx_write' and 'fx_ls'" "$TMP/calls-dup-err" \
+    || { tail -3 "$TMP/calls-dup-err" >&2; fail "phase 53: the loader refusal does not name both runtime verbs sharing the symbol"; }
+grep -q 'seat ARMED' "$TMP/calls-dup-err" \
+    && fail "phase 53: the seat ARMED on a duplicate-symbol table"
+echo "   OK loader refuses the share form: the SAME table --check-verbs refuses is refused by the seat's own loader, naming BOTH runtime verbs"
+
+
+echo "== phase 54: P7-fix THE OPERATOR-ENV FOOTGUNS — an unquotable TMPDIR refused, the armed-without-justification shape NAMED at startup"
+# (a) TMPDIR rides the evaluator's command line (single-quoted), so a quote or
+# control character cannot be shell-quoted safely — refused BEFORE serving.
+TMPDIR="/tmp/fx-bad'quote" "$GATE" --upstream "$FIX/responses_simple.sse" \
+    --slave-file "$TMP/calls-badtmp-slave" --log "$TMP/calls-badtmp-log.jsonl" \
+    --calls-policy-dir "$CALLS_DIR" --require-justification 2> "$TMP/calls-badtmp-err"
+trc=$?
+[ "$trc" -ne 0 ] || fail "phase 54: a TMPDIR carrying a quote was ACCEPTED (rc=$trc)"
+grep -q 'TMPDIR' "$TMP/calls-badtmp-err" \
+    || { tail -3 "$TMP/calls-badtmp-err" >&2; fail "phase 54: the refusal does not name TMPDIR"; }
+grep -q 'seat ARMED' "$TMP/calls-badtmp-err" && fail "phase 54: the seat ARMED with an unquotable TMPDIR"
+# the control: the SAME dir and flags with a sane TMPDIR ARM (the refusal is
+# TMPDIR's, not the fixture's) and carry NO footgun note (--require-justification
+# is given).
+mkdir -p "$TMP/fx-oktmp"
+TMPDIR="$TMP/fx-oktmp" timeout 3 "$GATE" --upstream "$FIX/responses_simple.sse" \
+    --slave-file "$TMP/calls-oktmp-slave" --log "$TMP/calls-oktmp-log.jsonl" \
+    --calls-policy-dir "$CALLS_DIR" --require-justification 2> "$TMP/calls-oktmp-err"
+grep -q 'seat ARMED' "$TMP/calls-oktmp-err" \
+    || { tail -3 "$TMP/calls-oktmp-err" >&2; fail "phase 54: a sane TMPDIR did not arm — the refusal is not TMPDIR's"; }
+grep -q 'WITHOUT --require-justification' "$TMP/calls-oktmp-err" \
+    && fail "phase 54: the footgun note fires even WITH --require-justification"
+echo "   OK TMPDIR: a quote-carrying TMPDIR is refused before serving; a sane one arms, and the arm IS reached (the refusal is TMPDIR's)"
+# (b) the armed-without-justification footgun is NAMED at startup (the
+# instrument already surfaces it as denial_rate 1.0000; this is the one-line
+# diagnosis at start).  The mechanism is NOT rebuilt — only the sentence added.
+timeout 3 "$GATE" --upstream "$FIX/responses_simple.sse" \
+    --slave-file "$TMP/calls-noreq-slave" --log "$TMP/calls-noreq-log.jsonl" \
+    --calls-policy-dir "$CALLS_DIR" 2> "$TMP/calls-noreq-err"
+grep -q 'seat ARMED' "$TMP/calls-noreq-err" || fail "phase 54: the claim author did not arm without --require-justification"
+grep -q 'WITHOUT --require-justification' "$TMP/calls-noreq-err" \
+    || { tail -3 "$TMP/calls-noreq-err" >&2; fail "phase 54: arming the claim author without --require-justification is not NAMED at startup"; }
+grep -q 'denial_rate 1.0000' "$TMP/calls-noreq-err" \
+    || fail "phase 54: the footgun note does not name the record shape it produces (denial_rate 1.0000)"
+echo "   OK startup sentence: arming the claim author without --require-justification names the consequence (every call denied, denial_rate 1.0000) in ONE line — and not when the flag is given"
+
+
+echo "PASS hostgate: the transparent proxy is stream-transparent (arm == control) and a mangling proxy is caught; the per-turn open/close mechanics hold through one proxy process; the one log JOINS every answered call by call_id and REPORTS every call it could not join; a join compiled out flips the pass by content; every model-controlled free-text field arrives MARKED while the join key renders verbatim; the DECODE GATE holds the channel invariant for a denied call (the true name never crosses) in the presence of interleaves, duplicate/never-opened dones, open-at-completed items and over-cap streams, with a pinned pre-fix control for each; the RESERVED NAME is a CHECKED property (it passes the guest's charset, collides with no verb of a catalog pinned by sha256 and cross-checked against the verbs server's own table, and the proxy REFUSES TO START on a collision — while the same source with the check compiled out starts and DISPATCHES the colliding name: the silent allow); and the JUSTIFICATION is required in the injected tools schema, judged on the argument accumulator the guest actually dispatches (a done-args-only judge is pinned and caught), denied BY NAME through the existing substitution on the outbound leg, and REPORTED BY A DENIAL-RATE INSTRUMENT whose own compiled-out mutant leaves the dead-agent shape invisible; and THE OPERATOR IS A REAL AUTHOR AT THIS SEAT (P6: the pinned ops policy, its PINS check, its alias table with the TWO-FORM grammar re-run here, and its per-call fact injection with the path canonicalized before matching) with the D1/D2 split NAMED in the startup line — D1 evaluated here, D2 and the compiled-in FLOOR enforced IN-GUEST ONLY because this seat can see neither — the D2 bound ASSERTED in both directions, the ALLOWED row carrying its own seat-scoped allow_scope qualifier (so a durable record cannot read as a permission the seat never grants) with the LOADED-BUT-INERT branch pinned by its own D2-only arm, and the seat's three failure directions each pinned against a control of the SAME source (fail-open when the seat is compiled out, over-deny when it binds the floor it cannot see, silent allow when it matches the raw path); and THE CLAIM AUTHOR AT THIS SEAT (P7) pins the file that COMPUTES every verdict (a swapped always-derives eval_calls.py is REFUSED at startup, while the same source with the evaluator exempt from the pin arms and lets the forbidden call CROSS and EXECUTE), BOUNDS the per-call evaluator (a hung one becomes a RECORDED refusal with its row written, while the same source with no deadline HANGS and writes NOTHING — the dead-agent instrument's blind spot), and refuses a folded verb-SYMBOL mapped by TWO runtime verbs at both check sites (--check-verbs and the seat's loader), so no shared symbol can let one contention justify two runtime verbs"

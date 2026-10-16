@@ -182,11 +182,13 @@
  *   exercise the gate — a pinned host-side denylist (--deny NAME, the
  *   brief's "deny get_weather").  The OPERATOR's real author arrives in P6
  *   (--ops-policy-dir, the pinned ops policy evaluated at this seat); the
- *   claim judgment is P7's and does not exist yet.  The log's `author` field
- *   always names what ACTUALLY RAN — `denylist`, `ops`, `justification` (or
- *   their `+`-joined set), never `claim`: a row claiming an author that did
+ *   CLAIM author arrives in P7 (--calls-policy-dir, the pinned calls policy
+ *   judged by shelling policy/calls/eval_calls.py).  The log's `author` field
+ *   always names what ACTUALLY RAN — `denylist`, `ops`, `justification`,
+ *   `claim` (or their `+`-joined set): a row claiming an author that did
  *   not run would be a record wider than the evidence.  With NO --deny, NO
- *   --require-justification and NO live --ops-policy-dir, NO policy ran and
+ *   --require-justification, NO live --ops-policy-dir and NO live
+ *   --calls-policy-dir, NO policy ran and
  *   NO verdict field is emitted (the P2 shape, byte-identical — its phases
  *   must stay green).  On an ALLOWED row `author` names the authors ARMED AND
  *   CONSULTED at this seat, which is not always the same as "evaluated THIS
@@ -331,6 +333,7 @@
 #include <string.h>
 #include <sys/select.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <termios.h>
 #include <time.h>
 #include <unistd.h>
@@ -402,6 +405,9 @@ static char *xstrdup(const char *s) {
  * comes first in this file because every seat below writes to it. */
 struct tbuf;
 static int policy_armed(void);
+/* declared here (redeclared with the calls seat below) because the log
+ * writer's ALLOWED-row allow_scope must name the seat that acted */
+static int calls_seat_present(void);
 static void tb_put(struct tbuf *t, const char *s, size_t n);
 static void tb_puts(struct tbuf *t, const char *s);
 #ifndef FH_MUTANT_NO_DENIAL_RATE /* the instrument is the only caller */
@@ -422,6 +428,8 @@ static char *reasons_breakdown_json(const char *const *names,
 #define FH_REFUSAL_MALFORMED_JUSTIFY "malformed-justification"
 #define FH_AUTHOR_OPS "ops"
 #define FH_REFUSAL_OPS "denied-by-ops"
+#define FH_AUTHOR_CLAIM "claim"
+#define FH_REFUSAL_CLAIM "denied-by-claim"
 /* A refusal-shaped entry that names NO refusing author: an item that never
  * completed was never JUDGED, so no policy refused it.  Used as the reason and
  * (prefixed) as the substitution text for such an item, so the record cannot
@@ -580,13 +588,14 @@ static void log_flush(void) {
                     r->ts, r->turn, jid, jname, jargs,
                     r->pending ? "true" : "false",
                     jout ? jout : "null");
-            /* P3/P5/P6: the verdict fields render ONLY when a policy actually
+            /* P3/P5/P6/P7: the verdict fields render ONLY when a policy actually
              * ran (the brief's honesty rule).  `author` names what ran — the
-             * placeholder denylist, the ops policy at this seat (P6) and/or
-             * the justification check — never the P7 author that does not
-             * exist yet; on a denial it names the ONE author that refused, and
+             * placeholder denylist, the ops policy at this seat (P6), the
+             * claim policy at this seat (P7) and/or
+             * the justification check; on a denial it names the ONE author that refused, and
              * refusal_name is the by-name refusal (P3's denied-by-denylist,
-             * P5's absent-/malformed-justification, P6's denied-by-ops).
+             * P5's absent-/malformed-justification, P6's denied-by-ops,
+             * P7's denied-by-claim).
              * reason/denial_text are real exactly for a denial, explicit
              * nulls otherwise. */
             if (r->verdict == VERDICT_DENIED) {
@@ -619,10 +628,20 @@ static void log_flush(void) {
                  * `reason`: phase 12 asserts an allowed row's
                  * reason/refusal_name/denial_text are null, and reason is the
                  * denial's field — reusing it would make an allow look like a
-                 * refusal. */
-                char *jscope =
-                    json_str("seat-scoped: no operator denial at this seat; "
-                             "the in-guest floor and D2 still govern");
+                 * refusal.
+                 *
+                 * P7-fix: when the CLAIM author is live too, the qualifier
+                 * names IT as well — the same row then also reads "no claim
+                 * refusal at this seat", which is exactly what an allowed row
+                 * with author `...claim...` means.  The P6 text alone
+                 * under-described the seat's authority. */
+                char *jscope = json_str(
+                    calls_seat_present()
+                    ? "seat-scoped: no operator denial and no claim refusal at "
+                      "this seat (the justification was judged and derived); "
+                      "the in-guest floor and D2 still govern"
+                    : "seat-scoped: no operator denial at this seat; "
+                      "the in-guest floor and D2 still govern");
                 fprintf(f,
                         ",\"verdict\":\"allowed\",\"author\":%s,"
                         "\"allow_scope\":%s,"
@@ -997,12 +1016,19 @@ static int g_require_justify;
  * (loaded AND at least one rule is live at this seat). */
 static int ops_seat_present(void);
 static const char *g_ops_dir;
+/* P7's arm (--calls-policy-dir): the claim-author policy directory at the host
+ * seat.  calls_seat_present() is defined with the calls seat itself (below);
+ * it is the seat's own answer to "did an author that can refuse actually run
+ * here?" (loaded AND armed). */
+static int calls_seat_present(void);
+static const char *g_calls_dir;
 
 /* ARMED = an author that can refuse is active.  The denylist (P3), the ops
  * policy at this seat (P6) and the justification check (P5) are three authors;
  * any one alone is armed. */
 static int policy_armed(void) {
-    return g_ndeny > 0 || g_require_justify || ops_seat_present();
+    return g_ndeny > 0 || g_require_justify || ops_seat_present()
+           || calls_seat_present();
 }
 
 static int policy_denied(const char *name) {
@@ -2242,6 +2268,672 @@ static int ops_judge(const char *name, const char *args, char *why, size_t whyca
 }
 #endif /* !FH_MUTANT_NO_OPS_SEAT */
 
+/* ── P7: THE CLAIM AUTHOR at the HOST SEAT ─────────────────────────────── */
+/*
+ * The proxy gains the CLAIM author — the second of the design's two visibly
+ * distinct authors (the operator says "you may not do this"; the claim author
+ * says "this is not justified").  It REPLACES NOTHING: the P3 --deny denylist
+ * and the P6 --ops-policy-dir operator seat stay exactly as they are.
+ *
+ * UNLIKE THE OPS SEAT (which links the datalog engine in-process), this seat
+ * SHELLS policy/calls/eval_calls.py — a thin sibling of policy/eval_claim.py —
+ * per call, EXACTLY as tools/fx-claim.c shells eval_claim.py (run_evaluator).
+ * The reasoning is NEVER reimplemented in the proxy: the seat owns the RECORD
+ * (temp files + the subprocess + the verdict parse), the evaluator owns the
+ * free-LE compilation, the head check, the premise check and the `justified`
+ * query.  `le` is consumed as a DEPENDENCY by the evaluator, never forked.
+ *
+ * THE SOUNDNESS BOUNDARY (the policy/calls header's argument, restated here
+ * so the seat's own code names it): the agent gets free LE over a CLOSED,
+ * host-declared lexicon (calls-lexicon.ini) that declares NO `justified` and
+ * NO `denied`; the frozen policy (calls-policy.dl) is the ONLY concluder of
+ * `justified`.  The seat injects the BINDING FACTS per call — call_name (the
+ * runtime verb folded to its abstract symbol through the pinned calls-verbs.tsv),
+ * call_purpose (the purpose the table assigns that verb) and forbidden_purpose
+ * (the table's forbidden set, at startup) — so the agent's assertions are
+ * never evidence and a spelled runtime symbol matches NOTHING (the letters-only
+ * seam; see the calls-policy.le header).  Vacuity FALLS OUT: an argument that
+ * never reaches the judgment rule derives zero rows and is `justified-not-
+ * derived` — a refusal, not a police action.
+ *
+ * THE TWO-AUTHOR BOUNDARY, IN THE SEAT: the calls lexicon has no `denied`, the
+ * ops lexicon has no `justified`, and this seat's judgment binds the call's
+ * VERB and PURPOSE while the ops seat binds the PATH — two authors on two
+ * DIFFERENT dimensions of the same call, and the verdict is DENY IF EITHER
+ * REFUSES.
+ *
+ * ORDER IN call_judge: denylist -> ops -> justification (P5) -> claim.  The
+ * claim author judges the JUSTIFICATION, so it runs only after P5 has
+ * confirmed the justification is present and well-formed.  A denial takes the
+ * SAME path as every other author (the true name never crosses; the denial
+ * text reaches the model through the existing P3 outbound substitution),
+ * with author="claim" and refusal_name="denied-by-claim"; the reason embeds
+ * the evaluator's OWN refusal name (justified-not-derived / premise-false /
+ * hostile-compile / ... — never paraphrased).
+ *
+ * THE PIN: every file policy/calls/PINS names must exist with the pinned
+ * sha256, verified AT STARTUP before any verdict is believed (every file the
+ * seat LOADS — calls-lexicon.ini, calls-policy.dl, calls-verbs.tsv AND the
+ * eval_calls.py that computes the verdict — must be pinned at all; pinning
+ * the artifacts while the evaluator that reads them is only stat()ed lets a
+ * swapped always-`derives` evaluator cross a forbidden call silently).  An
+ * ABSENT --calls-policy-dir is the NAMED "no claim author at this seat"
+ * state, never an error.
+ */
+#define FH_CALLS_PINS      "PINS"
+#define FH_CALLS_LEX       "calls-lexicon.ini"
+#define FH_CALLS_DL        "calls-policy.dl"
+#define FH_CALLS_VERBS     "calls-verbs.tsv"
+#define FH_CALLS_EVAL      "eval_calls.py"
+#define FH_CALLS_MAX_FILE  (1024u * 1024u)
+/* The fixed abstract identity the seat binds every call to: the agent cannot
+ * know the runtime call_id (it writes the justification in the SAME turn,
+ * before the id exists), so the seat maps every call to the ONE abstract
+ * symbol the agent's vocabulary declares (CallA -> calla). */
+#define FH_CALLS_CALL_SYM  "calla"
+
+typedef struct {
+    char *verb;         /* the RUNTIME verb name (never a proper noun) */
+    char *verb_sym;     /* FOLDED abstract verb symbol (le's fold) */
+    char *purpose_sym;  /* FOLDED purpose symbol */
+    int   forb;         /* the forbidden-purpose flag (the guard's fact) */
+} FhCallsRow;
+
+static struct {
+    int loaded;    /* a policy dir was given AND every startup check passed */
+    int present;   /* ...AND the seat can actually judge (loaded) */
+    char dir[PATH_MAX];
+    char evalpy[PATH_MAX];
+    char lex_path[PATH_MAX];
+    char dl_path[PATH_MAX];
+    char pins_path[PATH_MAX];
+    char dl_sha[65];
+    FhCallsRow *row;
+    size_t n_row;
+} CALLS;
+
+/* "Did an author that CAN REFUSE actually run here?" — the honesty rule's
+ * question (policy_armed, authors_ran).  Compiled out entirely in the
+ * pre-fix control. */
+static int calls_seat_present(void) {
+#ifdef FH_MUTANT_NO_CLAIM_SEAT
+    return 0;
+#else
+    return CALLS.present;
+#endif
+}
+
+#ifndef FH_MUTANT_NO_CLAIM_SEAT
+
+/* single-quote a path for the command line (the fx-claim.c sh_quote shape); a
+ * path carrying a single quote is refused before it ever reaches here. */
+static char *fh_sh_quote(const char *s) {
+    size_t n = strlen(s) + 4;
+    char *out = xmalloc(n);
+    snprintf(out, n, "'%s'", s);
+    return out;
+}
+
+static void calls_gate_die(const char *fmt, ...) {
+    fputs("fx-hostgate: calls-policy REFUSED: ", stderr);
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+    fputc('\n', stderr);
+    exit(1);
+}
+
+static char *calls_read_file(const char *path, size_t *len_out) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return NULL;
+    size_t cap = 8192, len = 0;
+    char *buf = malloc(cap + 1);
+    if (!buf) { fclose(f); return NULL; }
+    for (;;) {
+        if (len == cap) {
+            if (cap >= FH_CALLS_MAX_FILE) {
+                errno = EFBIG;
+                free(buf); fclose(f); return NULL;
+            }
+            cap *= 2;
+            char *nb = realloc(buf, cap + 1);
+            if (!nb) { free(buf); fclose(f); return NULL; }
+            buf = nb;
+        }
+        size_t n = fread(buf + len, 1, cap - len, f);
+        len += n;
+        if (n == 0) break;
+    }
+    if (ferror(f)) { free(buf); fclose(f); return NULL; }
+    fclose(f);
+    buf[len] = '\0';
+    if (len_out) *len_out = len;
+    return buf;
+}
+
+/* THE PIN CHECK: every file PINS names must exist with the pinned sha256;
+ * every file the seat LOADS — the three policy artifacts AND the EVALUATOR
+ * that computes the verdict — must be pinned at all.  Names BOTH shas on a
+ * mismatch. */
+static void calls_verify_pins(const char *dir, const char *pins_path) {
+    size_t plen = 0;
+    char *pins = calls_read_file(pins_path, &plen);
+    if (!pins)
+        calls_gate_die("%s cannot be read: %s — a present policy dir must "
+                       "carry a verifiable pin set", pins_path, strerror(errno));
+    int saw_lex = 0, saw_dl = 0, saw_verbs = 0, saw_eval = 0;
+    char *save = NULL;
+    for (char *line = strtok_r(pins, "\n", &save); line;
+         line = strtok_r(NULL, "\n", &save)) {
+        while (*line == ' ' || *line == '\t') line++;
+        if (!*line || *line == '#') continue;
+        char *tab = strchr(line, '\t');
+        if (!tab)
+            calls_gate_die("%s: a pin row is name<TAB>sha256, got '%.80s'",
+                           pins_path, line);
+        *tab = '\0';
+        char *name = line, *want = tab + 1;
+        char *cr = strchr(want, '\r');
+        if (cr) *cr = '\0';
+        int is_lex = strcmp(name, FH_CALLS_LEX) == 0;
+        int is_dl = strcmp(name, FH_CALLS_DL) == 0;
+        int is_verbs = strcmp(name, FH_CALLS_VERBS) == 0;
+        int is_eval = strcmp(name, FH_CALLS_EVAL) == 0;
+        if (is_lex) saw_lex = 1;
+        if (is_dl) saw_dl = 1;
+        if (is_verbs) saw_verbs = 1;
+        if (is_eval) saw_eval = 1;
+#ifdef FH_MUTANT_NO_EVAL_PIN
+        /* PRE-FIX CONTROL (build/fx-hostgate-noevalpin): the evaluator that
+         * COMPUTES every verdict is EXEMPT from the pin check (only stat()ed
+         * below), exactly the P7 pre-fix behavior — a swapped always-derives
+         * evaluator arms happily and a forbidden call crosses and EXECUTES. */
+        if (is_eval) continue;
+#endif
+        char path[PATH_MAX];
+        int n = snprintf(path, sizeof path, "%s/%s", dir, name);
+        if (n <= 0 || n >= (int)sizeof path)
+            calls_gate_die("pin path too long: %s", name);
+        size_t flen = 0;
+        char *bytes = calls_read_file(path, &flen);
+        if (!bytes)
+            calls_gate_die("pinned file %s is MISSING or unreadable (: %s) "
+                           "(pinned sha256 %s) — restore it or re-pin",
+                           path, strerror(errno), want);
+        char got[65];
+        sha256_hex(bytes, flen, got);
+        if (strcmp(got, want) != 0) {
+            free(bytes);
+            calls_gate_die("pinned file %s sha256 mismatch: pinned %s != actual "
+                           "%s — the deployed artifact is stale or swapped; a "
+                           "policy edit is a re-pin (artifact + PINS in the "
+                           "same release)", path, want, got);
+        }
+        if (is_dl)
+            snprintf(CALLS.dl_sha, sizeof CALLS.dl_sha, "%s", want);
+        free(bytes);
+    }
+    free(pins);
+    if (!saw_lex || !saw_dl || !saw_verbs || !saw_eval)
+        calls_gate_die("%s does not pin all of %s, %s, %s and %s — the loaded "
+                       "artifacts AND the evaluator that computes the verdict "
+                       "would go unverified", pins_path, FH_CALLS_LEX,
+                       FH_CALLS_DL, FH_CALLS_VERBS, FH_CALLS_EVAL);
+}
+
+/* THE FOLD (the folding contract's seat half): le compiles a proper noun to
+ * its LOWERCASED dl symbol, so the seat folds the table's surfaces before
+ * writing them — an unfolded surface could only ever non-match a legal rule's
+ * folded constant (a policy that stops matching stops protecting, silently). */
+static int calls_fold_proper(char *dst, size_t dstsz, const char *src) {
+    size_t l = strlen(src);
+    if (l == 0 || l >= dstsz) return 0;
+    for (size_t i = 0; i < l; i++) {
+        unsigned char c = (unsigned char)src[i];
+        if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'))) return 0;
+        dst[i] = (char)(c | 0x20);
+    }
+    dst[l] = '\0';
+    return 1;
+}
+
+/* The verb table: verb<TAB>verb-symbol<TAB>purpose<TAB>forbidden.  The
+ * verb-symbol and purpose surfaces must be proper nouns (letters-only) —
+ * a runtime verb spelled as an underscored proper noun could never reach a
+ * rule.  Duplicate runtime verbs are refused. */
+static void calls_load_verbs(const char *path, char *tsv_owned) {
+    char *tsv = tsv_owned;
+    size_t cap = 8;
+    CALLS.row = xmalloc(cap * sizeof *CALLS.row);
+    char *save = NULL;
+    for (char *line = strtok_r(tsv, "\n", &save); line;
+         line = strtok_r(NULL, "\n", &save)) {
+        while (*line == ' ' || *line == '\t') line++;
+        size_t ll = strlen(line);
+        if (ll > 0 && line[ll - 1] == '\r') line[ll - 1] = '\0';
+        if (!*line || *line == '#') continue;
+        char *f[4];
+        int nf = 0;
+        char *lsave = NULL;
+        for (char *tok = strtok_r(line, "\t", &lsave); tok && nf < 4;
+             tok = strtok_r(NULL, "\t", &lsave))
+            f[nf++] = tok;
+        if (nf != 4)
+            calls_gate_die("%s: a verb row is verb<TAB>verb-symbol<TAB>purpose"
+                           "<TAB>forbidden, got %d field(s)", path, nf);
+        if (strcmp(f[3], "yes") != 0 && strcmp(f[3], "no") != 0)
+            calls_gate_die("%s: the forbidden flag is '%s', not yes|no", path, f[3]);
+        for (size_t i = 0; i < CALLS.n_row; i++)
+            if (strcmp(CALLS.row[i].verb, f[0]) == 0)
+                calls_gate_die("%s: the runtime verb '%s' is mapped twice",
+                               path, f[0]);
+        if (CALLS.n_row == cap) {
+            cap *= 2;
+            CALLS.row = realloc(CALLS.row, cap * sizeof *CALLS.row);
+            if (!CALLS.row) die_errno("realloc calls verb rows");
+        }
+        FhCallsRow *r = &CALLS.row[CALLS.n_row];
+        memset(r, 0, sizeof *r);
+        r->verb = xstrdup(f[0]);
+        r->verb_sym = xmalloc(strlen(f[1]) + 1);
+        r->purpose_sym = xmalloc(strlen(f[2]) + 1);
+        if (!calls_fold_proper(r->verb_sym, strlen(f[1]) + 1, f[1]))
+            calls_gate_die("%s: the verb-symbol '%s' is not a proper noun "
+                           "(ASCII letters only) — le compiles proper nouns to "
+                           "their lowercased symbol, so any other shape could "
+                           "only ever match nothing", path, f[1]);
+        /* THE SHARE FORM: the duplicate-runtime-verb check above catches one
+         * verb mapped twice, but NOT two verbs sharing one folded SYMBOL
+         * (the table's spine is per-symbol, so one contention for a shared
+         * symbol would justify both runtime verbs and the claim rule's
+         * demand — "contends for the verb the call really is" — would stop
+         * discriminating).  Refused here as loudly as in --check-verbs. */
+        for (size_t i = 0; i < CALLS.n_row; i++)
+            if (strcmp(CALLS.row[i].verb_sym, r->verb_sym) == 0)
+                calls_gate_die("%s: the verb-symbol '%s' (folded '%s') is "
+                               "mapped by BOTH '%s' and '%s' — one contention "
+                               "would justify both runtime verbs", path, f[1],
+                               r->verb_sym, CALLS.row[i].verb, f[0]);
+        if (!calls_fold_proper(r->purpose_sym, strlen(f[2]) + 1, f[2]))
+            calls_gate_die("%s: the purpose '%s' is not a proper noun (ASCII "
+                           "letters only)", path, f[2]);
+        r->forb = (strcmp(f[3], "yes") == 0);
+        CALLS.n_row++;
+    }
+    free(tsv);
+    if (CALLS.n_row == 0)
+        calls_gate_die("%s carries no verb rows — the vocabulary seam's binding "
+                       "table is empty and every verb would be unjudgeable", path);
+}
+
+/* The real startup. */
+static void calls_seat_load(const char *dir) {
+    struct stat st;
+    /* The dir path rides a shell command line (the evaluator invocation), so a
+     * quote or control character is refused here — the fx-claim.c
+     * check_safe_path discipline.  Model-controlled bytes (the justification)
+     * never reach the command line: they ride mkstemp files whose paths are
+     * generated, not quoted. */
+    for (const char *c = dir; *c; c++)
+        if ((unsigned char)*c < 0x20 || *c == '\'')
+            calls_gate_die("the --calls-policy-dir path carries a character "
+                           "this seat refuses to put on a command line");
+    if (stat(dir, &st) != 0 || !S_ISDIR(st.st_mode))
+        calls_gate_die("%s is not a readable directory — a --calls-policy-dir "
+                       "must name the directory holding %s, %s, %s and %s",
+                       dir, FH_CALLS_PINS, FH_CALLS_LEX, FH_CALLS_DL,
+                       FH_CALLS_VERBS);
+    /* TMPDIR carries the same hazard as the policy dir: the mkstemp paths
+     * under it ride the evaluator's command line (single-quoted by
+     * calls_run_evaluator), so a quote or control character cannot be
+     * shell-quoted safely.  Checked at LOAD, not per call, for the reason the
+     * policy dir is: a malformed operator env has no later moment at which
+     * the refusal could be early enough to be a gate.  Operator env only —
+     * model bytes never reach the command line (every path is generated by
+     * mkstemp, never echoed from model text). */
+    {
+        const char *tmp = getenv("TMPDIR");
+        if (!tmp || !*tmp) tmp = "/tmp";
+        for (const char *c = tmp; *c; c++)
+            if ((unsigned char)*c < 0x20 || *c == '\'')
+                calls_gate_die("TMPDIR ('%s') carries a character this seat "
+                               "refuses to put on a command line (a quote or "
+                               "control character cannot be shell-quoted "
+                               "safely)", tmp);
+    }
+    snprintf(CALLS.dir, sizeof CALLS.dir, "%s", dir);
+    snprintf(CALLS.pins_path, sizeof CALLS.pins_path, "%s/%s", dir, FH_CALLS_PINS);
+    snprintf(CALLS.lex_path, sizeof CALLS.lex_path, "%s/%s", dir, FH_CALLS_LEX);
+    snprintf(CALLS.dl_path, sizeof CALLS.dl_path, "%s/%s", dir, FH_CALLS_DL);
+    snprintf(CALLS.evalpy, sizeof CALLS.evalpy, "%s/%s", dir, FH_CALLS_EVAL);
+    calls_verify_pins(dir, CALLS.pins_path);
+
+    char verbs_path[PATH_MAX];
+    snprintf(verbs_path, sizeof verbs_path, "%s/%s", dir, FH_CALLS_VERBS);
+    char *verbs_bytes = calls_read_file(verbs_path, NULL);
+    if (!verbs_bytes)
+        calls_gate_die("%s cannot be read: %s", verbs_path, strerror(errno));
+    calls_load_verbs(verbs_path, verbs_bytes);
+
+    if (stat(CALLS.evalpy, &st) != 0 || !S_ISREG(st.st_mode))
+        calls_gate_die("%s is missing — the seat shells the evaluator, it never "
+                       "reimplements the reasoning", CALLS.evalpy);
+
+    CALLS.loaded = 1;
+    CALLS.present = 1; /* a loaded calls seat can always refuse */
+}
+
+static void calls_seat_startup(const char *dir) {
+    memset(&CALLS, 0, sizeof CALLS);
+    if (!dir) {
+        note("calls-policy: NONE — no --calls-policy-dir was given, so the "
+             "claim author does not act at this seat (the justification, if "
+             "required, is still checked by P5; this is a per-seat state, not "
+             "an error)");
+        return;
+    }
+    calls_seat_load(dir);
+    note("calls-policy: seat ARMED — %zu verb row(s) loaded from the pinned "
+         "table (artifact sha256 %.16s..); the claim author judges every "
+         "call's justification against policy/calls (free LE over the closed "
+         "agent lexicon, no 'justified', no 'denied'); a justified call is "
+         "allowed, a not-justified call is DENIED BY NAME (denied-by-claim)",
+         CALLS.n_row, CALLS.dl_sha);
+}
+
+#else /* FH_MUTANT_NO_CLAIM_SEAT */
+
+/* P7 PRE-FIX CONTROL (build/fx-hostgate-noclaim): the claim seat is compiled
+ * OUT while --calls-policy-dir is still ACCEPTED and IGNORED, so the build
+ * runs exactly the P6-era proxy.  DIRECTION: FAIL-OPEN — a call the pinned
+ * policy refuses (a forbidden purpose) crosses verbatim and EXECUTES. */
+static void calls_seat_startup(const char *dir) {
+    memset(&CALLS, 0, sizeof CALLS);
+    if (dir)
+        note("calls-policy: SEAT COMPILED OUT (FH_MUTANT_NO_CLAIM_SEAT) — the "
+             "policy dir %s is ACCEPTED AND IGNORED: this is the PRE-FIX "
+             "control, the claim author does NOT run, and a call the pinned "
+             "policy refuses will CROSS and EXECUTE", dir);
+    else
+        note("calls-policy: SEAT COMPILED OUT (FH_MUTANT_NO_CLAIM_SEAT)");
+}
+
+#endif /* FH_MUTANT_NO_CLAIM_SEAT */
+
+/* Run policy/calls/eval_calls.py once for this call; return the exit code and
+ * the captured stdout (the VERDICT record, verbatim).  The evaluator's stderr
+ * is left on the seat's stderr: a tool error names itself there.
+ *
+ * THE BOUND: the subprocess is run under a DEADLINE and reaped with SIGKILL
+ * if it overruns (rc -2), because the alternative is an UNBOUNDED whole-seat
+ * stall in which the guest's turn ends, the call is never judged, and NO log
+ * row is written (rows are appended only after calls_judge returns) — so the
+ * denial-rate instrument meant to detect exactly this is blind to it.  The
+ * refusal still happens (fail-closed) but now on a deadline, and the row
+ * makes the call visible.  A bound is not a policy: it is the seat refusing
+ * to be hung by the thing it shells. */
+#ifndef FH_MUTANT_NO_CLAIM_SEAT
+#define FH_CALLS_EVAL_TIMEOUT_SEC 20
+#define FX_HOSTGATE_EVAL_TIMEOUT_ENV "FX_HOSTGATE_EVAL_TIMEOUT"
+
+/* The per-call bound, read from OPERATOR ENV ONLY (never model bytes) and
+ * validated to [1, 3600] so it can never be set to "no timeout"; the gate
+ * leans on it to exercise the path without a minute-long sleep. */
+static int calls_eval_timeout_sec(void) {
+    const char *e = getenv(FX_HOSTGATE_EVAL_TIMEOUT_ENV);
+    if (!e || !*e) return FH_CALLS_EVAL_TIMEOUT_SEC;
+    char *end = NULL;
+    long v = strtol(e, &end, 10);
+    if (!end || *end || v < 1 || v > 3600)
+        calls_gate_die("%s=%s is not an integer in [1, 3600] — the per-call "
+                       "evaluator bound must be a positive number of seconds",
+                       FX_HOSTGATE_EVAL_TIMEOUT_ENV, e);
+    return (int)v;
+}
+
+static int calls_run_evaluator(const char *call_path, const char *le_path,
+                               const char *facts_path, char **out) {
+    char *qe = fh_sh_quote(CALLS.evalpy);
+    char *qc = fh_sh_quote(call_path);
+    char *ql = fh_sh_quote(le_path);
+    char *qlex = fh_sh_quote(CALLS.lex_path);
+    char *qpol = fh_sh_quote(CALLS.dl_path);
+    char *qf = fh_sh_quote(facts_path);
+    char *qpin = fh_sh_quote(CALLS.pins_path);
+    char *cmd;
+    if (asprintf(&cmd,
+                 "python3 %s --call %s --le %s --lexicon %s --policy %s "
+                 "--facts %s --pins %s",
+                 qe, qc, ql, qlex, qpol, qf, qpin) < 0)
+        die_errno("out of memory");
+    free(qe); free(qc); free(ql); free(qlex); free(qpol); free(qf); free(qpin);
+
+    int fds[2];
+    if (pipe(fds) != 0)
+        calls_gate_die("cannot create the evaluator pipe (%s)", strerror(errno));
+    pid_t pid = fork();
+    if (pid < 0)
+        calls_gate_die("cannot fork the evaluator (%s)", strerror(errno));
+    if (pid == 0) {
+        /* the child: exec through the shell exactly as popen did.  A failure
+         * here is 127, which the parent reads as a tool error (fail-closed). */
+        close(fds[0]);
+        if (dup2(fds[1], STDOUT_FILENO) < 0) _exit(127);
+        close(fds[1]);
+        execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
+        _exit(127);
+    }
+    close(fds[1]);
+    int fl = fcntl(fds[0], F_GETFL, 0);
+    if (fl < 0 || fcntl(fds[0], F_SETFL, fl | O_NONBLOCK) < 0)
+        calls_gate_die("cannot set the evaluator pipe non-blocking (%s)",
+                       strerror(errno));
+
+    int bound = calls_eval_timeout_sec();
+    struct timespec start;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    size_t cap = 16384, len = 0;
+    char *buf = xmalloc(cap);
+    int timedout = 0;
+    for (;;) {
+        if (len + 4096 > cap - 1) { cap *= 2; buf = realloc(buf, cap); }
+        ssize_t n = read(fds[0], buf + len, cap - len - 1);
+        if (n > 0) { len += (size_t)n; continue; }
+        if (n == 0) break; /* EOF: the child closed stdout -> reap below */
+        if (errno == EINTR) continue;
+        if (errno != EAGAIN && errno != EWOULDBLOCK) break; /* real error */
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        double elapsed = (double)(now.tv_sec - start.tv_sec)
+                       + (double)(now.tv_nsec - start.tv_nsec) / 1e9;
+        struct timeval tv;
+        struct timeval *tvp = &tv;
+#ifndef FH_MUTANT_NO_EVAL_BOUND
+        if (elapsed >= (double)bound) { timedout = 1; break; }
+        double remain = (double)bound - elapsed;
+        tv.tv_sec = (time_t)remain;
+        tv.tv_usec = (suseconds_t)((remain - (double)tv.tv_sec) * 1e6);
+#else
+        /* PRE-FIX CONTROL (build/fx-hostgate-nobound): NO deadline — the seat
+         * blocks on the evaluator forever, the guest's turn ends with the call
+         * never judged, and NO row is written (rows are appended only after
+         * calls_judge returns), so the dead-agent instrument is blind to it. */
+        tvp = NULL;
+        (void)start; (void)bound; (void)elapsed;
+#endif
+        fd_set rf;
+        FD_ZERO(&rf);
+        FD_SET(fds[0], &rf);
+        select(fds[0] + 1, &rf, NULL, NULL, tvp);
+    }
+    free(cmd);
+    int st = 0, rc;
+    if (timedout) {
+        kill(pid, SIGKILL);
+        waitpid(pid, &st, 0);
+        rc = -2;
+    } else {
+        waitpid(pid, &st, 0);
+        rc = WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+    }
+    close(fds[0]);
+    buf[len] = '\0';
+    *out = buf;
+    return rc;
+}
+
+/* write a mkstemp file holding `data`, return the path (malloc'd). */
+static char *calls_write_temp(const char *tag, const char *data, size_t len) {
+    const char *tmp = getenv("TMPDIR");
+    if (!tmp || !*tmp) tmp = "/tmp";
+    char tmpl[PATH_MAX];
+    int n = snprintf(tmpl, sizeof tmpl, "%s/fx-hostgate-calls-%s-XXXXXX", tmp, tag);
+    if (n <= 0 || n >= (int)sizeof tmpl)
+        calls_gate_die("cannot build the temp path under %s", tmp);
+    int fd = mkstemp(tmpl);
+    if (fd < 0) calls_gate_die("cannot create the temp file: %s", strerror(errno));
+    if (write_all(fd, (const unsigned char *)data, len) != 0)
+        calls_gate_die("cannot write the temp file: %s", strerror(errno));
+    if (close(fd) != 0) calls_gate_die("cannot close the temp file: %s", strerror(errno));
+    return xstrdup(tmpl);
+}
+
+/* The justification string from the call's arguments (the same extraction the
+ * P5 judge uses).  Returns NULL when absent/non-string/blank. */
+static char *calls_extract_justification(const char *args) {
+    if (!args || !*args) return NULL;
+    yyjson_doc *doc = yyjson_read(args, strlen(args), 0);
+    yyjson_val *root = doc ? yyjson_doc_get_root(doc) : NULL;
+    char *out = NULL;
+    if (yyjson_is_obj(root)) {
+        yyjson_val *jv = yyjson_obj_get(root, "justification");
+        const char *js = jv ? yyjson_get_str(jv) : NULL;
+        if (js) {
+            int blank = 1;
+            for (const char *p = js; *p; p++)
+                if (!isspace((unsigned char)*p)) { blank = 0; break; }
+            if (!blank) out = xstrdup(js);
+        }
+    }
+    if (doc) yyjson_doc_free(doc);
+    return out;
+}
+
+/* THE PER-CALL DECISION.  Returns 1 when this seat DENIES (filling `why`),
+ * 0 when it does not refuse (the justification derives).  Injects the binding
+ * facts, shells the evaluator, parses its verdict.  A tool error (exit 2, or
+ * an unparsable verdict) is FAIL-CLOSED: refuse, never allow. */
+static int calls_judge(const char *name, const char *args, char *why, size_t whycap) {
+    if (!CALLS.present) return 0;
+
+    /* THE VERB — look it up in the pinned table.  A verb the table cannot bind
+     * has no declared purpose, so its justification cannot be judged here:
+     * fail-closed (refuse, never allow). */
+    FhCallsRow *row = NULL;
+    for (size_t i = 0; i < CALLS.n_row; i++)
+        if (strcmp(CALLS.row[i].verb, name) == 0) { row = &CALLS.row[i]; break; }
+    if (!row) {
+        snprintf(why, whycap,
+                 "the call's verb \"%s\" has no row in the pinned calls-verbs "
+                 "table — the claim author cannot judge it justified (a verb "
+                 "the table cannot bind is refused, never silently allowed)",
+                 name);
+        return 1;
+    }
+
+    char *just = calls_extract_justification(args);
+    if (!just) {
+        snprintf(why, whycap,
+                 "the call carries no justification to judge (the claim author "
+                 "judges the justification; an absent one is refused, never "
+                 "silently allowed)");
+        return 1;
+    }
+
+    /* the binding facts: call row + seat facts (call_purpose + forbidden). */
+    char call_row[PATH_MAX];
+    snprintf(call_row, sizeof call_row, "%s\t%s\n", FH_CALLS_CALL_SYM, row->verb_sym);
+    size_t fcap = 8192, flen = 0;
+    char *facts = xmalloc(fcap);
+    int sn = snprintf(facts + flen, fcap - flen, "call_purpose\t%s\t%s\n",
+                      FH_CALLS_CALL_SYM, row->purpose_sym);
+    flen += (size_t)sn;
+    for (size_t i = 0; i < CALLS.n_row; i++) {
+        if (!CALLS.row[i].forb) continue;
+        if (flen + 256 >= fcap) { fcap *= 2; facts = realloc(facts, fcap); }
+        sn = snprintf(facts + flen, fcap - flen, "forbidden_purpose\t%s\n",
+                      CALLS.row[i].purpose_sym);
+        flen += (size_t)sn;
+    }
+
+    char *call_path = calls_write_temp("call", call_row, strlen(call_row));
+    char *le_path = calls_write_temp("le", just, strlen(just));
+    char *facts_path = calls_write_temp("facts", facts, flen);
+    free(just);
+    free(facts);
+
+    char *out = NULL;
+    int rc = calls_run_evaluator(call_path, le_path, facts_path, &out);
+
+    /* parse the evaluator's verdict line: exit 0 -> derives; exit 1 -> a named
+     * refusal; anything else -> tool error (fail-closed). */
+    const char *verdict = NULL;
+    for (const char *p = out; p && *p;) {
+        const char *eol = strchr(p, '\n');
+        size_t ll = eol ? (size_t)(eol - p) : strlen(p);
+        if (ll >= 8 && !strncmp(p, "verdict\t", 8)) verdict = p;
+        p = eol ? eol + 1 : p + ll;
+    }
+    int deny = 0;
+    if (rc == 0) {
+        if (!verdict || strncmp(verdict, "verdict\tderives", 15)) {
+            snprintf(why, whycap,
+                     "the evaluator exited 0 but its stdout carries no "
+                     "'verdict<TAB>derives' line — an unparsable verdict is a "
+                     "tool error, never a silent derives; refusing");
+            deny = 1;
+        }
+    } else if (rc == 1) {
+        if (!verdict || strncmp(verdict, "verdict\trefused\t", 16)) {
+            snprintf(why, whycap,
+                     "the evaluator refused (exit 1) but its stdout carries no "
+                     "'verdict<TAB>refused<TAB>name' line — an unnamed refusal "
+                     "is a tool error; refusing");
+        } else {
+            const char *nm = verdict + 16;
+            const char *eol = strchr(nm, '\n');
+            size_t ll = eol ? (size_t)(eol - nm) : strlen(nm);
+            snprintf(why, whycap, "the justification does not derive (%.*s)",
+                     (int)ll, nm);
+        }
+        deny = 1;
+    } else if (rc == -2) {
+        snprintf(why, whycap,
+                 "the evaluator did not finish within the seat's timeout (%d "
+                 "s) — a hung evaluator is a tool error, not a verdict; "
+                 "refusing (fail-closed, never allowing)",
+                 calls_eval_timeout_sec());
+        deny = 1;
+    } else {
+        snprintf(why, whycap,
+                 "the evaluator exited %d — a tool error is infrastructure, "
+                 "not a verdict; refusing (fail-closed, never allowing)", rc);
+        deny = 1;
+    }
+
+    free(out);
+    unlink(call_path);
+    unlink(le_path);
+    unlink(facts_path);
+    free(call_path);
+    free(le_path);
+    free(facts_path);
+    return deny;
+}
+#endif /* !FH_MUTANT_NO_CLAIM_SEAT */
+
+
 /* ── P5: the justification (the tools injection + the judgement) ──────────── */
 
 /* --require-justification arms BOTH halves: the tools-array injection into the
@@ -2380,6 +3072,24 @@ static int call_judge(const char *name, const char *args,
      * gate's justification arm must catch by the DISPATCH MARKER. */
     (void)args;
 #endif
+#ifndef FH_MUTANT_NO_CLAIM_SEAT
+    /* P7 — THE CLAIM AUTHOR at this seat.  Runs LAST (after the justification
+     * check), because the claim author judges the justification: a denial
+     * takes the SAME path as the others (the true name never crosses, and
+     * this reason is what the model reads).  calls_judge extracts the
+     * justification itself and fails closed on an unmapped verb or an absent
+     * justification. */
+    {
+        char why[700];
+        if (calls_judge(name, args, why, sizeof why)) {
+            snprintf(reason, reason_cap, "\"%s\" was DENIED BY CLAIM: %s",
+                     name, why);
+            *author_out = FH_AUTHOR_CLAIM;
+            *refusal_out = FH_REFUSAL_CLAIM;
+            return 1;
+        }
+    }
+#endif /* FH_MUTANT_NO_CLAIM_SEAT */
     return 0;
 }
 
@@ -2395,12 +3105,21 @@ static int call_judge(const char *name, const char *args,
  * carries the reading; the field itself is the seat's author set. */
 static const char *authors_ran(void) {
     int o = ops_seat_present();
+    int c = calls_seat_present();
+    if (g_ndeny > 0 && o && c && g_require_justify) return "denylist+ops+claim+justification";
+    if (g_ndeny > 0 && o && c) return "denylist+ops+claim";
     if (g_ndeny > 0 && o && g_require_justify) return "denylist+ops+justification";
     if (g_ndeny > 0 && o) return "denylist+ops";
+    if (g_ndeny > 0 && c && g_require_justify) return "denylist+claim+justification";
+    if (g_ndeny > 0 && c) return "denylist+claim";
+    if (o && c && g_require_justify) return "ops+claim+justification";
+    if (o && c) return "ops+claim";
     if (o && g_require_justify) return "ops+justification";
+    if (c && g_require_justify) return "claim+justification";
     if (g_ndeny > 0 && g_require_justify) return "denylist+justification";
     if (g_ndeny > 0) return FH_AUTHOR_DENYLIST;
     if (o) return FH_AUTHOR_OPS;
+    if (c) return FH_AUTHOR_CLAIM;
     if (g_require_justify) return FH_AUTHOR_JUSTIFY;
     return "none";
 }
@@ -3842,6 +4561,15 @@ static void usage(void) {
     note("                  D2-class rules and the compiled-in floor stay");
     note("                  IN-GUEST — the startup line says exactly which");
     note("                  rules are live here");
+    note("  --calls-policy-dir DIR  arm P7: THE CLAIM AUTHOR at this seat.");
+    note("                  DIR holds the PINNED calls policy (PINS +");
+    note("                  calls-lexicon.ini + calls-policy.dl +");
+    note("                  calls-verbs.tsv + eval_calls.py, e.g. policy/calls).");
+    note("                  Verified against PINS at startup; every call's");
+    note("                  justification is judged by shelling eval_calls.py");
+    note("                  (free LE over the closed agent lexicon) and a");
+    note("                  not-justified call is denied (author `claim`,");
+    note("                  refusal denied-by-claim)");
     note("  --dump-requests PATH  append the REWRITTEN model-facing request");
     note("                  frame (one compact JSON line per turn) — the only");
     note("                  observable of the outbound substitution offline");
@@ -3882,6 +4610,8 @@ int main(int argc, char **argv) {
             g_require_justify = 1;
         } else if (!strcmp(argv[i], "--ops-policy-dir") && i + 1 < argc) {
             g_ops_dir = argv[++i];
+        } else if (!strcmp(argv[i], "--calls-policy-dir") && i + 1 < argc) {
+            g_calls_dir = argv[++i];
         } else if (!strcmp(argv[i], "--dump-requests") && i + 1 < argc) {
             g_dump_path = argv[++i];
         } else if (!strcmp(argv[i], "--print-catalog")) {
@@ -3922,6 +4652,12 @@ int main(int argc, char **argv) {
      * fails its pin or its alias grammar has no later moment at which the
      * refusal could be early enough to be a gate. */
     ops_seat_startup(g_ops_dir);
+
+    /* P7 — THE CLAIM AUTHOR.  Loaded (and refused, loudly) AFTER the operator
+     * seat and still BEFORE the slave path is published, for the same reason:
+     * a policy that fails its pin or its verb table has no later moment at
+     * which the refusal could be early enough to be a gate. */
+    calls_seat_startup(g_calls_dir);
 
     /* the upstream canned stream, read whole once — every turn replays it
      * from the start (the offline arm's provider is deterministic) */
@@ -3973,8 +4709,8 @@ int main(int argc, char **argv) {
          max_turns < 0 ? "unlimited" : "bounded");
     note("log: %s (one JSONL row per call)", g_log_path);
     /* The honesty lines: name what is ACTUALLY armed.  The denylist is a
-     * placeholder author (never P7, which does not exist); the ops policy at
-     * THIS seat and the justification check are real; the reserved name is
+     * placeholder author; the ops policy at THIS seat, the claim policy at
+     * this seat and the justification check are real; the reserved name is
      * refused by the verbs server even in an allow-all lane (structural
      * backstop, P3) AND checked against the pinned catalog at startup (P4). */
     if (policy_armed()) {
@@ -3992,6 +4728,22 @@ int main(int argc, char **argv) {
                  "above names exactly which rules are live here)",
                  OPS.dir);
         }
+        if (calls_seat_present()) {
+            note("policy: THE CLAIM AUTHOR IS LIVE at this seat "
+                 "(--calls-policy-dir %s): every call's justification is judged "
+                 "against policy/calls (free LE over the closed agent lexicon) "
+                 "by shelling eval_calls.py — a justified call is allowed, a "
+                 "not-justified call is DENIED BY NAME (denied-by-claim)",
+                 CALLS.dir);
+            if (!g_require_justify)
+                note("policy: NOTE — the claim author is armed WITHOUT "
+                     "--require-justification: the model is never told to "
+                     "justify (no tool-catalog injection), so an absent "
+                     "justification is DENIED BY NAME (denied-by-claim, "
+                     "'carries no justification') for EVERY call — expect "
+                     "denial_rate 1.0000 and no call executing; add "
+                     "--require-justification if that is not what you meant");
+        }
         if (g_require_justify) {
             note("policy: JUSTIFICATION REQUIRED for every call (P5) — the tool "
                  "catalog is injected into the forwarded request and an "
@@ -3999,9 +4751,10 @@ int main(int argc, char **argv) {
                  "(absent-justification / malformed-justification)");
         }
     } else {
-        note("policy: NONE — no denylist given, no --require-justification and "
-             "no live --ops-policy-dir, so no verdict fields are rendered; "
-             "every call is recorded and forwarded verbatim");
+        note("policy: NONE — no denylist given, no --require-justification, no "
+             "live --ops-policy-dir and no live --calls-policy-dir, so no "
+             "verdict fields are rendered; every call is recorded and "
+             "forwarded verbatim");
     }
     if (g_dump_path) {
         note("dump-requests: %s (the REWRITTEN model-facing frame, one line "

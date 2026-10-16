@@ -1,0 +1,4 @@
+# A policy whose judgment rule consumes NO seat template: it judges on the
+# call's own name and the agent's say-so, with no seat spine.  The pin-time
+# linter refuses it by name (policy-vacuous).
+A call C1 is justified if the call contends for a verb W1 and the call is named the verb.
