@@ -147,8 +147,10 @@
  *   (fx-verbs-server.c refuses an unknown name with -32602 ->
  *   mcp_tools_call returns -1 -> the guest records "(tool call failed)"
  *   and dispatches NOTHING).  Do not rely on the lane config; the staged
- *   config sets no tool lists at all.  (The proxy's own startup REFUSAL on
- *   a future catalog collision is slice P4's, not built here.)
+ *   config sets no tool lists at all.  (The proxy's own startup REFUSAL on a
+ *   future catalog collision is P4's, now built: see the P4 SCOPE block — and
+ *   that block's refusal is what keeps the claim above true as the catalog
+ *   grows.)
  *
  *   THE OUTBOUND SUBSTITUTION — the denial must reach the model as the
  *   CALL'S OWN RESULT.  The guest can only synthesize a sentinel ("(tool
@@ -190,6 +192,84 @@
  *   the guest (deliberately); a guest that reads them is already the §6b
  *   residual.
  *
+ * P4 SCOPE — THE RESERVED-NAME CONTRACT.  P3 USES `fx_host_denied`; P4 makes
+ *   its soundness a CHECKED property instead of an accident, and the check is
+ *   a STARTUP REFUSAL because a startup refusal is the only place it can be
+ *   LOUD:
+ *   (a) the name must pass the guest's validate_identifier charset
+ *       (^[A-Za-z0-9._-]+$, not starting with '-'; src/runner.c:49-70) — a
+ *       future rename that produced an unparseable name is caught here rather
+ *       than as a shape failure inside the guest;
+ *   (b) the name must collide with NO verb of the proxy's own PINNED catalog.
+ *       A collision makes the "reserved" name CALLABLE — an allow-all lane
+ *       (the staged config declares no tool lists at all, so
+ *       tool_policy_allowed is ALLOW-ALL, tool_policy.c:85-97) dispatches it
+ *       and the verbs server answers — which is a SILENT ALLOW.  Refuse, do
+ *       not warn;
+ *   (c) the catalog carries a sha256 PIN verified at startup with the
+ *       vendored sha256_hex (the fx-verbs PINS discipline,
+ *       fx-verbs-server.c:941-990).  Editing the catalog without re-pinning is
+ *       loud, because the collision check is worth exactly the bytes it
+ *       checks.
+ *   The catalog is a HOST-SIDE MIRROR of the closed fx-verbs vocabulary
+ *   (VERBS[] in tools/fx-verbs-server.c:2321-2456, 13 verbs — read from the
+ *   table, not from a plan line).  Its provenance is re-checked BY THE GATE
+ *   against that table (`--print-catalog`, one name per line), so a verb
+ *   added to the verbs server tomorrow surfaces as a gate failure rather than
+ *   as a silent collision later.  DIRECTION: a name collision is a SILENT
+ *   ALLOW, and the gate proves it by making a colliding name CALLABLE in the
+ *   no-contract build.
+ *
+ * P5 SCOPE — THE JUSTIFICATION RIDES WITH THE CALL.  Nothing new crosses the
+ *   chardev: the justification is a field OF THE CALL's arguments, in the same
+ *   model turn, which is what makes BEFORE structural (nothing has executed
+ *   when the host judges).  --require-justification arms three things:
+ *   (1) THE HOST INJECTS THE `tools` ARRAY into the request it forwards
+ *       (MEASURED: the guest sends none — "tools array omitted (S6 sends
+ *       none)", agent_loop.c:68-69 — and the host owns the wire), one entry
+ *       per pinned catalog verb, each `parameters` schema declaring
+ *       `justification` as a REQUIRED string property, so an unjustified call
+ *       is schema-invalid before any policy runs.  A `tools` member already
+ *       in the frame is REPLACED by the host's catalog: the host owns it.
+ *   (2) THE HOST JUDGES THE JUSTIFICATION at ITEM COMPLETION, on the
+ *       arguments the GUEST will dispatch: the accumulated
+ *       function_call_arguments.delta fragments, with the
+ *       response.function_call_arguments.done EVENT's `arguments` used ONLY
+ *       when no delta arrived — mirroring openai_responses.c:171-194 exactly.
+ *       The output_item.done ITEM's own `arguments` member is NEVER a
+ *       judgment source (at that event the guest emits its accumulator as-is
+ *       and does not read the member — a fallback to it made the host judge a
+ *       field the guest drops, reproduced by the gate's phase 37):
+ *       the mirror is load-bearing, not
+ *       pedantry: a real provider sends arguments:"" in added and every byte
+ *       in the deltas, so a judge reading the item's own field would deny
+ *       EVERY honest call while looking protective.  ABSENT (`justification`
+ *       not present, or no arguments at all) -> denied by name
+ *       `absent-justification`; MALFORMED (not a string, or blank) ->
+ *       `malformed-justification`.  Both are HOST refusals, so they take the
+ *       SAME path as a policy denial: the true name never crosses, and the
+ *       denial reaches the model through the EXISTING P3 outbound
+ *       substitution, with author:"justification".  A call WITH a valid
+ *       justification is judged by the policy normally.
+ *   (3) THE DENIAL-RATE INSTRUMENT, because the failure this slice can
+ *       introduce is invisible by construction: a required-justification
+ *       schema the model cannot satisfy DEGRADES TO AN EFFECTIVELY DEAD AGENT
+ *       while every log line looks protective (calls denied, nothing
+ *       executing, "working").  So every armed turn emits a `turn-stats` row
+ *       (calls / denied / allowed / denial-reason breakdown) AND a stderr
+ *       line, the proxy-exit row carries the run aggregate, and a turn whose
+ *       calls were ALL denied prints a loud 100%-denied line naming the
+ *       dead-agent shape.  A gate that only checked "denials happen" cannot
+ *       see this, which is why the instrument has its own mutation blind
+ *       (FH_MUTANT_NO_DENIAL_RATE).
+ *   ZERO GUEST CHANGE, and the reason it holds: every verb extracts its
+ *   arguments BY KEY and ignores unknown keys (fx-verbs-server.c:2548-2557),
+ *   so a riding `justification` breaks no verb and nothing needs stripping —
+ *   the argument bytes the model sent are the bytes the verb sees.  The gate
+ *   re-verifies that PER VERB against the REAL server (a differential probe
+ *   of build/fx-verbs-server with and without the riding key) instead of
+ *   trusting the line above.
+ *
  * TURN MECHANICS — the two things slice P1 was asked to MEASURE, not assume:
  *   (a) the guest OPENS the device per turn and CLOSES it at the turn
  *       boundary (openai_responses.c:226/:292): the slave path stays valid
@@ -206,6 +286,7 @@
  * XPG6 itself (the tree's no-new-dependency rule: this is libc, not a
  * dependency).  cfmakeraw stays covered by the CFLAGS' _DEFAULT_SOURCE. */
 #define _XOPEN_SOURCE 600
+#include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -219,6 +300,10 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "dhall.h" /* sha256_hex — the vendored dhall-c hash, P4's catalog pin
+                    * (the same helper fx-verbs-server.c:985 checks PINS with;
+                    * the Makefile links src/vendor/dhall-c/sha256.c only, as
+                    * it already does for fx-audit/fx-report/fx-claim) */
 #include "yyjson.h"
 
 static const char *prog = "fx-hostgate";
@@ -271,10 +356,35 @@ static char *xstrdup(const char *s) {
 #define FH_BOUND 512 /* free-text cap; a cut is MARKED, never silent */
 #define FH_FRAME_MAX (16u << 20) /* refuse absurd frames/fields, don't drop */
 
-/* P3's honest author/refusal names (see the P3 header block): what ACTUALLY
- * runs here is a placeholder denylist — never the P6/P7 authors. */
-#define FH_POLICY_AUTHOR "denylist"
-#define FH_REFUSAL_NAME "denied-by-denylist"
+/* Forward declarations: the exit report and the P5 denial-rate instrument
+ * (below, with the log) render the POLICY state ("which author ran?") and a
+ * text buffer, both defined further down with their own sections — the log
+ * comes first in this file because every seat below writes to it. */
+struct tbuf;
+static int policy_armed(void);
+static void tb_put(struct tbuf *t, const char *s, size_t n);
+static void tb_puts(struct tbuf *t, const char *s);
+#ifndef FH_MUTANT_NO_DENIAL_RATE /* the instrument is the only caller */
+static char *reasons_breakdown_json(const char *const *names,
+                                    const size_t *counts, size_t n);
+#endif
+
+/* THE HONEST AUTHOR/REFUSAL NAMES (P3 + P5; see the P3/P5 header blocks).
+ * P3's author is a placeholder denylist — never the P6/P7 authors; P5's is the
+ * justification check, and its refusal names are salvaged from the fx-init S3b
+ * list the plan names.  Every denial names its author AND its reason, and the
+ * refusal is BY NAME (never a bare rejection).  Declared here because the log
+ * writer below renders them. */
+#define FH_AUTHOR_DENYLIST "denylist"
+#define FH_REFUSAL_DENYLIST "denied-by-denylist"
+#define FH_AUTHOR_JUSTIFY "justification"
+#define FH_REFUSAL_ABSENT_JUSTIFY "absent-justification"
+#define FH_REFUSAL_MALFORMED_JUSTIFY "malformed-justification"
+/* A refusal-shaped entry that names NO refusing author: an item that never
+ * completed was never JUDGED, so no policy refused it.  Used as the reason and
+ * (prefixed) as the substitution text for such an item, so the record cannot
+ * carry an empty denial where a real one is owed. */
+#define FH_REASON_UNJUDGED_ITEM "item never completed and was not judged"
 
 /* Bounded copy of a free-text field: capped at FH_BOUND bytes with an
  * explicit truncation marker naming the original length when cut. */
@@ -340,12 +450,13 @@ enum {
     ROW_ANOM_UNJOINED = 2, /* P3 telemetry: an output whose call_id matches no decoded call */
     ROW_ANOM_ECHO = 3,     /* P3 telemetry: a denied call's output is not a known sentinel */
     ROW_ANOM_UNRESOLVED_SUBST = 4, /* P3-fix: a denied call whose outbound substitution never fired */
+    ROW_TURNSTATS = 5,     /* P5: the denial-rate instrument, one row per armed turn */
 };
 
 enum {
     VERDICT_NONE = -1,   /* no policy ran (unarmed): the P2 shape, no fields */
-    VERDICT_ALLOWED = 0, /* the placeholder denylist ran and did not list the call */
-    VERDICT_DENIED = 1,  /* the placeholder denylist listed the call */
+    VERDICT_ALLOWED = 0, /* an author ran and did not refuse the call */
+    VERDICT_DENIED = 1,  /* an author refused the call */
 };
 
 struct row {
@@ -357,13 +468,20 @@ struct row {
     char *args;    /* raw in memory; bounded (marked) at write */
     int pending;
     char *outcome; /* raw in memory; NULL until the join fires */
-    /* P3 policy fields (VERDICT_NONE renders none of them — honesty rule) */
+    /* P3/P5 policy fields (VERDICT_NONE renders none of them — honesty rule) */
     int verdict;
+    char *author;       /* the ONE author that refused / the authors that ran */
+    char *refusal_name; /* the by-name refusal (P3's, or P5's) */
     char *reason;      /* raw in memory; bounded at write */
     char *denial_text; /* raw in memory; bounded at write */
     long turns_served;      /* ROW_EXIT */
     size_t *unresolved_idx; /* ROW_EXIT: indices of still-pending rows */
     size_t n_unresolved;
+    /* P5's denial-rate instrument: the per-turn tally (ROW_TURNSTATS) and the
+     * run aggregate (ROW_EXIT).  reasons_json is host-authored (never model
+     * text), pre-rendered so log_flush stays a pure writer. */
+    size_t t_calls, t_denied, t_allowed;
+    char *reasons_json;
 };
 
 static struct row *g_rows;
@@ -420,31 +538,41 @@ static void log_flush(void) {
                     r->ts, r->turn, jid, jname, jargs,
                     r->pending ? "true" : "false",
                     jout ? jout : "null");
-            /* P3: the verdict fields render ONLY when a policy actually ran
+            /* P3/P5: the verdict fields render ONLY when a policy actually ran
              * (the brief's honesty rule).  `author` names what ran — the
-             * placeholder denylist — never the P6/P7 authors that do not
-             * exist yet; refusal_name/reason/denial_text are real exactly
-             * for a denial, explicit nulls otherwise. */
+             * placeholder denylist and/or the justification check — never the
+             * P6/P7 authors that do not exist yet; on a denial it names the
+             * ONE author that refused, and refusal_name is the by-name
+             * refusal (P3's denied-by-denylist, or P5's
+             * absent-/malformed-justification).  reason/denial_text are real
+             * exactly for a denial, explicit nulls otherwise. */
             if (r->verdict == VERDICT_DENIED) {
                 char *breason = bound_copy(r->reason);
                 char *jreason = json_str(breason);
                 char *bdeny = bound_copy(r->denial_text);
                 char *jdeny = json_str(bdeny);
+                char *jauth = json_str(r->author ? r->author : FH_AUTHOR_DENYLIST);
+                char *jref =
+                    json_str(r->refusal_name ? r->refusal_name : FH_REFUSAL_DENYLIST);
                 fprintf(f,
-                        ",\"verdict\":\"denied\",\"author\":\"%s\","
-                        "\"refusal_name\":\"%s\",\"reason\":%s,"
+                        ",\"verdict\":\"denied\",\"author\":%s,"
+                        "\"refusal_name\":%s,\"reason\":%s,"
                         "\"denial_text\":%s}",
-                        FH_POLICY_AUTHOR, FH_REFUSAL_NAME, jreason, jdeny);
+                        jauth, jref, jreason, jdeny);
                 free(breason);
                 free(jreason);
                 free(bdeny);
                 free(jdeny);
+                free(jauth);
+                free(jref);
             } else if (r->verdict == VERDICT_ALLOWED) {
+                char *jauth = json_str(r->author ? r->author : FH_AUTHOR_DENYLIST);
                 fprintf(f,
-                        ",\"verdict\":\"allowed\",\"author\":\"%s\","
+                        ",\"verdict\":\"allowed\",\"author\":%s,"
                         "\"refusal_name\":null,\"reason\":null,"
                         "\"denial_text\":null}",
-                        FH_POLICY_AUTHOR);
+                        jauth);
+                free(jauth);
             } else {
                 fputc('}', f); /* VERDICT_NONE: the P2 row, byte-identical */
             }
@@ -456,6 +584,22 @@ static void log_flush(void) {
             free(jargs);
             free(bout);
             free(jout);
+        } else if (r->kind == ROW_TURNSTATS) {
+            /* P5's denial-rate instrument: one row per armed turn, so the
+             * dead-agent shape (every call denied, nothing executing, every
+             * line looking protective) is a NUMBER in the record instead of
+             * something an operator has to infer from a wall of denials.
+             * denial_rate is null when the turn made no calls — "0.0000" would
+             * be a claim about a sample that does not exist. */
+            fprintf(f,
+                    "{\"ts\":\"%s\",\"type\":\"turn-stats\",\"turn\":%ld,"
+                    "\"calls\":%zu,\"denied\":%zu,\"allowed\":%zu,"
+                    "\"denial_rate\":",
+                    r->ts, r->turn, r->t_calls, r->t_denied, r->t_allowed);
+            if (r->t_calls == 0) fputs("null", f);
+            else fprintf(f, "%.4f", (double)r->t_denied / (double)r->t_calls);
+            fprintf(f, ",\"denial_reasons\":%s}\n",
+                    r->reasons_json ? r->reasons_json : "{}");
         } else if (r->kind == ROW_ANOM_UNJOINED || r->kind == ROW_ANOM_ECHO ||
                    r->kind == ROW_ANOM_UNRESOLVED_SUBST) {
             /* telemetry rows (P3): the record keeps the evidence; they are
@@ -496,7 +640,20 @@ static void log_flush(void) {
                 free(bname);
                 free(jname);
             }
-            fprintf(f, "]}\n");
+            fputc(']', f);
+            /* P5: the run aggregate, rendered ONLY when a policy ran — the
+             * unarmed exit row stays byte-identical to P2's. */
+            if (r->reasons_json) {
+                fprintf(f,
+                        ",\"calls_total\":%zu,\"denied_total\":%zu,"
+                        "\"allowed_total\":%zu,\"all_denied\":%s,"
+                        "\"denial_reasons\":%s",
+                        r->t_calls, r->t_denied, r->t_allowed,
+                        (r->t_calls > 0 && r->t_denied == r->t_calls) ? "true"
+                                                                     : "false",
+                        r->reasons_json);
+            }
+            fprintf(f, "}\n");
         }
     }
     if (fflush(f) != 0 || fsync(fileno(f)) != 0) die_errno("fsync the one log");
@@ -507,9 +664,12 @@ static void log_flush(void) {
 
 /* Append a call row: pending:true at write time, by definition — nothing has
  * answered it yet.  verdict is VERDICT_NONE when no policy ran (the P2
- * shape); reason/denial_text are owned by the row when denied. */
+ * shape); author/refusal_name/reason/denial_text are owned by the row when a
+ * policy refused it, and author is the joined set of authors that RAN on an
+ * allowed row (never one that did not run). */
 static void row_call_append(const char *call_id, const char *name,
                             const char *args, long turn, int verdict,
+                            const char *author, const char *refusal_name,
                             const char *reason, const char *denial_text) {
     struct row *r = row_alloc();
     now_ts(r->ts, sizeof r->ts);
@@ -520,6 +680,8 @@ static void row_call_append(const char *call_id, const char *name,
     r->args = xstrdup(args ? args : "");
     r->pending = 1;
     r->verdict = verdict;
+    r->author = xstrdup(author ? author : FH_AUTHOR_DENYLIST);
+    r->refusal_name = xstrdup(refusal_name ? refusal_name : "");
     r->reason = xstrdup(reason ? reason : "");
     r->denial_text = xstrdup(denial_text ? denial_text : "");
     log_flush();
@@ -565,10 +727,88 @@ static void row_resolve(const char *call_id, const char *output, long turn) {
 }
 #endif /* FH_MUTANT_NO_JOIN */
 
+/* THE DENIAL-RATE INSTRUMENT (P5) — one row per ARMED turn: calls, denied,
+ * allowed and the denial-reason breakdown, plus a stderr line, plus the loud
+ * 100%-denied line.  WHY IT EXISTS: a required-justification schema the model
+ * cannot satisfy does not break anything visibly — every call is denied,
+ * nothing executes, every log line looks protective, and the agent is
+ * EFFECTIVELY DEAD.  A gate (or an operator) that only checks "denials happen"
+ * cannot see that shape; a per-turn rate can.  The instrument is only rendered
+ * when a policy ran (the honesty rule) and has its own mutation blind. */
+static void turn_stats_emit(long turn) {
+#ifdef FH_MUTANT_NO_DENIAL_RATE
+    (void)turn; /* P5 MUTATION BLIND (build/fx-hostgate-nodrate): the
+                 * instrument is compiled out, so the dead-agent shape becomes
+                 * INVISIBLE in the record while every denial still happens —
+                 * the gate's instrument phase must catch exactly that. */
+    return;
+#else
+    if (!policy_armed()) return;
+    size_t calls = 0, denied = 0, allowed = 0;
+    const char *names[8];
+    size_t counts[8];
+    size_t n_names = 0;
+    for (size_t i = 0; i < g_nrows; i++) {
+        const struct row *r = &g_rows[i];
+        if (r->kind != ROW_CALL || r->turn != turn) continue;
+        calls++;
+        if (r->verdict == VERDICT_DENIED) {
+            denied++;
+            const char *nm = (r->refusal_name && *r->refusal_name)
+                                 ? r->refusal_name
+                                 : "(unnamed refusal)";
+            size_t k = 0;
+            for (; k < n_names; k++) {
+                if (strcmp(names[k], nm) == 0) {
+                    counts[k]++;
+                    break;
+                }
+            }
+            if (k == n_names && n_names < 8) {
+                names[n_names] = nm;
+                counts[n_names] = 1;
+                n_names++;
+            }
+        } else {
+            allowed++;
+        }
+    }
+    struct row *r = row_alloc();
+    now_ts(r->ts, sizeof r->ts);
+    r->kind = ROW_TURNSTATS;
+    r->turn = turn;
+    r->t_calls = calls;
+    r->t_denied = denied;
+    r->t_allowed = allowed;
+    r->reasons_json = reasons_breakdown_json(names, counts, n_names);
+    log_flush();
+
+    char *reasons = reasons_breakdown_json(names, counts, n_names);
+    if (calls == 0) {
+        note("turn %ld: call stats: 0 call(s) (nothing to deny)", turn);
+    } else {
+        note("turn %ld: call stats: %zu call(s), %zu denied, %zu allowed "
+             "(reasons %s)",
+             turn, calls, denied, allowed, reasons);
+        if (denied == calls) {
+            note("turn %ld: DENIAL RATE 100%% — every call this turn was "
+                 "denied (%s): nothing executed, so the agent is EFFECTIVELY "
+                 "DEAD while the log looks protective.  This line is the "
+                 "instrument; the shape is not a working gate, it is a broken "
+                 "lane (an unsatisfiable schema, a policy that denies "
+                 "everything, or a catalogue the model cannot satisfy)",
+                 turn, reasons);
+        }
+    }
+    free(reasons);
+#endif /* FH_MUTANT_NO_DENIAL_RATE */
+}
+
 /* Exit report — THE VISIBILITY CONTRACT.  Every row still pending at exit is
  * (a) named on stderr and (b) listed in a terminal proxy-exit summary row, so
  * an unfireable join is loud in the record instead of a missing outcome half
- * that could be mistaken for a record hole. */
+ * that could be mistaken for a record hole.  P5 adds the RUN aggregate of the
+ * denial-rate instrument (and the loud all-denied line) to the same row. */
 static void log_exit_report(long turns_served) {
     size_t n_unres = 0, n_calls = 0;
     for (size_t i = 0; i < g_nrows; i++) {
@@ -590,6 +830,55 @@ static void log_exit_report(long turns_served) {
         note("join: all %zu recorded call(s) resolved", n_calls);
     }
 
+#ifndef FH_MUTANT_NO_DENIAL_RATE
+    /* The run aggregate (only when a policy ran AND the instrument exists:
+     * FH_MUTANT_NO_DENIAL_RATE removes the WHOLE instrument — per-turn rows,
+     * exit-row fields and stderr lines — so "the instrument is gone" is one
+     * property the gate can assert, not a half-removed one). */
+    size_t denied = 0, allowed = 0;
+    const char *names[8];
+    size_t counts[8];
+    size_t n_names = 0;
+    int instrument = policy_armed();
+    if (instrument) {
+        for (size_t i = 0; i < g_nrows; i++) {
+            const struct row *r = &g_rows[i];
+            if (r->kind != ROW_CALL) continue;
+            if (r->verdict == VERDICT_DENIED) {
+                denied++;
+                const char *nm = (r->refusal_name && *r->refusal_name)
+                                     ? r->refusal_name
+                                     : "(unnamed refusal)";
+                size_t k = 0;
+                for (; k < n_names; k++) {
+                    if (strcmp(names[k], nm) == 0) {
+                        counts[k]++;
+                        break;
+                    }
+                }
+                if (k == n_names && n_names < 8) {
+                    names[n_names] = nm;
+                    counts[n_names] = 1;
+                    n_names++;
+                }
+            } else {
+                allowed++;
+            }
+        }
+    }
+#else
+    /* P5 MUTATION BLIND (build/fx-hostgate-nodrate): the whole instrument is
+     * compiled out, so the dead-agent shape leaves NO trace in the record or
+     * on stderr while every denial still happens — exactly the blindness this
+     * instrument exists to remove, and what the gate's instrument phase
+     * catches.  Said out loud, so the mutant is not mistaken for a build that
+     * merely has nothing to report. */
+    if (policy_armed())
+        note("denial-rate instrument: COMPILED OUT (FH_MUTANT_NO_DENIAL_RATE) "
+             "— the dead-agent shape is NOT reported: no turn-stats rows, no "
+             "exit aggregate, no 100%%-denied line");
+#endif
+
     struct row *r = row_alloc();
     now_ts(r->ts, sizeof r->ts);
     r->kind = ROW_EXIT;
@@ -602,14 +891,34 @@ static void log_exit_report(long turns_served) {
         }
     }
     r->n_unresolved = n_unres;
+#ifndef FH_MUTANT_NO_DENIAL_RATE
+    if (instrument) {
+        r->t_calls = n_calls;
+        r->t_denied = denied;
+        r->t_allowed = allowed;
+        r->reasons_json = reasons_breakdown_json(names, counts, n_names);
+    }
+#endif
     log_flush();
+
+#ifndef FH_MUTANT_NO_DENIAL_RATE
+    if (instrument) {
+        char *reasons = reasons_breakdown_json(names, counts, n_names);
+        note("denial rate: %zu of %zu call(s) denied, %zu allowed (reasons %s)",
+             denied, n_calls, allowed, reasons);
+        if (n_calls > 0 && denied == n_calls) {
+            note("ALL %zu call(s) DENIED — the agent is EFFECTIVELY DEAD: "
+                 "nothing executed in this whole run while every line above "
+                 "looks protective (see the per-turn 'DENIAL RATE 100%%' "
+                 "lines and the per-turn denial reasons)",
+                 n_calls);
+        }
+        free(reasons);
+    }
+#endif
 }
 
 /* ── the decode gate + the outbound substitution (P3) ────────────────────── */
-
-/* The reserved name (see the P3 header block): refused as unknown by the
- * verbs server even in an allow-all lane, so the backstop is structural. */
-#define FH_RESERVED_NAME "fx_host_denied"
 
 /* The pinned placeholder denylist (--deny NAME, repeatable).  EMPTY means
  * NO policy ran: nothing is rewritten, no verdict field is rendered (the
@@ -618,7 +927,15 @@ static const char **g_deny_list;
 static size_t g_ndeny;
 static const char *g_dump_path; /* --dump-requests: the model-facing frames */
 
-static int policy_armed(void) { return g_ndeny > 0; }
+/* P5's arm (--require-justification), declared HERE because policy_armed()
+ * is what "a policy ran" means for the honesty rule below: with the
+ * justification check armed, a policy DID run, so rows carry verdict fields
+ * and the denial-rate instrument speaks. */
+static int g_require_justify;
+
+/* ARMED = an author that can refuse is active.  The denylist (P3) and the
+ * justification check (P5) are two authors; either one alone is armed. */
+static int policy_armed(void) { return g_ndeny > 0 || g_require_justify; }
 
 static int policy_denied(const char *name) {
     if (!policy_armed() || !name) return 0;
@@ -703,6 +1020,28 @@ static void tb_put(struct tbuf *t, const char *s, size_t n) {
 }
 static void tb_puts(struct tbuf *t, const char *s) { tb_put(t, s, strlen(s)); }
 
+/* The denial-reason breakdown as JSON, host-authored from the rows' own
+ * refusal names (never model text, so no bounding applies).  Small and local:
+ * the reasons are the closed set of refusal names this seat can emit. */
+#ifndef FH_MUTANT_NO_DENIAL_RATE
+static char *reasons_breakdown_json(const char *const *names, const size_t *counts,
+                                    size_t n) {
+    struct tbuf t = {0};
+    tb_puts(&t, "{");
+    for (size_t i = 0; i < n; i++) {
+        char *jn = json_str(names[i]);
+        if (i) tb_puts(&t, ",");
+        tb_puts(&t, jn);
+        char buf[32];
+        snprintf(buf, sizeof buf, ":%zu", counts[i]);
+        tb_puts(&t, buf);
+        free(jn);
+    }
+    tb_puts(&t, "}");
+    return t.p;
+}
+#endif /* FH_MUTANT_NO_DENIAL_RATE */
+
 /* Serialize one parsed value verbatim (compact).  Dies on failure: a value
  * that parsed but will not serialize is a seat bug, not stream input. */
 static void tb_put_val(struct tbuf *t, const yyjson_val *v) {
@@ -753,6 +1092,318 @@ static void tb_put_obj_strset(struct tbuf *t, const yyjson_val *obj,
 }
 #endif /* FH_MUTANT_NO_REWRITE */
 
+/* ── P4: the reserved-name contract and the PINNED verb catalog ───────────── */
+
+/* The reserved name (see the P3 header block): refused as unknown by the
+ * verbs server even in an allow-all lane, so the backstop is structural.
+ * The name is OVERRIDABLE only at BUILD time, for the gate's arms
+ * (-DFH_RESERVED_NAME='"fx host denied"' / '"fx_write"'), the same
+ * same-source discipline the -DFH_MUTANT_* builds use: a runtime knob here
+ * would be a way to disarm the contract it is the point of. */
+#ifndef FH_RESERVED_NAME
+#define FH_RESERVED_NAME "fx_host_denied"
+#endif
+
+/* THE PINNED CATALOG — a HOST-SIDE MIRROR of the closed fx-verbs vocabulary,
+ * harvested from the VERBS[] table in tools/fx-verbs-server.c:2321-2456 (the
+ * proxy cannot read the guest source at run time; the GATE is what re-checks
+ * this list against that table — `--print-catalog`).  One name per line, in
+ * table order.  PINNED by sha256 over these exact bytes (fh_catalog_check),
+ * so editing this text without re-pinning is loud rather than a quiet change
+ * in what the collision check checks.  The invariant that binds this list to
+ * the gate's independent copy: `--print-catalog | sha256sum`. */
+static const char fh_verb_catalog[] =
+    "fx_query\n"
+    "fx_status\n"
+    "fx_activate\n"
+    "fx_rollback\n"
+    "fx_what\n"
+    "fx_why\n"
+    "fx_store_verify\n"
+    "fx_build\n"
+    "fx_outcome\n"
+    "fx_generation\n"
+    "fx_read\n"
+    "fx_write\n"
+    "fx_ls\n";
+
+/* The pin: sha256 (lowercase hex) over fh_verb_catalog's bytes, plus the
+ * provenance of the bytes it pins.  RE-PIN after a catalog edit:
+ *   build/fx-hostgate --print-catalog-sha
+ * and put the printed value here (the refusal below names both shas, so a
+ * stale pin diagnoses itself).  -DFH_CATALOG_SHA256 builds the gate's
+ * bad-pin arm. */
+#define FH_CATALOG_PROVENANCE "tools/fx-verbs-server.c:2321-2456 VERBS[]"
+#ifndef FH_CATALOG_SHA256
+#define FH_CATALOG_SHA256 \
+    "6b97a08255734cfb5cead2e347a0197ce7582fd02d74b2a2e92327b74496bf7a"
+#endif
+
+/* validate_identifier's charset, MIRRORED (src/runner.c:49-70):
+ * ^[A-Za-z0-9._-]+$ and not starting with '-'.  Mirrored on purpose — the
+ * guest's rule IS the contract the reserved name must satisfy, and the proxy
+ * must not "improve" it into a rule the guest does not enforce. */
+#ifndef FH_MUTANT_NO_NAME_CONTRACT
+static int fh_identifier_ok(const char *s) {
+    if (!s || !*s) return 0;
+    if (s[0] == '-') return 0;
+    for (const char *p = s; *p; p++) {
+        unsigned char c = (unsigned char)*p;
+        if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+              (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-'))
+            return 0;
+    }
+    return 1;
+}
+
+#endif /* FH_MUTANT_NO_NAME_CONTRACT */
+
+/* Catalog accessors: count the lines; copy the idx-th name into buf. */
+static size_t fh_catalog_count(void) {
+    size_t n = 0;
+    for (const char *p = fh_verb_catalog; *p; p++) {
+        if (*p == '\n') n++;
+    }
+    return n;
+}
+
+static int fh_catalog_nth(size_t idx, char *buf, size_t cap) {
+    size_t n = 0;
+    const char *p = fh_verb_catalog;
+    while (*p) {
+        const char *e = strchr(p, '\n');
+        if (!e) break;
+        if (n == idx) {
+            size_t len = (size_t)(e - p);
+            if (len + 1 > cap) return 0;
+            memcpy(buf, p, len);
+            buf[len] = '\0';
+            return 1;
+        }
+        n++;
+        p = e + 1;
+    }
+    return 0;
+}
+
+/* THE CONTRACT CHECK — a STARTUP REFUSAL, loud and non-zero, before the slave
+ * path is published: the three properties P4 exists to make checked.  A
+ * refusal is the only honest output here; "the proxy ran but the reserved
+ * name was callable" has no log line that could make it visible in time. */
+static void fh_catalog_check(void) {
+#ifdef FH_MUTANT_NO_NAME_CONTRACT
+    /* P4 MUTATION BLIND (build/fx-hostgate-nonamecheck): the whole contract
+     * is compiled OUT.  The gate's arms pair it with a colliding / bad-charset
+     * reserved name, where the proxy STARTS and the colliding name is
+     * CALLABLE — the silent allow the refusal exists to prevent. */
+    note("P4 NAME CONTRACT: COMPILED OUT (FH_MUTANT_NO_NAME_CONTRACT) — the "
+         "reserved name is NOT checked against the guest's charset or the "
+         "pinned catalog; a collision would be a silent allow");
+    return;
+#else
+    char got[65];
+    sha256_hex(fh_verb_catalog, strlen(fh_verb_catalog), got);
+    if (strcmp(got, FH_CATALOG_SHA256) != 0) {
+        note("FATAL: the pinned verb catalog (%s) hashes to %s, but the "
+             "compiled pin is %s — the catalog was edited without a re-pin, so "
+             "the collision check would be checking bytes the pin does not "
+             "describe.  RE-PIN (--print-catalog-sha) or restore the catalog; "
+             "REFUSING TO START",
+             FH_CATALOG_PROVENANCE, got, FH_CATALOG_SHA256);
+        exit(1);
+    }
+    if (!fh_identifier_ok(FH_RESERVED_NAME)) {
+        note("FATAL: the reserved name \"%s\" does NOT match the guest's "
+             "validate_identifier charset ^[A-Za-z0-9._-]+$ (and must not start "
+             "with '-' — src/runner.c:49-70): a name the guest cannot parse is "
+             "not a reserved name; REFUSING TO START",
+             FH_RESERVED_NAME);
+        exit(1);
+    }
+    size_t n = fh_catalog_count();
+    char name[128];
+    for (size_t i = 0; i < n; i++) {
+        if (!fh_catalog_nth(i, name, sizeof name)) continue;
+        if (strcmp(name, FH_RESERVED_NAME) == 0) {
+            note("FATAL: the reserved name \"%s\" COLLIDES with catalog verb "
+                 "\"%s\" (%s) — a collision makes the reserved name CALLABLE "
+                 "(an allow-all lane dispatches it and the verbs server "
+                 "answers) = a SILENT ALLOW; REFUSING TO START",
+                 FH_RESERVED_NAME, name, FH_CATALOG_PROVENANCE);
+            exit(1);
+        }
+    }
+    note("P4 name contract: reserved name \"%s\" passes the guest's identifier "
+         "charset and collides with none of the %zu pinned catalog verb(s); "
+         "catalog sha256 %.12s.. (pinned), %s",
+         FH_RESERVED_NAME, n, got, FH_CATALOG_PROVENANCE);
+#endif /* FH_MUTANT_NO_NAME_CONTRACT */
+}
+
+/* ── P5: the justification (the tools injection + the judgement) ──────────── */
+
+/* --require-justification arms BOTH halves: the tools-array injection into the
+ * forwarded request (the model is TOLD what is required) and the judgement at
+ * item completion (the host CHECKS it).  The two are separable by mutation
+ * (FH_MUTANT_NO_TOOLS_INJECT / FH_MUTANT_NO_JUSTIFY_CHECK) precisely because
+ * each one failing in isolation looks different: no injection = the model was
+ * never told and the agent dies unjustified; no check = the model was told and
+ * the host ignored it.  (The flag itself, g_require_justify, is declared with
+ * the denylist above, where policy_armed() lives; the author/refusal names are
+ * declared at FH_AUTHOR_* / FH_REFUSAL_* beside the log writer.) */
+
+enum { J_OK = 0, J_ABSENT = 1, J_MALFORMED = 2 };
+
+/* The judgement of ONE call's justification, over the arguments the GUEST will
+ * dispatch (the caller passes the delta-accumulated value; see the P5 header
+ * block).  `why` receives a human reason that lands in the row and in the
+ * denial text the model reads. */
+#if !defined(FH_MUTANT_NO_JUSTIFY_CHECK) && !defined(FH_MUTANT_SINGLE_ITEM)
+static int justification_verdict(const char *args, char *why, size_t whycap) {
+    if (!args || !*args) {
+        snprintf(why, whycap,
+                 "the call carries no arguments, so it carries no "
+                 "justification");
+        return J_ABSENT;
+    }
+    yyjson_doc *doc = yyjson_read(args, strlen(args), 0);
+    yyjson_val *root = doc ? yyjson_doc_get_root(doc) : NULL;
+    if (!yyjson_is_obj(root)) {
+        snprintf(why, whycap,
+                 "the call's arguments are not a JSON object, so no "
+                 "justification can be read from them");
+        if (doc) yyjson_doc_free(doc);
+        return J_MALFORMED;
+    }
+    yyjson_val *jv = yyjson_obj_get(root, "justification");
+    if (!jv) {
+        snprintf(why, whycap,
+                 "the call's arguments carry no \"justification\" field (the "
+                 "host injects the tools schema with justification REQUIRED)");
+        yyjson_doc_free(doc);
+        return J_ABSENT;
+    }
+    const char *js = yyjson_get_str(jv);
+    if (!js) {
+        snprintf(why, whycap,
+                 "the call's \"justification\" is not a JSON string (it is a "
+                 "%s)", yyjson_is_null(jv)   ? "null"
+                     : yyjson_is_num(jv)     ? "number"
+                     : yyjson_is_bool(jv)    ? "boolean"
+                     : yyjson_is_arr(jv)     ? "array"
+                     : yyjson_is_obj(jv)     ? "object"
+                                             : "non-string value");
+        yyjson_doc_free(doc);
+        return J_MALFORMED;
+    }
+    int blank = 1;
+    for (const char *p = js; *p; p++) {
+        if (!isspace((unsigned char)*p)) {
+            blank = 0;
+            break;
+        }
+    }
+    if (blank) {
+        snprintf(why, whycap,
+                 "the call's \"justification\" is blank (a blank justification "
+                 "is not a justification)");
+        yyjson_doc_free(doc);
+        return J_MALFORMED;
+    }
+    yyjson_doc_free(doc);
+    return J_OK;
+}
+
+#endif /* !FH_MUTANT_NO_JUSTIFY_CHECK && !FH_MUTANT_SINGLE_ITEM */
+
+/* ONE call's verdict: the placeholder denylist (P3) first, then the
+ * justification check (P5).  Returns 1 = DENY, 0 = allow; on DENY it fills the
+ * refusing AUTHOR, the refusal NAME and the reason (which becomes the denial
+ * text the model reads).  Every refusal is by name — never a bare rejection. */
+#ifndef FH_MUTANT_SINGLE_ITEM /* only the per-item serve_stream judges */
+static int call_judge(const char *name, const char *args,
+                      const char **author_out, const char **refusal_out,
+                      char *reason, size_t reason_cap) {
+    if (policy_denied(name)) {
+        snprintf(reason, reason_cap,
+                 "\"%s\" is on the pinned host denylist (placeholder P3 "
+                 "policy)", name);
+        *author_out = FH_AUTHOR_DENYLIST;
+        *refusal_out = FH_REFUSAL_DENYLIST;
+        return 1;
+    }
+#ifndef FH_MUTANT_NO_JUSTIFY_CHECK
+    if (g_require_justify) {
+        char why[512];
+        int j = justification_verdict(args, why, sizeof why);
+        if (j == J_ABSENT) {
+            snprintf(reason, reason_cap,
+                     "\"%s\" was DENIED BY NAME absent-justification: %s", name,
+                     why);
+            *author_out = FH_AUTHOR_JUSTIFY;
+            *refusal_out = FH_REFUSAL_ABSENT_JUSTIFY;
+            return 1;
+        }
+        if (j == J_MALFORMED) {
+            snprintf(reason, reason_cap,
+                     "\"%s\" was DENIED BY NAME malformed-justification: %s",
+                     name, why);
+            *author_out = FH_AUTHOR_JUSTIFY;
+            *refusal_out = FH_REFUSAL_MALFORMED_JUSTIFY;
+            return 1;
+        }
+    }
+#else
+    /* P5 MUTATION BLIND (build/fx-hostgate-nojustify): the CHECK is compiled
+     * out while --require-justification is still accepted and the tools array
+     * is still injected.  An unjustified call is then judged by the denylist
+     * alone and CROSSES VERBATIM — it executes.  That is the fail-open the
+     * gate's justification arm must catch by the DISPATCH MARKER. */
+    (void)args;
+#endif
+    return 0;
+}
+
+#endif /* FH_MUTANT_SINGLE_ITEM */
+
+/* The AUTHOR field on an ALLOWED row: the authors that ACTUALLY RAN, joined.
+ * A row claiming an author that did not run would be a record wider than the
+ * evidence (the same rule that keeps P2 rows verdict-free). */
+static const char *authors_ran(void) {
+    if (g_ndeny > 0 && g_require_justify) return "denylist+justification";
+    if (g_ndeny > 0) return FH_AUTHOR_DENYLIST;
+    if (g_require_justify) return FH_AUTHOR_JUSTIFY;
+    return "none";
+}
+
+/* THE INJECTED CATALOG — one tool per pinned verb, `justification` a REQUIRED
+ * string property so the schema itself demands the claim.  Built from the same
+ * fh_verb_catalog the collision check uses: one list, one provenance. */
+#ifndef FH_MUTANT_NO_TOOLS_INJECT
+static void tools_inject_json(struct tbuf *t) {
+    tb_puts(t, "[");
+    size_t n = fh_catalog_count();
+    char name[128];
+    for (size_t i = 0; i < n; i++) {
+        if (!fh_catalog_nth(i, name, sizeof name)) continue;
+        if (i) tb_puts(t, ",");
+        tb_puts(t, "{\"type\":\"function\",\"name\":\"");
+        tb_puts(t, name);
+        tb_puts(t,
+                "\",\"description\":\"hostgate: a pinned fx-verbs catalog "
+                "entry; the host judges the call AND its justification before "
+                "anything runs\",\"parameters\":{\"type\":\"object\","
+                "\"properties\":{\"justification\":{\"type\":\"string\","
+                "\"description\":\"REQUIRED: why this call is being made "
+                "(what it is for, and what it is expected to affect). A call "
+                "without one is denied by name "
+                "(absent-justification).\"}},\"required\":[\"justification\"],"
+                "\"additionalProperties\":true}}");
+    }
+    tb_puts(t, "]");
+}
+
+#endif /* FH_MUTANT_NO_TOOLS_INJECT */
 /* ── the decode gate: judge at item completion, rewrite the name ────────── */
 
 #ifndef FH_MUTANT_NO_REWRITE /* the control build forwards even denied calls */
@@ -999,13 +1650,21 @@ static void item_emit_rewritten(struct tbuf *out, const unsigned char *ib,
  * One OPEN function_call item: its buffered raw events (added .. done) and
  * the identity captured from its added event.  item.id is the routing key
  * for argument deltas (which carry item_id, not call_id); call_id is the
- * join key; name is what the guest's accumulator would hold. */
+ * join key; name is what the guest's accumulator would hold.
+ *
+ * P5 adds `args`: the ARGUMENT FRAGMENTS joined in arrival order, which is
+ * what the GUEST dispatches (openai_responses.c:171-194 — the deltas are
+ * authoritative, the done event's own `arguments` is used only when no delta
+ * arrived at all).  The justification is judged on THESE bytes, so the host
+ * judges the call the guest is about to make, not a field of the same item
+ * that the guest may never read. */
 
 struct open_item {
     char *item_id;
     char *call_id;
     char *name;
     struct tbuf ev;
+    struct tbuf args; /* the guest's accumulator, mirrored */
     struct open_item *next;
 };
 
@@ -1024,6 +1683,7 @@ static void open_item_free(struct open_item *o) {
     free(o->call_id);
     free(o->name);
     free(o->ev.p);
+    free(o->args.p);
     free(o);
 }
 
@@ -1150,7 +1810,10 @@ static unsigned char *serve_stream_legacy(const unsigned char *buf, size_t len,
                                      "(denied by host policy: %s)", reason);
                             dmap_put(cid, nm, reason, denial, turn);
                             row_call_append(cid, nm, fc_args, turn,
-                                            VERDICT_DENIED, reason, denial);
+                                            VERDICT_DENIED,
+                                            FH_AUTHOR_DENYLIST,
+                                            FH_REFUSAL_DENYLIST, reason,
+                                            denial);
                             note("turn %ld: DENIED call_id=%s true_name=%s -> "
                                  "serving the reserved name",
                                  turn, cid, nm);
@@ -1174,7 +1837,9 @@ static unsigned char *serve_stream_legacy(const unsigned char *buf, size_t len,
                             row_call_append(cid, nm, fc_args, turn,
                                             policy_armed() ? VERDICT_ALLOWED
                                                            : VERDICT_NONE,
-                                            NULL, NULL);
+                                            policy_armed() ? authors_ran()
+                                                           : NULL,
+                                            NULL, NULL, NULL);
                             tb_put(&out, item.p, item.len); /* verbatim */
                         }
                         item.len = 0;
@@ -1385,6 +2050,7 @@ static unsigned char *serve_stream(const unsigned char *buf, size_t len,
                         /* replay/dup of a still-open item: reset its buffer and
                          * re-capture identity (idempotent for a replayed id) */
                         o->ev.len = 0;
+                        o->args.len = 0; /* P5: the arg accumulator restarts */
                         free(o->call_id);
                         o->call_id = fc_cid ? xstrdup(fc_cid) : NULL;
                         free(o->name);
@@ -1409,6 +2075,36 @@ static unsigned char *serve_stream(const unsigned char *buf, size_t len,
                     struct open_item *o = open_item_find_iid(open_head,
                                                              args_item_id);
                     if (o) {
+                        /* P5: mirror the GUEST's argument accumulator exactly
+                         * (openai_responses.c:171-194): deltas append in
+                         * arrival order, and the .done event's full
+                         * `arguments` is used ONLY when no delta arrived.  The
+                         * justification is judged on these bytes. */
+                        int is_delta = strcmp(
+                            event,
+                            "response.function_call_arguments.delta") == 0;
+                        yyjson_val *pv = yyjson_obj_get(
+                            root, is_delta ? "delta" : "arguments");
+                        const char *txt = pv ? yyjson_get_str(pv) : NULL;
+                        if (txt && (is_delta || o->args.len == 0)) {
+                            if (o->args.len + strlen(txt) > FH_FRAME_MAX) {
+                                /* the accumulator outgrew the frame cap: the
+                                 * host can no longer judge what the guest will
+                                 * dispatch, so while armed it must not serve
+                                 * the stream (fail-closed, as for an oversize
+                                 * event) */
+                                note("turn %ld: the argument accumulator "
+                                     "exceeds the frame cap; %s",
+                                     turn,
+                                     policy_armed()
+                                         ? "REFUSING the stream (armed: an "
+                                           "unjudgeable call must not cross)"
+                                         : "kept raw (unarmed)");
+                                if (policy_armed()) exit(1);
+                            } else {
+                                tb_put(&o->args, txt, strlen(txt));
+                            }
+                        }
                         tb_put(&o->ev, (const char *)buf + ev_start,
                                i - ev_start);
                     } else {
@@ -1423,41 +2119,75 @@ static unsigned char *serve_stream(const unsigned char *buf, size_t len,
                     if (o) {
                         tb_put(&o->ev, (const char *)buf + ev_start,
                                i - ev_start);
-                        /* judge THIS item with ITS OWN identity; args are the
-                         * done event's (the full arguments) */
+                        /* judge THIS item with ITS OWN identity, on the
+                         * arguments the GUEST will dispatch: the accumulator
+                         * it emits at this event (see the jargs note below) */
                         const char *nm = o->name ? o->name : fc_nm;
                         const char *cid = o->call_id ? o->call_id : fc_cid;
+#ifdef FH_MUTANT_JUDGE_DONE_ARGS
+                        /* P5 PRE-FIX CONTROL (build/fx-hostgate-doneargs):
+                         * the judge reads the DONE EVENT's own `arguments`
+                         * field instead of the accumulator the guest will
+                         * dispatch.  A real provider sends arguments:"" in
+                         * added and every byte in the DELTAS, so this build
+                         * denies honest, fully justified calls — the "agent
+                         * effectively dead while the log looks protective"
+                         * shape, caught by the delta-mirror arm's marker. */
+                        const char *jargs = fc_args;
+#else
+                        /* THE JUDGMENT SOURCE IS THE GUEST'S SOURCE: the guest
+                         * dispatches the ACCUMULATOR as-is (openai_responses.c:
+                         * 171-194 emits it, possibly empty, at this event); its
+                         * ONLY fallback is the function_call_arguments.done
+                         * EVENT's `arguments`, already mirrored at is_args_ev
+                         * above.  It never reads the done ITEM's own field, so a
+                         * fallback to fc_args here would judge a call on bytes
+                         * the guest drops: a stream that puts the justification
+                         * ONLY in the done item's field would look justified
+                         * here and dispatch with none.  Judged on the
+                         * accumulator (possibly empty) -> absent-justification,
+                         * exactly what the guest dispatches. */
+                        const char *jargs = o->args.p;
+#endif
                         if (!cid || !*cid) {
                             note("turn %ld: function_call item WITHOUT a "
                                  "call_id — not recorded, not joinable", turn);
                             tb_put(&out, o->ev.p, o->ev.len);
-                        } else if (nm && policy_armed() && policy_denied(nm)) {
-                            char reason[512];
-                            snprintf(reason, sizeof reason,
-                                     "\"%s\" is on the pinned host denylist "
-                                     "(placeholder P3 policy)", nm);
-                            char *denial = xmalloc(strlen(reason) + 64);
-                            snprintf(denial, strlen(reason) + 64,
-                                     "(denied by host policy: %s)", reason);
-                            dmap_put(cid, nm, reason, denial, turn);
-                            row_call_append(cid, nm, fc_args, turn,
-                                            VERDICT_DENIED, reason, denial);
-                            note("turn %ld: DENIED call_id=%s true_name=%s -> "
-                                 "serving the reserved name", turn, cid, nm);
-#ifdef FH_MUTANT_NO_REWRITE
-                            tb_put(&out, o->ev.p, o->ev.len);
-#else
-                            item_emit_rewritten(&out,
-                                                (const unsigned char *)o->ev.p,
-                                                o->ev.len, turn);
-#endif
-                            free(denial);
                         } else {
-                            row_call_append(cid, nm, fc_args, turn,
-                                            policy_armed() ? VERDICT_ALLOWED
-                                                           : VERDICT_NONE,
-                                            NULL, NULL);
-                            tb_put(&out, o->ev.p, o->ev.len); /* verbatim */
+                            const char *author = NULL, *refusal = NULL;
+                            char reason[1024];
+                            int deny = nm && policy_armed() &&
+                                       call_judge(nm, jargs, &author, &refusal,
+                                                  reason, sizeof reason);
+                            if (deny) {
+                                char *denial = xmalloc(strlen(reason) + 64);
+                                snprintf(denial, strlen(reason) + 64,
+                                         "(denied by host policy: %s)", reason);
+                                dmap_put(cid, nm, reason, denial, turn);
+                                row_call_append(cid, nm, jargs, turn,
+                                                VERDICT_DENIED, author, refusal,
+                                                reason, denial);
+                                note("turn %ld: DENIED call_id=%s true_name=%s "
+                                     "author=%s refusal=%s -> serving the "
+                                     "reserved name",
+                                     turn, cid, nm, author, refusal);
+#ifdef FH_MUTANT_NO_REWRITE
+                                tb_put(&out, o->ev.p, o->ev.len);
+#else
+                                item_emit_rewritten(&out,
+                                                    (const unsigned char *)o->ev.p,
+                                                    o->ev.len, turn);
+#endif
+                                free(denial);
+                            } else {
+                                row_call_append(cid, nm, jargs, turn,
+                                                policy_armed() ? VERDICT_ALLOWED
+                                                               : VERDICT_NONE,
+                                                policy_armed() ? authors_ran()
+                                                               : NULL,
+                                                NULL, NULL, NULL);
+                                tb_put(&out, o->ev.p, o->ev.len); /* verbatim */
+                            }
                         }
                         open_item_remove(&open_head, &open_tail, o);
                         open_item_free(o);
@@ -1465,9 +2195,19 @@ static unsigned char *serve_stream(const unsigned char *buf, size_t len,
                         /* a done with NO matching open item (never-opened, or a
                          * duplicate done after the first removed it).  It still
                          * carries name + call_id + arguments, so it is judgeable
-                         * ON THE SPOT; the true name must not cross while armed. */
+                         * ON THE SPOT; the true name must not cross while armed.
+                         * Its args are the item's own field (no delta ever
+                         * arrived for it).  P45-fix: a refusal here IS recorded
+                         * as a row (the instrument must count what the host
+                         * refused) but still makes NO deny-map entry — nothing
+                         * was judged as a call the guest will dispatch, so no
+                         * substitution leg exists. */
 #ifndef FH_MUTANT_NO_REWRITE
-                        if (fc_nm && policy_armed() && policy_denied(fc_nm)) {
+                        const char *author = NULL, *refusal = NULL;
+                        char reason[1024];
+                        if (fc_nm && policy_armed() &&
+                            call_judge(fc_nm, fc_args, &author, &refusal,
+                                       reason, sizeof reason)) {
                             char *json = event_json_set_item_name(data, data_len,
                                                                   FH_RESERVED_NAME);
                             if (!json) {
@@ -1483,9 +2223,55 @@ static unsigned char *serve_stream(const unsigned char *buf, size_t len,
                             tb_puts(&out, json);
                             tb_puts(&out, "\n\n");
                             free(json);
+                            /* P45-fix (review item b): RECORD the refusal.  It
+                             * was not recorded from P3 on, which left the
+                             * denial-rate instrument and the exit aggregate
+                             * blind to this shape: a turn whose only refusals
+                             * are unopened denials reported calls=0 and
+                             * denial_rate=null — an instrument reading its own
+                             * blind spot as "nothing happened".
+                             * ONE row per call_id: a duplicate done for an item
+                             * the first done already judged must not be counted
+                             * twice (the join answers the oldest pending row,
+                             * so a second row on the same key would never
+                             * resolve and would report a false UNRESOLVED at
+                             * exit).  NO deny-map entry (unchanged from P3):
+                             * nothing was dispatched and no
+                             * function_call_output can follow an item whose
+                             * added never arrived, so there is no substitution
+                             * leg to arm — and arming one would emit a false
+                             * unresolved-substitution anomaly.  The row is
+                             * pending, by definition (nothing answered it),
+                             * and the exit report names it unresolved. */
+                            int known = 0;
+                            for (size_t ri = 0; ri < g_nrows; ri++) {
+                                if (g_rows[ri].kind == ROW_CALL && fc_cid &&
+                                    strcmp(g_rows[ri].call_id, fc_cid) == 0) {
+                                    known = 1;
+                                    break;
+                                }
+                            }
+                            if (known) {
+                                note("turn %ld: unopened denied done for "
+                                     "call_id=%s is ALREADY recorded — not "
+                                     "counted a second time", turn, fc_cid);
+                            } else if (fc_cid && *fc_cid) {
+                                char *denial = xmalloc(strlen(reason) + 64);
+                                snprintf(denial, strlen(reason) + 64,
+                                         "(denied by host policy: %s)", reason);
+                                row_call_append(fc_cid, fc_nm, fc_args, turn,
+                                                VERDICT_DENIED, author, refusal,
+                                                reason, denial);
+                                free(denial);
+                            } else {
+                                note("turn %ld: unopened denied done WITHOUT a "
+                                     "call_id — refused, but the join key is "
+                                     "missing, so it cannot be counted", turn);
+                            }
                             note("turn %ld: done for an item with NO open "
-                                 "buffer carries a DENIED name — rewritten "
-                                 "without a row (never judged)", turn);
+                                 "buffer carries a DENIED name — rewritten, "
+                                 "and the refusal is recorded (never judged: "
+                                 "nothing was dispatched)", turn);
                         } else
 #endif
                         {
@@ -1510,11 +2296,22 @@ static unsigned char *serve_stream(const unsigned char *buf, size_t len,
                      * not in the deny map and its true name would cross in
                      * completed's output array.  Seed the map from the open
                      * items' own captured names so the rewrite below picks
-                     * them up.  NO verdict row: nothing was judged here. */
+                     * them up.  NO verdict row: nothing was judged here.
+                     * The seeded denial text must NOT be empty: if this
+                     * call_id ever reappears as a function_call_output, the
+                     * outbound substitution writes the denial text over the
+                     * guest's output, and an empty one would put a BLANK tool
+                     * result in front of the model (a silent degradation).  No
+                     * author refused this call, so the text says exactly that:
+                     * the item never completed and was never judged. */
                     for (struct open_item *oi = open_head; oi; oi = oi->next) {
                         if (oi->call_id && oi->name && policy_armed() &&
                             policy_denied(oi->name)) {
-                            dmap_put(oi->call_id, oi->name, "", "", turn);
+                            dmap_put(oi->call_id, oi->name,
+                                     FH_REASON_UNJUDGED_ITEM,
+                                     "(denied by host policy: "
+                                     FH_REASON_UNJUDGED_ITEM ")",
+                                     turn);
                             note("turn %ld: item %s was STILL OPEN when "
                                  "completed arrived — its name in completed's "
                                  "output array rewritten (unjudged)", turn,
@@ -1779,14 +2576,26 @@ static char *outbound_pass(const unsigned char *body, size_t body_len,
     }
     tb_puts(&arr, "]");
 
-    /* rebuild the frame: every non-input member verbatim */
+    /* Rebuild the frame: every non-input member verbatim — EXCEPT `tools` when
+     * the justification is required, because then the HOST owns the tools
+     * catalog (P5): a member the guest never sends (MEASURED, agent_loop.c:68)
+     * and the one the model must be told what the schema requires. */
     struct tbuf frame = {0};
     tb_puts(&frame, "{");
+    int first = 1;
     yyjson_val *k2, *v2;
     size_t ridx, rmax;
     yyjson_obj_foreach((yyjson_val *)root, ridx, rmax, k2, v2) {
         const char *kn = yyjson_get_str(k2);
-        if (ridx > 0) tb_puts(&frame, ",");
+        if (g_require_justify && kn && strcmp(kn, "tools") == 0) {
+            note("turn %ld: the request carried a `tools` member; REPLACED by "
+                 "the host's pinned catalog (the host owns the wire, and a "
+                 "leftover catalog would be a second, unpinned one)",
+                 turn);
+            continue;
+        }
+        if (!first) tb_puts(&frame, ",");
+        first = 0;
         char *jk = json_str(kn ? kn : "");
         tb_puts(&frame, jk);
         free(jk);
@@ -1794,6 +2603,24 @@ static char *outbound_pass(const unsigned char *body, size_t body_len,
         if (kn && strcmp(kn, "input") == 0) tb_put(&frame, arr.p, arr.len);
         else tb_put_val(&frame, v2);
     }
+#ifdef FH_MUTANT_NO_TOOLS_INJECT
+    /* P5 MUTATION BLIND (build/fx-hostgate-notools): the injection is compiled
+     * out while --require-justification still DENIES an unjustified call.  The
+     * model is never told what is required, so the lane dies unjustified with
+     * a perfectly protective-looking record — the dead-agent shape the
+     * denial-rate instrument exists to make visible. */
+    if (g_require_justify)
+        note("turn %ld: tools-array injection COMPILED OUT "
+             "(FH_MUTANT_NO_TOOLS_INJECT) — the model is NOT told that a "
+             "justification is required", turn);
+#else
+    if (g_require_justify) {
+        if (!first) tb_puts(&frame, ",");
+        first = 0;
+        tb_puts(&frame, "\"tools\":");
+        tools_inject_json(&frame);
+    }
+#endif
     tb_puts(&frame, "}");
     free(arr.p);
     yyjson_doc_free(doc);
@@ -1961,7 +2788,7 @@ static int read_frame(int fd, struct frame_reader *fr) {
 /* ── main ────────────────────────────────────────────────────────────────── */
 
 static void usage(void) {
-    note("usage: %s --upstream FILE --slave-file PATHFILE --log LOGFILE [--turns N] [--deny NAME]... [--dump-requests PATH]",
+    note("usage: %s --upstream FILE --slave-file PATHFILE --log LOGFILE [--turns N] [--deny NAME]... [--require-justification] [--dump-requests PATH]",
          prog);
     note("  --upstream      the canned SSE stream served each turn");
     note("  --slave-file    where the pty slave path is published (one line)");
@@ -1970,11 +2797,20 @@ static void usage(void) {
     note("                  this seat, it is a silent hole in the record)");
     note("  --turns N       exit after serving N request frames (default: never)");
     note("  --deny NAME     the pinned placeholder denylist (repeatable).  With");
-    note("                  none given NO policy ran: nothing is rewritten and");
-    note("                  no verdict field is rendered (the P2 shape)");
+    note("                  none given and no --require-justification NO policy");
+    note("                  ran: nothing is rewritten and no verdict field is");
+    note("                  rendered (the P2 shape)");
+    note("  --require-justification  arm P5: inject the pinned `tools` catalog");
+    note("                  (justification REQUIRED in each schema) into the");
+    note("                  forwarded request, and deny by name any call whose");
+    note("                  justification is absent or malformed");
     note("  --dump-requests PATH  append the REWRITTEN model-facing request");
     note("                  frame (one compact JSON line per turn) — the only");
     note("                  observable of the outbound substitution offline");
+    note("  --print-catalog / --print-catalog-sha  print the pinned verb");
+    note("                  catalog (one name per line) / its sha256, for the");
+    note("                  gate's INDEPENDENT cross-check against the real");
+    note("                  VERBS[] table, and exit");
 }
 
 int main(int argc, char **argv) {
@@ -2004,8 +2840,26 @@ int main(int argc, char **argv) {
             if (!nl) die_errno("realloc denylist");
             g_deny_list = nl;
             g_deny_list[g_ndeny++] = name;
+        } else if (!strcmp(argv[i], "--require-justification")) {
+            g_require_justify = 1;
         } else if (!strcmp(argv[i], "--dump-requests") && i + 1 < argc) {
             g_dump_path = argv[++i];
+        } else if (!strcmp(argv[i], "--print-catalog")) {
+            /* The gate's INDEPENDENT cross-check of the pinned catalog against
+             * the real VERBS[] table: one name per line on stdout, then exit —
+             * BEFORE any check or any pty, because this is a query about the
+             * binary, not a run. */
+            size_t n = fh_catalog_count();
+            char nm[128];
+            for (size_t k = 0; k < n; k++) {
+                if (fh_catalog_nth(k, nm, sizeof nm)) printf("%s\n", nm);
+            }
+            return 0;
+        } else if (!strcmp(argv[i], "--print-catalog-sha")) {
+            char got[65];
+            sha256_hex(fh_verb_catalog, strlen(fh_verb_catalog), got);
+            printf("%s\n", got);
+            return 0;
         } else {
             note("FATAL: unknown/incomplete argument '%s'", argv[i]);
             usage();
@@ -2016,6 +2870,12 @@ int main(int argc, char **argv) {
         usage();
         return 2;
     }
+
+    /* P4 — THE RESERVED-NAME CONTRACT, checked FIRST: a refusal has to happen
+     * before the slave path is published or any byte is served, because
+     * "the proxy started and the reserved name was callable" is a silent allow
+     * with no later moment at which it could be made loud. */
+    fh_catalog_check();
 
     /* the upstream canned stream, read whole once — every turn replays it
      * from the start (the offline arm's provider is deterministic) */
@@ -2066,20 +2926,28 @@ int main(int argc, char **argv) {
          upstream_path, upstream_len,
          max_turns < 0 ? "unlimited" : "bounded");
     note("log: %s (one JSONL row per call)", g_log_path);
-    /* P3 honesty line: name what is actually armed.  The placeholder
-     * denylist is the ONLY author in this slice; the reserved name is
-     * refused by the verbs server even in an allow-all lane (structural
-     * backstop — see the P3 header block). */
+    /* The honesty lines: name what is ACTUALLY armed.  The denylist is a
+     * placeholder author (never P6/P7, which do not exist); the justification
+     * check is real; the reserved name is refused by the verbs server even in
+     * an allow-all lane (structural backstop, P3) AND checked against the
+     * pinned catalog at startup (P4). */
     if (policy_armed()) {
-        note("policy: PLACEHOLDER denylist armed (%zu name(s)); author=%s; "
-             "reserved name=%s",
-             g_ndeny, FH_POLICY_AUTHOR, FH_RESERVED_NAME);
+        note("policy: authors armed = %s; reserved name=%s (P4 contract checked "
+             "at startup)",
+             authors_ran(), FH_RESERVED_NAME);
         for (size_t d = 0; d < g_ndeny; d++) {
-            note("policy: deny \"%s\"", g_deny_list[d]);
+            note("policy: PLACEHOLDER denylist entry \"%s\"", g_deny_list[d]);
+        }
+        if (g_require_justify) {
+            note("policy: JUSTIFICATION REQUIRED for every call (P5) — the tool "
+                 "catalog is injected into the forwarded request and an "
+                 "absent/malformed justification is DENIED BY NAME "
+                 "(absent-justification / malformed-justification)");
         }
     } else {
-        note("policy: NONE — no denylist given, no verdict fields are "
-             "rendered; every call is recorded and forwarded verbatim");
+        note("policy: NONE — no denylist given and no --require-justification, "
+             "so no verdict fields are rendered; every call is recorded and "
+             "forwarded verbatim");
     }
     if (g_dump_path) {
         note("dump-requests: %s (the REWRITTEN model-facing frame, one line "
@@ -2167,6 +3035,13 @@ int main(int argc, char **argv) {
             note("turn %ld: served %zu bytes", served, served_len);
         }
         free(served_stream);
+
+        /* P5: the per-turn denial-rate instrument, emitted AFTER the decode
+         * (the calls of this turn have been judged by now) and BEFORE the
+         * turn ends — a row per armed turn, so the dead-agent shape is a
+         * number in the record rather than an inference from a wall of
+         * denials. */
+        turn_stats_emit(served);
 
         if (max_turns >= 0 && served >= max_turns) break;
     }

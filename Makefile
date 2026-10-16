@@ -280,39 +280,56 @@ BIN_HOSTGATE_NOREWRITE := build/fx-hostgate-norewrite
 BIN_HOSTGATE_BLINDADD := build/fx-hostgate-blindadd
 BIN_HOSTGATE_SINGLEITEM := build/fx-hostgate-singleitem
 BIN_HOSTGATE_NOSUBST := build/fx-hostgate-nosubst
+# P4 + P5 (the reserved-name contract and the justification): the mutants and
+# the build-time override arms, EVERY ONE from the same tools/fx-hostgate.c.
+BIN_HOSTGATE_NONAMECHECK := build/fx-hostgate-nonamecheck
+BIN_HOSTGATE_COLLIDE := build/fx-hostgate-collide
+BIN_HOSTGATE_NONAMEBAD := build/fx-hostgate-nonamebad
+BIN_HOSTGATE_BADNAME := build/fx-hostgate-badname
+BIN_HOSTGATE_BADPIN := build/fx-hostgate-badpin
+BIN_HOSTGATE_NOJUSTIFY := build/fx-hostgate-nojustify
+BIN_HOSTGATE_NOTOOLS := build/fx-hostgate-notools
+BIN_HOSTGATE_NODRATE := build/fx-hostgate-nodrate
+BIN_HOSTGATE_DONEARGS := build/fx-hostgate-doneargs
 
 test-hostgate: $(BIN_HOSTGATE) $(BIN_HOSTGATE_MUTANT) $(BIN_HOSTGATE_UNBOUND) \
                $(BIN_HOSTGATE_NOREWRITE) $(BIN_HOSTGATE_BLINDADD) \
-               $(BIN_HOSTGATE_SINGLEITEM) $(BIN_HOSTGATE_NOSUBST) $(BIN)
+               $(BIN_HOSTGATE_SINGLEITEM) $(BIN_HOSTGATE_NOSUBST) \
+               $(BIN_HOSTGATE_NONAMECHECK) $(BIN_HOSTGATE_NONAMEBAD) $(BIN_HOSTGATE_COLLIDE) \
+               $(BIN_HOSTGATE_BADNAME) $(BIN_HOSTGATE_BADPIN) \
+               $(BIN_HOSTGATE_NOJUSTIFY) $(BIN_HOSTGATE_NOTOOLS) \
+               $(BIN_HOSTGATE_NODRATE) $(BIN_HOSTGATE_DONEARGS) $(BIN)
 	bash tests/test_hostgate.sh
 
-$(BIN_HOSTGATE): tools/fx-hostgate.c $(YYJSON_SRC)
+# The proxy links the vendored dhall-c sha256 (P4's catalog pin) and nothing
+# else of dhall-c: the same single-object link fx-audit/fx-report/fx-claim use.
+$(BIN_HOSTGATE): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC)
 	@mkdir -p build
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ tools/fx-hostgate.c $(YYJSON_SRC)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC)
 
 # P2's mutation blind: the SAME proxy source with the join pass compiled out
 # — a never-firing join is a WRONG RECORD, not a crash, and the gate must
 # catch it by content on exactly the two-turn fixture.
-$(BIN_HOSTGATE_MUTANT): tools/fx-hostgate.c $(YYJSON_SRC)
+$(BIN_HOSTGATE_MUTANT): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC)
 	@mkdir -p build
-	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_MUTANT_NO_JOIN -o $@ tools/fx-hostgate.c $(YYJSON_SRC)
+	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_MUTANT_NO_JOIN -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC)
 
 # The P2-fix mutation blind: the bound compiled OUT (FH_MUTANT_NO_BOUND) —
 # an over-long model-controlled field must arrive in the log MARKED, and a
 # proxy that ships it verbatim is a wrong record the gate catches by
 # content on exactly the bound fixture.
-$(BIN_HOSTGATE_UNBOUND): tools/fx-hostgate.c $(YYJSON_SRC)
+$(BIN_HOSTGATE_UNBOUND): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC)
 	@mkdir -p build
-	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_MUTANT_NO_BOUND -o $@ tools/fx-hostgate.c $(YYJSON_SRC)
+	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_MUTANT_NO_BOUND -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC)
 
 # P3's PRE-FIX CONTROL (FH_MUTANT_NO_REWRITE): the P2-era behavior pinned —
 # the enforcement rewrites are compiled out while the policy RECORD still
 # runs, so on the denied fixture the stream carries the TRUE name of a call
 # the log says was denied.  The gate's control arm proves the stub then
 # DISPATCHES (marker present): the asymmetry the real proxy flips.
-$(BIN_HOSTGATE_NOREWRITE): tools/fx-hostgate.c $(YYJSON_SRC)
+$(BIN_HOSTGATE_NOREWRITE): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC)
 	@mkdir -p build
-	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_MUTANT_NO_REWRITE -o $@ tools/fx-hostgate.c $(YYJSON_SRC)
+	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_MUTANT_NO_REWRITE -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC)
 
 # P3's COMPLETENESS MUTATION BLIND (FH_MUTANT_NO_ADDED_REWRITE): ONLY the
 # output_item.added rewrite is compiled out (done/completed keep theirs).
@@ -320,9 +337,9 @@ $(BIN_HOSTGATE_NOREWRITE): tools/fx-hostgate.c $(YYJSON_SRC)
 # (openai_responses.c:146-161), so the mutant lets the true name reach the
 # accumulator and DISPATCH while the record claims a denial — a partial
 # rewriter is an allow, and the gate must catch it by the dispatch marker.
-$(BIN_HOSTGATE_BLINDADD): tools/fx-hostgate.c $(YYJSON_SRC)
+$(BIN_HOSTGATE_BLINDADD): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC)
 	@mkdir -p build
-	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_MUTANT_NO_ADDED_REWRITE -o $@ tools/fx-hostgate.c $(YYJSON_SRC)
+	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_MUTANT_NO_ADDED_REWRITE -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC)
 
 # P3-FIX PRE-FIX CONTROL (FH_MUTANT_SINGLE_ITEM): the P2/P3-era SINGLE
 # open-item accumulator pinned — the interleave shape that produced the
@@ -330,9 +347,9 @@ $(BIN_HOSTGATE_BLINDADD): tools/fx-hostgate.c $(YYJSON_SRC)
 # build and require the silent allow (marker present, mis-joined allowed row
 # under call_A carrying call_B's args) — the asymmetry the per-item buffers
 # flip.
-$(BIN_HOSTGATE_SINGLEITEM): tools/fx-hostgate.c $(YYJSON_SRC)
+$(BIN_HOSTGATE_SINGLEITEM): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC)
 	@mkdir -p build
-	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_MUTANT_SINGLE_ITEM -o $@ tools/fx-hostgate.c $(YYJSON_SRC)
+	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_MUTANT_SINGLE_ITEM -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC)
 
 # P3-FIX OUTBOUND-SUBSTITUTION MUTATION BLIND (FH_MUTANT_NO_SUBSTITUTE): the
 # decode rewrite STAYS (name rewritten, nothing executes) while the outbound
@@ -340,9 +357,70 @@ $(BIN_HOSTGATE_SINGLEITEM): tools/fx-hostgate.c $(YYJSON_SRC)
 # leg.  The pending-substitution instrument must catch it by content: an
 # `unresolved-substitution` anomaly row in the log, while the dump still
 # carries the reserved name unrestored.
-$(BIN_HOSTGATE_NOSUBST): tools/fx-hostgate.c $(YYJSON_SRC)
+$(BIN_HOSTGATE_NOSUBST): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC)
 	@mkdir -p build
-	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_MUTANT_NO_SUBSTITUTE -o $@ tools/fx-hostgate.c $(YYJSON_SRC)
+	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_MUTANT_NO_SUBSTITUTE -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC)
+
+# ── P4 + P5 (the reserved-name contract and the justification) ──────────────
+#
+# The contract's FAILURE DIRECTION is a silent allow (a colliding reserved
+# name is CALLABLE), so the gate needs a build in which the collision is REAL:
+# FH_MUTANT_NO_NAME_CONTRACT removes the check, and the reserved name is
+# overridden to a CATALOG VERB — the proxy then starts and rewrites denied
+# calls to a name the verbs server answers.  The bad-charset and bad-pin arms
+# are overrides of the same source (a STATIC refusal has no mutation to make:
+# what is under test is that the proxy refuses, and the control is the mutant
+# that starts).
+$(BIN_HOSTGATE_NONAMECHECK): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC)
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_MUTANT_NO_NAME_CONTRACT -DFH_RESERVED_NAME='"fx_write"' -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC)
+
+# the same mutant with an UNPARSEABLE reserved name: the control for the
+# CHARSET arm — the check compiled out let the bad name go live, so the startup
+# refusal is what stands between it and the wire.
+$(BIN_HOSTGATE_NONAMEBAD): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC)
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_MUTANT_NO_NAME_CONTRACT -DFH_RESERVED_NAME='"fx host denied"' -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC)
+
+$(BIN_HOSTGATE_COLLIDE): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC)
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_RESERVED_NAME='"fx_write"' -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC)
+
+$(BIN_HOSTGATE_BADNAME): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC)
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_RESERVED_NAME='"fx host denied"' -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC)
+
+$(BIN_HOSTGATE_BADPIN): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC)
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_CATALOG_SHA256='"0000000000000000000000000000000000000000000000000000000000000000"' -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC)
+
+# P5's two half-mutations, each isolating one side of --require-justification:
+# NO_JUSTIFY_CHECK = the model is TOLD and the host IGNORES it (an unjustified
+# call crosses and EXECUTES); NO_TOOLS_INJECT = the host CHECKS a rule the
+# model was never told (the lane dies unjustified behind a protective record),
+# and the denial-rate instrument must make that shape visible.
+$(BIN_HOSTGATE_NOJUSTIFY): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC)
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_MUTANT_NO_JUSTIFY_CHECK -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC)
+
+$(BIN_HOSTGATE_NOTOOLS): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC)
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_MUTANT_NO_TOOLS_INJECT -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC)
+
+$(BIN_HOSTGATE_NODRATE): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC)
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_MUTANT_NO_DENIAL_RATE -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC)
+
+
+# P5's PRE-FIX CONTROL for the ARGUMENT MIRROR (FH_MUTANT_JUDGE_DONE_ARGS):
+# the judge reads the done event's own field instead of the argument
+# accumulator the guest dispatches — on a stream whose justification arrives
+# ONLY in the deltas (what a real provider sends) it denies an honest, fully
+# justified call: the dead-agent shape, loud only through the marker and the
+# denial-rate instrument.
+$(BIN_HOSTGATE_DONEARGS): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC)
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_MUTANT_JUDGE_DONE_ARGS -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC)
 
 .PHONY: test-hostgate
 

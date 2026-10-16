@@ -83,6 +83,33 @@
 #     log claims a denial.  A partial rewriter is an allow; the gate MUST
 #     catch it.
 #
+# P4 DIRECTION (stated up front): a NAME COLLISION is a SILENT ALLOW — a
+#   reserved name that matches a catalog verb is CALLABLE, and an allow-all
+#   lane dispatches it.  So P4 asserts a STARTUP REFUSAL (collision,
+#   unparseable name, stale catalog pin — each with a build of the SAME SOURCE
+#   where the check is absent and the proxy STARTS), and the collision arm
+#   MEASURES the silent allow end to end (marker + transcript + a log that
+#   claims a denial).  A provenance phase re-checks the proxy's pinned catalog
+#   against the VERBS[] table in tools/fx-verbs-server.c and against a pin
+#   restated here: two independent edits have to agree, so a future verb
+#   surfaces as a failure rather than as a collision later.
+#
+# P5 DIRECTION: `--require-justification` arms the tools injection (the model
+#   is TOLD what is required) AND the judgement (the host CHECKS it).  Its
+#   named failure shape is the DEAD AGENT: a schema the model cannot satisfy
+#   denies everything, nothing executes, and the logs look protective — so the
+#   gate asserts the DENIAL-RATE INSTRUMENT (per-turn rows, run aggregate, the
+#   loud 100%-denied line) reports that shape, and has its own mutation blind
+#   (FH_MUTANT_NO_DENIAL_RATE) to prove the report is load-bearing.  The
+#   judgement reads the ARGUMENT ACCUMULATOR the guest dispatches (the deltas,
+#   openai_responses.c:171-194) — a judge reading the done event's own field
+#   denies honest calls, so that misreading is pinned as a pre-fix control
+#   (FH_MUTANT_JUDGE_DONE_ARGS).  A justified call must still EXECUTE and the
+#   verb must receive the justification RIDING WITH THE CALL (the stub records
+#   the arguments it is handed): zero guest change, and the gate's
+#   differential probe re-verifies per-verb unknown-key tolerance against the
+#   REAL verbs server instead of trusting the source line.
+#
 # THE ARM/CONTROL PAIR THAT IS THE PROOF:
 #   CONTROL (no proxy): FX_CHARDEV at the marked canned fixture AS A REGULAR
 #     FILE — the offline arm's own shape (tools/stage-guest.sh host
@@ -123,6 +150,16 @@ GATENRW="$ROOT/build/fx-hostgate-norewrite"
 GATEADD="$ROOT/build/fx-hostgate-blindadd"
 GATESI="$ROOT/build/fx-hostgate-singleitem"
 GATENOS="$ROOT/build/fx-hostgate-nosubst"
+# P4/P5: the contract + justification builds, every one from the SAME source
+GATENONAME="$ROOT/build/fx-hostgate-nonamecheck"     # contract compiled out + a COLLIDING reserved name
+GATENONAMEBAD="$ROOT/build/fx-hostgate-nonamebad"    # contract compiled out + an UNPARSEABLE reserved name
+GATECOLLIDE="$ROOT/build/fx-hostgate-collide"        # reserved name = a catalog verb (real build: REFUSES)
+GATEBADNAME="$ROOT/build/fx-hostgate-badname"        # reserved name fails the guest's charset (REFUSES)
+GATEBADPIN="$ROOT/build/fx-hostgate-badpin"          # stale catalog pin (REFUSES)
+GATENOTOOLS="$ROOT/build/fx-hostgate-notools"        # the tools injection compiled out
+GATENOJUST="$ROOT/build/fx-hostgate-nojustify"       # the justification check compiled out
+GATENODRATE="$ROOT/build/fx-hostgate-nodrate"        # the denial-rate instrument compiled out
+GATEDONEARGS="$ROOT/build/fx-hostgate-doneargs"      # the judge reads the done event's field (pre-fix control)
 FIX="${FX_FIXTURE_DIR:-$ROOT/tests/fixtures}"
 MARKER="FX-GUEST-LOOP-OK-8f31"
 SENTINEL="hostgate-p1-probe"
@@ -145,10 +182,15 @@ fail() { echo "FAIL $*" >&2; exit 1; }
 [ -x "$GATEADD" ] || fail "phase 0: $GATEADD missing — run make first"
 [ -x "$GATESI" ] || fail "phase 0: $GATESI missing — run make first"
 [ -x "$GATENOS" ] || fail "phase 0: $GATENOS missing — run make first"
+for b in "$GATENONAME" "$GATENONAMEBAD" "$GATECOLLIDE" "$GATEBADNAME" "$GATEBADPIN" \
+         "$GATENOTOOLS" "$GATENOJUST" "$GATENODRATE" "$GATEDONEARGS"; do
+    [ -x "$b" ] || fail "phase 0: $b missing — run make first"
+done
 [ -f "$FIX/responses_simple.sse" ] || fail "phase 0: fixture $FIX/responses_simple.sse missing"
 [ -f "$FIX/responses_tool.sse" ] || fail "phase 0: fixture $FIX/responses_tool.sse missing"
 [ -f "$FIX/responses_interleaved.sse" ] || fail "phase 0: fixture $FIX/responses_interleaved.sse missing"
 [ -f "$FIX/responses_sequential.sse" ] || fail "phase 0: fixture $FIX/responses_sequential.sse missing"
+[ -f "$FIX/responses_justified.sse" ] || fail "phase 0: fixture $FIX/responses_justified.sse missing"
 
 TMP=$(mktemp -d)
 PROXIES=""
@@ -262,16 +304,21 @@ wait_for_slave() {
 }
 
 # wait_for_proxy_exit <pid> <errlog> — bounded reap; a hung proxy is a FAIL,
-# never a hang (the gate must always end).
+# never a hang (the gate must always end).  THE BOUND IS MEASURED, not chosen:
+# the OVERSIZE arms push an 17.8 MiB stream through a 4 KiB pty line discipline,
+# and draining it was measured at 11.4 s on this host — a 10 s bound made those
+# arms a race they could lose (they did, twice, under load, with the proxy
+# simply still writing).  40 s leaves room for that transfer and still fails a
+# proxy that is genuinely stuck.
 wait_for_proxy_exit() {
     local i=0
-    while kill -0 "$1" 2>/dev/null && [ "$i" -lt 100 ]; do # <= 10 s
+    while kill -0 "$1" 2>/dev/null && [ "$i" -lt 400 ]; do # <= 40 s
         sleep 0.1
         i=$((i + 1))
     done
     if kill -0 "$1" 2>/dev/null; then
         tail -5 "$2" >&2 || true
-        fail "the proxy (pid $1) did not exit within 10s — see log above"
+        fail "the proxy (pid $1) did not exit within 40s (the bound of the wait loop above) — see log above"
     fi
 }
 
@@ -1336,7 +1383,11 @@ frame = json.dumps({"model": "m", "stream": True,
                     "input": [{"type": "message", "role": "user", "content": "hi"}]})
 os.write(fd, f"{len(frame)}\n{frame}".encode())
 data = b""
-deadline = time.time() + 15
+# 60 s: the OVERSIZE arm's 17.8 MiB drain through the pty was MEASURED at
+# 11.4 s here, and a drain abandoned on a short deadline leaves the proxy
+# blocked in write() with nobody reading — a proxy "hang" that is the probe's
+# fault, not the proxy's.
+deadline = time.time() + 60
 while time.time() < deadline:
     try:
         r, _, _ = select.select([fd], [], [], 1)
@@ -1517,4 +1568,886 @@ grep -q "fx_write" "$RAW_CAP" \
     || fail "phase 25: the pre-fix control did NOT forward the denied name — the asymmetry arm is empty"
 echo "   OK oversize asymmetry: fixed arm refuses (0 bytes), pinned pre-fix control forwards fx_write verbatim under a false 'event skipped' note"
 
-echo "PASS hostgate: the transparent proxy is stream-transparent (arm == control), a mangling proxy is caught, the per-turn open/close mechanics hold through one proxy process, and the one log JOINS every answered call by call_id while REPORTING every call it could not join — the positive and negative directions both proven, a join compiled out flips the pass by content, and every model-controlled free-text field arrives MARKED (never silently truncated) while the join key renders verbatim — and (P3) a DENIED call's true name never crosses the chardev (not even as bytes), nothing executes (marker absent under the allow-all config), the denial reaches the model as the call's own result (restored name + denial text in the dumped outbound frame), the accepted direction still crosses VERBATIM and executes, the P2-era control and the added-event completeness mutant both DISPATCH and are caught by content"
+# ── P4: THE RESERVED-NAME CONTRACT ─────────────────────────────────────────
+#
+# P3 USED the reserved name; P4 makes its soundness CHECKED, and the DIRECTION
+# is what shapes every arm below: a reserved name that collides with a catalog
+# verb is CALLABLE (an allow-all lane dispatches it and the verbs server
+# answers) = a SILENT ALLOW.  A startup refusal is the only place that can be
+# loud, so each refusal arm is paired with a build of the SAME SOURCE in which
+# the check is absent and the proxy STARTS — the asymmetry is the proof, and
+# the collision arm measures the silent allow END TO END (marker + transcript),
+# not by argument.
+
+# ── P4/P5 helpers ───────────────────────────────────────────────────────────
+
+# make_args_stub <script> <marker> — the dispatch-recording stub for the
+# JUSTIFIED arm: for the KNOWN verb it records the RAW arguments it was handed
+# (the instrument for "the justification rode with the call, THROUGH the guest,
+# into the verb") and answers; anything else gets -32602 exactly as the real
+# verbs server refuses an unknown name (fx-verbs-server.c:2669-2674).
+make_args_stub() { # <script-path> <marker-path>
+    cat > "$1" <<PY
+#!/usr/bin/env python3
+# Records the arguments it RECEIVES, then answers — the riding key's witness.
+import json
+import sys
+
+MARKER = "$2"
+KNOWN = "get_weather"
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        req = json.loads(line)
+    except ValueError:
+        continue
+    m = req.get("method")
+    if m == "initialize":
+        print(json.dumps({"jsonrpc": "2.0", "id": req.get("id"), "result": {
+            "protocolVersion": req.get("params", {}).get("protocolVersion"),
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": "hostgate-args-stub", "version": "0"}}}),
+            flush=True)
+    elif m == "tools/call":
+        name = (req.get("params") or {}).get("name")
+        if name == KNOWN:
+            args = (req.get("params") or {}).get("arguments")
+            with open(MARKER, "a") as f:
+                f.write(json.dumps(args, sort_keys=True) + "\\n")
+            print(json.dumps({"jsonrpc": "2.0", "id": req.get("id"),
+                              "result": {"content": [{"type": "text",
+                                                      "text": "stub-ok-weather"}]}}),
+                  flush=True)
+        else:
+            print(json.dumps({"jsonrpc": "2.0", "id": req.get("id"),
+                              "error": {"code": -32602,
+                                        "message": "unknown tool: %s" % name}}),
+                  flush=True)
+PY
+    chmod +x "$1"
+}
+
+# proxy_roundtrip <gate> <upstream> <tag> [extra argv...] — start ONE gate
+# (bounded to a single turn), drive ONE request frame straight down the chardev,
+# drain the served stream, reap.  Leaves RT_RC (the gate's exit status), RT_CAP
+# (the SERVED bytes), RT_ERR (stderr), RT_LOG (the one log) and RT_DUMP (the
+# rewritten model-facing frame) for the caller.  No guest runs: the properties
+# asserted through it are the proxy's own (what it serves, what it records,
+# what it would forward), and each crafted stream is the guest's exact
+# accumulator shape.  The upstream is only ever READ — the probe writes its own
+# request frame, so FX_CHARDEV is never pointed at a fixture.
+proxy_roundtrip() {
+    local gate="$1" upstream="$2" tag="$3"
+    shift 3
+    local d="$TMP/rt-$tag"
+    mkdir -p "$d"
+    "$gate" --upstream "$upstream" --slave-file "$d/slave" --log "$d/log.jsonl" \
+        --dump-requests "$d/dump.jsonl" "$@" --turns 1 2> "$d/proxy.err" &
+    local p=$!
+    PROXIES="$PROXIES $p"
+    wait_for_slave "$d/slave" "$p" "$d/proxy.err"
+    local dev
+    dev=$(cat "$d/slave")
+    python3 - "$dev" "$d/cap.sse" <<'PY'
+import json, os, select, sys, time
+fd = os.open(sys.argv[1], os.O_RDWR | os.O_APPEND)
+frame = json.dumps({"model": "m", "stream": True,
+                    "input": [{"type": "message", "role": "user", "content": "hi"}]})
+os.write(fd, f"{len(frame)}\n{frame}".encode())
+data = b""
+# 60 s: the OVERSIZE arm's 17.8 MiB drain through the pty was MEASURED at
+# 11.4 s here, and a drain abandoned on a short deadline leaves the proxy
+# blocked in write() with nobody reading — a proxy "hang" that is the probe's
+# fault, not the proxy's.
+deadline = time.time() + 60
+while time.time() < deadline:
+    try:
+        r, _, _ = select.select([fd], [], [], 1)
+    except OSError:
+        break
+    if not r:
+        continue
+    try:
+        b = os.read(fd, 65536)
+    except OSError:
+        break  # master closed (refusal / exit): end of stream
+    if not b:
+        break
+    data += b
+    if b"response.completed" in data:
+        tail = time.time() + 1.0
+        while time.time() < tail:
+            try:
+                r, _, _ = select.select([fd], [], [], 0.5)
+            except OSError:
+                break
+            if not r:
+                break
+            try:
+                b = os.read(fd, 65536)
+            except OSError:
+                break
+            if not b:
+                break
+            data += b
+        break
+try:
+    os.close(fd)
+except OSError:
+    pass
+open(sys.argv[2], "wb").write(data)
+PY
+    wait_for_proxy_exit "$p" "$d/proxy.err"
+    wait "$p"
+    RT_RC=$?
+    RT_DIR="$d"
+    RT_CAP="$d/cap.sse"
+    RT_ERR="$d/proxy.err"
+    RT_LOG="$d/log.jsonl"
+    RT_DUMP="$d/dump.jsonl"
+}
+
+echo "== phase 26: P4 CATALOG PROVENANCE — the pinned mirror must equal the real VERBS[] table"
+# The gate's INDEPENDENT copy of the ground truth: the VERBS[] table in the
+# verbs server's own source (the proxy cannot read it at run time, and the
+# pinned list is only as good as the bytes it pins).  A verb added THERE
+# without re-pinning the proxy surfaces here, before it can become a silent
+# collision later.
+awk '/^static const Verb VERBS\[\] = \{/,/^\};/' "$ROOT/tools/fx-verbs-server.c" \
+    | grep -o '^    { "fx_[a-z_]*"' | sed 's/.*"\(fx_[a-z_]*\)"/\1/' > "$TMP/verbs-real.txt"
+nreal=$(wc -l < "$TMP/verbs-real.txt" | tr -d ' ')
+[ "$nreal" -ge 10 ] || fail "phase 26: extracted only $nreal verb(s) from tools/fx-verbs-server.c — the provenance check is not reading the table, so a pass here would be vacuous"
+"$GATE" --print-catalog > "$TMP/verbs-pinned.txt" || fail "phase 26: --print-catalog failed"
+if ! diff -u "$TMP/verbs-real.txt" "$TMP/verbs-pinned.txt" > "$TMP/verbs-drift.diff"; then
+    sed -n '1,14p' "$TMP/verbs-drift.diff" >&2
+    fail "phase 26: the proxy's pinned catalog DRIFTED from the VERBS[] table in tools/fx-verbs-server.c ($nreal verb(s) there) — the collision check would be checking a stale list"
+fi
+# THE PIN, restated in the gate as well: the proxy verifies this sha256 at
+# startup, and an edit to the catalog text without a re-pin now fails in TWO
+# places (the proxy refuses to start, and this constant).
+CATALOG_SHA_EXPECTED="6b97a08255734cfb5cead2e347a0197ce7582fd02d74b2a2e92327b74496bf7a"
+got=$("$GATE" --print-catalog-sha) || fail "phase 26: --print-catalog-sha failed"
+[ "$got" = "$CATALOG_SHA_EXPECTED" ] || fail "phase 26: the pinned catalog sha256 is $got, the gate expects $CATALOG_SHA_EXPECTED — the catalog was edited without re-pinning the gate"
+sha=$(sha256sum "$TMP/verbs-pinned.txt" | cut -d' ' -f1)
+[ "$sha" = "$CATALOG_SHA_EXPECTED" ] || fail "phase 26: sha256 of the printed catalog is $sha — the pin does not describe the printed bytes"
+# ... and the RESERVED NAME against the guest's own rule (src/runner.c:49-70),
+# asserted on the REAL build's startup contract line (phase 2's proxy ran it).
+grep -q 'P4 name contract: reserved name "fx_host_denied" passes' "$TMP/proxy1.err" \
+    || fail "phase 26: the real build printed no P4 name-contract line — the check did not run at startup"
+grep -q "collides with none of the $nreal pinned catalog verb(s)" "$TMP/proxy1.err" \
+    || fail "phase 26: the contract line does not name $nreal catalog verbs — the count it checked is not the table's"
+python3 - "$GATE" <<'PY'
+import re, subprocess, sys
+sha = subprocess.run([sys.argv[1], "--print-catalog-sha"], capture_output=True, text=True).stdout.strip()
+catalog = subprocess.run([sys.argv[1], "--print-catalog"], capture_output=True, text=True).stdout.split()
+assert len(catalog) == 13, catalog
+assert "fx_host_denied" not in catalog, "the reserved name IS a catalog verb"
+# the guest's rule, restated from src/runner.c:49-70: ^[A-Za-z0-9._-]+$, not '-'
+assert re.fullmatch(r"[A-Za-z0-9._-]+", "fx_host_denied"), "charset"
+assert not "fx_host_denied".startswith("-")
+assert re.fullmatch(r"[0-9a-f]{64}", sha), sha
+PY
+rc=$?
+[ "$rc" -eq 0 ] || fail "phase 26: the reserved name / catalog / pin properties do not hold (rc=$rc)"
+echo "   OK provenance: --print-catalog == the VERBS[] table in tools/fx-verbs-server.c ($nreal verbs, byte-identical), the pin describes those bytes, and fx_host_denied is no verb while passing the guest's charset"
+
+echo "== phase 27: P4 STARTUP REFUSALS — collision / unparseable name / stale pin, all LOUD and EARLY"
+# Every arm runs the real proxy with an override that makes the contract
+# FAIL, bounded by `timeout` (a build that fails to refuse would block on the
+# chardev forever — the gate must still end), and asserts the refusal happens
+# BEFORE the slave path is published: after that point the proxy is serving,
+# and a silent allow has already begun.
+refuse_arm() { # <bin> <tag> <stderr-substring-that-must-appear>
+    local bin="$1" tag="$2" want="$3"
+    # a separate statement: bash expands every word of a `local` declaration
+    # before assigning any of them, so `d="$TMP/p4-$tag"` in the SAME line is
+    # an unbound-variable error under `set -u`
+    local d="$TMP/p4-$tag"
+    mkdir -p "$d"
+    timeout 10 "$bin" --upstream "$TMP/upstream2.sse" --slave-file "$d/slave" \
+        --log "$d/log.jsonl" --turns 1 2> "$d/err"
+    local rc=$?
+    [ "$rc" -ne 0 ] || fail "phase 27 ($tag): the proxy STARTED (rc=$rc) — the refusal did not fire and the collision went live"
+    [ ! -e "$d/slave" ] || fail "phase 27 ($tag): the slave path was published BEFORE the refusal — a refusal that happens after serving is not early enough to be a gate"
+    grep -q "$want" "$d/err" || { sed -n '1,6p' "$d/err" >&2; fail "phase 27 ($tag): the refusal does not name its cause ('$want')"; }
+    echo "   OK p4-$tag: rc=$rc, no slave path published, stderr names the cause"
+}
+refuse_arm "$GATECOLLIDE" collide "COLLIDES with catalog verb \"fx_write\""
+refuse_arm "$GATEBADNAME" badname "does NOT match the guest"
+refuse_arm "$GATEBADPIN" badpin "compiled pin is 0000"
+
+echo "== phase 28: P4 COLLISION = SILENT ALLOW — the asymmetry, measured end to end"
+# build/fx-hostgate-nonamecheck is the SAME SOURCE with the contract compiled
+# out AND the reserved name overridden to the catalog verb fx_write: exactly
+# the collision the real build refuses at startup (phase 27).  This build
+# STARTS, and because the lane declares NO tool lists — ALLOW-ALL
+# (tool_policy.c:85-97) — the guest DISPATCHES the colliding "reserved" name
+# and the servers answer.  THAT is the silent allow, and the assertions are the
+# marker (it executed), the transcript (under which name), and the log (which
+# claims a denial while it happened).
+mkdir -p "$TMP/data-collide" "$TMP/cfg-collide"
+make_multi_stub "$TMP/mcp_multi28.py" "$TMP/marker28-weather" "$TMP/marker28-write"
+cat > "$TMP/cfg-collide/config.dhall" <<DHALL
+{ agents =
+  [ { name = "fx"
+    , agent_type = "agent"
+    , mcp_servers = [ { command = "$TMP/mcp_multi28.py", args = [] : List Text } ]
+    }
+  ]
+}
+DHALL
+# the ALLOW-ALL property is asserted, not assumed: no tool list anywhere in
+# this lane's config (a config that DID list fx_host_denied would refuse the
+# call in the guest and the arm would prove nothing about the collision).
+grep -q 'enabled_tools\|disabled_tools' "$TMP/cfg-collide/config.dhall" \
+    && fail "phase 28: the lane declares a tool list — it is not the ALLOW-ALL lane this arm is about"
+"$GATENONAME" --upstream "$TMP/upstream2.sse" --slave-file "$TMP/slave28" \
+    --log "$TMP/log-collide28.jsonl" --deny get_weather --turns 2 2> "$TMP/proxy28.err" &
+PROXY28=$!
+PROXIES="$PROXIES $PROXY28"
+wait_for_slave "$TMP/slave28" "$PROXY28" "$TMP/proxy28.err"
+DEV28=$(cat "$TMP/slave28")
+out=$(FX_CHARDEV="$DEV28" FX_AGENT_CONFIG_DIR="$TMP/cfg-collide" \
+    FX_AGENT_DATA="$TMP/data-collide" HOME="$TMP" \
+    "$BIN" -p "$SENTINEL" --agent fx --max-turns 2 --output text)
+rc=$?
+[ "$rc" -eq 0 ] || { sed -n '1,10p' "$TMP/proxy28.err" >&2; fail "phase 28: the no-contract run rc=$rc (the mutant must have started AND served)"; }
+wait_for_proxy_exit "$PROXY28" "$TMP/proxy28.err"
+grep -q 'COMPILED OUT (FH_MUTANT_NO_NAME_CONTRACT)' "$TMP/proxy28.err" \
+    || fail "phase 28: the build did not say the contract is compiled out — it is not the mutant this arm needs"
+grep -q 'authors armed' "$TMP/proxy28.err" || fail "phase 28: the proxy never reached its startup honesty lines (the refusal path, not the mutant, ran)"
+[ -f "$TMP/marker28-write" ] \
+    || fail "phase 28: the colliding reserved name fx_write did NOT execute — the arm did not reproduce the silent allow and proves nothing"
+[ ! -e "$TMP/marker28-weather" ] \
+    || fail "phase 28: the model's true call get_weather executed — the deny never fired (wrong arm)"
+TR=$(ls "$TMP"/data-collide/sessions/*/messages.jsonl 2>/dev/null)
+[ -f "$TR" ] || fail "phase 28: no guest transcript"
+n=$(pyq "$TR" "len([1 for r in rows for tc in (r.get('tool_calls') or []) if tc.get('name')=='fx_write'])")
+[ "$n" -ge 1 ] || fail "phase 28: the guest never dispatched the colliding name — nothing crossed"
+n=$(pyq "$TR" "len([1 for r in rows for tc in (r.get('tool_calls') or []) if tc.get('name')=='get_weather'])")
+[ "$n" -eq 0 ] || fail "phase 28: get_weather reached the accumulator — this is not the rewritten path"
+n=$(pyq "$TMP/log-collide28.jsonl" "len([r for r in rows if r.get('verdict')=='denied' and r.get('refusal_name')=='denied-by-denylist'])")
+[ "$n" -ge 1 ] || fail "phase 28: the log does not claim the denial — the arm is not 'the record looks protective while the colliding name executes'"
+echo "   OK collision asymmetry: the real build REFUSES (phase 27) while this one starts, the ALLOW-ALL lane dispatches the colliding fx_write (marker PRESENT), and the log claims denied — the silent allow, reproduced"
+# the UNPARSEABLE-name control: same mutant, the reserved name overridden to a
+# string the guest's validate_identifier rejects.  The real build refuses at
+# startup (phase 27); this build STARTS and publishes its slave path — i.e. the
+# startup refusal is the ONLY thing standing between that name and the wire.
+mkdir -p "$TMP/p4-charsetctl"
+"$GATENONAMEBAD" --upstream "$TMP/upstream2.sse" --slave-file "$TMP/p4-charsetctl/slave" \
+    --log "$TMP/p4-charsetctl/log.jsonl" --turns 1 2> "$TMP/p4-charsetctl/err" &
+PROXY28B=$!
+PROXIES="$PROXIES $PROXY28B"
+wait_for_slave "$TMP/p4-charsetctl/slave" "$PROXY28B" "$TMP/p4-charsetctl/err"
+kill "$PROXY28B" 2>/dev/null
+wait "$PROXY28B" 2>/dev/null
+echo "   OK charset asymmetry: with the check compiled out the unparseable reserved name goes LIVE (slave published) where the real build refuses"
+
+echo "== phase 29: P5 THE HOST INJECTS THE tools ARRAY (and the model being kept in ignorance is a mutant)"
+# The design property: the justification RIDES WITH THE CALL — which only works
+# if the model is TOLD to send one.  The guest sends NO tools array (MEASURED,
+# agent_loop.c:68-69), so the host owns it; --require-justification makes the
+# forwarded frame carry the pinned catalog with `justification` REQUIRED.
+# Asserted on the DUMPED frame (the object the proxy would send), and paired
+# with the injection compiled out: the same flag then denies calls the model
+# was never told to justify.
+proxy_roundtrip "$GATE" "$TMP/upstream2.sse" inject --require-justification --deny fx_write
+[ "$RT_RC" -eq 0 ] || fail "phase 29: the injection run exited rc=$RT_RC"
+python3 - "$RT_DUMP" "$TMP/verbs-pinned.txt" <<'PY'
+import json, sys
+frames = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
+assert frames, "no dumped frame"
+verbs = [v.strip() for v in open(sys.argv[2]) if v.strip()]
+f = frames[0]
+assert "tools" in f, "the forwarded frame carries NO tools array — the model is never told"
+tools = f["tools"]
+names = [t.get("name") for t in tools]
+assert names == verbs, f"the injected catalog != the pinned one: {names} vs {verbs}"
+for t in tools:
+    p = t["parameters"]
+    assert p["required"] == ["justification"], (t["name"], p.get("required"))
+    assert p["properties"]["justification"]["type"] == "string", t["name"]
+    assert t["type"] == "function"
+print(f"injected catalog: {len(tools)} tool(s), each requiring a string justification")
+PY
+rc=$?
+[ "$rc" -eq 0 ] || fail "phase 29: the forwarded request does not carry the pinned catalog with justification REQUIRED (rc=$rc)"
+proxy_roundtrip "$GATENOTOOLS" "$TMP/upstream2.sse" notools --require-justification
+[ "$RT_RC" -eq 0 ] || fail "phase 29: the no-injection control exited rc=$RT_RC"
+grep -q 'tools-array injection COMPILED OUT' "$RT_ERR" \
+    || fail "phase 29: the no-injection build did not say the injection is compiled out"
+n=$(pyq "$RT_DUMP" "len([1 for r in rows if 'tools' in r])")
+[ "$n" -eq 0 ] || fail "phase 29: the no-injection build STILL sent a tools array — the control is vacuous"
+n=$(pyq "$RT_LOG" "len([r for r in rows if r.get('verdict')=='denied' and r.get('refusal_name')=='absent-justification'])")
+[ "$n" -ge 1 ] || fail "phase 29: the no-injection build did not deny the unjustified call — the dead-agent shape needs BOTH halves (a check the model was never told about)"
+echo "   OK injection: the forwarded frame carries all 13 pinned verbs with justification REQUIRED, and the injection-compiled-out build sends none while still denying — the check the model was never told about"
+
+echo "== phase 30: P5 JUSTIFIED — the claim rides THROUGH the guest into the verb (zero guest change)"
+# responses_justified.sse is responses_tool.sse with the call's arguments
+# carrying a justification — delivered the way a REAL provider delivers
+# arguments: `arguments:""` in the added event, every byte in the DELTAS.  The
+# arm is end-to-end: the proxy must allow it (judging the accumulator the guest
+# will dispatch), the guest must dispatch it UNCHANGED, and the verb must
+# receive the justification RIDING WITH THE CALL — which is what makes the
+# front half of the claim (the model says why) real, and is also the evidence
+# that nothing needs stripping.
+mkdir -p "$TMP/data-just" "$TMP/cfg-just"
+cp "$FIX/responses_justified.sse" "$TMP/upstream-just.sse"
+make_args_stub "$TMP/mcp_args30.py" "$TMP/marker30"
+cat > "$TMP/cfg-just/config.dhall" <<DHALL
+{ agents =
+  [ { name = "fx"
+    , agent_type = "agent"
+    , mcp_servers = [ { command = "$TMP/mcp_args30.py", args = [] : List Text } ]
+    }
+  ]
+}
+DHALL
+"$GATE" --upstream "$TMP/upstream-just.sse" --slave-file "$TMP/slave30" \
+    --log "$TMP/log-just30.jsonl" --dump-requests "$TMP/dump-just30.jsonl" \
+    --require-justification --deny fx_write --turns 2 2> "$TMP/proxy30.err" &
+PROXY30=$!
+PROXIES="$PROXIES $PROXY30"
+wait_for_slave "$TMP/slave30" "$PROXY30" "$TMP/proxy30.err"
+DEV30=$(cat "$TMP/slave30")
+out=$(FX_CHARDEV="$DEV30" FX_AGENT_CONFIG_DIR="$TMP/cfg-just" \
+    FX_AGENT_DATA="$TMP/data-just" HOME="$TMP" \
+    "$BIN" -p "$SENTINEL" --agent fx --max-turns 2 --output text)
+rc=$?
+[ "$rc" -eq 0 ] || { sed -n '1,12p' "$TMP/proxy30.err" >&2; fail "phase 30: the justified run rc=$rc"; }
+wait_for_proxy_exit "$PROXY30" "$TMP/proxy30.err"
+wait "$PROXY30"
+prc=$?
+[ "$prc" -eq 0 ] || fail "phase 30: the proxy exited rc=$prc"
+[ -f "$TMP/marker30" ] || fail "phase 30: the marker is ABSENT — a call WITH a valid justification did not execute (the check denies honest calls)"
+grep -q '"justification"' "$TMP/marker30" \
+    || { cat "$TMP/marker30" >&2; fail "phase 30: the verb received no justification — the claim did not ride with the call through the guest"; }
+grep -q '"city"' "$TMP/marker30" || fail "phase 30: the verb did not receive the call's own arguments"
+TR=$(ls "$TMP"/data-just/sessions/*/messages.jsonl 2>/dev/null)
+[ -f "$TR" ] || fail "phase 30: no guest transcript"
+n=$(pyq "$TR" "len([1 for r in rows for tc in (r.get('tool_calls') or []) if tc.get('name')=='get_weather'])")
+[ "$n" -ge 1 ] || fail "phase 30: the true name did not cross for an ALLOWED call — transparency is broken"
+n=$(pyq "$TR" "len([1 for r in rows if r.get('role')=='tool' and r.get('content')=='stub-ok-weather'])")
+[ "$n" -ge 1 ] || fail "phase 30: the stub's result never reached the transcript"
+n=$(pyq "$TMP/log-just30.jsonl" "len([r for r in rows if r.get('call_id')=='$CALLID' and r.get('verdict')=='allowed' and r.get('author')=='denylist+justification'])")
+[ "$n" -ge 1 ] || fail "phase 30: no row records verdict=allowed with BOTH authors that ran (denylist+justification)"
+n=$(pyq "$TMP/log-just30.jsonl" "len([1 for r in rows if r.get('type')=='turn-stats' and r.get('allowed')>=1 and r.get('denied')==0])")
+[ "$n" -ge 1 ] || fail "phase 30: the denial-rate instrument shows no allowed turn — the positive direction of the instrument is missing"
+n=$(pyq "$TMP/dump-just30.jsonl" "len([r for r in rows if any(i.get('type')=='function_call_output' and isinstance(i.get('output'),str) and i['output'].startswith('(denied by host policy:') for i in r.get('input',[]))])")
+[ "$n" -eq 0 ] || fail "phase 30: a denial text crossed for a call that was NOT denied"
+echo "   OK justified: the call crossed and EXECUTED, and the verb received the call's justification RIDING WITH IT (arguments verbatim through the guest) — zero guest change"
+
+echo "== phase 31: P5 ABSENT JUSTIFICATION — DENIED BY NAME, and the denial reaches the model"
+# responses_tool.sse's call carries `{"city": "Paris"}` and no justification:
+# under --require-justification the host must refuse it BY NAME, and the TRUE
+# NAME must never cross — the P3 invariant, now driven by a refusal the host
+# makes for itself.  All the content assertions are the P3 ones, re-pointed.
+mkdir -p "$TMP/data-abs" "$TMP/cfg-abs"
+make_marker_stub "$TMP/mcp_marker31.py" "$TMP/marker31"
+cat > "$TMP/cfg-abs/config.dhall" <<DHALL
+{ agents =
+  [ { name = "fx"
+    , agent_type = "agent"
+    , mcp_servers = [ { command = "$TMP/mcp_marker31.py", args = [] : List Text } ]
+    }
+  ]
+}
+DHALL
+"$GATE" --upstream "$TMP/upstream2.sse" --slave-file "$TMP/slave31" \
+    --log "$TMP/log-abs31.jsonl" --dump-requests "$TMP/dump-abs31.jsonl" \
+    --require-justification --turns 2 2> "$TMP/proxy31.err" &
+PROXY31=$!
+PROXIES="$PROXIES $PROXY31"
+wait_for_slave "$TMP/slave31" "$PROXY31" "$TMP/proxy31.err"
+DEV31=$(cat "$TMP/slave31")
+out=$(FX_CHARDEV="$DEV31" FX_AGENT_CONFIG_DIR="$TMP/cfg-abs" \
+    FX_AGENT_DATA="$TMP/data-abs" HOME="$TMP" \
+    "$BIN" -p "$SENTINEL" --agent fx --max-turns 2 --output text)
+rc=$?
+[ "$rc" -eq 0 ] || { sed -n '1,12p' "$TMP/proxy31.err" >&2; fail "phase 31: the absent-justification run rc=$rc"; }
+wait_for_proxy_exit "$PROXY31" "$TMP/proxy31.err"
+wait "$PROXY31"
+prc=$?
+[ "$prc" -eq 0 ] || fail "phase 31: the proxy exited rc=$prc"
+[ ! -e "$TMP/marker31" ] || fail "phase 31: THE MARKER IS PRESENT — an unjustified call EXECUTED (fail-open)"
+TR=$(ls "$TMP"/data-abs/sessions/*/messages.jsonl 2>/dev/null)
+[ -f "$TR" ] || fail "phase 31: no guest transcript"
+n=$(pyq "$TR" "len([1 for r in rows for tc in (r.get('tool_calls') or []) if tc.get('name')=='fx_host_denied' and tc.get('id')=='$CALLID'])")
+[ "$n" -eq 1 ] || fail "phase 31: the transcript does not carry the call as the reserved name — the refusal did not take the P3 path"
+n=$(pyq "$TR" "len([1 for r in rows for tc in (r.get('tool_calls') or []) if tc.get('name')=='get_weather'])")
+[ "$n" -eq 0 ] || fail "phase 31: the TRUE NAME crossed into the guest for a refused call — THE INVARIANT IS BROKEN"
+n=$(pyq "$TR" "len([1 for r in rows if r.get('role')=='tool' and r.get('tool_call_id')=='$CALLID' and r.get('content')=='(tool call failed)'])")
+[ "$n" -eq 1 ] || fail "phase 31: the guest produced no sentinel for the refused call"
+n=$(pyq "$TMP/log-abs31.jsonl" "len([r for r in rows if r.get('call_id')=='$CALLID' and r.get('verdict')=='denied' and r.get('author')=='justification' and r.get('refusal_name')=='absent-justification' and isinstance(r.get('reason'),str) and 'DENIED BY NAME absent-justification' in r['reason']])")
+[ "$n" -ge 1 ] || fail "phase 31: no row carries verdict=denied with author=justification and refusal_name=absent-justification"
+n=$(pyq "$TMP/dump-abs31.jsonl" "len([r for r in rows if any(i.get('type')=='function_call' and i.get('call_id')=='$CALLID' and i.get('name')=='get_weather' for i in r.get('input',[]))])")
+[ "$n" -ge 1 ] || fail "phase 31: the OUTBOUND frame does not restore the true name — the model would see a call it never made (the EXISTING P3 substitution did not run)"
+n=$(pyq "$TMP/dump-abs31.jsonl" "len([r for r in rows if any(i.get('type')=='function_call_output' and i.get('call_id')=='$CALLID' and isinstance(i.get('output'),str) and i['output'].startswith('(denied by host policy:') and 'absent-justification' in i['output'] for i in r.get('input',[]))])")
+[ "$n" -ge 1 ] || fail "phase 31: the denial text never reached the model as the call's own result"
+n=$(pyq "$TMP/dump-abs31.jsonl" "len([1 for r in rows if 'fx_host_denied' in json.dumps(r.get('input',[]))])")
+[ "$n" -eq 0 ] || fail "phase 31: the reserved name survived into a model-facing frame"
+echo "   OK absent-justification: refused BY NAME through the existing P3 path (reserved name on the wire, nothing dispatched, the true name and the denial text restored on the outbound leg)"
+
+echo "== phase 31b: P5 THE DENIAL-RATE INSTRUMENT — the dead-agent shape is a NUMBER, not an inference"
+# THIS is the shape P5 can introduce and no other assertion can see: every call
+# denied, nothing executing, every line protective.  The instrument must report
+# it — per turn, and for the run — loudly.
+grep -q 'DENIAL RATE 100%' "$TMP/proxy31.err" \
+    || { grep -n 'call stats' "$TMP/proxy31.err" | head -3 >&2; fail "phase 31b: no 100%-denied line — the dead-agent shape is invisible on stderr"; }
+n=$(pyq "$TMP/log-abs31.jsonl" "len([1 for r in rows if r.get('type')=='turn-stats'])")
+[ "$n" -ge 1 ] || fail "phase 31b: no turn-stats row — the per-turn rate is missing from the record"
+n=$(pyq "$TMP/log-abs31.jsonl" "len([r for r in rows if r.get('type')=='turn-stats' and r.get('calls',0)>0 and r.get('denied')==r.get('calls') and r.get('denial_rate')==1.0 and r.get('denial_reasons',{}).get('absent-justification',0)>=1])")
+[ "$n" -ge 1 ] || fail "phase 31b: no turn-stats row reports calls==denied with a denial_rate of 1.0 and the absent-justification reason"
+n=$(pyq "$TMP/log-abs31.jsonl" "len([r for r in rows if r.get('type')=='proxy-exit' and r.get('calls_total',0)>0 and r.get('denied_total')==r.get('calls_total') and r.get('all_denied') is True])")
+[ "$n" -eq 1 ] || fail "phase 31b: the exit row carries no run aggregate (or does not say all_denied)"
+grep -q 'ALL [0-9]* call(s) DENIED' "$TMP/proxy31.err" \
+    || fail "phase 31b: the run-level all-denied line is missing"
+n=$(pyq "$TMP/log-abs31.jsonl" "len([1 for r in rows if r.get('type')=='turn-stats' and r.get('calls')==0 and r.get('denial_rate') is not None])")
+[ "$n" -eq 0 ] || fail "phase 31b: a call-free turn reports a denial_rate — a rate over an empty sample is a claim, not a measurement"
+echo "   OK instrument: per-turn turn-stats (calls/denied/allowed/rate/reasons) + the run aggregate + the loud 100%-denied and ALL-DENIED lines all report the dead-agent shape"
+
+echo "== phase 32: P5 MALFORMED JUSTIFICATION — denied by name, for each malformed shape"
+# The malformed class, on crafted streams (generated into $TMP — never the
+# shared fixtures): a justification that is not a string, one that is blank,
+# and arguments that are not an object at all.  Each must be refused BY NAME
+# and must not let the true name cross.  The streams are the guest's exact
+# accumulator shape (`arguments:""` in added, every byte in the DELTAS), so
+# what is judged is what the guest would dispatch.
+python3 - "$TMP" <<'PY'
+import json, os, sys
+d = sys.argv[1]
+def sse(events):
+    return "".join("event: %s\ndata: %s\n\n" % (e, p) for e, p in events)
+def stream(args_delta, item_id="item_M_1", call_id="call_M_0001"):
+    ev = []
+    ev.append(("response.output_item.added", json.dumps({
+        "type": "response.output_item.added",
+        "item": {"type": "function_call", "id": item_id, "status": "in_progress",
+                 "arguments": "", "call_id": call_id, "name": "get_weather"},
+        "output_index": 1, "sequence_number": 1})))
+    ev.append(("response.function_call_arguments.delta", json.dumps({
+        "type": "response.function_call_arguments.delta", "delta": args_delta,
+        "item_id": item_id, "output_index": 1, "sequence_number": 2})))
+    ev.append(("response.function_call_arguments.done", json.dumps({
+        "type": "response.function_call_arguments.done", "arguments": args_delta,
+        "item_id": item_id, "output_index": 1, "sequence_number": 3})))
+    ev.append(("response.output_item.done", json.dumps({
+        "type": "response.output_item.done",
+        "item": {"type": "function_call", "id": item_id, "status": "completed",
+                 "arguments": args_delta, "call_id": call_id, "name": "get_weather"},
+        "output_index": 1, "sequence_number": 4})))
+    ev.append(("response.completed", json.dumps({
+        "type": "response.completed", "response": {
+            "id": "p", "status": "completed", "output": []}})))
+    return sse(ev)
+open(os.path.join(d, "mal-num.sse"), "w").write(stream('{"city": "Paris", "justification": 42}'))
+open(os.path.join(d, "mal-blank.sse"), "w").write(stream('{"city": "Paris", "justification": "   "}'))
+open(os.path.join(d, "mal-notobj.sse"), "w").write(stream('["Paris"]'))
+open(os.path.join(d, "mal-null.sse"), "w").write(stream('{"city": "Paris", "justification": null}'))
+PY
+mal_arm() { # <tag> <stream> <expected-refusal-name> <expected-reason-substring>
+    local tag="$1" stream="$2" want="$3" why="$4"
+    proxy_roundtrip "$GATE" "$stream" "mal-$tag" --require-justification --deny fx_write
+    [ "$RT_RC" -eq 0 ] || fail "phase 32 ($tag): the proxy exited rc=$RT_RC"
+    grep -q 'fx_host_denied' "$RT_CAP" || fail "phase 32 ($tag): the reserved name never reached the served bytes"
+    grep -q 'get_weather' "$RT_CAP" && fail "phase 32 ($tag): the TRUE NAME crossed the chardev for a refused call"
+    n=$(pyq "$RT_LOG" "len([r for r in rows if r.get('call_id')=='call_M_0001' and r.get('verdict')=='denied' and r.get('author')=='justification' and r.get('refusal_name')=='$want' and '$why' in (r.get('reason') or '')])")
+    [ "$n" -ge 1 ] || { sed -n '1,3p' "$RT_LOG" >&2; fail "phase 32 ($tag): no row names the refusal $want with a reason containing '$why'"; }
+    echo "   OK malformed-$tag: denied BY NAME $want ($why); the true name never crossed"
+}
+mal_arm num "$TMP/mal-num.sse" malformed-justification "not a JSON string"
+mal_arm blank "$TMP/mal-blank.sse" malformed-justification "blank"
+mal_arm null "$TMP/mal-null.sse" malformed-justification "null"
+mal_arm notobj "$TMP/mal-notobj.sse" malformed-justification "not a JSON object"
+
+echo "== phase 33: P5 THE ARGUMENT MIRROR — the judge must read what the GUEST dispatches"
+# THE SHADOW OF THE WHOLE CHECK: a real provider sends arguments:"" in the
+# added event and EVERY byte in the deltas (openai_responses.c:171-194).  A
+# judge that read the done event's own `arguments` field would deny honest,
+# fully justified calls and look protective doing it.  The crafted stream
+# below is that provider's shape: the justification arrives ONLY in the deltas,
+# the done item's field is empty.  Fixed build: ALLOWED (and it executes).
+# Pre-fix control (build/fx-hostgate-doneargs, FH_MUTANT_JUDGE_DONE_ARGS):
+# DENIED absent-justification, with the instrument reporting the dead agent.
+python3 - "$TMP" <<'PY'
+import json, os, sys
+d = sys.argv[1]
+def sse(events):
+    return "".join("event: %s\ndata: %s\n\n" % (e, p) for e, p in events)
+ARGS = '{"city": "Paris", "justification": "the user asked for the weather in Paris"}'
+ev = []
+ev.append(("response.output_item.added", json.dumps({
+    "type": "response.output_item.added",
+    "item": {"type": "function_call", "id": "item_D_1", "status": "in_progress",
+             "arguments": "", "call_id": "call_D_0001", "name": "get_weather"},
+    "output_index": 1, "sequence_number": 1})))
+ev.append(("response.function_call_arguments.delta", json.dumps({
+    "type": "response.function_call_arguments.delta", "delta": ARGS,
+    "item_id": "item_D_1", "output_index": 1, "sequence_number": 2})))
+ev.append(("response.output_item.done", json.dumps({
+    "type": "response.output_item.done",
+    "item": {"type": "function_call", "id": "item_D_1", "status": "completed",
+             "arguments": "", "call_id": "call_D_0001", "name": "get_weather"},
+    "output_index": 1, "sequence_number": 3})))
+ev.append(("response.completed", json.dumps({
+    "type": "response.completed", "response": {"id": "p", "status": "completed", "output": []}})))
+open(os.path.join(d, "delta-only.sse"), "w").write(sse(ev))
+PY
+proxy_roundtrip "$GATE" "$TMP/delta-only.sse" mirror --require-justification --deny fx_write
+[ "$RT_RC" -eq 0 ] || fail "phase 33: the mirror arm exited rc=$RT_RC"
+grep -q 'get_weather' "$RT_CAP" \
+    || fail "phase 33: a fully justified call (justification delivered in the DELTAS, as a real provider sends it) was NOT allowed — the judge is not reading the guest's accumulator"
+grep -q 'fx_host_denied' "$RT_CAP" && fail "phase 33: the reserved name crossed for a call that should have been allowed"
+n=$(pyq "$RT_LOG" "len([r for r in rows if r.get('call_id')=='call_D_0001' and r.get('verdict')=='allowed'])")
+[ "$n" -ge 1 ] || fail "phase 33: no allowed row for the delta-delivered justification"
+n=$(pyq "$RT_LOG" "len([r for r in rows if r.get('call_id')=='call_D_0001' and isinstance(r.get('args'),str) and 'justification' in r['args']])")
+[ "$n" -ge 1 ] || fail "phase 33: the row does not record the accumulator's args — the record is not what was judged"
+echo "   OK mirror: a delta-delivered justification is ALLOWED and recorded"
+proxy_roundtrip "$GATEDONEARGS" "$TMP/delta-only.sse" doneargs --require-justification --deny fx_write
+[ "$RT_RC" -eq 0 ] || fail "phase 33: the pre-fix control exited rc=$RT_RC"
+grep -q 'fx_host_denied' "$RT_CAP" \
+    || fail "phase 33: the done-args-only control did NOT refuse — it is not the pre-fix behavior"
+grep -q 'get_weather' "$RT_CAP" && fail "phase 33: the pre-fix control let the true name cross"
+n=$(pyq "$RT_LOG" "len([r for r in rows if r.get('call_id')=='call_D_0001' and r.get('refusal_name')=='absent-justification'])")
+[ "$n" -ge 1 ] || fail "phase 33: the pre-fix control's refusal is not absent-justification — it is not the mirror defect"
+grep -q 'DENIAL RATE 100%' "$RT_ERR" \
+    || fail "phase 33: the control's dead-agent shape was not reported by the instrument"
+echo "   OK mirror asymmetry: the SAME stream, fully justified, is DENIED by a judge reading the done event's own field (marker/rows/instrument all flip) — the mirror is load-bearing"
+
+echo "== phase 34: P5 NO-JUSTIFICATION-CHECK MUTANT — the model was told and the host ignored it"
+# The other half of the check: with the justification check compiled out the
+# very same unjustified fixture that phase 31 refuses CROSSES AND EXECUTES.
+# The instrument cannot see this one (nothing was denied), which is exactly why
+# the marker is the instrument here — stated, not glossed.
+mkdir -p "$TMP/data-nojust" "$TMP/cfg-nojust"
+make_marker_stub "$TMP/mcp_marker34.py" "$TMP/marker34"
+cat > "$TMP/cfg-nojust/config.dhall" <<DHALL
+{ agents =
+  [ { name = "fx"
+    , agent_type = "agent"
+    , mcp_servers = [ { command = "$TMP/mcp_marker34.py", args = [] : List Text } ]
+    }
+  ]
+}
+DHALL
+"$GATENOJUST" --upstream "$TMP/upstream2.sse" --slave-file "$TMP/slave34" \
+    --log "$TMP/log-nojust34.jsonl" --require-justification --turns 2 2> "$TMP/proxy34.err" &
+PROXY34=$!
+PROXIES="$PROXIES $PROXY34"
+wait_for_slave "$TMP/slave34" "$PROXY34" "$TMP/proxy34.err"
+DEV34=$(cat "$TMP/slave34")
+out=$(FX_CHARDEV="$DEV34" FX_AGENT_CONFIG_DIR="$TMP/cfg-nojust" \
+    FX_AGENT_DATA="$TMP/data-nojust" HOME="$TMP" \
+    "$BIN" -p "$SENTINEL" --agent fx --max-turns 2 --output text)
+rc=$?
+[ "$rc" -eq 0 ] || { sed -n '1,12p' "$TMP/proxy34.err" >&2; fail "phase 34: the mutant run rc=$rc"; }
+wait_for_proxy_exit "$PROXY34" "$TMP/proxy34.err"
+[ -f "$TMP/marker34" ] \
+    || fail "phase 34: the marker is ABSENT — the mutant did not reproduce the fail-open; the phase-31 marker-absence would then prove nothing about the check"
+TR=$(ls "$TMP"/data-nojust/sessions/*/messages.jsonl 2>/dev/null)
+n=$(pyq "$TR" "len([1 for r in rows for tc in (r.get('tool_calls') or []) if tc.get('name')=='get_weather'])")
+[ "$n" -ge 1 ] || fail "phase 34: the mutant did not dispatch the true name — not the fail-open"
+n=$(pyq "$TMP/log-nojust34.jsonl" "len([r for r in rows if r.get('call_id')=='$CALLID' and r.get('verdict')=='allowed'])")
+[ "$n" -ge 1 ] || fail "phase 34: the mutant's record does not say allowed"
+echo "   OK no-justify-check asymmetry: an unjustified call EXECUTED under --require-justification while phase 31 refused the same fixture — the check is what stops it"
+
+echo "== phase 35: P5 NO-DENIAL-RATE MUTANT — the instrument compiled out is BLIND, and that is asserted"
+# The instrument's own mutation blind: the refusals still happen (same fixture,
+# same flag) but NOTHING in the record or on stderr says the lane is dead.  If
+# this phase passes, phase 31b's instrument is load-bearing rather than
+# decorative.
+proxy_roundtrip "$GATENODRATE" "$TMP/upstream2.sse" nodrate --require-justification --deny fx_write
+[ "$RT_RC" -eq 0 ] || fail "phase 35: the mutant exited rc=$RT_RC"
+grep -q 'fx_host_denied' "$RT_CAP" \
+    || fail "phase 35: the mutant did not refuse at all — the instrument arm is not isolating the instrument"
+n=$(pyq "$RT_LOG" "len([r for r in rows if r.get('verdict')=='denied' and r.get('refusal_name')=='absent-justification'])")
+[ "$n" -ge 1 ] || fail "phase 35: the denial is not in the record — the blindness arm depends on the denial happening"
+n=$(pyq "$RT_LOG" "len([1 for r in rows if r.get('type')=='turn-stats'])")
+[ "$n" -eq 0 ] || fail "phase 35: the mutant STILL emitted turn-stats rows"
+n=$(pyq "$RT_LOG" "len([1 for r in rows if r.get('type')=='proxy-exit' and 'calls_total' in r])")
+[ "$n" -eq 0 ] || fail "phase 35: the mutant STILL emitted the exit aggregate"
+grep -q 'DENIAL RATE 100%' "$RT_ERR" && fail "phase 35: the mutant still printed the 100%-denied line"
+grep -q 'ALL [0-9]* call(s) DENIED' "$RT_ERR" && fail "phase 35: the mutant still printed the run-level dead-agent line"
+grep -q 'denial-rate instrument: COMPILED OUT' "$RT_ERR" \
+    || fail "phase 35: the mutant does not say the instrument is compiled out (a silent blindness is not the mutant being pinned)"
+echo "   OK instrument asymmetry: identical refusals, and the dead-agent shape leaves NO trace in the record or on stderr — phase 31b's instrument is what makes it visible"
+
+echo "== phase 36: P5 ZERO GUEST CHANGE — every verb IGNORES the riding justification key (differential, against the REAL server)"
+# The design says the justification RIDES WITH THE CALL through the guest into
+# the verb, which is sound ONLY if no verb is strict about unknown argument
+# keys (fx-verbs-server.c:2548-2557 extracts arguments BY KEY).  That is a
+# source claim until it is measured, so this phase drives the REAL verbs server
+# twice per verb — with and without a riding `justification` key — and requires
+# BYTE-IDENTICAL replies, for all 13.  It also requires the probe ITSELF to be
+# able to fail: a third call mutating a MEANINGFUL argument must change the
+# reply, or the identical-with-and-without result would prove nothing (an
+# instrument that cannot disagree is not evidence).
+# If a verb ever becomes strict the gate fails HERE, and the remedy is
+# host-side — the host owns the wire and can STRIP the key — never a guest
+# change.  A missing server binary is a LOUD SKIP: a substitute would measure a
+# substitute.
+if [ ! -x "$ROOT/build/fx-verbs-server" ]; then
+    echo "   SKIP phase 36: build/fx-verbs-server is not built — the REAL verbs server is the oracle for this property and no stand-in may replace it"
+else
+python3 - "$ROOT" "$TMP/verbs-pinned.txt" <<'PY'
+import json, os, subprocess, sys
+root, verbs_file = sys.argv[1], sys.argv[2]
+server = os.path.join(root, "build", "fx-verbs-server")
+verbs = [v.strip() for v in open(verbs_file) if v.strip()]
+assert len(verbs) == 13, verbs
+# the probe's own sandbox: an empty root and no store, so every verb's reply is
+# a deterministic refusal/one-liner rather than a fact about this host.
+env = dict(os.environ)
+env["FX_VERB_ROOT"] = os.environ.get("FX_VERB_PROBE_ROOT", "/tmp/hostgate-verbs-probe-root")
+env["FX_RUN"] = "/tmp/hostgate-verbs-probe-run"
+env["PATH"] = "/usr/bin:/bin"
+env.pop("FX_AGENT_WRITABLE", None)
+env.pop("FX_AGENT_BUILDABLE", None)
+os.makedirs(env["FX_VERB_ROOT"], exist_ok=True)
+ARGS = {
+    "fx_query": {"relation": "generation"},
+    "fx_rollback": {"version": "1"},
+    "fx_what": {"target": "/x"},
+    "fx_why": {"package": "x"},
+    "fx_read": {"path": "/etc/hostname"},
+    "fx_write": {"path": env["FX_VERB_ROOT"] + "/w.txt", "content": "x"},
+    "fx_ls": {"path": "/"},
+    "fx_activate": {"config": "/x"},
+    "fx_build": {"package": "x"},
+}
+# a MEANINGFUL mutation per verb, for the can-this-probe-fail control
+MUTATE = {"fx_read": {"path": "/etc/does-not-exist-hostgate"},
+          "fx_ls": {"path": "/proc/1/fd"},
+          "fx_query": {"relation": "svc"},
+          "fx_write": {"path": env["FX_VERB_ROOT"] + "/other.txt", "content": "x"},
+          "fx_what": {"target": "/y"},
+          "fx_build": {"package": "y"}}
+def call(name, args):
+    inp = json.dumps({"jsonrpc": "2.0", "id": 0, "method": "initialize",
+                      "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                                 "clientInfo": {"name": "probe", "version": "0"}}}) + "\n"
+    inp += json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                       "params": {"name": name, "arguments": args}}) + "\n"
+    p = subprocess.run([server], input=inp, capture_output=True, text=True,
+                       env=env, timeout=30)
+    reps = [json.loads(l) for l in p.stdout.splitlines() if l.strip()]
+    r = [x for x in reps if x.get("id") == 1]
+    assert len(r) == 1, (name, p.stdout[:200], p.stderr[:200])
+    return json.dumps(r, sort_keys=True)
+bad = []
+for v in verbs:
+    base = dict(ARGS.get(v, {}))
+    with_j = dict(base, justification="the user asked for this; probe only")
+    a, b = call(v, base), call(v, with_j)
+    if a != b:
+        bad.append((v, a[:120], b[:120]))
+detectable = 0
+for v, mut in MUTATE.items():
+    if v not in verbs:
+        continue
+    base = dict(ARGS.get(v, {}))
+    if call(v, base) != call(v, dict(base, **mut)):
+        detectable += 1
+if bad:
+    for v, a, b in bad:
+        print("DIFFER %s\n  without: %s\n  with:    %s" % (v, a, b))
+    sys.exit("the riding justification key CHANGED %d verb reply/replies — a strict verb would need host-side stripping" % len(bad))
+assert detectable >= 1, ("the probe cannot detect ANY argument difference — its identical replies prove nothing", detectable)
+print("all %d verbs returned byte-identical replies with and without the riding "
+      "justification key; the probe can still detect a real argument change (%d verb(s) differ)"
+      % (len(verbs), detectable))
+PY
+rc=$?
+[ "$rc" -eq 0 ] || fail "phase 36: the riding justification key is not transparent to every verb (rc=$rc) — the host would have to strip it (host-side), never the guest"
+fi
+
+echo "== phase 37: P5 THE JUDGMENT SOURCE IS THE GUEST'S SOURCE — a justification the guest DROPS must not justify a call"
+# THE DEFECT THIS PHASE PINS (found by review AFTER the gate was green): the
+# judge's no-delta fallback read output_item.done's item.arguments — a field
+# the GUEST NEVER READS.  At that event the guest emits its accumulator AS-IS
+# (openai_responses.c:171-194; possibly empty) and its ONLY fallback is the
+# response.function_call_arguments.done EVENT.  So a stream carrying its
+# justification ONLY in the done item's field made the host record a justified
+# call and ALLOW it while the guest, its accumulator empty, dispatched the same
+# call with "{}" (the review reproduced that end-to-end: served bytes allowed,
+# row args carrying the justification, the verb receiving args={} — that
+# measurement is theirs, quoted; the served bytes below are this phase's).
+# The stream: added(arguments:"") -> NO deltas, NO arguments.done ->
+# output_item.done(item.arguments=<justified>) -> completed.
+# FIXED build: the accumulator is empty -> absent-justification -> the RESERVED
+# name on the wire.  Pre-fix control (build/fx-hostgate-doneargs,
+# FH_MUTANT_JUDGE_DONE_ARGS): reads the done item's field -> ALLOWS -> the TRUE
+# NAME crosses and the row claims a justification that never rode with a call.
+python3 - "$TMP" <<'PY'
+import json, os, sys
+d = sys.argv[1]
+def sse(events):
+    return "".join("event: %s\ndata: %s\n\n" % (e, p) for e, p in events)
+JUST = '{"city": "Paris", "justification": "the user asked for the weather in Paris"}'
+ev = []
+ev.append(("response.output_item.added", json.dumps({
+    "type": "response.output_item.added",
+    "item": {"type": "function_call", "id": "item_DO_1", "status": "in_progress",
+             "arguments": "", "call_id": "call_DO_0001", "name": "get_weather"},
+    "output_index": 1, "sequence_number": 1})))
+ev.append(("response.output_item.done", json.dumps({
+    "type": "response.output_item.done",
+    "item": {"type": "function_call", "id": "item_DO_1", "status": "completed",
+             "arguments": JUST, "call_id": "call_DO_0001", "name": "get_weather"},
+    "output_index": 1, "sequence_number": 2})))
+ev.append(("response.completed", json.dumps({
+    "type": "response.completed", "response": {"id": "p", "status": "completed", "output": []}})))
+open(os.path.join(d, "done-only.sse"), "w").write(sse(ev))
+# the NEVER-OPENED shape (item (b) of the same review): a done for an item
+# whose added NEVER arrived — the guest dispatches NOTHING (its accumulator is
+# fed only by added), so this is a refusal the host serves with no
+# function_call_output leg at all.
+ev2 = []
+ev2.append(("response.output_item.done", json.dumps({
+    "type": "response.output_item.done",
+    "item": {"type": "function_call", "id": "item_UN_1", "status": "completed",
+             "arguments": "{}", "call_id": "call_UN_0002", "name": "fx_write"},
+    "output_index": 1, "sequence_number": 1})))
+ev2.append(("response.completed", json.dumps({
+    "type": "response.completed", "response": {"id": "p", "status": "completed", "output": []}})))
+open(os.path.join(d, "unopened-done.sse"), "w").write(sse(ev2))
+# the OPEN-AT-COMPLETED shape (item (a)): a denied item still open when
+# completed arrives, so the deny map is seeded from the open item rather than
+# from a judgment — and completed's output array carries the item too.
+def fc_ov():
+    return {"type": "function_call", "id": "item_OV_1", "status": "in_progress",
+            "arguments": "", "call_id": "call_OV_0001", "name": "fx_write"}
+ev3 = [("response.output_item.added", json.dumps({
+        "type": "response.output_item.added",
+        "item": fc_ov(), "output_index": 1, "sequence_number": 1})),
+       ("response.completed", json.dumps({
+           "type": "response.completed", "response": {
+               "id": "p", "object": "response", "status": "completed",
+               "output": [fc_ov()]}}))]
+open(os.path.join(d, "raw-open37.sse"), "w").write(sse(ev3))
+PY
+proxy_roundtrip "$GATE" "$TMP/done-only.sse" doneonly --require-justification --deny fx_write
+[ "$RT_RC" -eq 0 ] || fail "phase 37: the fixed build exited rc=$RT_RC"
+grep -q 'fx_host_denied' "$RT_CAP" \
+    || fail "phase 37: a justification present ONLY in output_item.done's item field (a field the guest never reads) was NOT refused — the judge is not reading the guest's source"
+grep -q 'get_weather' "$RT_CAP" && fail "phase 37: the TRUE name crossed the chardev for a call the guest dispatches with no justification"
+n=$(pyq "$RT_LOG" "len([r for r in rows if r.get('call_id')=='call_DO_0001' and r.get('verdict')=='denied' and r.get('author')=='justification' and r.get('refusal_name')=='absent-justification'])")
+[ "$n" -ge 1 ] || { sed -n '1,3p' "$RT_LOG" >&2; fail "phase 37: no absent-justification row — the refusal is not the judgment-source refusal"; }
+n=$(pyq "$RT_LOG" "len([r for r in rows if r.get('call_id')=='call_DO_0001' and 'justification' not in (r.get('args') or '')])")
+[ "$n" -ge 1 ] || fail "phase 37: the row records the done item's field as the judged args — the record is not what the judge read"
+n=$(pyq "$RT_LOG" "len([1 for r in rows if r.get('type')=='turn-stats' and r.get('calls')==1 and r.get('denied')==1 and r.get('denial_rate')==1.0])")
+[ "$n" -ge 1 ] || fail "phase 37: the instrument did not report the refusal (1 call, 1 denied, rate 1.0)"
+echo "   OK done-only: judged on the EMPTY accumulator -> absent-justification, reserved name on the served bytes, and the row records the EMPTY args that were judged"
+proxy_roundtrip "$GATEDONEARGS" "$TMP/done-only.sse" doneonly-ctl --require-justification --deny fx_write
+[ "$RT_RC" -eq 0 ] || fail "phase 37: the pre-fix control exited rc=$RT_RC"
+grep -q 'get_weather' "$RT_CAP" \
+    || fail "phase 37: the done-args-only control did NOT let the true name cross — it is not the pre-fix behavior"
+grep -q 'fx_host_denied' "$RT_CAP" && fail "phase 37: the pre-fix control refused a stream it used to allow — the control is not the pre-fix judgment source"
+n=$(pyq "$RT_LOG" "len([r for r in rows if r.get('call_id')=='call_DO_0001' and r.get('verdict')=='allowed' and 'justification' in (r.get('args') or '')])")
+[ "$n" -ge 1 ] || fail "phase 37: the control's row does not claim a justification the guest never dispatched — the bypass is not reproduced"
+echo "   OK judgment-source asymmetry: the SAME bytes are DENIED by the fixed build (empty accumulator) and ALLOWED by the doneargs control, whose row claims a justification the guest drops — the bypass the review reproduced is now gated"
+# item (b): the never-opened-done refusal must be COUNTED (it wrote no row at
+# all before), or the denial-rate instrument reads its own blind spot as
+# "nothing happened" (calls=0, denial_rate=null).
+proxy_roundtrip "$GATE" "$TMP/unopened-done.sse" unopened --require-justification --deny fx_write
+[ "$RT_RC" -eq 0 ] || fail "phase 37: the never-opened arm exited rc=$RT_RC"
+grep -q 'fx_host_denied' "$RT_CAP" \
+    || fail "phase 37: the never-opened denied done was NOT rewritten — the true name crossed for a refused call"
+grep -q 'fx_write' "$RT_CAP" && fail "phase 37: the true name of a NEVER-OPENED denied item crossed the chardev"
+n=$(pyq "$RT_LOG" "len([r for r in rows if r.get('call_id')=='call_UN_0002' and r.get('verdict')=='denied' and r.get('refusal_name')=='denied-by-denylist'])")
+[ "$n" -ge 1 ] || fail "phase 37: the never-opened refusal wrote NO row — the denial-rate instrument is blind to this shape"
+n=$(pyq "$RT_LOG" "len([r for r in rows if r.get('type')=='turn-stats' and r.get('calls')==1 and r.get('denied')==1])")
+[ "$n" -ge 1 ] || fail "phase 37: the instrument did not count the never-opened refusal"
+n=$(pyq "$RT_LOG" "len([1 for r in rows if r.get('type')=='proxy-exit' and r.get('calls_total')==1 and r.get('denied_total')==1])")
+[ "$n" -ge 1 ] || fail "phase 37: the exit aggregate does not carry the never-opened refusal"
+echo "   OK never-opened-done: refused AND counted (row + turn-stats + exit aggregate), where it used to write no row at all"
+# item (a): the completed-with-open-item SEEDING used to store an EMPTY denial
+# text, and the leg that CONSUMES it is the outbound substitution for that
+# call_id in the NEXT request: an empty text puts a BLANK tool result in front
+# of the model.  The arm below drives exactly that leg (a raw two-frame client:
+# turn 1 leaves the denied item open at completed, turn 2 replays its
+# function_call_output) and reads the SUBSTITUTED output out of the dump.
+mkdir -p "$TMP/seed"
+"$GATE" --upstream "$TMP/raw-open37.sse" --slave-file "$TMP/seed/slave" \
+    --log "$TMP/seed/log.jsonl" --dump-requests "$TMP/seed/dump.jsonl" \
+    --deny fx_write --turns 2 2> "$TMP/seed/proxy.err" &
+PROXY37=$!
+PROXIES="$PROXIES $PROXY37"
+wait_for_slave "$TMP/seed/slave" "$PROXY37" "$TMP/seed/proxy.err"
+DEV37=$(cat "$TMP/seed/slave")
+python3 - "$DEV37" <<'PY'
+import json, os, select, sys, time
+fd = os.open(sys.argv[1], os.O_RDWR | os.O_APPEND)
+def frame(inp):
+    f = json.dumps({"model": "m", "stream": True, "input": inp})
+    os.write(fd, f"{len(f)}\n{f}".encode())
+def drain(deadline):
+    data = b""
+    while time.time() < deadline:
+        try:
+            r, _, _ = select.select([fd], [], [], 1)
+        except OSError:
+            break
+        if not r:
+            continue
+        try:
+            b = os.read(fd, 65536)
+        except OSError:
+            break
+        if not b:
+            break
+        data += b
+        if b"response.completed" in data:
+            tail = time.time() + 0.5
+            while time.time() < tail:
+                try:
+                    r, _, _ = select.select([fd], [], [], 0.5)
+                except OSError:
+                    break
+                if not r:
+                    break
+                try:
+                    b = os.read(fd, 65536)
+                except OSError:
+                    break
+                if not b:
+                    break
+                data += b
+            break
+    return data
+frame([{"type": "message", "role": "user", "content": "hi"}])
+drain(time.time() + 20)
+# turn 2: the refused call's own result, replayed under the SAME call_id
+frame([{"type": "message", "role": "user", "content": "hi"},
+       {"type": "function_call_output", "call_id": "call_OV_0001",
+        "output": "(tool call failed)"}])
+drain(time.time() + 20)
+os.close(fd)
+PY
+wait_for_proxy_exit "$PROXY37" "$TMP/seed/proxy.err"
+n=$(python3 - "$TMP/seed/dump.jsonl" <<'PY'
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
+outs = [it.get("output") for r in rows for it in (r.get("input") or [])
+        if it.get("type") == "function_call_output"
+        and it.get("call_id") == "call_OV_0001"]
+print(len([o for o in outs if o and "item never completed" in o]))
+PY
+)
+[ "$n" -ge 1 ] || fail "phase 37: the seeded denial text did not reach the outbound substitution — the model would see a BLANK tool result for the un-judged item"
+n=$(python3 - "$TMP/seed/dump.jsonl" <<'PY'
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
+outs = [it.get("output") for r in rows for it in (r.get("input") or [])
+        if it.get("type") == "function_call_output"
+        and it.get("call_id") == "call_OV_0001"]
+print(len([o for o in outs if o == ""]))
+PY
+)
+[ "$n" -eq 0 ] || fail "phase 37: an EMPTY denial text was substituted for the un-judged item's call_id (a blank tool result)"
+echo "   OK seeding: the completed-with-open-item refusal substitutes a REAL denial text (never an empty output) for that call_id's replay"
+
+echo "PASS hostgate: the transparent proxy is stream-transparent (arm == control) and a mangling proxy is caught; the per-turn open/close mechanics hold through one proxy process; the one log JOINS every answered call by call_id and REPORTS every call it could not join; a join compiled out flips the pass by content; every model-controlled free-text field arrives MARKED while the join key renders verbatim; the DECODE GATE holds the channel invariant for a denied call (the true name never crosses) in the presence of interleaves, duplicate/never-opened dones, open-at-completed items and over-cap streams, with a pinned pre-fix control for each; the RESERVED NAME is a CHECKED property (it passes the guest's charset, collides with no verb of a catalog pinned by sha256 and cross-checked against the verbs server's own table, and the proxy REFUSES TO START on a collision — while the same source with the check compiled out starts and DISPATCHES the colliding name: the silent allow); and the JUSTIFICATION is required in the injected tools schema, judged on the argument accumulator the guest actually dispatches (a done-args-only judge is pinned and caught), denied BY NAME through the existing substitution on the outbound leg, and REPORTED BY A DENIAL-RATE INSTRUMENT whose own compiled-out mutant leaves the dead-agent shape invisible"

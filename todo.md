@@ -1365,6 +1365,28 @@ judges it; **claim + verdict + outcome are one record** and the **disagreement**
       verbatim but **loudly** — safe, since name-only-at-`done` makes the guest dispatch nothing.
 - [ ] **P4** — the reserved-name contract (`fx_host_denied` passes `validate_identifier`, matches no verb,
       and the proxy REFUSES TO START on a collision). **P5** — justification + tools injection.
+- [x] **P4 + P5 LANDED** (**COMMITTED**). **P4:** a built-in **13-verb catalog** mirroring the real
+      `VERBS[]`, sha256-pinned, verified at startup with a mirror of the guest's `validate_identifier`
+      charset; `fh_catalog_check()` runs **first in `main`, before the slave path is published**, and
+      **refuses to start** on a collision — because a collision makes the "reserved" name **callable**,
+      which is a silent allow. *Orchestrator-verified by invoking:* the catalog is an **exact match** to
+      what the real `build/fx-verbs-server` advertises over `tools/list`, and the collision build exits
+      rc=1 naming the cause with no slave published. **P5:** `--require-justification` injects a `tools`
+      array (`required:["justification"]`) into the forwarded frame and judges each call on the
+      **delta-accumulated arguments**; absent/malformed → denied **by name** through the existing P3
+      rewrite + outbound substitution; plus a **denial-rate instrument** so "an effectively dead agent
+      whose logs read as protective" is *visible* rather than inferred.
+      **The review found a real bypass, reproduced end-to-end:** the judgment fell back to
+      `output_item.done`'s `item.arguments` — **a field the guest never reads** (its only fallback is the
+      `function_call_arguments.done` *event*, `openai_responses.c:171-180`) — so a crafted stream made the
+      host judge a call **justified** while the guest accumulated nothing. *Reproduced by the
+      orchestrator:* the pinned `doneargs` build crosses `get_weather` and records `allowed`, the fixed
+      build crosses `fx_host_denied` and records `denied`/`absent-justification`. The fix makes the host
+      judge exactly the accumulator the guest emits; **the orchestrator verified the mirroring line by
+      line** (`fx-hostgate.c:2074-2089` — deltas append in order, the `.done` event's `arguments` only
+      when no delta arrived — matching the guest), so the review's divergence was not traded for a new
+      one. The reviewer's verdict otherwise: **the name invariant is sound in every constructed shape**,
+      and the three earlier fail-opens remain closed.
 - [ ] **THE STATED RESIDUAL:** this closes the **tool-call channel** only — a root agent in the guest
       can still run things directly, outside any tool call (§6b: *auditing, not proofing*).
 - [x] **P1 — THE PROXY SKELETON / TRANSPARENCY** (`tools/fx-hostgate.c`, `tests/test_hostgate.sh`,
