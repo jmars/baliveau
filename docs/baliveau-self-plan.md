@@ -967,14 +967,43 @@ the host end that owns the model endpoint, the headers, the credential and one l
 and the denial message — so this is not a new subsystem bolted on, it is the piece the design already
 owed, now with a job.
 
-**THE OPEN DESIGN DECISION.** (a) **The loop stays in the guest**, and the host MARKS the verdict in
-the response it proxies, with the harness taking the path it already has (denied → return the result,
-do not dispatch): smallest change, and it preserves §8.7's *"the loop belongs INSIDE the guest"*
-correction. (b) **The host owns the loop** — the literal MCP topology (host as client, guest as MCP
-server): cleaner, no marking at all, but it moves the loop out of the guest, which §8.7 reversed once —
-though §8.7's reason was that the *vocabulary* is a fact in-guest, and under (b) EXECUTION stays
-in-guest, so that reason may no longer bite. **INTERPRETATION: take (a) first; (b) is a deliberate
-second step.**
+**THE DESIGN DECISION, SETTLED — and it is neither of the two options first put to the user.** Both
+earlier candidates are **REJECTED, and for the same reason: each leaves the *executor* as the governed
+component.**
+- (a) **REJECTED — UNSOUND, user 2026-10-14:** *"in that design there is nothing stopping the harness
+  from simply executing tool calls, the host has no say whatsoever."* The host would MARK a verdict and
+  the in-guest harness would decide. The host could annotate and afterwards detect; it could not
+  PREVENT.
+- (b) **REJECTED as an over-read.** The host does not take over the loop.
+
+**WHAT IT IS: THE HOST REWRITES THE DECODE STREAM AT THE BOUNDARY.** *"The host ALREADY owns the decode
+stream, since the model engine is on the host (or via an endpoint from the host)"* (user, 2026-10-14).
+The host inspects each `function_call` item in the decode **before it reaches the guest**, judges it, and
+either forwards it verbatim (**accepted** → the guest dispatches it exactly as today) or **replaces** it
+(**denied** → the harness's ordinary parse/dispatch never yields an execution). *"As far as the harness
+in the guest is concerned it looks like a normal decode stream"* — no special training, no schema
+change, no new protocol; **it is just MCP**.
+
+**MEASURED — THE HOST SEES BOTH LEGS.** `src/agent/fx_transport.c:57-85`: the guest writes its request
+(`<len>\n<json>`) and then READS on the **same fd**, so the host holds the outbound request *and* the
+return stream. That is what lets the denial reach the model as **the call's own result** — the property
+the user asked for (*"for rejections it should look like the response to the tool call was the denial"*)
+— without the guest synthesizing it.
+
+**MEASURED — THE GUEST-CHANGELESS REFUSAL ALREADY EXISTS.** `src/agent/tool_policy.c:85-97`:
+`tool_policy_allowed()` is a `'*'`-glob over the call's NAME, `disabled` wins, and **empty
+enabled/disabled lists are ALLOW-ALL**. `src/agent/agent_loop.c` `:770-830` takes that refusal to
+`"(tool disabled)"` **without dispatching**, keeping the invariant that every assistant tool_call gets a
+matching result. So a denied call can be made unexecutable by rewriting its *name* — **zero guest
+change**. **INTERPRETATION, NOT YET MEASURED:** that this rewrite is safe mid-stream, that the lane's
+config actually excludes the reserved name (an allow-all lane would defeat it silently), and what the
+guest's own transcript then records — all open, and the round-2 plan's business (`handoff-hostgate-plan2`).
+The alternatives — suppressing the call's items outright, or substituting prose — change *turn
+semantics* instead, and are likewise the plan's to settle.
+
+**THE RESIDUAL, STATED RATHER THAN HIDDEN.** This closes the **tool-call channel** only. A root agent in
+the guest can still run things directly, outside any tool call: that is §6b's lever, and the answer
+remains the record, the rollback and host-side observation (§6b: *auditing, not proofing*).
 
 ---
 

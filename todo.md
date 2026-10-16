@@ -1323,12 +1323,68 @@ judges it; **claim + verdict + outcome are one record** and the **disagreement**
       end that owns the model endpoint, the headers, the credential and one log is designed (§7.1a) but
       not built. It is the natural home for the model engine, the per-call policy, the record and the
       denial message.
-- [ ] **THE FIRST DESIGN DECISION**: (a) the loop stays in the guest and the host MARKS the verdict in
-      the response it proxies, the harness taking the path it already has — smallest, and it preserves
-      §8.7's *"the loop belongs INSIDE the guest"*; or (b) the host OWNS the loop (the literal MCP
-      topology: host as client, guest as MCP server) — cleaner, no marking, but it moves the loop out of
-      the guest (execution still stays in-guest, so §8.7's stated reason may no longer bite).
-      **Orchestrator recommendation: (a) first, (b) as a deliberate second step.**
+- [x] **THE DESIGN DECISION — SETTLED (user, 2026-10-14), and it is NEITHER of the two candidates
+      first put.** Both are **REJECTED**: (a) *the loop stays in the guest and the host MARKS the
+      verdict* is **UNSOUND** — user, verbatim: *"in that design there is nothing stopping the harness
+      from simply executing tool calls, the host has no say whatsoever"* (the host could annotate and
+      afterwards detect; it could not PREVENT — its executor would be the governed component); and (b)
+      *the host owns the loop* is an **over-read** — the host does not take over the loop.
+- [ ] **WHAT IT IS: THE HOST REWRITES THE DECODE STREAM AT THE BOUNDARY.** User: *"the host ALREADY
+      owns the decode stream, since the model engine is on the host (or via an endpoint from the
+      host)"* — *"the host can simply detect the model's outputted tool calls in the decode before they
+      even go into the harness in the guest and run the policy against them. Accepted ones go through
+      fine into the harness which executes them, rejected are replaced with a rejection response. As
+      far as the harness in the guest is concerned it looks like a normal decode stream."* **MEASURED:**
+      the host sees BOTH legs (`src/agent/fx_transport.c:57-85` — the guest writes its request and then
+      READS on the same fd), so the denial can reach the model as *the call's own result*.
+      **MEASURED:** the guest already refuses a call by NAME without dispatching
+      (`tool_policy.c:85-97` + `agent_loop.c:770-830` → `"(tool disabled)"`), and empty
+      enabled/disabled lists are **ALLOW-ALL** — so the guest-changeless form is a mid-stream NAME
+      rewrite, with the lane's config excluding the reserved name; an allow-all lane would defeat it
+      SILENTLY. The rewrite's mid-stream safety, the config pre-condition and what the guest's own
+      transcript then records are **open** — round-2 plan `handoff-hostgate-plan2`.
+- [x] **P3 — THE DECODE GATE (H2) + THE OUTBOUND SUBSTITUTION** (**UNCOMMITTED**; routed to `engineer`, the
+      soundness-critical slice). The invariant: **for a denied call the TRUE VERB NAME never crosses the
+      chardev into the guest** — args cross deliberately (they are the intent record), the `call_id`
+      crosses untouched (the join key). A denied call's `name` becomes `fx_host_denied` in every event
+      carrying it; on the guest's next request the host **restores** the true name and **replaces** that
+      call's `function_call_output` with the denial text. 25 gate phases; verified by orchestrator: 26 OK
+      / 0 FAIL, `make test` green, zero guest change.
+      **THE REVIEW FOUND A REPRODUCED SILENT ALLOW** — the exact class ranked first in the review brief.
+      `serve_stream` had a **single** open-item accumulator, so an **interleaved** second `function_call`
+      (`added(B)` before `done(A)`) was merged under A's identity, judged under A's (accepted) name, and
+      forwarded **verbatim**: the *denied* verb's true name crossed and **dispatched** — rc 0, logs
+      protective. Fixed by a **per-item** open-item list keyed by `item.id`, judged at its own `done`,
+      with `-DFH_MUTANT_SINGLE_ITEM` pinned as the pre-fix control. Round 2 confirmed **the class
+      closed** (8 crafted streams; ASAN/UBSAN/LSAN clean) and found three residual fail-opens from
+      `function_call` events **outside** the `added→done` window — `completed`'s array with an item still
+      open; `done` for a never-opened item / duplicate `done`; and an **oversize `added` served verbatim
+      under a false "event skipped" note** (the only one dispatchable by today's guest). All three fixed
+      and gated. *Reproduced independently by the orchestrator:* pre-fix serves `name: fx_write` on the
+      wire; fixed serves none. Stated residual: a stream-end flush of a held `added` still forwards it
+      verbatim but **loudly** — safe, since name-only-at-`done` makes the guest dispatch nothing.
+- [ ] **P4** — the reserved-name contract (`fx_host_denied` passes `validate_identifier`, matches no verb,
+      and the proxy REFUSES TO START on a collision). **P5** — justification + tools injection.
+- [ ] **THE STATED RESIDUAL:** this closes the **tool-call channel** only — a root agent in the guest
+      can still run things directly, outside any tool call (§6b: *auditing, not proofing*).
+- [x] **P1 — THE PROXY SKELETON / TRANSPARENCY** (`tools/fx-hostgate.c`, `tests/test_hostgate.sh`,
+      `Makefile`; **UNCOMMITTED**). Gate `make test-hostgate`; the arm/control pair is the transparency
+      proof. **MEASURED, AND IT CORRECTED THE PLAN:** the plan said `downstream=FIFO` — **a single FIFO
+      opened `O_RDWR` SELF-READS** (the guest consumes its own request frame; it parses as SSE with no
+      recognised events → synthesized `FINISH` → empty result at rc 0 — LOUD BUT FLAKY, and flaky is not
+      a transparency proof). A **PTY pair** is the faithful chardev stand-in (`lseek` → `ESPIPE`, exactly
+      what `fx_send_request` already ignores). Second measurement: **the pty ldisc buffer is 4096 B and a
+      proxy that EXITS drops kernel-staged bytes** — the guest sees a silent 4095-byte truncation
+      indistinguishable from EOF. *A close is a truncation channel.*
+- [x] **P2 — THE ONE LOG + THE JOIN** (**UNCOMMITTED**). One JSONL row per call, bounded, single writer;
+      joined by `call_id` against the guest's next request (`function_call_output`, no new channel).
+      Nine gate phases; **BOTH directions asserted** (a real two-turn run RESOLVES the call_id; an
+      unfireable join is REPORTED by call_id), so a join that never fires cannot pass. **NO `verdict`
+      field is emitted** — no policy has run, and a row saying `allowed` would be a claim wider than the
+      evidence. Two orchestrator findings were routed back and fixed: the bound was applied to only two
+      of four model-controlled fields (`true_name` landed at 2000 B unmasked — **proved by invoking**),
+      and the bound was **ungated**; now `call_id` (the join key) renders verbatim by decision, and the
+      over-long-field arm flips a clean pass to a fail (`-DFH_MUTANT_NO_BOUND`).
 
 ---
 
