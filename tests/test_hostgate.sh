@@ -94,6 +94,24 @@
 #   restated here: two independent edits have to agree, so a future verb
 #   surfaces as a failure rather than as a collision later.
 #
+# P6 DIRECTION: `--ops-policy-dir` arms THE OPERATOR as a real policy author
+#   (the second of the design's two authors) beside the P3 placeholder
+#   denylist, which STAYS.  The seat PORTS the in-guest ops evaluation
+#   (tools/fx-verbs-server.c:774-1573) — the PINS check, the alias table with
+#   the TWO-FORM pattern grammar (re-run at the new seat: an ambiguous glob
+#   refuses at startup, and the exact-vs-subtree semantics are executed), the
+#   per-call fact injection, the `denied` query and deny-more-only.  THE
+#   D1/D2 SPLIT IS DETERMINED FROM THE RULE TEXT and NAMED in the startup
+#   line: D1 (protected pathclass) is evaluated HERE; D2 (boot-verdict × the
+#   compiled-in floor) needs live in-guest state and stays IN-GUEST — the
+#   seat loads the artifact WHOLE but never injects `writable`/`boot_verdict`,
+#   so D2 is INERT BY CONSTRUCTION, and the seat says it has NO FLOOR of its
+#   own.  FAILURE DIRECTIONS pinned: a seat that does not deny what the pinned
+#   policy denies is FAIL-OPEN (the pre-fix control executes it); a seat that
+#   binds the floor it cannot see OVER-DENIES (the D2-bound control); a seat
+#   matching the RAW path against the pinned patterns is a SILENT ALLOW on the
+#   spellings the in-guest seat canonicalizes and refuses.
+#
 # P5 DIRECTION: `--require-justification` arms the tools injection (the model
 #   is TOLD what is required) AND the judgement (the host CHECKS it).  Its
 #   named failure shape is the DEAD AGENT: a schema the model cannot satisfy
@@ -160,6 +178,10 @@ GATENOTOOLS="$ROOT/build/fx-hostgate-notools"        # the tools injection compi
 GATENOJUST="$ROOT/build/fx-hostgate-nojustify"       # the justification check compiled out
 GATENODRATE="$ROOT/build/fx-hostgate-nodrate"        # the denial-rate instrument compiled out
 GATEDONEARGS="$ROOT/build/fx-hostgate-doneargs"      # the judge reads the done event's field (pre-fix control)
+# P6 (the operator author at the host seat), every one from the SAME source
+GATENOOPS="$ROOT/build/fx-hostgate-noops"            # the ops seat compiled out (PRE-FIX control, fail-open)
+GATEOPSFLOOR="$ROOT/build/fx-hostgate-opsfloor"      # the seat binds the floor fact it cannot see (D2-bound control)
+GATEOPSNOCANON="$ROOT/build/fx-hostgate-opsnocanon"  # raw path matching (canonicalization blind)
 FIX="${FX_FIXTURE_DIR:-$ROOT/tests/fixtures}"
 MARKER="FX-GUEST-LOOP-OK-8f31"
 SENTINEL="hostgate-p1-probe"
@@ -168,9 +190,11 @@ CALLID="call_00_DgJfXOD0j0bvOV7jB0tl0124"
 # the two calls the interleave/sequential fixtures carry (P3-fix)
 CALL_A="call_A_0001"  # get_weather
 CALL_B="call_B_0002"  # fx_write
-# the policy fields RESERVED for P3/P5 — their presence in a P2 row is a
-# claim wider than the evidence (no policy has run)
-POLICY_FIELDS="verdict allowed author refusal_name reason denial_text"
+# the policy fields RESERVED for P3/P5/P6 — their presence in a P2 row is a
+# claim wider than the evidence (no policy has run).  allow_scope (P6-fix) is
+# the ALLOWED row's own seat-scoped reading: it is a verdict field too, so a
+# row carrying it with NO policy behind it is the same over-claim.
+POLICY_FIELDS="verdict allowed author allow_scope refusal_name reason denial_text"
 
 fail() { echo "FAIL $*" >&2; exit 1; }
 
@@ -183,7 +207,8 @@ fail() { echo "FAIL $*" >&2; exit 1; }
 [ -x "$GATESI" ] || fail "phase 0: $GATESI missing — run make first"
 [ -x "$GATENOS" ] || fail "phase 0: $GATENOS missing — run make first"
 for b in "$GATENONAME" "$GATENONAMEBAD" "$GATECOLLIDE" "$GATEBADNAME" "$GATEBADPIN" \
-         "$GATENOTOOLS" "$GATENOJUST" "$GATENODRATE" "$GATEDONEARGS"; do
+         "$GATENOTOOLS" "$GATENOJUST" "$GATENODRATE" "$GATEDONEARGS" \
+         "$GATENOOPS" "$GATEOPSFLOOR" "$GATEOPSNOCANON"; do
     [ -x "$b" ] || fail "phase 0: $b missing — run make first"
 done
 [ -f "$FIX/responses_simple.sse" ] || fail "phase 0: fixture $FIX/responses_simple.sse missing"
@@ -221,7 +246,7 @@ PY
 # policy has run in this slice (the brief's most-repeated failure shape).
 assert_no_policy_fields() {
     local n
-    n=$(pyq "$1" "len([1 for r in rows for k in ('verdict','allowed','author','refusal_name','reason','denial_text') if k in r])") \
+    n=$(pyq "$1" "len([1 for r in rows for k in ('verdict','allowed','author','allow_scope','refusal_name','reason','denial_text') if k in r])") \
         || fail "a row of $1 does not parse as JSONL"
     [ "$n" -eq 0 ] || fail "$1 carries policy fields ($POLICY_FIELDS) — a verdict claim with no policy behind it"
 }
@@ -2450,4 +2475,541 @@ PY
 [ "$n" -eq 0 ] || fail "phase 37: an EMPTY denial text was substituted for the un-judged item's call_id (a blank tool result)"
 echo "   OK seeding: the completed-with-open-item refusal substitutes a REAL denial text (never an empty output) for that call_id's replay"
 
-echo "PASS hostgate: the transparent proxy is stream-transparent (arm == control) and a mangling proxy is caught; the per-turn open/close mechanics hold through one proxy process; the one log JOINS every answered call by call_id and REPORTS every call it could not join; a join compiled out flips the pass by content; every model-controlled free-text field arrives MARKED while the join key renders verbatim; the DECODE GATE holds the channel invariant for a denied call (the true name never crosses) in the presence of interleaves, duplicate/never-opened dones, open-at-completed items and over-cap streams, with a pinned pre-fix control for each; the RESERVED NAME is a CHECKED property (it passes the guest's charset, collides with no verb of a catalog pinned by sha256 and cross-checked against the verbs server's own table, and the proxy REFUSES TO START on a collision — while the same source with the check compiled out starts and DISPATCHES the colliding name: the silent allow); and the JUSTIFICATION is required in the injected tools schema, judged on the argument accumulator the guest actually dispatches (a done-args-only judge is pinned and caught), denied BY NAME through the existing substitution on the outbound leg, and REPORTED BY A DENIAL-RATE INSTRUMENT whose own compiled-out mutant leaves the dead-agent shape invisible"
+# ── P6: THE OPERATOR AUTHOR AT THE HOST SEAT ────────────────────────────────
+#
+# WHERE THE S1/S2 ARMS WENT, stated: tests/test_ops_policy.sh is the PIN-TIME
+# artifact gate (le compile, lint, alias checking, engine-level fact
+# derivation) and it stays UNTOUCHED and green — it is the artifact authority
+# and it has no proxy in it.  The property the brief names ("a rule that
+# DENIES in the artifact must DENY at the host seat, ON A REAL CALL") is
+# therefore MIRRORED here as phases 38-44, driven against the REAL
+# policy/ops/ artifacts through the REAL proxy and (where a call must execute)
+# through the REAL guest harness.  These phases are SELF-VERIFYING against
+# those artifacts and do not need test_ops_policy.sh to be re-pointed (which
+# would have made the artifact gate depend on the host binary and lose its
+# role as the independent authority).
+#
+# FAILURE DIRECTIONS, named per arm: a seat that does not deny what the pinned
+# policy denies is FAIL-OPEN (phase 40's control); a seat that binds the floor
+# it cannot see OVER-DENIES (phase 41's control); a seat that matches the RAW
+# path against the pinned patterns is a SILENT ALLOW on exactly the spellings
+# the in-guest seat refuses (phase 43's control); a seat whose startup line
+# does not NAME which rules are live would be a record claiming more than it
+# enforces (phase 38); and a seat that keeps acting on a policy whose every
+# rule is INERT here would claim an author that cannot refuse (phase 44's
+# D2-only arm, the branch the review found unpinned).
+#
+# AND THE RECORD'S OWN HONESTY (P6-fix, the review's SHOULD-FIX): an ALLOWED
+# row carries allow_scope — the seat-scoped reading ("no operator denial at
+# this seat; the in-guest floor and D2 still govern") — because the qualifier
+# used to live only in the TRANSIENT startup line while the one log is what a
+# reader sees AT REST.  A row that reads as a permission this seat never
+# grants is the over-claim this project keeps paying for, so phase 41 ASSERTS
+# the qualifier on the D2-bound allowed row instead of documenting it.
+
+OPS_DIR="$ROOT/policy/ops"
+
+# ops_stream <dest> <name> <path> <call-id> [<name> <path> <call-id>]... —
+# one or more function_calls in the real-provider shape: arguments:"" in added,
+# every byte in the DELTAS, the full args in arguments.done/item.done/
+# completed.  The delta delivery is load-bearing (P5's phase 33/37
+# discipline): the host judges the ACCUMULATOR, which is also what the guest
+# dispatches, so a stream carrying args only in the done item's own field
+# would be judged on empty arguments.
+ops_stream() { # <dest> <name> <path> <call-id> ...
+    python3 - "$@" <<'PY'
+import json, sys
+dest = sys.argv[1]
+triples = [tuple(sys.argv[i:i + 3]) for i in range(2, len(sys.argv), 3)]
+ev = []
+seq = 0
+completed = []
+for n, (name, path, cid) in enumerate(triples, start=1):
+    iid = "item_OP_%d" % n
+    args = json.dumps({"path": path})
+    def fc(status):
+        return {"type": "function_call", "id": iid, "status": status,
+                "arguments": args, "call_id": cid, "name": name}
+    seq += 1
+    ev.append(("response.output_item.added", json.dumps({
+        "type": "response.output_item.added",
+        "item": {"type": "function_call", "id": iid, "status": "in_progress",
+                 "arguments": "", "call_id": cid, "name": name},
+        "output_index": n, "sequence_number": seq})))
+    seq += 1
+    ev.append(("response.function_call_arguments.delta", json.dumps({
+        "type": "response.function_call_arguments.delta", "delta": args,
+        "item_id": iid, "output_index": n, "sequence_number": seq})))
+    seq += 1
+    ev.append(("response.function_call_arguments.done", json.dumps({
+        "type": "response.function_call_arguments.done", "arguments": args,
+        "item_id": iid, "output_index": n, "sequence_number": seq})))
+    seq += 1
+    ev.append(("response.output_item.done", json.dumps({
+        "type": "response.output_item.done", "item": fc("completed"),
+        "output_index": n, "sequence_number": seq})))
+    completed.append(fc("completed"))
+ev.append(("response.completed", json.dumps({
+    "type": "response.completed",
+    "response": {"id": "p", "status": "completed", "output": completed}})))
+open(dest, "w").write("".join("event: %s\ndata: %s\n\n" % (e, p) for e, p in ev))
+PY
+}
+
+# ops_guest_arm <gate> <upstream> <tag> <policy-dir> [extra argv...] — the
+# whole guest loop THROUGH the proxy with a two-verb dispatch-recording stub
+# (get_weather / fx_write, phase 28's discipline): the arm asserts on the
+# transcript, the dispatch MARKER, the dumped outbound frame and the log.
+# Exports OG_TR OG_LOG OG_DUMP OG_ERR OG_MW OG_MWW OG_RC.
+ops_guest_arm() {
+    local gate="$1" upstream="$2" tag="$3" pdir="$4"
+    shift 4
+    local data="$TMP/ops-data-$tag"
+    local cfg="$TMP/ops-cfg-$tag"
+    local mw="$TMP/ops-marker-$tag-write"
+    local mww="$TMP/ops-marker-$tag-weather"
+    mkdir -p "$data" "$cfg"
+    make_multi_stub "$TMP/ops-stub-$tag.py" "$mww" "$mw"
+    cat > "$cfg/config.dhall" <<DHALL
+{ agents =
+  [ { name = "fx"
+    , agent_type = "agent"
+    , mcp_servers = [ { command = "$TMP/ops-stub-$tag.py", args = [] : List Text } ]
+    }
+  ]
+}
+DHALL
+    "$gate" --upstream "$upstream" --slave-file "$TMP/ops-slave-$tag" \
+        --log "$TMP/ops-log-$tag.jsonl" --dump-requests "$TMP/ops-dump-$tag.jsonl" \
+        --ops-policy-dir "$pdir" "$@" --turns 2 2> "$TMP/ops-err-$tag" &
+    local p=$!
+    PROXIES="$PROXIES $p"
+    wait_for_slave "$TMP/ops-slave-$tag" "$p" "$TMP/ops-err-$tag"
+    local dev
+    dev=$(cat "$TMP/ops-slave-$tag")
+    FX_CHARDEV="$dev" FX_AGENT_CONFIG_DIR="$cfg" \
+    FX_AGENT_DATA="$data" HOME="$TMP" \
+        "$BIN" -p "$SENTINEL" --agent fx --max-turns 2 --output text \
+        > "$TMP/ops-stdout-$tag" 2> "$TMP/ops-guesterr-$tag"
+    OG_RC=$?
+    wait_for_proxy_exit "$p" "$TMP/ops-err-$tag"
+    OG_TR=$(ls "$data"/sessions/*/messages.jsonl 2>/dev/null)
+    OG_LOG="$TMP/ops-log-$tag.jsonl"
+    OG_DUMP="$TMP/ops-dump-$tag.jsonl"
+    OG_ERR="$TMP/ops-err-$tag"
+    OG_MW="$mw"
+    OG_MWW="$mww"
+}
+
+# ops_repin <dir> — recompute PINS for ops-aliases.tsv and ops-policy.dl in a
+# COPY of the policy dir, so a mutated table is a VALID pinned release: the
+# arm then tests the seat's check, not the pin's refusal.
+ops_repin() {
+    local d="$1"
+    local tsv sha_dl sha_lex
+    tsv=$(sha256sum "$d/ops-aliases.tsv" | cut -d' ' -f1)
+    sha_dl=$(sha256sum "$d/ops-policy.dl" | cut -d' ' -f1)
+    sha_lex=$(sha256sum "$d/ops-lexicon.ini" | cut -d' ' -f1)
+    grep -v '^ops-aliases.tsv' "$d/PINS" | grep -v '^ops-policy.dl' \
+        | grep -v '^ops-lexicon.ini' > "$d/PINS.new"
+    printf 'ops-lexicon.ini\t%s\nops-policy.dl\t%s\nops-aliases.tsv\t%s\n' \
+        "$sha_lex" "$sha_dl" "$tsv" >> "$d/PINS.new"
+    mv "$d/PINS.new" "$d/PINS"
+}
+
+echo "== phase 38: P6 THE SEAT'S STARTUP LINE NAMES THE D1/D2 SPLIT (and the floor it does NOT have)"
+# (a) THE SPLIT IS READ OUT OF THE ARTIFACT, not asserted from a plan: the two
+# rules of policy/ops/ops-policy.dl are quoted here and must appear verbatim,
+# and the C seat this seat ports must be consulted from EXACTLY ONE commit
+# site, inside native_write — the provenance of the pinned write-verb set.
+r1='denied(W1, P1) :- touches(W1, P1), kind(W1, write), class(P1, C1), protected(C1).'
+r2='denied(W1, P1) :- touches(W1, P1), kind(W1, write), writable(P1), !boot_verdict(ok).'
+grep -qF "$r1" "$OPS_DIR/ops-policy.dl" \
+    || fail "phase 38: the pinned artifact does not carry D1 as the rule text read here"
+grep -qF "$r2" "$OPS_DIR/ops-policy.dl" \
+    || fail "phase 38: the pinned artifact does not carry D2 as the rule text read here"
+n=$(grep -c '!ops_write_allowed(' "$ROOT/tools/fx-verbs-server.c")
+[ "$n" -eq 1 ] || fail "phase 38: the in-guest ops seat has $n commit sites, not one — the write-verb set pinned in the proxy may be incomplete"
+csite=$(grep -n '!ops_write_allowed(' "$ROOT/tools/fx-verbs-server.c" | cut -d: -f1)
+ndef=$(grep -n '^static int native_write' "$ROOT/tools/fx-verbs-server.c" | cut -d: -f1)
+[ -n "$ndef" ] && [ "$csite" -gt "$ndef" ] \
+    || fail "phase 38: the single ops commit site is not inside native_write (def=$ndef call=$csite) — the write-verb provenance is wrong"
+nxt=$(awk -v s="$ndef" 'NR>s && /^static /{print NR; exit}' "$ROOT/tools/fx-verbs-server.c")
+[ "$csite" -lt "$nxt" ] || fail "phase 38: the ops commit site ($csite) is not inside native_write (which ends at $nxt)"
+echo "   OK split source: the artifact's own D1/D2 lines are quoted; the in-guest seat has ONE commit site, inside native_write (line $csite) — the pinned write-verb set's provenance"
+# (b) the STARTUP LINE, on the real build with the real dir: it names D1 live,
+# D2 inert WITH ITS REASON, and states the floor is in-guest only.  Nothing is
+# driven — the proxy is started bounded and reaped.
+mkdir -p "$TMP/p6-start"
+"$GATE" --upstream "$TMP/upstream2.sse" --slave-file "$TMP/p6-start/slave" \
+    --log "$TMP/p6-start/log.jsonl" --ops-policy-dir "$OPS_DIR" --turns 1 \
+    2> "$TMP/p6-start/err" &
+P6S=$!
+PROXIES="$PROXIES $P6S"
+wait_for_slave "$TMP/p6-start/slave" "$P6S" "$TMP/p6-start/err"
+kill "$P6S" 2>/dev/null
+wait "$P6S" 2>/dev/null
+for want in "1 LIVE at this seat (D1)" "INERT AT THIS SEAT (D2)" \
+            "boot_verdict" "never injects writable" "THE FLOOR" \
+            "enforced IN-GUEST ONLY" "has NO floor of its own"; do
+    grep -qF "$want" "$TMP/p6-start/err" \
+        || { sed -n '1,8p' "$TMP/p6-start/err" >&2; fail "phase 38: the startup line does not name '$want' — the seat does not say what it does and does not enforce"; }
+done
+grep -qF "authors armed = ops" "$TMP/p6-start/err" \
+    || fail "phase 38: the honesty line does not name the ops author as armed"
+echo "   OK startup line: D1 named LIVE, D2 named INERT with its reason (writable/boot_verdict), the floor stated as IN-GUEST ONLY and explicitly NOT held here"
+# (c) the NAMED no-policy state: with no --ops-policy-dir the seat says so,
+# and the proxy still starts (a per-seat state, never an error).
+mkdir -p "$TMP/p6-nopol"
+"$GATE" --upstream "$TMP/upstream2.sse" --slave-file "$TMP/p6-nopol/slave" \
+    --log "$TMP/p6-nopol/log.jsonl" --turns 1 2> "$TMP/p6-nopol/err" &
+P6N=$!
+PROXIES="$PROXIES $P6N"
+wait_for_slave "$TMP/p6-nopol/slave" "$P6N" "$TMP/p6-nopol/err"
+kill "$P6N" 2>/dev/null
+wait "$P6N" 2>/dev/null
+grep -qF "ops-policy: NONE" "$TMP/p6-nopol/err" \
+    || fail "phase 38: with no policy dir the seat does not name its state"
+echo "   OK no-policy state: named once, not an error"
+
+echo "== phase 39: P6 D1 DENIES AT THE HOST SEAT — a real call, the P3 invariant intact"
+# THE RE-POINTED PROPERTY: the rule that DENIES in the pinned artifact denies
+# at the host seat on a real call.  /fx/disk/agent-config.dhall is the
+# Agentconfig row's EXACT pattern, protected=yes, so D1 fires.  Everything is
+# asserted by CONTENT (the run exits 0 in every arm, the log looks protective
+# in every arm).
+ops_stream "$TMP/ops-protected.sse" fx_write "/fx/disk/agent-config.dhall" call_OP_0001
+ops_guest_arm "$GATE" "$TMP/ops-protected.sse" protected "$OPS_DIR"
+[ "$OG_RC" -eq 0 ] || { sed -n '1,10p' "$OG_ERR" >&2; fail "phase 39: the guest run rc=$OG_RC"; }
+[ -f "$OG_TR" ] || fail "phase 39: no guest transcript — the arm is not the real scenario"
+# (a) THE CHANNEL INVARIANT holds for an OPS denial too
+n=$(pyq "$OG_TR" "len([1 for r in rows for tc in (r.get('tool_calls') or []) if tc.get('name')=='fx_host_denied' and tc.get('id')=='call_OP_0001'])")
+[ "$n" -eq 1 ] || fail "phase 39: the transcript does not carry the call as fx_host_denied — the ops denial did not take the rewrite path"
+n=$(pyq "$OG_TR" "len([1 for r in rows for tc in (r.get('tool_calls') or []) if tc.get('name')=='fx_write'])")
+[ "$n" -eq 0 ] || fail "phase 39: THE TRUE NAME fx_write reached the guest as a call name — the invariant is broken for an ops denial"
+n=$(pyq "$OG_TR" "len([1 for r in rows if r.get('role')=='tool' and r.get('tool_call_id')=='call_OP_0001' and r.get('content')=='(tool call failed)'])")
+[ "$n" -eq 1 ] || fail "phase 39: the guest's sentinel for the reserved name is missing — the structural backstop did not run"
+# (b) nothing executed
+[ ! -e "$OG_MW" ] || fail "phase 39: THE fx_write MARKER IS PRESENT — a call the operator policy denies EXECUTED"
+# (c) the outbound leg carries the truth
+n=$(pyq "$OG_DUMP" "len([r for r in rows if any(i.get('type')=='function_call' and i.get('call_id')=='call_OP_0001' and i.get('name')=='fx_write' for i in r.get('input',[]))])")
+[ "$n" -ge 1 ] || fail "phase 39: the dumped frame does not RESTORE the true name for the denied call"
+n=$(pyq "$OG_DUMP" "len([r for r in rows if any(i.get('type')=='function_call_output' and i.get('call_id')=='call_OP_0001' and isinstance(i.get('output'),str) and i['output'].startswith('(denied by host policy:') for i in r.get('input',[]))])")
+[ "$n" -ge 1 ] || fail "phase 39: the denial text did not reach the model as the call's own result"
+# (d) the log row names the REAL author, the by-name refusal and the rule
+n=$(pyq "$OG_LOG" "len([r for r in rows if r.get('call_id')=='call_OP_0001' and r.get('verdict')=='denied' and r.get('author')=='ops' and r.get('refusal_name')=='denied-by-ops' and 'rule D1' in (r.get('reason') or '') and '/fx/disk/agent-config.dhall' in (r.get('reason') or '') and (r.get('denial_text') or '').startswith('(denied by host policy:')])")
+[ "$n" -ge 1 ] || { sed -n '1,3p' "$OG_LOG" >&2; fail "phase 39: no row carries verdict=denied author=ops refusal_name=denied-by-ops with the FIRED RULE D1 and the path"; }
+echo "   OK D1 at the host seat: fx_host_denied on the wire (never fx_write), NO dispatch, the restored name + denial text on the outbound leg, and a row naming author=ops rule D1"
+# NO LATCH: the per-call facts are injected and RETRACTED per call (the in-guest
+# seat's collect-then-mutate discipline; its own comment claims the retraction
+# also retracts the DERIVED rows, so nothing latches).  A seat that latched
+# would OVER-DENY — the second, unprotected call in the SAME pass would be
+# denied by the first call's materialized rows — so the property is MEASURED,
+# not assumed: one pass, two calls, DIFFERENT verdicts.
+ops_stream "$TMP/ops-two.sse" fx_write "/fx/disk/agent-config.dhall" call_OP_L1 \
+    fx_write "/fx/disk/agent-data" call_OP_L2
+proxy_roundtrip "$GATE" "$TMP/ops-two.sse" opslatch --ops-policy-dir "$OPS_DIR"
+[ "$RT_RC" -eq 0 ] || fail "phase 39: the no-latch arm exited rc=$RT_RC"
+grep -q 'fx_host_denied' "$RT_CAP" \
+    || fail "phase 39: the protected call was not denied in the two-call pass"
+grep -q 'fx_write' "$RT_CAP" \
+    || fail "phase 39: the UNPROTECTED call was denied too — the per-call facts LATCH (an over-deny): the first call's materialized rows survived its retraction"
+n=$(pyq "$RT_LOG" "len([r for r in rows if r.get('call_id')=='call_OP_L1' and r.get('verdict')=='denied' and r.get('author')=='ops'])")
+[ "$n" -eq 1 ] || fail "phase 39: no denied row for the protected call"
+n=$(pyq "$RT_LOG" "len([r for r in rows if r.get('call_id')=='call_OP_L2' and r.get('verdict')=='allowed'])")
+[ "$n" -eq 1 ] || fail "phase 39: no allowed row for the unprotected call — the record does not show the two different verdicts"
+echo "   OK no latch: in ONE pass the protected call is denied and the unprotected call is allowed — the per-call facts (and the rows derived from them) are retracted, so a denial does not leak onto the next call"
+
+echo "== phase 40: P6 PRE-FIX CONTROL — FAIL-OPEN (the seat compiled out)"
+# The SAME stream and the SAME pinned policy dir on build/fx-hostgate-noops:
+# the seat does not exist, so the call crosses VERBATIM and EXECUTES.  That is
+# the asymmetry — phase 39's marker-absence and rewrite are the seat's doing,
+# not the scenario's — and it is the FAIL-OPEN direction the brief names.
+# WHY THE CONTROL IS A MUTANT BUILD AND NOT THE PRE-CHANGE BINARY (MEASURED,
+# not assumed): HEAD's tools/fx-hostgate.c has no --ops-policy-dir option at
+# all, so the P3-era binary REFUSES the flag outright — `FATAL: unknown/
+# incomplete argument '--ops-policy-dir'`, exit 2, NO slave path published —
+# and would run none of this scenario.  The seat compiled out of the SAME
+# source is therefore the only build in which the pre-seat behavior on this
+# scenario can be measured, and it IS that behavior (P3's proxy).
+ops_guest_arm "$GATENOOPS" "$TMP/ops-protected.sse" noops "$OPS_DIR"
+[ "$OG_RC" -eq 0 ] || fail "phase 40: the pre-fix control run rc=$OG_RC (it must start AND serve)"
+grep -qF "SEAT COMPILED OUT (FH_MUTANT_NO_OPS_SEAT)" "$OG_ERR" \
+    || fail "phase 40: the build does not say the seat is compiled out — it is not the control this arm needs"
+[ -f "$OG_MW" ] \
+    || fail "phase 40: the pre-fix control did NOT execute the call the policy denies — the arm does not reproduce the fail-open and proves nothing"
+n=$(pyq "$OG_TR" "len([1 for r in rows for tc in (r.get('tool_calls') or []) if tc.get('name')=='fx_write'])")
+[ "$n" -ge 1 ] || fail "phase 40: the true name never reached the guest in the control — the flip is not measured on the same axis"
+n=$(pyq "$OG_LOG" "len([r for r in rows for k in ('verdict','author','allow_scope','refusal_name','reason','denial_text') if k in r])")
+[ "$n" -eq 0 ] || fail "phase 40: the control's log claims a verdict — no policy ran at that seat, so a verdict field is a claim wider than the evidence"
+echo "   OK pre-fix fail-open: with the seat compiled out the SAME pinned policy denies nothing — the call crosses, EXECUTES (marker PRESENT) and the log carries no verdict field"
+
+echo "== phase 41: P6 THE D2 BOUND IS ASSERTED — the host does NOT deny what only D2 would deny"
+# /fx/disk/agent-data is the Agentdata row: class Datadir, protected=NO, so D1
+# cannot fire; D2 would deny it ONLY on a non-ok boot verdict — live in-guest
+# state this seat cannot see.  So the host seat must ALLOW it (and the guest
+# floor is what governs).  Asserted BOTH ways: the real build allows and the
+# call EXECUTES; the bound-unseen control DENIES the same bytes.
+mkdir -p "$TMP/p6-d2"
+ops_stream "$TMP/ops-data.sse" fx_write "/fx/disk/agent-data" call_OP_0002
+ops_guest_arm "$GATE" "$TMP/ops-data.sse" d2data "$OPS_DIR"
+[ "$OG_RC" -eq 0 ] || { sed -n '1,10p' "$OG_ERR" >&2; fail "phase 41: the unprotected-write run rc=$OG_RC"; }
+[ -f "$OG_MW" ] \
+    || fail "phase 41: the host seat DENIED a write only D2 could refuse (marker ABSENT) — the seat is enforcing in-guest state it cannot see"
+n=$(pyq "$OG_TR" "len([1 for r in rows for tc in (r.get('tool_calls') or []) if tc.get('name')=='fx_write'])")
+[ "$n" -ge 1 ] || fail "phase 41: the call did not cross as fx_write — the arm is not measuring the allowed direction"
+n=$(pyq "$OG_LOG" "len([r for r in rows if r.get('call_id')=='call_OP_0002' and r.get('verdict')=='allowed' and r.get('author')=='ops'])")
+[ "$n" -ge 1 ] || fail "phase 41: no allowed row naming author=ops — the record does not say which author ran and did not refuse"
+# THE ALLOW CARRIES ITS OWN READING (P6-fix).  The qualifier used to live ONLY
+# in the startup line, which is TRANSIENT: the one log is what a reader sees
+# AT REST (fx-audit today, P9's join next), and a bare
+# {"verdict":"allowed","author":"ops"} row for a D2-bound write IS "the host
+# permitted this write" to anyone who does not know this seat has no floor.
+# So the honesty property is ASSERTED on the record, not documented in prose.
+n=$(pyq "$OG_LOG" "len([r for r in rows if r.get('call_id')=='call_OP_0002' and r.get('verdict')=='allowed' and r.get('author')=='ops' and isinstance(r.get('allow_scope'),str) and 'no operator denial at this seat' in r.get('allow_scope') and 'floor' in r.get('allow_scope')])")
+[ "$n" -ge 1 ] || { sed -n '1,3p' "$OG_LOG" >&2; fail "phase 41: the D2-bound allowed row carries NO seat-scoped allow_scope qualifier — the durable record reads as a permission this seat never grants"; }
+# and it is NOT smuggled into reason: an allowed row's reason stays null (the
+# field is the denial's), which is why allow_scope is a NEW key.
+n=$(pyq "$OG_LOG" "len([r for r in rows if r.get('call_id')=='call_OP_0002' and r.get('verdict')=='allowed' and (r.get('reason') is not None or r.get('refusal_name') is not None or r.get('denial_text') is not None)])")
+[ "$n" -eq 0 ] || fail "phase 41: the allowed row's reason/refusal_name/denial_text are not null — the qualifier must not turn an allow into a refusal"
+n=$(pyq "$OG_LOG" "len([1 for r in rows if r.get('call_id')=='call_OP_0002' and r.get('verdict')=='denied'])")
+[ "$n" -eq 0 ] || fail "phase 41: the call was denied at the host seat"
+echo "   OK D2 bound (host): an unprotected write is ALLOWED at this seat and EXECUTES, with an allowed row naming the ops author"
+# THE ASYMMETRY: the bound-unseen control injects writable(<path>) — the floor
+# fact this seat cannot see — so D2 fires and the SAME bytes are DENIED.  The
+# bound is therefore the seat's BINDING, not the fixture's.
+proxy_roundtrip "$GATEOPSFLOOR" "$TMP/ops-data.sse" opsfloor --ops-policy-dir "$OPS_DIR"
+[ "$RT_RC" -eq 0 ] || fail "phase 41: the bound-unseen control exited rc=$RT_RC"
+grep -qF "FH_MUTANT_OPS_BIND_UNSEEN" "$RT_ERR" \
+    || fail "phase 41: the control does not say it binds the floor fact it cannot see"
+grep -q 'fx_host_denied' "$RT_CAP" \
+    || fail "phase 41: the bound-unseen control did NOT deny the unprotected write — D2's inertness at the real seat is not caused by the seat's binding"
+grep -q 'fx_write' "$RT_CAP" && fail "phase 41: the control served the true name anyway"
+n=$(pyq "$RT_LOG" "len([r for r in rows if r.get('call_id')=='call_OP_0002' and r.get('verdict')=='denied' and r.get('author')=='ops' and 'rule D2' in (r.get('reason') or '')])")
+[ "$n" -ge 1 ] || fail "phase 41: the control's denial is not attributed to rule D2"
+echo "   OK D2 bound (control): binding the unseen floor fact flips the SAME bytes to denied-by-ops rule D2 — the bound is the seat's binding"
+# THE IN-GUEST HALF, where it is measurable: the demoted C seat, over the REAL
+# verbs server, refuses the SAME path under the SAME pinned policy because the
+# boot verdict is not ok.  Skipped LOUDLY without build/fx-verbs-server (a
+# substitute would measure a substitute; phase 36's discipline).
+if [ ! -x "$ROOT/build/fx-verbs-server" ]; then
+    echo "   SKIP phase 41 (in-guest half): build/fx-verbs-server is not built — the REAL in-guest seat is the only oracle for D2 and no stand-in may replace it"
+else
+mkdir -p "$TMP/p6-inguest/root/usr/fx-agent/policy" "$TMP/p6-inguest/run/fx"
+cp "$OPS_DIR"/ops-policy.dl "$OPS_DIR"/ops-aliases.tsv "$OPS_DIR"/ops-lexicon.ini \
+   "$OPS_DIR"/PINS "$TMP/p6-inguest/root/usr/fx-agent/policy/"
+python3 - "$ROOT" "$TMP/p6-inguest" <<'PY'
+import json, os, subprocess, sys
+root, tmp = sys.argv[1], sys.argv[2]
+server = os.path.join(root, "build", "fx-verbs-server")
+env = dict(os.environ)
+env["FX_VERB_ROOT"] = os.path.join(tmp, "root")
+env["FX_RUN"] = os.path.join(tmp, "run/fx")
+# BOTH wired paths must be served: the protected alias must match a served
+# path or the C seat refuses to start (its own startup obligation).
+env["FX_AGENT_WRITABLE"] = "/fx/disk/agent-config.dhall:/fx/disk/agent-data"
+env["PATH"] = "/usr/bin:/bin"
+env.pop("FX_AGENT_BUILDABLE", None)
+
+def call(name, args):
+    inp = json.dumps({"jsonrpc": "2.0", "id": 0, "method": "initialize",
+                      "params": {"protocolVersion": "2025-06-18",
+                                 "capabilities": {},
+                                 "clientInfo": {"name": "p6", "version": "0"}}}) + "\n"
+    inp += json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                       "params": {"name": name, "arguments": args}}) + "\n"
+    p = subprocess.run([server], input=inp, capture_output=True, text=True,
+                       env=env, timeout=60)
+    reps = [json.loads(l) for l in p.stdout.splitlines() if l.strip()]
+    r = [x for x in reps if x.get("id") == 1]
+    assert len(r) == 1, (name, p.stdout[:300], p.stderr[:300])
+    return json.dumps(r[0])
+
+# the SAME path the host seat ALLOWED, at the in-guest seat with no bootlog
+# (an absent boot verdict -> D2 fails closed)
+d2 = call("fx_write", {"path": "/fx/disk/agent-data", "content": "x"})
+assert "operator policy denies this write" in d2 and "rule D2" in d2, d2[:400]
+# the control: the protected path is refused by D1 here too
+d1 = call("fx_write", {"path": "/fx/disk/agent-config.dhall", "content": "x"})
+assert "rule D1" in d1, d1[:400]
+print("in-guest seat: the path the HOST allowed is DENIED in-guest by rule D2 "
+      "(boot verdict absent), and the protected path by D1")
+PY
+rc=$?
+[ "$rc" -eq 0 ] || fail "phase 41 (in-guest half): the demoted C seat did not deny the same path by D2 (rc=$rc) — the host's silence is then not attributable to the D2 bound"
+echo "   OK D2 bound (in-guest half): the SAME path the host seat allows is refused by the in-guest seat's D2 — the rule is real, it is simply not evaluable at the host seat"
+fi
+
+echo "== phase 42: P6 THE TWO-FORM ALIAS GRAMMAR, RE-RUN AT THE NEW SEAT"
+# THE CASE A PREVIOUS REVIEW CAUGHT: a pattern that LOOKS protective but is
+# not one of the two stated forms.  The pin-time checker refuses it, and the
+# seat must refuse it TOO (it does not trust the staging) — a seat that
+# accepted it would protect nothing while the artifact says it does.  The copy
+# is RE-PINNED first, so the arm tests the grammar and not the pin.
+cp -r "$OPS_DIR" "$TMP/p6-ambig"
+sed -e 's@^Agentdata	Datadir	no	/fx/disk/agent-data$@Agentdata	Datadir	no	/fx/disk/agent-data/*@' \
+    "$TMP/p6-ambig/ops-aliases.tsv" > "$TMP/p6-ambig/tsv.new"
+cmp -s "$TMP/p6-ambig/ops-aliases.tsv" "$TMP/p6-ambig/tsv.new" \
+    && fail "phase 42: the ambiguous-pattern sed matched NOTHING (the mutant would be the original)"
+mv "$TMP/p6-ambig/tsv.new" "$TMP/p6-ambig/ops-aliases.tsv"
+ops_repin "$TMP/p6-ambig"
+mkdir -p "$TMP/p6-ambig-run"
+timeout 10 "$GATE" --upstream "$TMP/upstream2.sse" --slave-file "$TMP/p6-ambig-run/slave" \
+    --log "$TMP/p6-ambig-run/log.jsonl" --ops-policy-dir "$TMP/p6-ambig" --turns 1 \
+    2> "$TMP/p6-ambig-run/err"
+rc=$?
+[ "$rc" -ne 0 ] || fail "phase 42: the seat STARTED with an ambiguous glob pattern (a re-pinned table) — the grammar is not enforced at the new seat"
+[ ! -e "$TMP/p6-ambig-run/slave" ] || fail "phase 42: the slave path was published before the refusal"
+grep -qF "/fx/disk/agent-data/*" "$TMP/p6-ambig-run/err" \
+    || { sed -n '1,4p' "$TMP/p6-ambig-run/err" >&2; fail "phase 42: the refusal does not NAME the offending pattern"; }
+grep -qF "silent allow-all" "$TMP/p6-ambig-run/err" \
+    || fail "phase 42: the refusal does not name the failure direction"
+echo "   OK ambiguous pattern: refused at the NEW seat, by name, before the slave path (re-pinned, so the pin was not what refused it)"
+# THE SUBTREE FORM vs THE EXACT FORM, at the new seat: '<path>/**' covers the
+# node and its descendants; a bare directory path is EXACT and covers the NODE
+# ONLY.  Both directions are executed with the private pin discipline, and the
+# grandchild is the discriminator (the exact-only semantics are what the S1
+# review measured).
+cp -r "$OPS_DIR" "$TMP/p6-subtree"
+sed -e 's@^Agentdata	Datadir	no	/fx/disk/agent-data$@Agentdata	Datadir	yes	/fx/disk/agent-data/**@' \
+    "$TMP/p6-subtree/ops-aliases.tsv" > "$TMP/p6-subtree/tsv.new"
+cmp -s "$TMP/p6-subtree/ops-aliases.tsv" "$TMP/p6-subtree/tsv.new" \
+    && fail "phase 42: the subtree sed matched NOTHING"
+mv "$TMP/p6-subtree/tsv.new" "$TMP/p6-subtree/ops-aliases.tsv"
+ops_repin "$TMP/p6-subtree"
+ops_stream "$TMP/ops-grandchild.sse" fx_write "/fx/disk/agent-data/sub/deep/file" call_OP_0003
+proxy_roundtrip "$GATE" "$TMP/ops-grandchild.sse" subtree --ops-policy-dir "$TMP/p6-subtree"
+[ "$RT_RC" -eq 0 ] || fail "phase 42: the subtree arm exited rc=$RT_RC"
+grep -q 'fx_host_denied' "$RT_CAP" \
+    || fail "phase 42: the /** subtree form did NOT deny a grandchild at the new seat — the form is not implemented as stated"
+grep -q 'fx_write' "$RT_CAP" && fail "phase 42: the true name crossed under the subtree form"
+proxy_roundtrip "$GATE" "$TMP/ops-grandchild.sse" baredir --ops-policy-dir "$OPS_DIR"
+[ "$RT_RC" -eq 0 ] || fail "phase 42: the exact-form arm exited rc=$RT_RC"
+grep -q 'fx_write' "$RT_CAP" \
+    || fail "phase 42: the EXACT (bare-directory) row denied a grandchild — glob-less patterns are NOT prefixes; this arm pins exact-only semantics at the new seat"
+grep -q 'fx_host_denied' "$RT_CAP" && fail "phase 42: the exact-form row rewrote a grandchild the artifact does not cover"
+n=$(pyq "$RT_LOG" "len([r for r in rows if r.get('call_id')=='call_OP_0003' and r.get('verdict')=='allowed'])")
+[ "$n" -eq 1 ] || fail "phase 42: the exact-form arm did not record an allowed row"
+echo "   OK subtree vs exact at the new seat: '<path>/**' denies the grandchild, a bare directory row does not (exact, never a prefix)"
+# THE PIN, re-run at the new seat: a tampered artifact must fail LOUDLY.  The
+# PINS row is corrupted (the artifact bytes are the same), so the refusal must
+# name BOTH shas.
+cp -r "$OPS_DIR" "$TMP/p6-stale"
+sed -e 's@^ops-policy.dl	.*@ops-policy.dl	0000000000000000000000000000000000000000000000000000000000000000@' \
+    "$TMP/p6-stale/PINS" > "$TMP/p6-stale/PINS.new"
+cmp -s "$TMP/p6-stale/PINS" "$TMP/p6-stale/PINS.new" && fail "phase 42: the pin sed matched NOTHING"
+mv "$TMP/p6-stale/PINS.new" "$TMP/p6-stale/PINS"
+timeout 10 "$GATE" --upstream "$TMP/upstream2.sse" --slave-file "$TMP/p6-stale/slave" \
+    --log "$TMP/p6-stale/log.jsonl" --ops-policy-dir "$TMP/p6-stale" --turns 1 \
+    2> "$TMP/p6-stale/err"
+rc=$?
+[ "$rc" -ne 0 ] || fail "phase 42: the seat STARTED with a stale pin — a swapped artifact would be believed"
+[ ! -e "$TMP/p6-stale/slave" ] || fail "phase 42: the slave path was published before the pin refusal"
+grep -qF "sha256 mismatch: pinned 0000" "$TMP/p6-stale/err" \
+    || { sed -n '1,4p' "$TMP/p6-stale/err" >&2; fail "phase 42: the pin refusal does not name both shas"; }
+echo "   OK pin at the new seat: a tampered pinned artifact refuses at startup, naming both shas, before the slave path"
+
+echo "== phase 43: P6 THE PATH CANONICALIZATION — the port that a raw match would miss"
+# THE IN-GUEST SEAT CANONICALIZES the request path before matching the pinned
+# patterns (canon_root_rel + ops_abs_of).  A host seat doing a RAW string
+# match would miss every equivalent spelling of a protected path — the TRUE
+# NAME would cross and the guest would dispatch it.  Nothing would EXECUTE
+# (the in-guest floor and D1 still refuse the write at the commit site), but
+# the host's own decision would be wrong, so the port is gated.
+ops_stream "$TMP/ops-dotdot.sse" fx_write "/fx/disk/agent-data/../agent-config.dhall" call_OP_0004
+proxy_roundtrip "$GATE" "$TMP/ops-dotdot.sse" dotdot --ops-policy-dir "$OPS_DIR"
+[ "$RT_RC" -eq 0 ] || fail "phase 43: the real build exited rc=$RT_RC"
+grep -q 'fx_host_denied' "$RT_CAP" \
+    || fail "phase 43: an equivalent spelling of the PROTECTED path was NOT denied — the seat does not canonicalize"
+grep -q 'fx_write' "$RT_CAP" && fail "phase 43: the true name crossed for a canonicalization-equivalent spelling of a protected path"
+n=$(pyq "$RT_LOG" "len([r for r in rows if r.get('call_id')=='call_OP_0004' and r.get('verdict')=='denied' and r.get('author')=='ops' and '/fx/disk/agent-config.dhall' in (r.get('reason') or '')])")
+[ "$n" -ge 1 ] || fail "phase 43: the denial does not quote the CANONICAL path the rule matched"
+echo "   OK canonicalization: a \"..\"-spelled protected path is denied, and the row quotes the canonical path"
+proxy_roundtrip "$GATEOPSNOCANON" "$TMP/ops-dotdot.sse" noconon --ops-policy-dir "$OPS_DIR"
+[ "$RT_RC" -eq 0 ] || fail "phase 43: the canonicalization-blind build exited rc=$RT_RC"
+grep -qF "FH_MUTANT_OPS_NO_CANON" "$RT_ERR" \
+    || fail "phase 43: the blind build does not say it matches the raw path"
+grep -q 'fx_write' "$RT_CAP" \
+    || fail "phase 43: the raw-match control DID deny the equivalent spelling — the canonicalization is not what decides this arm"
+grep -q 'fx_host_denied' "$RT_CAP" && fail "phase 43: the raw-match control still rewrote the call"
+echo "   OK canonicalization asymmetry: the SAME bytes are DENIED by the seat that normalizes and CROSS on the raw-match build — the port is load-bearing, not stylistic"
+
+
+echo "== phase 44: P6 THE LOADED-BUT-INERT BRANCH — a D2-only policy makes NO claim (P6-fix)"
+# THE BRANCH THE CODE HANDLES BUT NO ARM PINNED (the review's nice-to-have 2).
+# The seat loads the WHOLE artifact and classifies each rule LIVE or INERT
+# here; a policy whose EVERY rule needs facts this seat never injects has NO
+# host-side contribution, and the honesty rule says such a seat must claim
+# none: OPS.present=0 -> ops_seat_present()=0 -> policy_armed() false -> NO
+# verdict field on any row and NO ops author named.  A classification
+# regression that silently flipped an inert policy to LIVE would render
+# allowed/author=ops rows for a policy this seat cannot enforce and nothing
+# would fail — that is the direction this arm exists to catch.
+# THE CAUSE VARIED IS THE RULE SET, not the build or the scenario: D1's line
+# is dropped from a COPY (never the pinned artifact), re-pinned with the
+# private pin discipline so the pin is not what refuses, and the SAME binary
+# on the SAME call with the FULL pinned policy still DENIES it (the control
+# arm below, and phase 39's guest arm).
+cp -r "$OPS_DIR" "$TMP/p6-inert"
+grep -vF 'denied(W1, P1) :- touches(W1, P1), kind(W1, write), class(P1, C1), protected(C1).' \
+    "$TMP/p6-inert/ops-policy.dl" > "$TMP/p6-inert/dl.new"
+cmp -s "$TMP/p6-inert/ops-policy.dl" "$TMP/p6-inert/dl.new" \
+    && fail "phase 44: the D1-drop matched NOTHING (the mutant would be the original artifact)"
+mv "$TMP/p6-inert/dl.new" "$TMP/p6-inert/ops-policy.dl"
+n=$(grep -c '^denied(' "$TMP/p6-inert/ops-policy.dl")
+[ "$n" -eq 1 ] || fail "phase 44: the D2-only copy carries $n rule(s), not the one D2 rule"
+ops_repin "$TMP/p6-inert"
+# (a) the SAME call and the SAME guest/slave harness as phase 39, D2-only dir
+ops_guest_arm "$GATE" "$TMP/ops-protected.sse" inert "$TMP/p6-inert"
+[ "$OG_RC" -eq 0 ] || { sed -n '1,10p' "$OG_ERR" >&2; fail "phase 44: the D2-only run rc=$OG_RC"; }
+grep -qF "LOADED-BUT-INERT" "$OG_ERR" \
+    || { sed -n '1,8p' "$OG_ERR" >&2; fail "phase 44: the startup line does not name the loaded-but-inert state"; }
+grep -qF "0 LIVE at this seat" "$OG_ERR" \
+    || fail "phase 44: the startup line does not say NO rule is live at this seat"
+grep -qF "NONE live at this seat" "$OG_ERR" \
+    || fail "phase 44: the seat does not state that an all-inert policy gives it nothing to enforce"
+grep -qF "the operator author does NOT act at this seat" "$OG_ERR" \
+    || fail "phase 44: the seat does not refuse the ops-author claim for an all-inert policy"
+# AND IT MAKES NO CLAIM IT CANNOT BACK: the LIVE/INERT/FLOOR block belongs to a
+# seat with a live rule and must be ABSENT here (a seat that printed "LIVE AT
+# THIS SEAT (D1)" over a policy with 0 live rules would be the startup-line
+# version of the same over-claim).
+grep -qF "LIVE AT THIS SEAT" "$OG_ERR" \
+    && fail "phase 44: the seat claims a LIVE rule for a policy with none — the startup line over-claims"
+grep -qF "THE FLOOR" "$OG_ERR" \
+    && fail "phase 44: the seat states a floor position for a policy it does not act on"
+# (b) the CALL: with no live rule the protected path is NOT the seat's to refuse
+n=$(pyq "$OG_TR" "len([1 for r in rows for tc in (r.get('tool_calls') or []) if tc.get('name')=='fx_write'])")
+[ "$n" -ge 1 ] || fail "phase 44: the true name fx_write did not cross under the D2-only policy — the inert seat rewrote a call it cannot judge"
+n=$(pyq "$OG_TR" "len([1 for r in rows for tc in (r.get('tool_calls') or []) if tc.get('name')=='fx_host_denied'])")
+[ "$n" -eq 0 ] || fail "phase 44: the inert seat denied the protected call (fx_host_denied crossed)"
+[ -f "$OG_MW" ] \
+    || fail "phase 44: the call did NOT execute under the D2-only policy — the arm is not measuring an ALLOW"
+# (c) THE RECORD MAKES NO VERDICT CLAIM: not a denial, not an allowed row with
+# an ops author, and not the allow qualifier either — no policy acted here.
+n=$(pyq "$OG_LOG" "len([r for r in rows for k in ('verdict','author','allow_scope','refusal_name','reason','denial_text') if k in r])")
+[ "$n" -eq 0 ] || { sed -n '1,3p' "$OG_LOG" >&2; fail "phase 44: the D2-only policy's log carries $n verdict field(s) — the record claims an author that did not act"; }
+echo "   OK loaded-but-inert: a D2-only policy names NONE live, prints no LIVE/FLOOR block, makes NO verdict claim in the record, and the protected call crosses and EXECUTES"
+# (d) THE ATTRIBUTION, in this phase: the SAME bytes and the SAME binary with
+# the FULL pinned policy are DENIED (proxy-level, so the flip is on the rule
+# set alone — phase 39 makes the same point through the real guest).
+proxy_roundtrip "$GATE" "$TMP/ops-protected.sse" inert-on --ops-policy-dir "$TMP/p6-inert"
+[ "$RT_RC" -eq 0 ] || fail "phase 44: the D2-only roundtrip exited rc=$RT_RC"
+grep -q 'fx_write' "$RT_CAP" || fail "phase 44: the D2-only seat did not serve the call verbatim"
+grep -q 'fx_host_denied' "$RT_CAP" && fail "phase 44: the D2-only seat rewrote the call — an inert policy must not deny"
+n=$(pyq "$RT_LOG" "len([r for r in rows for k in ('verdict','author','allow_scope','refusal_name','reason','denial_text') if k in r])")
+[ "$n" -eq 0 ] || fail "phase 44: the D2-only roundtrip's log carries $n verdict field(s)"
+proxy_roundtrip "$GATE" "$TMP/ops-protected.sse" inert-off --ops-policy-dir "$OPS_DIR"
+[ "$RT_RC" -eq 0 ] || fail "phase 44: the pinned-policy control roundtrip exited rc=$RT_RC"
+grep -q 'fx_host_denied' "$RT_CAP" \
+    || fail "phase 44: the SAME bytes under the FULL pinned policy were NOT denied — the inert arm is not attributable to the rule set"
+grep -q 'fx_write' "$RT_CAP" && fail "phase 44: the pinned-policy control served the true name"
+echo "   OK inert-policy asymmetry: SAME binary, SAME bytes — the FULL pinned policy denies (fx_host_denied), the D2-only policy crosses verbatim: the varied cause is the rule set"
+# (e) AND THE ALLOW QUALIFIER IS NOT A REFUSAL'S FIELD: the pinned-policy
+# control's denied row carries the qualifier NEVER (it is an ALLOWED-row key),
+# so a reader cannot confuse the two shapes.
+n=$(pyq "$RT_LOG" "len([r for r in rows if r.get('verdict')=='denied' and 'allow_scope' in r])")
+[ "$n" -eq 0 ] || fail "phase 44: a DENIED row carries allow_scope — the allow qualifier leaked onto the denial shape"
+
+
+echo "PASS hostgate: the transparent proxy is stream-transparent (arm == control) and a mangling proxy is caught; the per-turn open/close mechanics hold through one proxy process; the one log JOINS every answered call by call_id and REPORTS every call it could not join; a join compiled out flips the pass by content; every model-controlled free-text field arrives MARKED while the join key renders verbatim; the DECODE GATE holds the channel invariant for a denied call (the true name never crosses) in the presence of interleaves, duplicate/never-opened dones, open-at-completed items and over-cap streams, with a pinned pre-fix control for each; the RESERVED NAME is a CHECKED property (it passes the guest's charset, collides with no verb of a catalog pinned by sha256 and cross-checked against the verbs server's own table, and the proxy REFUSES TO START on a collision — while the same source with the check compiled out starts and DISPATCHES the colliding name: the silent allow); and the JUSTIFICATION is required in the injected tools schema, judged on the argument accumulator the guest actually dispatches (a done-args-only judge is pinned and caught), denied BY NAME through the existing substitution on the outbound leg, and REPORTED BY A DENIAL-RATE INSTRUMENT whose own compiled-out mutant leaves the dead-agent shape invisible; and THE OPERATOR IS A REAL AUTHOR AT THIS SEAT (P6: the pinned ops policy, its PINS check, its alias table with the TWO-FORM grammar re-run here, and its per-call fact injection with the path canonicalized before matching) with the D1/D2 split NAMED in the startup line — D1 evaluated here, D2 and the compiled-in FLOOR enforced IN-GUEST ONLY because this seat can see neither — the D2 bound ASSERTED in both directions, the ALLOWED row carrying its own seat-scoped allow_scope qualifier (so a durable record cannot read as a permission the seat never grants) with the LOADED-BUT-INERT branch pinned by its own D2-only arm, and the seat's three failure directions each pinned against a control of the SAME source (fail-open when the seat is compiled out, over-deny when it binds the floor it cannot see, silent allow when it matches the raw path)"

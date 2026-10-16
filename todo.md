@@ -1389,6 +1389,32 @@ judges it; **claim + verdict + outcome are one record** and the **disagreement**
       and the three earlier fail-opens remain closed.
 - [ ] **THE STATED RESIDUAL:** this closes the **tool-call channel** only — a root agent in the guest
       can still run things directly, outside any tool call (§6b: *auditing, not proofing*).
+- [x] **P6 — THE OPERATOR AUTHOR AT THE HOST SEAT** (**COMMITTED**; `coder`, then a review round).
+      The in-guest ops evaluation is **ported** into the proxy beside P3's `--deny` placeholder, which
+      stays and stays honestly named `denylist`. **THE D1/D2 SPLIT, confirmed from the rule text and
+      NAMED in the startup line:** **D1** (`touches ∧ kind(write) ∧ class(P,C) ∧ protected(C)`) needs only
+      host-derivable facts → **LIVE at this seat**; **D2** adds `writable(P)` and `!boot_verdict(ok)` —
+      live in-guest state no host reader can see → **INERT by construction** (the seat never injects those
+      facts), **STAYS IN-GUEST** in the demoted C seat. The seat also states plainly that it **has no floor
+      of its own and does not claim one**: an ALLOW here means *"no operator denial at this seat"*, never
+      *"the write is permitted"*. **THE REVIEW'S VERDICT: the D1 denial path is SOUND and the D2 inertness
+      claim is TRUE** — all seven adversarial probes clean, including a 47-case mechanical diff showing the
+      host canonicalizer is **equivalent** to the in-guest one, and the path-key binding sharing one
+      interned id (the "plausible spelling that matches nothing" seam is closed here).
+      **The one real finding was RECORD HONESTY:** an `allowed` row rendered `verdict=allowed/author=ops`
+      with the seat-scoped qualifier living only in the **transient stderr startup line** — so the durable
+      artifact `fx-audit` reads *at rest* outlived its own qualifier and read as a permission the seat
+      never grants. Fixed with a NEW `allow_scope` key (deliberately not `reason`, which phase 12 asserts
+      null on allowed rows) and **gated** so the honesty property is asserted, not documented.
+      *Orchestrator-verified by invoking:* the armed allowed row carries `allow_scope`; with no policy the
+      row carries **no** verdict field; a write to the protected `/fx/disk/agent-config.dhall` is rewritten
+      to `fx_host_denied` with `author=ops` and a reason **quoting rule D1**, while the unprotected
+      `/fx/disk/agent-data` crosses as `fx_write`.
+      **DECISION (mine):** `allow_scope` is emitted on **every** allowed row, not only ops-authored ones —
+      the risk it addresses is generic to any allowed row, and its "this seat" names the **host gate seat**.
+      **GOTCHA RECORDED:** `make` alone does **not** build the `build/fx-hostgate*` binaries; only
+      `make test-hostgate` does — so a restored source with a stale proxy binary still in place measures
+      the OLD build. Always let the gate rebuild, and hash-verify after any source mutation.
 - [x] **P1 — THE PROXY SKELETON / TRANSPARENCY** (`tools/fx-hostgate.c`, `tests/test_hostgate.sh`,
       `Makefile`; **UNCOMMITTED**). Gate `make test-hostgate`; the arm/control pair is the transparency
       proof. **MEASURED, AND IT CORRECTED THE PLAN:** the plan said `downstream=FIFO` — **a single FIFO

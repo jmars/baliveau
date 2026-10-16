@@ -180,12 +180,25 @@
  *
  *   THE POLICY, AND THE HONESTY RULE: P3's policy is a PLACEHOLDER to
  *   exercise the gate — a pinned host-side denylist (--deny NAME, the
- *   brief's "deny get_weather").  The real authors are P6 (operator
- *   allow/deny) and P7 (the claim judgment); they do not exist yet, and the
- *   log's `author` field names what ACTUALLY RAN (`denylist`) — never
- *   `ops`, never `claim`: a row claiming them would be a record wider than
- *   the evidence.  With NO --deny, NO policy ran and NO verdict field is
- *   emitted (the P2 shape, byte-identical — its phases must stay green).
+ *   brief's "deny get_weather").  The OPERATOR's real author arrives in P6
+ *   (--ops-policy-dir, the pinned ops policy evaluated at this seat); the
+ *   claim judgment is P7's and does not exist yet.  The log's `author` field
+ *   always names what ACTUALLY RAN — `denylist`, `ops`, `justification` (or
+ *   their `+`-joined set), never `claim`: a row claiming an author that did
+ *   not run would be a record wider than the evidence.  With NO --deny, NO
+ *   --require-justification and NO live --ops-policy-dir, NO policy ran and
+ *   NO verdict field is emitted (the P2 shape, byte-identical — its phases
+ *   must stay green).  On an ALLOWED row `author` names the authors ARMED AND
+ *   CONSULTED at this seat, which is not always the same as "evaluated THIS
+ *   call": the ops judge returns before the policy is consulted for a verb it
+ *   does not classify as a write, so an allowed row for such a verb names
+ *   `ops` as armed, never as having judged the call (the review's secondary
+ *   note, named here rather than widened into a per-call author field).
+ *   AND AN ALLOW CARRIES ITS OWN READING: every ALLOWED row renders
+ *   `allow_scope`, the seat-scoped qualifier that an allow means "no operator
+ *   denial at this seat", never "the write is permitted" — in the RECORD,
+ *   where a reader at rest (fx-audit, P9's join) can see it, not only in the
+ *   startup line, which is transient.
  *   STATED RESIDUALS: §6b unchanged — a root agent in the guest can still
  *   act DIRECTLY, outside any tool call; this closes the tool-call channel
  *   only (auditing, not proofing).  The ARGS of a denied call cross into
@@ -270,6 +283,25 @@
  *   of build/fx-verbs-server with and without the riding key) instead of
  *   trusting the line above.
  *
+ * P6 SCOPE — THE OPERATOR AUTHOR AT THE HOST SEAT.  The proxy gains the
+ *   OPERATOR as a real policy author beside the P3 `--deny` placeholder
+ *   denylist (which STAYS: many existing phases depend on it and it is
+ *   honestly named).  --ops-policy-dir DIR loads the PINNED ops policy
+ *   (policy/ops: PINS + ops-policy.dl + ops-aliases.tsv) and evaluates it per
+ *   call, at the same place P3 decides.  THE WHOLE SECTION — the D1/D2 split
+ *   determined from the rule text, how the split is ENFORCED (the seat loads
+ *   the artifact whole and binds only host-derivable facts, so D2 is INERT BY
+ *   CONSTRUCTION), the per-call class resolution and its canonicalization,
+ *   the floor this seat does NOT have, and the startup obligations the
+ *   in-guest seat's served set makes impossible here — is documented at the
+ *   P6 section itself (search "P6: THE OPERATOR AUTHOR").  THE FAILURE
+ *   DIRECTIONS the gate pins: a PRE-FIX seat that does not deny what the
+ *   pinned policy denies is FAIL-OPEN (build/fx-hostgate-noops); a seat that
+ *   binds the floor it cannot see OVER-DENIES (build/fx-hostgate-opsfloor);
+ *   and a seat that matches the RAW path against the pinned patterns is a
+ *   SILENT ALLOW on exactly the equivalent spellings the in-guest seat does
+ *   deny (build/fx-hostgate-opsnocanon).
+ *
  * TURN MECHANICS — the two things slice P1 was asked to MEASURE, not assume:
  *   (a) the guest OPENS the device per turn and CLOSES it at the turn
  *       boundary (openai_responses.c:226/:292): the slave path stays valid
@@ -287,10 +319,13 @@
  * dependency).  cfmakeraw stays covered by the CFLAGS' _DEFAULT_SOURCE. */
 #define _XOPEN_SOURCE 600
 #include <ctype.h>
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <signal.h>
 #include <stdarg.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -305,6 +340,11 @@
                     * the Makefile links src/vendor/dhall-c/sha256.c only, as
                     * it already does for fx-audit/fx-report/fx-claim) */
 #include "yyjson.h"
+/* P6: THE SIBLING DATALOG ENGINE, linked IN-PROCESS the way the tree already
+ * links it (the Makefile's $(BIN) rule, tools/build.sh for the verbs server,
+ * src/runstore.h): the header resolves through build/include's symlink to the
+ * ENGINE'S OWN src/ — the reasoning is never reimplemented in the proxy. */
+#include "vendor/datalog-dafsa/src/dl.h"
 
 static const char *prog = "fx-hostgate";
 
@@ -369,17 +409,19 @@ static char *reasons_breakdown_json(const char *const *names,
                                     const size_t *counts, size_t n);
 #endif
 
-/* THE HONEST AUTHOR/REFUSAL NAMES (P3 + P5; see the P3/P5 header blocks).
- * P3's author is a placeholder denylist — never the P6/P7 authors; P5's is the
- * justification check, and its refusal names are salvaged from the fx-init S3b
- * list the plan names.  Every denial names its author AND its reason, and the
- * refusal is BY NAME (never a bare rejection).  Declared here because the log
- * writer below renders them. */
+/* THE HONEST AUTHOR/REFUSAL NAMES (P3 + P5 + P6; see the P3/P5/P6 header
+ * blocks).  P3's is a placeholder denylist; P5's is the justification check;
+ * P6's is THE OPERATOR POLICY at this seat (the real second author), whose
+ * refusal name follows the plan's salvaged list (`denied-by-ops`).  Every
+ * denial names its author AND its reason, and the refusal is BY NAME (never a
+ * bare rejection).  Declared here because the log writer below renders them. */
 #define FH_AUTHOR_DENYLIST "denylist"
 #define FH_REFUSAL_DENYLIST "denied-by-denylist"
 #define FH_AUTHOR_JUSTIFY "justification"
 #define FH_REFUSAL_ABSENT_JUSTIFY "absent-justification"
 #define FH_REFUSAL_MALFORMED_JUSTIFY "malformed-justification"
+#define FH_AUTHOR_OPS "ops"
+#define FH_REFUSAL_OPS "denied-by-ops"
 /* A refusal-shaped entry that names NO refusing author: an item that never
  * completed was never JUDGED, so no policy refused it.  Used as the reason and
  * (prefixed) as the substitution text for such an item, so the record cannot
@@ -538,14 +580,15 @@ static void log_flush(void) {
                     r->ts, r->turn, jid, jname, jargs,
                     r->pending ? "true" : "false",
                     jout ? jout : "null");
-            /* P3/P5: the verdict fields render ONLY when a policy actually ran
-             * (the brief's honesty rule).  `author` names what ran — the
-             * placeholder denylist and/or the justification check — never the
-             * P6/P7 authors that do not exist yet; on a denial it names the
-             * ONE author that refused, and refusal_name is the by-name
-             * refusal (P3's denied-by-denylist, or P5's
-             * absent-/malformed-justification).  reason/denial_text are real
-             * exactly for a denial, explicit nulls otherwise. */
+            /* P3/P5/P6: the verdict fields render ONLY when a policy actually
+             * ran (the brief's honesty rule).  `author` names what ran — the
+             * placeholder denylist, the ops policy at this seat (P6) and/or
+             * the justification check — never the P7 author that does not
+             * exist yet; on a denial it names the ONE author that refused, and
+             * refusal_name is the by-name refusal (P3's denied-by-denylist,
+             * P5's absent-/malformed-justification, P6's denied-by-ops).
+             * reason/denial_text are real exactly for a denial, explicit
+             * nulls otherwise. */
             if (r->verdict == VERDICT_DENIED) {
                 char *breason = bound_copy(r->reason);
                 char *jreason = json_str(breason);
@@ -567,11 +610,26 @@ static void log_flush(void) {
                 free(jref);
             } else if (r->verdict == VERDICT_ALLOWED) {
                 char *jauth = json_str(r->author ? r->author : FH_AUTHOR_DENYLIST);
+                /* THE ALLOW CARRIES ITS OWN READING (P6-fix).  An allowed row
+                 * means "no operator denial AT THIS SEAT", never "the write
+                 * is permitted" — the qualifier used to live only in the
+                 * stderr startup line, which is TRANSIENT, while the one log
+                 * is what a reader (fx-audit, P9's join) sees AT REST.  So it
+                 * is a FIELD on the row.  A NEW key, deliberately not
+                 * `reason`: phase 12 asserts an allowed row's
+                 * reason/refusal_name/denial_text are null, and reason is the
+                 * denial's field — reusing it would make an allow look like a
+                 * refusal. */
+                char *jscope =
+                    json_str("seat-scoped: no operator denial at this seat; "
+                             "the in-guest floor and D2 still govern");
                 fprintf(f,
                         ",\"verdict\":\"allowed\",\"author\":%s,"
+                        "\"allow_scope\":%s,"
                         "\"refusal_name\":null,\"reason\":null,"
                         "\"denial_text\":null}",
-                        jauth);
+                        jauth, jscope);
+                free(jscope);
                 free(jauth);
             } else {
                 fputc('}', f); /* VERDICT_NONE: the P2 row, byte-identical */
@@ -933,9 +991,19 @@ static const char *g_dump_path; /* --dump-requests: the model-facing frames */
  * and the denial-rate instrument speaks. */
 static int g_require_justify;
 
-/* ARMED = an author that can refuse is active.  The denylist (P3) and the
- * justification check (P5) are two authors; either one alone is armed. */
-static int policy_armed(void) { return g_ndeny > 0 || g_require_justify; }
+/* P6's arm (--ops-policy-dir): the operator policy directory at the host seat.
+ * ops_seat_present() is defined with the ops seat itself (below); it is the
+ * seat's own answer to "did an author that can refuse actually run here?"
+ * (loaded AND at least one rule is live at this seat). */
+static int ops_seat_present(void);
+static const char *g_ops_dir;
+
+/* ARMED = an author that can refuse is active.  The denylist (P3), the ops
+ * policy at this seat (P6) and the justification check (P5) are three authors;
+ * any one alone is armed. */
+static int policy_armed(void) {
+    return g_ndeny > 0 || g_require_justify || ops_seat_present();
+}
 
 static int policy_denied(const char *name) {
     if (!policy_armed() || !name) return 0;
@@ -1240,6 +1308,940 @@ static void fh_catalog_check(void) {
 #endif /* FH_MUTANT_NO_NAME_CONTRACT */
 }
 
+/* ── P6: THE OPERATOR AUTHOR at the HOST SEAT ─────────────────────────────── */
+/*
+ * The proxy gains the OPERATOR as a real policy author — the second of the
+ * design's two visibly distinct authors (the operator says "you may not do
+ * this"; P7's claim judgment says "this is not justified").  It REPLACES
+ * NOTHING: the P3 --deny placeholder denylist stays exactly as it is.
+ *
+ * THIS IS A PORT of the in-guest ops seat (tools/fx-verbs-server.c:774-1573:
+ * ops_verify_pins, ops_load_aliases, ops_pattern_valid/ops_pattern_hits,
+ * ops_fold_proper, ops_resolve_and_declare, the fact injection and the
+ * `denied` query), not a re-derivation.  ZERO GUEST CHANGE: the in-guest seat
+ * is DEMOTED to the second line of defence and keeps D2.
+ *
+ * THE D1/D2 SPLIT, DETERMINED FROM THE RULE TEXT (policy/ops/ops-policy.dl —
+ * the artifact, not a summary) AND NAMED IN THE STARTUP LINE:
+ *
+ *   D1  denied(W1,P1) :- touches(W1,P1), kind(W1,write), class(P1,C1),
+ *                        protected(C1).
+ *       Every body atom is derivable AT THIS SEAT: `touches` from the call's
+ *       own arguments, `kind` static per verb, `class`/`protected` from the
+ *       PINNED alias table (policy/ops/ops-aliases.tsv).  D1 IS EVALUABLE
+ *       HERE.
+ *
+ *   D2  denied(W1,P1) :- touches(W1,P1), kind(W1,write), writable(P1),
+ *                        !boot_verdict(ok).
+ *       Needs `writable(P1)` — the compiled-in writable set, an in-guest fact
+ *       of the verbs server's own FX_AGENT_WRITABLE env (fx-verbs-server.c:
+ *       285-314, 1960-1976) — AND `!boot_verdict(ok)`, LIVE in-guest runtime
+ *       state read from the bootlog (fx-verbs-server.c:1430-1438).  The host
+ *       reads NEITHER: fx-audit/fx-claim read the store only AT REST, and the
+ *       gate sees only the two chardev legs.  D2 STAYS IN-GUEST.
+ *
+ * HOW THE SPLIT IS ENFORCED RATHER THAN ASSERTED: this seat LOADS THE WHOLE
+ * pinned artifact (both rules — the rule set is never filtered, so the
+ * loaded policy IS the pinned policy) and injects ONLY the facts it can
+ * derive: kind/touches/class/protected.  It NEVER injects `writable(...)` or
+ * `boot_verdict(...)`, so D2's body has an unsatisfiable atom AT THIS SEAT
+ * and the rule is INERT BY CONSTRUCTION.  The startup line NAMES each rule
+ * as LIVE or INERT at this seat, with the reason — a seat that silently
+ * omitted D2 while its logs read as though the policy were enforced is the
+ * exact failure shape this project keeps paying for.
+ *
+ * THE FLOOR, HONESTLY: this seat has NO floor of its own and CANNOT mirror
+ * one.  The floor is the verbs server's compiled-in writable set, a fact of
+ * the GUEST's environment; the host never sees it.  So the floor — and D2,
+ * which is conditioned on it — is ENFORCED IN-GUEST ONLY (by the demoted C
+ * seat), and the startup line says so.  DENY-MORE-ONLY holds structurally
+ * anyway: this seat can only ADD denials to the in-guest decision
+ * (floor_allows && !denied_D2_guest && !denied_D1_host) — it has no
+ * vocabulary and no code path that could grant anything.
+ *
+ * THE PER-CALL RESOLUTION (the timing difference from the in-guest seat,
+ * stated because it is what the port had to get right): the in-guest seat
+ * resolves `class` at STARTUP against the SERVED path set (the canonicalized
+ * writable-set entries).  At the host the target path is PER CALL — it
+ * arrives in the call's arguments — so `class(<call's path>, <class>)` is
+ * injected per call, matched with the SAME two-form pattern grammar against
+ * the SAME pinned table.  THE SEMANTICS ARE THE SAME because the path is
+ * CANONICALIZED THE SAME WAY FIRST (canon_root_rel's lexical normalization,
+ * fx-verbs-server.c:388-418, re-implemented below as fh_canon_abs): a call
+ * spelling the protected path as "/fx/disk/agent-data/../agent-config.dhall"
+ * must be denied here exactly as it is denied in-guest.  A raw string
+ * comparison against the pattern would MISS it — a host-seat silent allow
+ * (the in-guest seat would still refuse the write, so nothing would execute;
+ * but the host's own job is to decide, and the gate pins the canonicalizing
+ * behaviour with a mutant that does not canonicalize).
+ *
+ * ONE HONEST DIFFERENCE THAT CANNOT BE PORTED, named: the in-guest seat's
+ * STARTUP obligations run against a SERVED SET — "a PROTECTED alias matching
+ * NO served path" and "a SERVED path covered by NO row" are both loud
+ * refusals there (fx-verbs-server.c:1187-1266).  This seat has no served set
+ * (the wired paths are a guest-env fact), so it cannot make either check and
+ * DOES NOT CLAIM TO.  An unclassified path at this seat simply acquires no
+ * `class` fact: untightened, not loosened — the in-guest floor and D2 still
+ * govern, and the in-guest seat still refuses loudly if its own served set
+ * goes uncovered.
+ *
+ * THE BINDING, MEASURED AGAINST THE C SEAT RATHER THAN ASSUMED: the verb whose
+ * path this seat binds is fx_write (the one name the in-guest dispatch reads
+ * `path` from — fx-verbs-server.c:2680-2684; `content` is irrelevant to the
+ * policy), and the fact the policy speaks about is `touches(<verb>,<path>)`
+ * with the SAME guest-absolute spelling the pinned patterns are written in.
+ * TWO SHAPES NAMED, not hidden: (a) the SUBTREE pattern form's grandchild case
+ * cannot arise IN-GUEST at all — the floor is EXACT-match, so no grandchild
+ * ever reaches the commit site — which is exactly why the grammar is
+ * re-checked HERE (the pinned TABLE is the authority and the in-guest seat
+ * validates it at its own startup); (b) the never-opened-done shape (a
+ * function_call whose `added` never arrived) is judged at this seat on the
+ * done item's own `arguments` field, exactly as P3 and P5 judge it there:
+ * the guest dispatches NOTHING for that shape (its accumulator is fed by the
+ * added event alone), so the judgement is a refusal of a call that could not
+ * have executed — the pre-existing P3 shape, inherited, not newly introduced.
+ *
+ * THE PIN (ported verbatim in discipline): every file policy/ops/PINS names
+ * must exist with the pinned sha256, verified AT STARTUP before any denial is
+ * believed; the verified bytes are KEPT and handed to the loaders (no window
+ * for a swap between hash and load).  A stale or swapped artifact is a LOUD
+ * STARTUP REFUSAL naming both shas.  An ABSENT --ops-policy-dir is the NAMED
+ * "no operator author at this seat" state, never an error.  ONE DELIBERATE
+ * DIFFERENCE from the in-guest seat: --ops-policy-dir is EXPLICIT, so a dir
+ * the operator NAMES but that carries no verifiable PINS refuses loudly, where
+ * the in-guest seat (whose dir is a well-known staging point) treats an
+ * absent-or-EMPTY dir as the named floor-only state.
+ */
+#define FH_OPS_DL       "ops-policy.dl"
+#define FH_OPS_TSV      "ops-aliases.tsv"
+#define FH_OPS_PINS     "PINS"
+#define FH_OPS_MAX_FILE (1024u * 1024u) /* the artifact cap, FXV_OPS_MAX_FILE's */
+
+#ifndef FH_MUTANT_NO_OPS_SEAT
+/* THE WRITE-VERB SET — the verbs whose `kind(W, write)` fact this seat
+ * injects.  PINNED HERE, and the pin is checkable: the in-guest seat is
+ * consulted from EXACTLY ONE commit site, native_write
+ * (fx-verbs-server.c:1983, the only `!ops_write_allowed(` call), and that
+ * site writes exactly one verb's path.  The gate re-checks that provenance
+ * against the guest source, so a second write verb added in-guest surfaces as
+ * a gate failure instead of as a verb this seat silently does not bind (a
+ * silent allow of the deny-more-only direction). */
+static const char fh_ops_write_verbs[] = "fx_write\n";
+#define FH_OPS_WRITE_PROVENANCE "tools/fx-verbs-server.c:1983 native_write (the ONE !ops_write_allowed call site)"
+
+/* Two DERIVED predicates this seat can never inject, and therefore the mark
+ * of a rule that is INERT here.  A rule whose body names either cannot fire
+ * on facts this seat adds — see the D1/D2 block above. */
+static const char *const FH_OPS_UNSEEN[] = { "writable", "boot_verdict" };
+#endif /* !FH_MUTANT_NO_OPS_SEAT */
+
+typedef struct {
+    char *alias;        /* the raw tsv surface, for the refusals */
+    char *alias_folded; /* its FOLDED symbol (le's proper-noun fold) */
+    char *pathclass;    /* the raw surface, for the refusals */
+    char *class_sym;    /* FOLDED — the symbol the class/protected facts carry */
+    int   prot;         /* the protected flag D1's protected(C1) rides on */
+    char *pattern;      /* EXACT '<path>' or the SUBTREE form: <path> slash star star */
+} FhOpsRow;
+
+static struct {
+    int   loaded;   /* a policy dir was given AND every startup check passed */
+    int   present;  /* ...AND at least one rule is LIVE at this seat */
+    char  dir[PATH_MAX];
+    dl_db *db;
+    char  scratch[PATH_MAX];
+    char  sha[65];      /* the pinned .dl sha */
+    char *dl_text;      /* the artifact's bytes (the verified ones) */
+    char **rule;        /* its rule lines, for the per-rule attribution */
+    size_t n_rule;
+    size_t n_live;      /* rules this seat can evaluate */
+    size_t n_inert;     /* rules naming a predicate this seat cannot inject */
+    char  inert[256];   /* their positional names, for the startup line */
+    char  live[256];    /* the LIVE rules' positional names */
+    FhOpsRow *row;
+    size_t n_row;
+} OPS;
+
+/* "Did an author that CAN REFUSE actually run at this seat?" — the honesty
+ * rule's question (policy_armed, authors_ran).  A policy that loaded but has
+ * no live rule here has no host-side contribution and must NOT be claimed as
+ * an author that ran.  Compiled out entirely in the pre-fix control. */
+static int ops_seat_present(void) {
+#ifdef FH_MUTANT_NO_OPS_SEAT
+    return 0;
+#else
+    return OPS.present;
+#endif
+}
+
+#ifndef FH_MUTANT_NO_OPS_SEAT
+/* ── the seat's internals (compiled out entirely in the pre-fix control) ─── */
+
+/* A LOUD startup refusal, before the slave path is published: the ops seat
+ * has no later moment at which a wrong policy load could be made visible. */
+static void ops_gate_die(const char *fmt, ...) {
+    fputs("fx-hostgate: ops-policy REFUSED: ", stderr);
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+    fputc('\n', stderr);
+    exit(1);
+}
+
+/* Best-effort scratch removal (flat engine files; no shell, no system(3)) —
+ * the in-guest seat's ops_rm_rf discipline: the scratch db is
+ * process-lifetime state and must not outlive the process. */
+static void ops_rm_rf(const char *dir, int depth) {
+    DIR *d = opendir(dir);
+    if (!d) return;
+    struct dirent *de;
+    while ((de = readdir(d)) != NULL) {
+        if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0) continue;
+        char *child = xmalloc(strlen(dir) + 1 + strlen(de->d_name) + 1);
+        sprintf(child, "%s/%s", dir, de->d_name);
+        if (unlink(child) != 0 && errno == EISDIR && depth < 4)
+            ops_rm_rf(child, depth + 1);
+        free(child);
+    }
+    closedir(d);
+    rmdir(dir);
+}
+
+/* STATED RESIDUAL: this runs at process exit (atexit) and on every normal
+ * path, so a proxy that finishes removes its scratch db.  A proxy killed by a
+ * SIGNAL does not run it and leaves the scratch dir under $TMPDIR behind —
+ * the in-guest seat's ops_policy_shutdown has exactly the same shape (atexit,
+ * the same signal hole), and the dir holds only this process' own policy
+ * state, never anything in the store or in a writable set.  Named, not
+ * hidden. */
+static void ops_shutdown(void) {
+    if (OPS.db) { dl_close(OPS.db); OPS.db = NULL; }
+    if (OPS.scratch[0]) { ops_rm_rf(OPS.scratch, 0); OPS.scratch[0] = '\0'; }
+}
+
+/* Read a whole file, or NULL (errno set; EFBIG when over the cap). */
+static char *ops_read_file(const char *path, size_t *len_out) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return NULL;
+    size_t cap = 8192, len = 0;
+    char *buf = malloc(cap + 1);
+    if (!buf) { fclose(f); return NULL; }
+    for (;;) {
+        if (len == cap) {
+            if (cap >= FH_OPS_MAX_FILE) {
+                errno = EFBIG; /* named as a read failure, not a stale errno */
+                free(buf); fclose(f); return NULL;
+            }
+            cap *= 2;
+            char *nb = realloc(buf, cap + 1);
+            if (!nb) { free(buf); fclose(f); return NULL; }
+            buf = nb;
+        }
+        size_t n = fread(buf + len, 1, cap - len, f);
+        len += n;
+        if (n == 0) break;
+    }
+    if (ferror(f)) { free(buf); fclose(f); return NULL; }
+    fclose(f);
+    buf[len] = '\0';
+    if (len_out) *len_out = len;
+    return buf;
+}
+
+/* THE PIN CHECK (ported): every file PINS names must exist with the pinned
+ * sha256; the two files the seat LOADS must be pinned at all; the verified
+ * bytes are the bytes the loaders receive.  Names BOTH shas on a mismatch —
+ * the operator's diagnosis is "which bytes did I expect vs which am I
+ * holding". */
+static void ops_verify_pins(const char *dir, const char *pins_path,
+                            char **dl_out, char **tsv_out, char *dl_sha_out) {
+    size_t plen = 0;
+    char *pins = ops_read_file(pins_path, &plen);
+    if (!pins)
+        ops_gate_die("%s cannot be read: %s — a present policy dir must carry "
+                     "a verifiable pin set", pins_path, strerror(errno));
+    int saw_dl = 0, saw_tsv = 0;
+    char *save = NULL;
+    for (char *line = strtok_r(pins, "\n", &save); line;
+         line = strtok_r(NULL, "\n", &save)) {
+        while (*line == ' ' || *line == '\t') line++;
+        if (!*line || *line == '#') continue;
+        char *tab = strchr(line, '\t');
+        if (!tab)
+            ops_gate_die("%s: a pin row is name<TAB>sha256, got '%.80s'",
+                         pins_path, line);
+        *tab = '\0';
+        char *name = line, *want = tab + 1;
+        char *cr = strchr(want, '\r');
+        if (cr) *cr = '\0';
+        int is_dl = strcmp(name, FH_OPS_DL) == 0;
+        int is_tsv = strcmp(name, FH_OPS_TSV) == 0;
+        if (is_dl) saw_dl = 1;
+        if (is_tsv) saw_tsv = 1;
+        char path[PATH_MAX];
+        int n = snprintf(path, sizeof path, "%s/%s", dir, name);
+        if (n <= 0 || n >= (int)sizeof path)
+            ops_gate_die("pin path too long: %s", name);
+        size_t flen = 0;
+        char *bytes = ops_read_file(path, &flen);
+        if (!bytes)
+            ops_gate_die("pinned file %s is MISSING or unreadable (: %s) "
+                         "(pinned sha256 %s) — no such file, or it is over the "
+                         "%u-byte artifact cap; restore it or re-pin",
+                         path, strerror(errno), want, FH_OPS_MAX_FILE);
+        char got[65];
+        sha256_hex(bytes, flen, got);
+        if (strcmp(got, want) != 0) {
+            free(bytes);
+            ops_gate_die("pinned file %s sha256 mismatch: pinned %s != actual "
+                         "%s — the deployed artifact is stale or swapped; a "
+                         "policy edit is a re-pin (artifact + PINS in the same "
+                         "release)", path, want, got);
+        }
+        if (is_dl) {
+            free(*dl_out);
+            *dl_out = bytes;
+            snprintf(dl_sha_out, 65, "%s", want);
+        } else if (is_tsv) {
+            free(*tsv_out);
+            *tsv_out = bytes;
+        } else {
+            free(bytes);
+        }
+    }
+    free(pins);
+    if (!saw_dl || !saw_tsv)
+        ops_gate_die("%s does not pin both %s and %s — the loaded artifacts "
+                     "would go unverified", pins_path, FH_OPS_DL, FH_OPS_TSV);
+}
+
+/* THE PATTERN GRAMMAR — the TWO FORMS ops-aliases.tsv states and
+ * eval_ops.py --check-aliases enforces at pin time, RE-RUN AT THIS SEAT (the
+ * seat does not trust the staging to have been checked, and a previous review
+ * found this exact grammar broken once: patterns were exact-match globs while
+ * validation checked only absoluteness, so a rule that LOOKED protective
+ * never fired for any child — an operator-reachable SILENT ALLOW).
+ *   EXACT   '<path>'  glob-less; matches that one path, NEVER a prefix
+ *   SUBTREE           '<path>' plus a slash and two asterisks: the path
+ *                     itself and every descendant
+ * Anything else (a lone '*', '?', '[', '**' off the tail, a trailing '/', a
+ * subtree base ending in '/') is a LOUD refusal: coverage nobody stated is
+ * the silent allow-all. */
+static int ops_glob_char(const char *s) { return strpbrk(s, "*?[") != NULL; }
+
+static int ops_pattern_valid(const char *p) {
+    size_t l = strlen(p);
+    if (l < 2 || p[0] != '/') return 0;
+    if (l >= 3 && strcmp(p + l - 3, "/**") == 0) {
+        size_t bl = l - 3;
+        if (bl < 2 || p[0] != '/' || p[bl - 1] == '/') return 0;
+        char base[PATH_MAX];
+        if (bl >= sizeof base) return 0;
+        memcpy(base, p, bl); base[bl] = '\0';
+        return !ops_glob_char(base);
+    }
+    if (p[l - 1] == '/') return 0;
+    return !ops_glob_char(p);
+}
+
+static int ops_pattern_hits(const char *pattern, const char *canon) {
+    size_t pl = strlen(pattern);
+    if (pl >= 3 && strcmp(pattern + pl - 3, "/**") == 0) {
+        size_t bl = pl - 3;
+        size_t cl = strlen(canon);
+        if (cl < bl || strncmp(canon, pattern, bl) != 0) return 0;
+        return cl == bl || canon[bl] == '/';
+    }
+    return strcmp(canon, pattern) == 0;
+}
+
+/* THE FOLD (the folding contract's seat half): le compiles a proper noun to
+ * its LOWERCASED dl symbol, so the seat folds the table's surfaces before
+ * interning — an unfolded surface could only ever non-match a legal rule's
+ * folded constant (a policy that stops matching stops protecting, silently).
+ * A non-ASCII-letters surface is REFUSED rather than folded: le could never
+ * compile it into a constant. */
+static int ops_fold_proper(char *dst, size_t dstsz, const char *src) {
+    size_t l = strlen(src);
+    if (l == 0 || l >= dstsz) return 0;
+    for (size_t i = 0; i < l; i++) {
+        unsigned char c = (unsigned char)src[i];
+        if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'))) return 0;
+        dst[i] = (char)(c | 0x20);
+    }
+    dst[l] = '\0';
+    return 1;
+}
+
+/* The alias table: alias<TAB>pathclass<TAB>protected<TAB>pattern, '#'
+ * comments — parsed and VALIDATED here (grammar above, duplicate aliases, the
+ * yes/no flag, proper-noun surfaces), because a malformed row must refuse
+ * loudly, never half-match.  `tsv_owned` is the verified bytes the pin check
+ * kept. */
+static void ops_load_aliases(const char *path, char *tsv_owned) {
+    char *tsv = tsv_owned;
+    size_t cap = 8;
+    OPS.row = xmalloc(cap * sizeof *OPS.row);
+    char *save = NULL;
+    for (char *line = strtok_r(tsv, "\n", &save); line;
+         line = strtok_r(NULL, "\n", &save)) {
+        while (*line == ' ' || *line == '\t') line++;
+        size_t ll = strlen(line);
+        if (ll > 0 && line[ll - 1] == '\r') line[ll - 1] = '\0';
+        if (!*line || *line == '#') continue;
+        char *f[4];
+        int nf = 0;
+        char *lsave = NULL;
+        for (char *tok = strtok_r(line, "\t", &lsave); tok && nf < 4;
+             tok = strtok_r(NULL, "\t", &lsave))
+            f[nf++] = tok;
+        if (nf != 4)
+            ops_gate_die("%s: an alias row is alias<TAB>pathclass<TAB>protected"
+                         "<TAB>pattern, got %d field(s)", path, nf);
+        if (strcmp(f[2], "yes") != 0 && strcmp(f[2], "no") != 0)
+            ops_gate_die("%s: the protected flag is '%s', not yes|no", path, f[2]);
+        if (!ops_pattern_valid(f[3]))
+            ops_gate_die("%s: the pattern '%s' is neither of the two stated "
+                         "forms — an EXACT glob-less path or a SUBTREE "
+                         "'<path>/**'; an ambiguous glob covers a set nobody "
+                         "stated, and a pattern that matches nothing is a "
+                         "silent allow-all", path, f[3]);
+        if (OPS.n_row == cap) {
+            cap *= 2;
+            OPS.row = realloc(OPS.row, cap * sizeof *OPS.row);
+            if (!OPS.row) die_errno("realloc alias rows");
+        }
+        FhOpsRow *r = &OPS.row[OPS.n_row];
+        memset(r, 0, sizeof *r);
+        r->alias = xstrdup(f[0]);
+        r->pathclass = xstrdup(f[1]);
+        r->pattern = xstrdup(f[3]);
+        r->alias_folded = xmalloc(strlen(f[0]) + 1);
+        r->class_sym = xmalloc(strlen(f[1]) + 1);
+        if (!ops_fold_proper(r->alias_folded, strlen(f[0]) + 1, f[0]))
+            ops_gate_die("%s: the alias '%s' is not a proper noun (ASCII "
+                         "letters only) — le compiles proper nouns to their "
+                         "lowercased symbol, so any other shape could only ever "
+                         "match nothing", path, f[0]);
+        if (!ops_fold_proper(r->class_sym, strlen(f[1]) + 1, f[1]))
+            ops_gate_die("%s: the pathclass '%s' is not a proper noun (ASCII "
+                         "letters only)", path, f[1]);
+        for (size_t i = 0; i < OPS.n_row; i++)
+            if (strcmp(OPS.row[i].alias_folded, r->alias_folded) == 0)
+                ops_gate_die("%s: the alias '%s' is mapped twice", path, f[0]);
+        r->prot = (strcmp(f[2], "yes") == 0);
+        OPS.n_row++;
+    }
+    free(tsv);
+    if (OPS.n_row == 0)
+        ops_gate_die("%s carries no alias rows — the vocabulary seam's binding "
+                     "table is empty and every path would be unclassified", path);
+}
+
+/* THE PATH CANONICALIZATION, px-ported from the in-guest seat's
+ * canon_root_rel + ops_abs_of (fx-verbs-server.c:388-418, 1170-1177): resolve
+ * "." and ".." components lexically and drop empty ones; a ".." that climbs
+ * above the root, or a non-absolute spelling, yields NULL.  THE RESULT IS THE
+ * ABSOLUTE GUEST-ABSOLUTE SPELLING the pinned alias patterns are written in,
+ * so matching here is the SAME match the in-guest seat makes — a raw string
+ * comparison would miss every equivalent spelling (a host-seat silent allow).
+ * Returns a malloc'd string, or NULL. */
+#ifndef FH_MUTANT_OPS_NO_CANON
+static char *fh_canon_abs(const char *abs) {
+    if (!abs || abs[0] != '/') return NULL;
+    size_t cap = strlen(abs) + 2;
+    char *out = xmalloc(cap);
+    size_t olen = 0;
+    int depth = 0;
+    const char *p = abs;
+    while (*p) {
+        while (*p == '/') p++;
+        if (!*p) break;
+        const char *seg = p;
+        while (*p && *p != '/') p++;
+        size_t sl = (size_t)(p - seg);
+        if (sl == 1 && seg[0] == '.') continue;
+        if (sl == 2 && seg[0] == '.' && seg[1] == '.') {
+            if (depth == 0) { free(out); return NULL; } /* escapes the root */
+            while (olen > 0 && out[olen - 1] != '/') olen--;
+            if (olen > 0) olen--;
+            depth--;
+            continue;
+        }
+        if (olen + sl + 2 >= cap) { free(out); return NULL; }
+        out[olen++] = '/';
+        memcpy(out + olen, seg, sl);
+        olen += sl;
+        depth++;
+    }
+    if (olen == 0) out[olen++] = '/'; /* the root itself */
+    out[olen] = '\0';
+    return out;
+}
+#endif /* !FH_MUTANT_OPS_NO_CANON */
+
+/* How many write verbs the pinned set names (the startup line counts rather
+ * than asserting a literal). */
+static size_t ops_write_verb_count(void) {
+    size_t n = 0;
+    for (const char *p = fh_ops_write_verbs; *p; p++) {
+        if (*p == '\n') n++;
+    }
+    return n;
+}
+
+/* Is `name` a verb this seat injects kind(<verb>, write) for? */
+static int ops_write_verb(const char *name) {
+    if (!name || !*name) return 0;
+    const char *p = fh_ops_write_verbs;
+    while (*p) {
+        const char *e = strchr(p, '\n');
+        if (!e) break;
+        size_t l = (size_t)(e - p);
+        if (strlen(name) == l && strncmp(name, p, l) == 0) return 1;
+        p = e + 1;
+    }
+    return 0;
+}
+
+/* Split the artifact's rule lines (one per line, the deterministic compile)
+ * for the per-rule attribution and the LIVE/INERT classification.  A rule
+ * whose BODY names a predicate this seat can never inject is INERT here —
+ * named, never silently dropped from the artifact. */
+static void ops_classify_rules(void) {
+    for (char *p = OPS.dl_text; *p; ) {
+        while (*p == '\n' || *p == '\r' || *p == ' ' || *p == '\t') p++;
+        if (!*p) break;
+        char *end = p;
+        while (*end && *end != '\n' && *end != '\r') end++;
+        int ended = *end != '\0';
+        *end = '\0';
+        if (!ended) end = NULL;
+        OPS.rule = realloc(OPS.rule, (OPS.n_rule + 1) * sizeof *OPS.rule);
+        if (!OPS.rule) die_errno("realloc rule lines");
+        OPS.rule[OPS.n_rule++] = p;
+        if (!end) break;
+        p = end + 1;
+    }
+    if (OPS.n_rule == 0)
+        ops_gate_die("%s carries no rules (policy-vacuous) — an artifact the "
+                     "release path's lint refuses cannot be served as a policy",
+                     FH_OPS_DL);
+
+    for (size_t i = 0; i < OPS.n_rule; i++) {
+        const char *body = strchr(OPS.rule[i], ':');
+        int unseen = 0;
+        if (body) {
+            for (size_t k = 0; k < sizeof FH_OPS_UNSEEN / sizeof *FH_OPS_UNSEEN; k++) {
+                size_t nl = strlen(FH_OPS_UNSEEN[k]);
+                char needle[64];
+                snprintf(needle, sizeof needle, "%s(", FH_OPS_UNSEEN[k]);
+                (void)nl;
+                if (strstr(body, needle)) { unseen = 1; break; }
+            }
+        }
+        char *dst = unseen ? OPS.inert : OPS.live;
+        char nm[24];
+        snprintf(nm, sizeof nm, "%sD%zu", dst[0] ? "," : "", i + 1);
+        size_t used = strlen(dst);
+        if (used + strlen(nm) < 200) strcat(dst, nm);
+        if (unseen) OPS.n_inert++;
+        else OPS.n_live++;
+    }
+    /* PRESENT means an author that can actually refuse is active: a policy
+     * whose every rule is INERT here has no host-side contribution, and this
+     * seat must not claim one (see the honesty rule). */
+    OPS.present = OPS.n_live > 0;
+    if (OPS.loaded && !OPS.present)
+        note("ops-policy: %zu rule(s) loaded, NONE live at this seat (%s are "
+             "inert here: they need facts this seat never injects) — the "
+             "operator author does NOT act at this seat; the in-guest seat "
+             "alone enforces this policy", OPS.n_rule,
+             OPS.inert[0] ? OPS.inert : "(all)");
+}
+
+/* The fact-count collector (dl_tuple_cb): the query's only job here is
+ * "does a denial derive", so it counts rows. */
+static int ops_count_cb(const uint32_t *cols, uint8_t arity, void *u) {
+    (void)cols; (void)arity;
+    (*(size_t *)u)++;
+    return 0;
+}
+
+
+/* The real startup: only built when the seat exists. */
+static void ops_seat_load(const char *dir) {
+    struct stat st;
+    if (stat(dir, &st) != 0 || !S_ISDIR(st.st_mode))
+        ops_gate_die("%s is not a readable directory — a --ops-policy-dir must "
+                     "name the directory holding %s, %s and %s",
+                     dir, FH_OPS_PINS, FH_OPS_DL, FH_OPS_TSV);
+    snprintf(OPS.dir, sizeof OPS.dir, "%s", dir);
+
+    char pins_path[PATH_MAX], tsv_path[PATH_MAX];
+    snprintf(pins_path, sizeof pins_path, "%s/%s", dir, FH_OPS_PINS);
+    snprintf(tsv_path, sizeof tsv_path, "%s/%s", dir, FH_OPS_TSV);
+    char *tsv_bytes = NULL;
+    ops_verify_pins(dir, pins_path, &OPS.dl_text, &tsv_bytes, OPS.sha);
+    ops_load_aliases(tsv_path, tsv_bytes);
+
+    /* the scratch db: process-lifetime state, removed at exit.  A HOST temp
+     * dir (never the store, never the guest's /run — this seat is host-side). */
+    const char *tmp = getenv("TMPDIR");
+    if (!tmp || !*tmp) tmp = "/tmp";
+    int n = snprintf(OPS.scratch, sizeof OPS.scratch, "%s/fx-hostgate-ops-XXXXXX", tmp);
+    if (n <= 0 || n >= (int)sizeof OPS.scratch)
+        ops_gate_die("cannot build the policy scratch db path under %s", tmp);
+    if (!mkdtemp(OPS.scratch))
+        ops_gate_die("cannot create the policy scratch db under %s: %s — a "
+                     "present policy must be loadable, never silently skipped",
+                     OPS.scratch, strerror(errno));
+    atexit(ops_shutdown);
+    int derr = 0;
+    OPS.db = dl_open2(OPS.scratch, &derr);
+    if (!OPS.db)
+        ops_gate_die("cannot open the policy scratch db %s (err %d)", OPS.scratch, derr);
+
+    /* THE CLOSED RELATION SET — exactly the ops lexicon's templates plus the
+     * one head (ops-lexicon.ini [predicates]).  A pinned artifact whose atoms
+     * fall outside it fails dl_load_rules BY NAME (the engine refuses an
+     * undeclared predicate), so relation-level drift is loud.  It is DECLARED
+     * even where this seat never adds a fact (writable, boot_verdict): the
+     * artifact is loaded whole, and it is the BINDING, not the relation set,
+     * that makes D2 inert. */
+    if (dl_declare_relation(OPS.db, "denied", 2) != 0 ||
+        dl_declare_relation(OPS.db, "touches", 2) != 0 ||
+        dl_declare_relation(OPS.db, "kind", 2) != 0 ||
+        dl_declare_relation(OPS.db, "class", 2) != 0 ||
+        dl_declare_relation(OPS.db, "protected", 1) != 0 ||
+        dl_declare_relation(OPS.db, "writable", 1) != 0 ||
+        dl_declare_relation(OPS.db, "boot_verdict", 1) != 0)
+        ops_gate_die("cannot declare the closed relation set in %s", OPS.scratch);
+    if (dl_load_rules(OPS.db, OPS.dl_text) != 0)
+        ops_gate_die("%s/%s: the engine refused the pinned rules (see the "
+                     "engine's diagnostic above) — a pinned artifact the engine "
+                     "cannot load is a broken release, never a silent skip",
+                     dir, FH_OPS_DL);
+
+    OPS.loaded = 1;
+    ops_classify_rules();
+
+    /* THE STATIC FACTS — kind(<write verb>, write) for every verb in the
+     * pinned write-verb set.  The verb must be in the proxy's own pinned
+     * catalog: a write verb this proxy has never heard of would be a binding
+     * nothing can consult, and it is cheap to make that loud. */
+    {
+        char vb[128];
+        const char *p = fh_ops_write_verbs;
+        while (*p) {
+            const char *e = strchr(p, '\n');
+            if (!e) break;
+            size_t l = (size_t)(e - p);
+            if (l >= sizeof vb) ops_gate_die("a write-verb entry is too long");
+            memcpy(vb, p, l); vb[l] = '\0';
+            int in_catalog = 0;
+            size_t cn = fh_catalog_count();
+            for (size_t i = 0; i < cn; i++) {
+                char nm[128];
+                if (fh_catalog_nth(i, nm, sizeof nm) && strcmp(nm, vb) == 0) {
+                    in_catalog = 1;
+                    break;
+                }
+            }
+            if (!in_catalog)
+                ops_gate_die("the write-verb set names \"%s\", which is not in "
+                             "the proxy's pinned verb catalog — a write verb the "
+                             "catalog does not know is a binding nothing can "
+                             "consult (%s)", vb, FH_OPS_WRITE_PROVENANCE);
+            uint32_t k[2] = { dl_intern_str(OPS.db, vb),
+                              dl_intern_str(OPS.db, "write") };
+            if (!k[0] || !k[1] || dl_add_fact(OPS.db, "kind", k, 2) < 0)
+                ops_gate_die("cannot inject the kind fact for %s (the folding "
+                             "contract is machine-checked: a failed add refuses, "
+                             "never silently proceeds)", vb);
+            p = e + 1;
+        }
+    }
+
+    /* THE STARTUP-HALF FACTS — protected(<class>) for every protected=yes row.
+     * class-level, exactly as the in-guest seat injects it; the per-call
+     * class(<path>,<class>) facts are what make it bite (D1 needs BOTH for
+     * the SAME path). */
+    for (size_t i = 0; i < OPS.n_row; i++) {
+        if (!OPS.row[i].prot) continue;
+        uint32_t pf[1] = { dl_intern_str(OPS.db, OPS.row[i].class_sym) };
+        if (!pf[0] || dl_add_fact(OPS.db, "protected", pf, 1) < 0)
+            ops_gate_die("cannot inject the protected fact for %s",
+                         OPS.row[i].pathclass);
+    }
+}
+
+/* STARTUP: the whole policy load, or one of the two NAMED states (no policy
+ * given; a policy none of whose rules is live at this seat).  Called from
+ * main() BEFORE the slave path is published, so every refusal is early. */
+static void ops_seat_startup(const char *dir) {
+    memset(&OPS, 0, sizeof OPS);
+    if (!dir) {
+        /* THE NAMED "NO OPERATOR AUTHOR AT THIS SEAT" STATE: not an error,
+         * never a silent allow-all — the in-guest floor and D2 still govern,
+         * and the P3 denylist is unaffected. */
+        note("ops-policy: NONE — no --ops-policy-dir was given, so the "
+             "operator author does not act at this seat (the in-guest seat "
+             "still enforces the floor; this is a per-seat state, not an "
+             "error)");
+        return;
+    }
+    ops_seat_load(dir);
+#ifdef FH_MUTANT_OPS_BIND_UNSEEN
+    note("ops-policy: MUTANT (FH_MUTANT_OPS_BIND_UNSEEN) — this build ALSO "
+         "injects writable(<path>) per call: THE FLOOR FACT THIS SEAT CANNOT "
+         "SEE.  D2-class rules therefore FIRE here and the seat denies writes "
+         "the real build allows — it is the D2-bound control, not a seat that "
+         "claims a floor.");
+#endif
+#ifdef FH_MUTANT_OPS_NO_CANON
+    note("ops-policy: MUTANT (FH_MUTANT_OPS_NO_CANON) — the call's RAW path "
+         "string is matched against the pinned patterns: an equivalent "
+         "spelling of a protected path is NOT denied at this seat");
+#endif
+    note("ops-policy: seat %s — %zu rule(s) loaded from the pinned artifact "
+         "(sha256 %.16s..), %zu LIVE at this seat (%s), %zu INERT here (%s); "
+         "%zu alias row(s), %zu write verb(s) bound",
+         OPS.present ? "ARMED" : "LOADED-BUT-INERT",
+         OPS.n_rule, OPS.sha, OPS.n_live, OPS.live[0] ? OPS.live : "(none)",
+         OPS.n_inert, OPS.inert[0] ? OPS.inert : "(none)", OPS.n_row,
+         ops_write_verb_count());
+    if (OPS.present) {
+        note("ops-policy: LIVE AT THIS SEAT (%s) — a rule whose body needs only "
+             "the facts this seat can DERIVE.  Facts injected: "
+             "kind(<write verb>,write) at startup; touches(<verb>,<canon path>) "
+             "and class(<canon path>,<class>) PER CALL (the target path is in "
+             "the call's arguments, canonicalized before matching) against the "
+             "pinned alias table; protected(<class>) at startup for every "
+             "protected=yes row.  D1 is the rule class this seat can evaluate.",
+             OPS.live);
+        note("ops-policy: INERT AT THIS SEAT (%s) — loaded from the SAME pinned "
+             "artifact, but it CANNOT fire here: this seat never injects "
+             "writable(...) (the compiled-in writable set is an IN-GUEST fact "
+             "of the verbs server's own environment) and never injects "
+             "boot_verdict(...) (LIVE in-guest runtime state, which no "
+             "host-side reader can see — fx-audit/fx-claim read the store only "
+             "AT REST).  D2 STAYS IN-GUEST, enforced by the demoted C seat "
+             "(tools/fx-verbs-server.c).",
+             OPS.inert[0] ? OPS.inert : "(none)");
+        note("ops-policy: THE FLOOR — this seat has NO floor of its own and "
+             "does not claim one: the compiled-in writable set is enforced "
+             "IN-GUEST ONLY.  This seat can only ADD denials to the in-guest "
+             "decision (deny-more-only holds structurally: it has no rule "
+             "vocabulary and no code path that could grant); an ALLOW from this "
+             "seat means 'no operator denial at this seat', never 'the write is "
+             "permitted'.");
+    }
+}
+
+#else /* FH_MUTANT_NO_OPS_SEAT */
+
+/* P6 PRE-FIX CONTROL (build/fx-hostgate-noops): the ops seat is compiled OUT
+ * while --ops-policy-dir is still ACCEPTED and IGNORED, so the build runs
+ * exactly the P3-era proxy.  DIRECTION: FAIL-OPEN — a policy that DENIES in
+ * the artifact does not deny at this seat (the true name crosses and the call
+ * executes).  Asserted by the gate's control arm. */
+static void ops_seat_startup(const char *dir) {
+    memset(&OPS, 0, sizeof OPS);
+    if (dir)
+        note("ops-policy: SEAT COMPILED OUT (FH_MUTANT_NO_OPS_SEAT) — the "
+             "policy dir %s is ACCEPTED AND IGNORED: this is the PRE-FIX "
+             "control, the ops author does NOT run, and a call the pinned "
+             "policy denies will CROSS and EXECUTE", dir);
+    else
+        note("ops-policy: SEAT COMPILED OUT (FH_MUTANT_NO_OPS_SEAT)");
+}
+
+#endif /* FH_MUTANT_NO_OPS_SEAT */
+
+/* THE PER-CALL DECISION.  Returns 1 when this seat DENIES (filling `why`),
+ * 0 when it is SILENT (it never permits — silence means "no operator denial
+ * at this seat", and the in-guest floor + D2 still govern).  Injects the
+ * per-call facts, queries the pinned rules, retracts the facts
+ * (collect-then-mutate, the runstore.h discipline — the retraction also
+ * retracts the derived rows, so nothing latches across calls). */
+#ifndef FH_MUTANT_NO_OPS_SEAT
+static int ops_judge(const char *name, const char *args, char *why, size_t whycap) {
+    if (!OPS.present) return 0;
+    if (!ops_write_verb(name)) return 0;
+
+    /* THE PATH — the per-call binding the in-guest seat resolves at startup.
+     * Extracted from the call's arguments BY KEY (the guest's own discipline,
+     * fx-verbs-server.c:2548-2557: every verb extracts by key) and
+     * CANONICALIZED before matching, so an equivalent spelling of a protected
+     * path is denied here exactly as it is denied in-guest. */
+    if (!args || !*args) return 0;
+    yyjson_doc *doc = yyjson_read(args, strlen(args), 0);
+    yyjson_val *root = doc ? yyjson_doc_get_root(doc) : NULL;
+    const char *raw = NULL;
+    if (yyjson_is_obj(root)) {
+        yyjson_val *pv = yyjson_obj_get(root, "path");
+        if (pv) raw = yyjson_get_str(pv);
+    }
+    if (!raw) { /* no path (or a non-string one): nothing to bind here — the
+                * in-guest seat refuses the malformed call itself. */
+        if (doc) yyjson_doc_free(doc);
+        return 0;
+    }
+    char *apath;
+#ifdef FH_MUTANT_OPS_NO_CANON
+    /* P6 CANONICALIZATION BLIND (build/fx-hostgate-opsnocanon): match the RAW
+     * path string against the pinned patterns.  Enables the host-seat SILENT
+     * ALLOW this blind is the control for. */
+    if (raw[0] != '/') {
+        if (doc) yyjson_doc_free(doc);
+        return 0;
+    }
+    apath = xstrdup(raw);
+#else
+    apath = fh_canon_abs(raw);
+#endif
+    if (!apath) { /* non-absolute or root-escaping: the in-guest seat refuses
+                   * the same call (fx-verbs-server.c:1935-1958). */
+        if (doc) yyjson_doc_free(doc);
+        return 0;
+    }
+    if (doc) yyjson_doc_free(doc);
+
+    uint32_t w = dl_intern_str(OPS.db, name);
+    uint32_t p = dl_intern_str(OPS.db, apath);
+    uint32_t tp[2] = { w, p };
+    if (!w || !p || dl_add_fact(OPS.db, "touches", tp, 2) < 0) {
+        free(apath);
+        snprintf(why, whycap, "cannot inject the per-call facts (engine error) "
+                              "— refusing, never allowing");
+        return 1; /* FAIL-CLOSED: an unconsultable policy refuses */
+    }
+#ifdef FH_MUTANT_OPS_BIND_UNSEEN
+    /* P6 D2-BOUND CONTROL (build/fx-hostgate-opsfloor): this seat binds a fact
+     * it CANNOT see — the compiled-in floor.  D2 then fires (boot_verdict is
+     * never injected), so this build denies a write the real build allows.
+     * The gate's D2-bound arm is the asymmetry. */
+    {
+        uint32_t wf[1] = { p };
+        if (dl_add_fact(OPS.db, "writable", wf, 1) < 0) {
+            free(apath);
+            snprintf(why, whycap, "cannot inject the FLOOR fact this build "
+                                  "binds (bound-unseen control)");
+            return 1;
+        }
+    }
+#endif
+    /* THE RESOLVE, per call: class(<path>, <class>) for every row whose
+     * pattern hits the canonical path — the same loop the in-guest seat runs
+     * at startup over its served set, here over the ONE path the call names. */
+    for (size_t i = 0; i < OPS.n_row; i++) {
+        if (!ops_pattern_hits(OPS.row[i].pattern, apath)) continue;
+        uint32_t cf[2] = { p, dl_intern_str(OPS.db, OPS.row[i].class_sym) };
+        if (!cf[1] || dl_add_fact(OPS.db, "class", cf, 2) < 0) {
+            snprintf(why, whycap, "cannot inject the class fact for %s (the "
+                                  "folding contract is machine-checked) — "
+                                  "refusing, never allowing", apath);
+            free(apath);
+            return 1;
+        }
+    }
+
+    size_t rows = 0;
+    long qr = dl_query(OPS.db, "denied", ops_count_cb, &rows);
+    if (qr < 0) {
+        (void)dl_delete_fact(OPS.db, "touches", tp, 2);
+        free(apath);
+        snprintf(why, whycap, "dl_query(denied) failed — refusing, never "
+                              "allowing");
+        return 1;
+    }
+
+    /* PER-RULE ATTRIBUTION (denial path only; the C seat's own discipline —
+     * fx-verbs-server.c:1496-1522): the derived relation is deduplicated with
+     * no provenance, so each artifact rule is re-asked on a SHALLOW CLONE with
+     * its HEAD RENAMED.  The rule text quoted in the denial is the artifact's
+     * own. */
+    int fired[32];
+    size_t n_fired = 0;
+    if (rows > 0) {
+        for (size_t i = 0; i < OPS.n_rule && n_fired < 32; i++) {
+            const char *rl = OPS.rule[i];
+            if (strlen(rl) > 1024) continue;
+            if (memcmp(rl, "denied(", 7) != 0) continue;
+            char prog[1200], goal[32];
+            snprintf(goal, sizeof goal, "ops_r%zu", i + 1);
+            int sn = snprintf(prog, sizeof prog, "%s%s", goal, rl + 6);
+            if (sn <= 0 || sn >= (int)sizeof prog) continue;
+            size_t rn = 0;
+            if (dl_query_rules_ro(OPS.db, prog, goal, ops_count_cb, &rn) >= 0
+                && rn > 0)
+                fired[n_fired++] = (int)i;
+        }
+    }
+
+    int delbad = 0;
+    if (dl_delete_fact(OPS.db, "touches", tp, 2) < 0) delbad = 1;
+    /* THE CLASS FACTS TOO (P6-fix).  The per-call resolve loop above interns
+     * and adds class(<canon path>,<class>) for every row whose pattern hits;
+     * ONLY touches used to be retracted, so the EDB/WAL grew with every
+     * DISTINCT classified path a stream named for the proxy's lifetime —
+     * unbounded under a subtree row, where a caller can spray distinct
+     * allowed children.  (Derived `denied` rows are deduplicated by the
+     * engine and this seat re-adds what each call needs, so retracting here
+     * cannot disturb another call — it is deterministic and per-call, exactly
+     * like the add.)  Verdicts were already correct (touches is the per-call
+     * discriminator); this is the record's growth, not a decision. */
+    for (size_t i = 0; i < OPS.n_row; i++) {
+        if (!ops_pattern_hits(OPS.row[i].pattern, apath)) continue;
+        uint32_t cf[2] = { p, dl_intern_str(OPS.db, OPS.row[i].class_sym) };
+        if (!cf[1] || dl_delete_fact(OPS.db, "class", cf, 2) < 0) delbad = 1;
+    }
+#ifdef FH_MUTANT_OPS_BIND_UNSEEN
+    {
+        uint32_t wf[1] = { p };
+        if (dl_delete_fact(OPS.db, "writable", wf, 1) < 0) delbad = 1;
+    }
+#endif
+
+    if (rows == 0) {
+        free(apath);
+        if (delbad) {
+            snprintf(why, whycap, "cannot retract the per-call facts (they "
+                                  "would latch onto the next call) — refusing, "
+                                  "never allowing");
+            return 1;
+        }
+        return 0;
+    }
+
+    /* THE DENIAL — the in-guest seat's shape, one line per FIRED rule, with
+     * the rule number POSITIONAL over the artifact's own order (the compile is
+     * deterministic) and the quoted rule text as the authority. */
+    size_t off = 0;
+    if (n_fired == 0)
+        off += (size_t)snprintf(why + off, whycap - off,
+                                "operator policy denies this write (no rule "
+                                "attributed — the artifact and the engine "
+                                "disagree; refusing, never allowing)");
+    for (size_t i = 0; i < n_fired && off < whycap; i++) {
+        int sn = snprintf(why + off, whycap - off,
+                          "%soperator policy rule D%d: %s (verb %s, path %s)",
+                          off ? "; " : "", fired[i] + 1, OPS.rule[fired[i]],
+                          name, apath);
+        if (sn <= 0) break;
+        off += (size_t)sn;
+    }
+    if (delbad && off < whycap)
+        snprintf(why + off, whycap - off, "; the per-call facts could not be "
+                 "retracted (fail-closed: the next decision refuses until the "
+                 "engine is clean)");
+    free(apath);
+    return 1;
+}
+#endif /* !FH_MUTANT_NO_OPS_SEAT */
+
 /* ── P5: the justification (the tools injection + the judgement) ──────────── */
 
 /* --require-justification arms BOTH halves: the tools-array injection into the
@@ -1332,6 +2334,23 @@ static int call_judge(const char *name, const char *args,
         *refusal_out = FH_REFUSAL_DENYLIST;
         return 1;
     }
+#ifndef FH_MUTANT_NO_OPS_SEAT
+    /* P6 — THE OPERATOR AUTHOR at this seat.  The rule vocabulary is the
+     * pinned ops policy's; the facts are the ones this seat can DERIVE (see
+     * the P6 header block: D1-class only, D2 is inert here and lives
+     * in-guest).  A denial takes the SAME path as the others: the true name
+     * never crosses, and this reason is what the model reads. */
+    {
+        char why[700];
+        if (ops_judge(name, args, why, sizeof why)) {
+            snprintf(reason, reason_cap, "\"%s\" was DENIED BY OPS: %s",
+                     name, why);
+            *author_out = FH_AUTHOR_OPS;
+            *refusal_out = FH_REFUSAL_OPS;
+            return 1;
+        }
+    }
+#endif /* FH_MUTANT_NO_OPS_SEAT */
 #ifndef FH_MUTANT_NO_JUSTIFY_CHECK
     if (g_require_justify) {
         char why[512];
@@ -1366,12 +2385,22 @@ static int call_judge(const char *name, const char *args,
 
 #endif /* FH_MUTANT_SINGLE_ITEM */
 
-/* The AUTHOR field on an ALLOWED row: the authors that ACTUALLY RAN, joined.
- * A row claiming an author that did not run would be a record wider than the
- * evidence (the same rule that keeps P2 rows verdict-free). */
+/* The AUTHOR field on an ALLOWED row: the authors ARMED AND CONSULTED at this
+ * seat, joined.  A row claiming an author that did not run would be a record
+ * wider than the evidence (the same rule that keeps P2 rows verdict-free) —
+ * and, the other way, "armed" is not "evaluated THIS call": the ops judge
+ * returns before the pinned policy is consulted for a verb it does not
+ * classify as a write, so an allowed non-write row's `ops` names an author
+ * that was present, not one that judged the call.  The row's allow_scope
+ * carries the reading; the field itself is the seat's author set. */
 static const char *authors_ran(void) {
+    int o = ops_seat_present();
+    if (g_ndeny > 0 && o && g_require_justify) return "denylist+ops+justification";
+    if (g_ndeny > 0 && o) return "denylist+ops";
+    if (o && g_require_justify) return "ops+justification";
     if (g_ndeny > 0 && g_require_justify) return "denylist+justification";
     if (g_ndeny > 0) return FH_AUTHOR_DENYLIST;
+    if (o) return FH_AUTHOR_OPS;
     if (g_require_justify) return FH_AUTHOR_JUSTIFY;
     return "none";
 }
@@ -2788,7 +3817,7 @@ static int read_frame(int fd, struct frame_reader *fr) {
 /* ── main ────────────────────────────────────────────────────────────────── */
 
 static void usage(void) {
-    note("usage: %s --upstream FILE --slave-file PATHFILE --log LOGFILE [--turns N] [--deny NAME]... [--require-justification] [--dump-requests PATH]",
+    note("usage: %s --upstream FILE --slave-file PATHFILE --log LOGFILE [--turns N] [--deny NAME]... [--require-justification] [--ops-policy-dir DIR] [--dump-requests PATH]",
          prog);
     note("  --upstream      the canned SSE stream served each turn");
     note("  --slave-file    where the pty slave path is published (one line)");
@@ -2804,6 +3833,15 @@ static void usage(void) {
     note("                  (justification REQUIRED in each schema) into the");
     note("                  forwarded request, and deny by name any call whose");
     note("                  justification is absent or malformed");
+    note("  --ops-policy-dir DIR  arm P6: THE OPERATOR AUTHOR at this seat.");
+    note("                  DIR holds the PINNED ops policy (PINS +");
+    note("                  ops-policy.dl + ops-aliases.tsv, e.g. policy/ops).");
+    note("                  Verified against PINS at startup; its D1-class");
+    note("                  rules are evaluated per write call and a denial");
+    note("                  takes the normal deny path (author `ops`).  The");
+    note("                  D2-class rules and the compiled-in floor stay");
+    note("                  IN-GUEST — the startup line says exactly which");
+    note("                  rules are live here");
     note("  --dump-requests PATH  append the REWRITTEN model-facing request");
     note("                  frame (one compact JSON line per turn) — the only");
     note("                  observable of the outbound substitution offline");
@@ -2842,6 +3880,8 @@ int main(int argc, char **argv) {
             g_deny_list[g_ndeny++] = name;
         } else if (!strcmp(argv[i], "--require-justification")) {
             g_require_justify = 1;
+        } else if (!strcmp(argv[i], "--ops-policy-dir") && i + 1 < argc) {
+            g_ops_dir = argv[++i];
         } else if (!strcmp(argv[i], "--dump-requests") && i + 1 < argc) {
             g_dump_path = argv[++i];
         } else if (!strcmp(argv[i], "--print-catalog")) {
@@ -2876,6 +3916,12 @@ int main(int argc, char **argv) {
      * "the proxy started and the reserved name was callable" is a silent allow
      * with no later moment at which it could be made loud. */
     fh_catalog_check();
+
+    /* P6 — THE OPERATOR AUTHOR.  Loaded (and refused, loudly) AFTER the name
+     * contract and still BEFORE the slave path is published: a policy that
+     * fails its pin or its alias grammar has no later moment at which the
+     * refusal could be early enough to be a gate. */
+    ops_seat_startup(g_ops_dir);
 
     /* the upstream canned stream, read whole once — every turn replays it
      * from the start (the offline arm's provider is deterministic) */
@@ -2927,16 +3973,24 @@ int main(int argc, char **argv) {
          max_turns < 0 ? "unlimited" : "bounded");
     note("log: %s (one JSONL row per call)", g_log_path);
     /* The honesty lines: name what is ACTUALLY armed.  The denylist is a
-     * placeholder author (never P6/P7, which do not exist); the justification
-     * check is real; the reserved name is refused by the verbs server even in
-     * an allow-all lane (structural backstop, P3) AND checked against the
-     * pinned catalog at startup (P4). */
+     * placeholder author (never P7, which does not exist); the ops policy at
+     * THIS seat and the justification check are real; the reserved name is
+     * refused by the verbs server even in an allow-all lane (structural
+     * backstop, P3) AND checked against the pinned catalog at startup (P4). */
     if (policy_armed()) {
         note("policy: authors armed = %s; reserved name=%s (P4 contract checked "
              "at startup)",
              authors_ran(), FH_RESERVED_NAME);
         for (size_t d = 0; d < g_ndeny; d++) {
             note("policy: PLACEHOLDER denylist entry \"%s\"", g_deny_list[d]);
+        }
+        if (ops_seat_present()) {
+            note("policy: THE OPERATOR AUTHOR IS LIVE at this seat "
+                 "(--ops-policy-dir %s): its D1-class rules are evaluated per "
+                 "write call against the pinned alias table.  D2-class rules "
+                 "and the compiled-in floor remain IN-GUEST (the startup block "
+                 "above names exactly which rules are live here)",
+                 OPS.dir);
         }
         if (g_require_justify) {
             note("policy: JUSTIFICATION REQUIRED for every call (P5) — the tool "
@@ -2945,9 +3999,9 @@ int main(int argc, char **argv) {
                  "(absent-justification / malformed-justification)");
         }
     } else {
-        note("policy: NONE — no denylist given and no --require-justification, "
-             "so no verdict fields are rendered; every call is recorded and "
-             "forwarded verbatim");
+        note("policy: NONE — no denylist given, no --require-justification and "
+             "no live --ops-policy-dir, so no verdict fields are rendered; "
+             "every call is recorded and forwarded verbatim");
     }
     if (g_dump_path) {
         note("dump-requests: %s (the REWRITTEN model-facing frame, one line "
