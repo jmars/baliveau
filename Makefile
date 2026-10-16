@@ -249,6 +249,103 @@ $(BIN_SELECT): tools/fx-select.c
 
 .PHONY: test-select
 
+# THE HOST PROXY (design record §7.6; plan handoff-hostgate-plan2, slice P1)
+# — the wire seat: the guest has no socket layer, so whoever holds the
+# chardev's other end holds the endpoint and the credential, and that end
+# must be a HOST seat like the others (agent-unwritable, a function of
+# observable state — here, the wire itself).  P1 is the stream-transparent
+# skeleton, NO POLICY: it speaks the measured chardev contract
+# (src/agent/fx_transport.c:57-85 — "<len>\n<json>" in, raw SSE out,
+# response.completed last) and nothing else.  Its transport is a PTY PAIR,
+# NOT a FIFO (measured: a FIFO opened O_RDWR self-reads — the guest would
+# consume its own request frame; a pty has no self-read, and cfmakeraw kills
+# the echo/ONLCR phantom).  The gate, tests/test_hostgate.sh, is the
+# transparency proof: the DIRECT FILE arm (no proxy) and the PROXY arm must
+# print the SAME marker, and a mangling proxy must flip that pass to a fail
+# on exactly this fixture — a transparency mistake is LOUD, never silent.
+# P2 adds THE ONE LOG + the join (see tools/fx-hostgate.c): the gate's P2
+# phases assert BOTH directions — a real two-turn run RESOLVES the call_id,
+# and an unfireable join is REPORTED by call_id — plus the mutation blind:
+# build/fx-hostgate-mutant is THIS source with the resolution pass compiled
+# out (FH_MUTANT_NO_JOIN); it exits cleanly with a WRONG RECORD and the gate
+# must catch that by content, not by exit status.  The P2 fix adds the
+# bounding blind: build/fx-hostgate-unbound (FH_MUTANT_NO_BOUND) renders
+# every free-text field verbatim — unbounded model-controlled text in an
+# append-only host log — and the gate's bound phase must flip on it by
+# content too.
+BIN_HOSTGATE := build/fx-hostgate
+BIN_HOSTGATE_MUTANT := build/fx-hostgate-mutant
+BIN_HOSTGATE_UNBOUND := build/fx-hostgate-unbound
+BIN_HOSTGATE_NOREWRITE := build/fx-hostgate-norewrite
+BIN_HOSTGATE_BLINDADD := build/fx-hostgate-blindadd
+BIN_HOSTGATE_SINGLEITEM := build/fx-hostgate-singleitem
+BIN_HOSTGATE_NOSUBST := build/fx-hostgate-nosubst
+
+test-hostgate: $(BIN_HOSTGATE) $(BIN_HOSTGATE_MUTANT) $(BIN_HOSTGATE_UNBOUND) \
+               $(BIN_HOSTGATE_NOREWRITE) $(BIN_HOSTGATE_BLINDADD) \
+               $(BIN_HOSTGATE_SINGLEITEM) $(BIN_HOSTGATE_NOSUBST) $(BIN)
+	bash tests/test_hostgate.sh
+
+$(BIN_HOSTGATE): tools/fx-hostgate.c $(YYJSON_SRC)
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ tools/fx-hostgate.c $(YYJSON_SRC)
+
+# P2's mutation blind: the SAME proxy source with the join pass compiled out
+# — a never-firing join is a WRONG RECORD, not a crash, and the gate must
+# catch it by content on exactly the two-turn fixture.
+$(BIN_HOSTGATE_MUTANT): tools/fx-hostgate.c $(YYJSON_SRC)
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_MUTANT_NO_JOIN -o $@ tools/fx-hostgate.c $(YYJSON_SRC)
+
+# The P2-fix mutation blind: the bound compiled OUT (FH_MUTANT_NO_BOUND) —
+# an over-long model-controlled field must arrive in the log MARKED, and a
+# proxy that ships it verbatim is a wrong record the gate catches by
+# content on exactly the bound fixture.
+$(BIN_HOSTGATE_UNBOUND): tools/fx-hostgate.c $(YYJSON_SRC)
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_MUTANT_NO_BOUND -o $@ tools/fx-hostgate.c $(YYJSON_SRC)
+
+# P3's PRE-FIX CONTROL (FH_MUTANT_NO_REWRITE): the P2-era behavior pinned —
+# the enforcement rewrites are compiled out while the policy RECORD still
+# runs, so on the denied fixture the stream carries the TRUE name of a call
+# the log says was denied.  The gate's control arm proves the stub then
+# DISPATCHES (marker present): the asymmetry the real proxy flips.
+$(BIN_HOSTGATE_NOREWRITE): tools/fx-hostgate.c $(YYJSON_SRC)
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_MUTANT_NO_REWRITE -o $@ tools/fx-hostgate.c $(YYJSON_SRC)
+
+# P3's COMPLETENESS MUTATION BLIND (FH_MUTANT_NO_ADDED_REWRITE): ONLY the
+# output_item.added rewrite is compiled out (done/completed keep theirs).
+# The guest's tool accumulator is fed by the added event alone
+# (openai_responses.c:146-161), so the mutant lets the true name reach the
+# accumulator and DISPATCH while the record claims a denial — a partial
+# rewriter is an allow, and the gate must catch it by the dispatch marker.
+$(BIN_HOSTGATE_BLINDADD): tools/fx-hostgate.c $(YYJSON_SRC)
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_MUTANT_NO_ADDED_REWRITE -o $@ tools/fx-hostgate.c $(YYJSON_SRC)
+
+# P3-FIX PRE-FIX CONTROL (FH_MUTANT_SINGLE_ITEM): the P2/P3-era SINGLE
+# open-item accumulator pinned — the interleave shape that produced the
+# reproduced silent allow.  The gate's interleave control arms run this
+# build and require the silent allow (marker present, mis-joined allowed row
+# under call_A carrying call_B's args) — the asymmetry the per-item buffers
+# flip.
+$(BIN_HOSTGATE_SINGLEITEM): tools/fx-hostgate.c $(YYJSON_SRC)
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_MUTANT_SINGLE_ITEM -o $@ tools/fx-hostgate.c $(YYJSON_SRC)
+
+# P3-FIX OUTBOUND-SUBSTITUTION MUTATION BLIND (FH_MUTANT_NO_SUBSTITUTE): the
+# decode rewrite STAYS (name rewritten, nothing executes) while the outbound
+# substitution (restore + denial text) is compiled out — a missed outbound
+# leg.  The pending-substitution instrument must catch it by content: an
+# `unresolved-substitution` anomaly row in the log, while the dump still
+# carries the reserved name unrestored.
+$(BIN_HOSTGATE_NOSUBST): tools/fx-hostgate.c $(YYJSON_SRC)
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_MUTANT_NO_SUBSTITUTE -o $@ tools/fx-hostgate.c $(YYJSON_SRC)
+
+.PHONY: test-hostgate
+
 # THE SIBLING-PATH GATE (unit `path-sweep`).  Every gate that reads a sibling
 # checkout (fx-init, fxstore, datalog-dafsa) resolves it with ONE policy —
 # $FX_SIBLINGS wins, else the historical neighbour $REPO/.. IF it really holds

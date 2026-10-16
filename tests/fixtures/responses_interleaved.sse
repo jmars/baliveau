@@ -1,0 +1,24 @@
+event: response.created
+data: {"type": "response.created", "response": {"id": "p", "status": "in_progress", "output": []}}
+
+event: response.output_item.added
+data: {"type": "response.output_item.added", "item": {"type": "function_call", "id": "item_A_1111", "status": "in_progress", "arguments": "", "call_id": "call_A_0001", "name": "get_weather"}, "output_index": 1, "sequence_number": 1}
+
+event: response.output_item.added
+data: {"type": "response.output_item.added", "item": {"type": "function_call", "id": "item_B_2222", "status": "in_progress", "arguments": "", "call_id": "call_B_0002", "name": "fx_write"}, "output_index": 2, "sequence_number": 2}
+
+event: response.function_call_arguments.delta
+data: {"type": "response.function_call_arguments.delta", "delta": "{\"path\": \"/tmp/evil\"}", "item_id": "item_B_2222", "output_index": 2, "sequence_number": 3}
+
+event: response.function_call_arguments.done
+data: {"type": "response.function_call_arguments.done", "arguments": "{\"city\": \"Paris\"}", "item_id": "item_A_1111", "output_index": 1, "sequence_number": 4}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "item": {"type": "function_call", "id": "item_B_2222", "status": "completed", "arguments": "{\"path\": \"/tmp/evil\"}", "call_id": "call_B_0002", "name": "fx_write"}, "output_index": 2, "sequence_number": 5}
+
+event: response.output_item.done
+data: {"type": "response.output_item.done", "item": {"type": "function_call", "id": "item_A_1111", "status": "completed", "arguments": "{\"city\": \"Paris\"}", "call_id": "call_A_0001", "name": "get_weather"}, "output_index": 1, "sequence_number": 6}
+
+event: response.completed
+data: {"type": "response.completed", "response": {"id": "probe-1", "object": "response", "status": "completed", "output": [{"type": "function_call", "id": "item_A_1111", "status": "completed", "arguments": "{\"city\": \"Paris\"}", "call_id": "call_A_0001", "name": "get_weather"}, {"type": "function_call", "id": "item_B_2222", "status": "completed", "arguments": "{\"path\": \"/tmp/evil\"}", "call_id": "call_B_0002", "name": "fx_write"}], "parallel_tool_calls": true, "created_at": 1787006775, "completed_at": 1787006776, "background": false, "content_filters": null, "error": null, "frequency_penalty": 0.0, "incomplete_details": null, "instructions": null, "max_output_tokens": null, "max_tool_calls": null, "model": "probe", "moderation": null, "presence_penalty": 0.0, "previous_response_id": null, "prompt_cache_key": null, "response_format": null, "safety_identifier": null, "service_tier": "default", "store": true, "temperature": 1.0, "tool_choice": "auto", "tools": [], "top_p": 1.0, "truncation": "disabled", "usage": null, "user": null}}
+
