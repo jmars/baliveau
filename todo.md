@@ -1389,6 +1389,34 @@ judges it; **claim + verdict + outcome are one record** and the **disagreement**
       and the three earlier fail-opens remain closed.
 - [ ] **THE STATED RESIDUAL:** this closes the **tool-call channel** only — a root agent in the guest
       can still run things directly, outside any tool call (§6b: *auditing, not proofing*).
+- [x] **P10 — THE REAL LANE** (**COMMITTED**; `engineer`). The proxy gains an **HTTP(S) upstream**
+      (`--http`; endpoint/key/timeout from env, the key sent only in the Authorization header and **never
+      printed, logged or crossed**), with a native plain-HTTP client (non-blocking connect+poll, per-read
+      and total deadlines, 32 MiB cap, close/content-length/chunked), and — required — a **LOUD NAMED SKIP
+      (exit 77)** when the endpoint is absent, unreachable, https or malformed. The canned-file arm stays
+      **byte-identical** (it is every existing phase's control). A live unauthenticated OpenAI-compatible
+      endpoint serving the **Responses API over SSE** exists on this host at
+      `http://10.0.0.1:8321/v1/responses` (I probed it directly; the canned fixtures were plainly recorded
+      from it — same field set, same `parallel_tool_calls: true`).
+      **THE THREE QUESTIONS THE REVIEWS PARKED ARE NOW MEASURED — this was the slice's real value:**
+      **(a) A LIVE PROVIDER DOES NOT INTERLEAVE.** Driven into three calls in one turn, the provider echoes
+      `parallel_tool_calls: true` but **serializes** the items on the wire (`added(A) → args.done → done(A)`
+      fully closes before `added(B)`). So the P3 review's biggest unmeasured risk **does not reach the guest
+      from a natural stream here** — the per-item buffers are **defence in depth, not a live-lane fix**.
+      **(b) THE INJECTED TOOLS SCHEMA IS HONORED:** with the proxy's exact 13-verb array (`justification`
+      REQUIRED) the model emitted a well-formed justification on **every** call — and on a denied call
+      replayed with the denial text it **acknowledged the denial, did not blind-retry, and pivoted to other
+      verbs**, folding the denial into its later justifications. That is the design property ("the model
+      needs no special training") **observed against a real model rather than asserted**.
+      **(c)** The live lane POSTs **exactly** the buffer `outbound_pass` returns — `cmp`-asserted against the
+      `--dump-requests` record (P3's SHOULD-FIX 4, closed).
+      *Orchestrator-verified:* offline `make test-hostgate` rc=0 (135 OK / 0 FAIL) with the 4 loud-skip arms;
+      **live** `make test-hostgate` rc=0 with phase 72 running — `LIVE observed: 1 call decoded; 1 denied;
+      0 allowed`; and my own skip probes return rc=77 naming the reason, with *"never a silent green"* in
+      the message. **RESIDUALS, owned and stated:** https is **refused loudly, not implemented** (the
+      configured endpoint is plain http; hand-rolled TLS would be the silent-wrong surface); the live
+      measurements are **n=1** — real, repeatable via phase 72, **not** a proof of invariant provider
+      behaviour.
 - [x] **P9 — THE REPORTER'S CALL CLASS** (**COMMITTED**; `coder`). The problem it solves: the host gate
       delivers a denial by rewriting a call's name to `fx_host_denied` and substituting a denial text, so
       the **guest's transcript records the rewritten name and a generic sentinel and never learns the true

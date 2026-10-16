@@ -418,13 +418,17 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <netdb.h>
+#include <poll.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/select.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <termios.h>
@@ -5342,6 +5346,435 @@ static void subst_unresolved_check(long turn) {
     }
 }
 
+/* ── the HTTP(S) upstream (P10 — THE REAL LANE) ────────────────────────────
+ *
+ * Instead of a canned file, the proxy POSTs the (rewritten) model-facing
+ * request to a live OpenAI-compatible endpoint and streams the SSE response
+ * back through the SAME decode gate (serve_stream) the offline arm uses.
+ * The endpoint URL and the optional credential come from the ENVIRONMENT and
+ * NEVER cross into the guest: the proxy is host-side, and the chardev carries
+ * only the served SSE and the guest's own request frames — never the URL,
+ * never the key, never in the log.
+ *
+ *   FX_HOSTGATE_ENDPOINT     the full URL (http://host[:port]/path).
+ *                            REQUIRED under --http; absent -> a LOUD named
+ *                            SKIP (exit 77), never a silent green.
+ *   FX_HOSTGATE_KEY          optional API key, sent as `Authorization: Bearer`.
+ *   FX_HOSTGATE_HTTP_TIMEOUT optional whole-exchange deadline in seconds
+ *                            (default 120 — a live endpoint can hang, so the
+ *                            proxy bounds it TIGHTLY, not loosely).
+ *
+ * SCOPE (stated, not hidden): the endpoint this tree is configured against
+ * (providers.openai-compatible.base_url, ~/.config/hax/config.json) is plain
+ * http://, so the client speaks plain HTTP NATIVELY (no TLS dependency, in
+ * line with the tree's NO-TLS structural decision).  An https:// endpoint is
+ * REFUSED LOUDLY as a named skip, never half-supported: a hand-rolled TLS
+ * here would be a silent-wrong surface far worse than a loud refusal.
+ *
+ * THE SEND-BUFFER WIRING (P3 SHOULD-FIX 4, the (c) measurement): the frame
+ * this lane POSTs is EXACTLY the buffer outbound_pass RETURNS (the same
+ * buffer --dump-requests records) — the live lane never re-renders the
+ * frame, so "what would be sent" and "what was sent" are one object. */
+#define FX_HOSTGATE_ENDPOINT_ENV "FX_HOSTGATE_ENDPOINT"
+#define FX_HOSTGATE_KEY_ENV "FX_HOSTGATE_KEY"
+#define FX_HOSTGATE_HTTP_TIMEOUT_ENV "FX_HOSTGATE_HTTP_TIMEOUT"
+#define FH_HTTP_MAX (32u << 20) /* refuse an absurd response body, never drop */
+#define FH_HTTP_DEFAULT_TIMEOUT 120 /* whole-exchange deadline, seconds */
+#define FH_HTTP_CONNECT_TIMEOUT 5  /* TCP connect / reachability probe */
+#define FH_HTTP_READ_TIMEOUT 30    /* per-read SO_RCVTIMEO, seconds */
+
+enum {
+    FH_HTTP_OK = 0,
+    FH_HTTP_SKIP = 77, /* absent/unreachable/unsupported: a LOUD named skip */
+    FH_HTTP_FAIL = 1,  /* timed out / bad status / oversize: a loud failure */
+};
+
+static int g_http_mode;      /* --http: the live lane, endpoint from ENV */
+static char *g_http_host;    /* parsed from FX_HOSTGATE_ENDPOINT */
+static int g_http_port;
+static char *g_http_path;
+static const char *g_http_key; /* FX_HOSTGATE_KEY, if any (never printed) */
+static long g_http_timeout = FH_HTTP_DEFAULT_TIMEOUT;
+
+/* Parse http://host[:port][/path] into host/port/path (all malloc'd).  Returns
+ * FH_HTTP_OK, or FH_HTTP_SKIP with a named reason on stderr (unsupported
+ * scheme, https — which this build refuses loudly — or a malformed URL). */
+static int http_parse_url(const char *url, char **host_out, int *port_out,
+                          char **path_out) {
+    const char *p = url;
+    const char *scheme_end = strstr(p, "://");
+    if (!scheme_end) {
+        note("SKIP (hostgate-http): %s=%s is not a URL (expected "
+             "http://host[:port]/path)",
+             FX_HOSTGATE_ENDPOINT_ENV, url);
+        return FH_HTTP_SKIP;
+    }
+    size_t scheme_len = (size_t)(scheme_end - p);
+    if (scheme_len != 4 || memcmp(p, "http", 4) != 0) {
+        if (scheme_len == 5 && memcmp(p, "https", 5) == 0)
+            note("SKIP (hostgate-http): %s uses https — this build speaks "
+                 "plain HTTP only (the tree's NO-TLS structural decision); a "
+                 "TLS endpoint is REFUSED LOUDLY, never half-supported", url);
+        else
+            note("SKIP (hostgate-http): unsupported URL scheme in %s", url);
+        return FH_HTTP_SKIP;
+    }
+    p = scheme_end + 3;
+    const char *slash = strchr(p, '/');
+    const char *hostpart_end = slash ? slash : p + strlen(p);
+    const char *colon = NULL;
+    for (const char *q = p; q < hostpart_end; q++) {
+        if (*q == ':') {
+            colon = q;
+            break;
+        }
+    }
+    size_t host_len = colon ? (size_t)(colon - p) : (size_t)(hostpart_end - p);
+    if (host_len == 0) {
+        note("SKIP (hostgate-http): %s=%s has no host", FX_HOSTGATE_ENDPOINT_ENV,
+             url);
+        return FH_HTTP_SKIP;
+    }
+    char *host = xmalloc(host_len + 1);
+    memcpy(host, p, host_len);
+    host[host_len] = '\0';
+    int port = 80;
+    if (colon) {
+        const char *ps = colon + 1;
+        size_t plen = (size_t)(hostpart_end - ps);
+        if (plen == 0 || plen >= 16) {
+            note("SKIP (hostgate-http): bad port in %s", url);
+            free(host);
+            return FH_HTTP_SKIP;
+        }
+        char pbuf[16];
+        memcpy(pbuf, ps, plen);
+        pbuf[plen] = '\0';
+        char *end = NULL;
+        long v = strtol(pbuf, &end, 10);
+        if (!end || *end != '\0' || v < 1 || v > 65535) {
+            note("SKIP (hostgate-http): bad port in %s", url);
+            free(host);
+            return FH_HTTP_SKIP;
+        }
+        port = (int)v;
+    }
+    const char *path = slash ? slash : "/";
+    *host_out = host;
+    *port_out = port;
+    *path_out = xstrdup(path);
+    return FH_HTTP_OK;
+}
+
+/* A TCP connect to host:port with a bounded wait.  Returns a connected fd, or
+ * -1 after a LOUD note (the caller maps it to FH_HTTP_SKIP).  Non-blocking
+ * connect + poll so an unreachable host cannot hang the proxy. */
+static int http_connect(const char *host, int port, int timeout_sec) {
+    struct addrinfo hints, *res = NULL, *ai;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    char portstr[16];
+    snprintf(portstr, sizeof portstr, "%d", port);
+    int g = getaddrinfo(host, portstr, &hints, &res);
+    if (g != 0) {
+        note("SKIP (hostgate-http): cannot resolve %s (%s) — the live lane has "
+             "no endpoint to reach",
+             host, gai_strerror(g));
+        return -1;
+    }
+    int fd = -1;
+    for (ai = res; ai; ai = ai->ai_next) {
+        fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+        if (fd < 0) continue;
+        int fl = fcntl(fd, F_GETFL, 0);
+        if (fl < 0 || fcntl(fd, F_SETFL, fl | O_NONBLOCK) < 0) {
+            close(fd);
+            fd = -1;
+            continue;
+        }
+        int c = connect(fd, ai->ai_addr, ai->ai_addrlen);
+        if (c < 0 && errno == EINPROGRESS) {
+            struct pollfd pfd;
+            pfd.fd = fd;
+            pfd.events = POLLOUT;
+            pfd.revents = 0;
+            int pr = poll(&pfd, 1, timeout_sec * 1000);
+            if (pr <= 0) {
+                errno = (pr == 0) ? ETIMEDOUT : errno;
+                close(fd);
+                fd = -1;
+                continue;
+            }
+            int soerr = 0;
+            socklen_t sl = sizeof soerr;
+            if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &soerr, &sl) != 0 || soerr != 0) {
+                errno = soerr ? soerr : errno;
+                close(fd);
+                fd = -1;
+                continue;
+            }
+        } else if (c < 0) {
+            close(fd);
+            fd = -1;
+            continue;
+        }
+        if (fcntl(fd, F_SETFL, fl) < 0) { /* back to blocking */
+            close(fd);
+            fd = -1;
+            continue;
+        }
+        break;
+    }
+    freeaddrinfo(res);
+    if (fd < 0) {
+        note("SKIP (hostgate-http): cannot connect to %s:%d (errno=%d: %s) — "
+             "the endpoint is unreachable",
+             host, port, errno, strerror(errno));
+    }
+    return fd;
+}
+
+/* The whole-exchange deadline, from FX_HOSTGATE_HTTP_TIMEOUT (seconds).
+ * Returns a positive number, or -1 after a LOUD refusal on a bad value. */
+static long http_timeout_seconds(void) {
+    const char *e = getenv(FX_HOSTGATE_HTTP_TIMEOUT_ENV);
+    if (!e || !*e) return FH_HTTP_DEFAULT_TIMEOUT;
+    char *end = NULL;
+    long v = strtol(e, &end, 10);
+    if (!end || *end != '\0' || v < 1) {
+        note("FATAL: %s=%s is not a positive integer", FX_HOSTGATE_HTTP_TIMEOUT_ENV,
+             e);
+        return -1;
+    }
+    return v;
+}
+
+/* Elapsed seconds since `start` (CLOCK_MONOTONIC), as a long. */
+static long http_elapsed(const struct timespec *start) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (long)(now.tv_sec - start->tv_sec) +
+           (now.tv_nsec < start->tv_nsec ? -1 : 0);
+}
+
+/* POST body to http://host:port/path and read the whole response body (bounded
+ * and timed).  Returns FH_HTTP_OK with the body in *resp_out, or
+ * FH_HTTP_SKIP / FH_HTTP_FAIL after a LOUD note (never a silent green).  The
+ * caller owns *resp_out. */
+static int http_post(const char *host, int port, const char *path,
+                     const char *key, const unsigned char *body, size_t body_len,
+                     unsigned char **resp_out, size_t *resp_len_out) {
+    *resp_out = NULL;
+    *resp_len_out = 0;
+
+    int fd = http_connect(host, port, FH_HTTP_CONNECT_TIMEOUT);
+    if (fd < 0) return FH_HTTP_SKIP;
+
+    struct timeval rtv;
+    rtv.tv_sec = FH_HTTP_READ_TIMEOUT;
+    rtv.tv_usec = 0;
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &rtv, sizeof rtv);
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &rtv, sizeof rtv);
+
+    struct timespec start;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+
+    /* the request head (the key rides ONLY here, never logged) */
+    struct tbuf req = {0};
+    tb_puts(&req, "POST ");
+    tb_puts(&req, path);
+    tb_puts(&req, " HTTP/1.1\r\nHost: ");
+    tb_puts(&req, host);
+    if (port != 80) {
+        char pb[16];
+        snprintf(pb, sizeof pb, ":%d", port);
+        tb_puts(&req, pb);
+    }
+    tb_puts(&req, "\r\nContent-Type: application/json\r\n");
+    if (key && *key) {
+        tb_puts(&req, "Authorization: Bearer ");
+        tb_puts(&req, key);
+        tb_puts(&req, "\r\n");
+    }
+    char lb[32];
+    snprintf(lb, sizeof lb, "%zu", body_len);
+    tb_puts(&req, "Content-Length: ");
+    tb_puts(&req, lb);
+    tb_puts(&req, "\r\nConnection: close\r\n\r\n");
+
+    int wr = write_all(fd, (const unsigned char *)req.p, req.len);
+    if (wr == 0 && body_len > 0) wr = write_all(fd, body, body_len);
+    free(req.p);
+    if (wr != 0) {
+        note("FAIL (hostgate-http): request write to %s:%d failed (errno=%d: "
+             "%s)",
+             host, port, errno, strerror(errno));
+        close(fd);
+        return FH_HTTP_FAIL;
+    }
+
+    /* read the whole response (header + body) into one bounded buffer */
+    unsigned char *buf = xmalloc(8192);
+    size_t cap = 8192, len = 0;
+    long content_len = -1;
+    int chunked = 0;
+    size_t head_end = 0; /* index just past the \r\n\r\n (0 = not seen yet) */
+    int have_head = 0;
+
+    for (;;) {
+        if (http_elapsed(&start) > g_http_timeout) {
+            note("FAIL (hostgate-http): %s:%d exceeded the %lds deadline — a "
+                 "live endpoint can hang; the proxy bound it and bailed",
+                 host, port, g_http_timeout);
+            free(buf);
+            close(fd);
+            return FH_HTTP_FAIL;
+        }
+        if (len == cap) {
+            if (cap >= FH_HTTP_MAX + 65536) {
+                note("FAIL (hostgate-http): the response from %s:%d exceeds %u "
+                     "bytes — refusing rather than dropping",
+                     host, port, (unsigned)FH_HTTP_MAX);
+                free(buf);
+                close(fd);
+                return FH_HTTP_FAIL;
+            }
+            cap *= 2;
+            unsigned char *nb = realloc(buf, cap);
+            if (!nb) {
+                free(buf);
+                close(fd);
+                die_errno("realloc http response");
+            }
+            buf = nb;
+        }
+        ssize_t n = read(fd, buf + len, cap - len);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                note("FAIL (hostgate-http): %s:%d stalled %lds between bytes — "
+                     "the endpoint is not streaming",
+                     host, port, (long)FH_HTTP_READ_TIMEOUT);
+                free(buf);
+                close(fd);
+                return FH_HTTP_FAIL;
+            }
+            note("FAIL (hostgate-http): read from %s:%d failed (errno=%d: %s)",
+                 host, port, errno, strerror(errno));
+            free(buf);
+            close(fd);
+            return FH_HTTP_FAIL;
+        }
+        if (n == 0) break; /* EOF: close-delimited body (the endpoint's shape) */
+        len += (size_t)n;
+
+        if (!have_head) {
+            /* find the header terminator; bytes past it are the body's start */
+            unsigned char *hh = NULL;
+            for (size_t i = 0; i + 3 < len; i++) {
+                if (buf[i] == '\r' && buf[i + 1] == '\n' && buf[i + 2] == '\r' &&
+                    buf[i + 3] == '\n') {
+                    hh = buf + i;
+                    break;
+                }
+            }
+            if (hh) {
+                have_head = 1;
+                head_end = (size_t)(hh - buf) + 4;
+                /* parse status + framing from the header block */
+                char head[8192];
+                size_t hl = head_end;
+                if (hl > sizeof head - 1) {
+                    note("FAIL (hostgate-http): response header from %s:%d is "
+                         "absurdly long",
+                         host, port);
+                    free(buf);
+                    close(fd);
+                    return FH_HTTP_FAIL;
+                }
+                memcpy(head, buf, hl);
+                head[hl] = '\0';
+                int status = 0;
+                if (sscanf(head, "HTTP/%*s %d", &status) == 1 && status != 200) {
+                    /* find the status line for the message */
+                    char *eol = strchr(head, '\n');
+                    note("FAIL (hostgate-http): %s:%d answered HTTP %d (%s)",
+                         host, port, status,
+                         eol ? eol : "no status line");
+                    free(buf);
+                    close(fd);
+                    return FH_HTTP_FAIL;
+                }
+                /* Content-Length / Transfer-Encoding: chunked */
+                for (char *line = head; (line = strstr(line, "\r\n")) != NULL;) {
+                    line += 2;
+                    if (strncasecmp(line, "Content-Length:", 15) == 0)
+                        content_len = strtol(line + 15, NULL, 10);
+                    else if (strncasecmp(line, "Transfer-Encoding:", 18) == 0 &&
+                             strcasestr(line + 18, "chunked") != NULL)
+                        chunked = 1;
+                }
+            }
+        }
+
+        /* stop early once the body per the framing is complete */
+        if (have_head) {
+            size_t body_so_far = len - head_end;
+            if (!chunked && content_len >= 0 &&
+                body_so_far >= (size_t)content_len)
+                break;
+            if (chunked) {
+                /* the terminator "0\r\n\r\n" (allowing an optional trailing
+                 * CRLF after the last chunk) ends the body */
+                const unsigned char *tail = buf + (head_end ? head_end : 0);
+                size_t tl = len - (head_end ? head_end : 0);
+                if (tl >= 5 &&
+                    memcmp(tail + tl - 5, "0\r\n\r\n", 5) == 0)
+                    break;
+            }
+        }
+    }
+    close(fd);
+
+    unsigned char *bodyp = buf + head_end;
+    size_t body_n = len - head_end;
+
+    /* dechunk the body if it was chunked */
+    if (chunked) {
+        unsigned char *plain = xmalloc(body_n + 1);
+        size_t pn = 0;
+        size_t i = 0;
+        while (i < body_n) {
+            /* a chunk-size line ends at \r\n */
+            size_t ls = i;
+            while (ls < body_n && !(bodyp[ls] == '\r' && ls + 1 < body_n &&
+                                    bodyp[ls + 1] == '\n'))
+                ls++;
+            if (ls >= body_n) break; /* malformed tail: stop, keep what came */
+            long cs = strtol((const char *)bodyp + i, NULL, 16);
+            size_t dl = (size_t)(ls + 2); /* past the size line */
+            if (cs == 0) break;           /* last chunk */
+            if (cs < 0 || (size_t)cs > body_n - dl) break;
+            memcpy(plain + pn, bodyp + dl, (size_t)cs);
+            pn += (size_t)cs;
+            i = dl + (size_t)cs + 2; /* skip the chunk's trailing \r\n */
+        }
+        plain[pn] = '\0';
+        free(buf);
+        *resp_out = plain;
+        *resp_len_out = pn;
+        return FH_HTTP_OK;
+    }
+
+    buf = realloc(buf, len + 1);
+    if (!buf) die_errno("realloc http response");
+    buf[len] = '\0';
+    *resp_out = buf;
+    *resp_len_out = len;
+    return FH_HTTP_OK;
+}
+
 /* ── the request frame reader ───────────────────────────────────────────── */
 
 #define FH_CARRY_CAP 4096
@@ -5475,7 +5908,18 @@ static int read_frame(int fd, struct frame_reader *fr) {
 static void usage(void) {
     note("usage: %s --upstream FILE --slave-file PATHFILE --log LOGFILE [--turns N] [--deny NAME]... [--require-justification] [--ops-policy-dir DIR] [--dump-requests PATH]",
          prog);
-    note("  --upstream      the canned SSE stream served each turn");
+    note("         OR: %s --http --slave-file PATHFILE --log LOGFILE [same options]",
+         prog);
+    note("  --upstream      the canned SSE stream served each turn (the OFFLINE");
+    note("                  arm — byte-identical, it is the control)");
+    note("  --http          THE REAL LANE: POST the rewritten request to a live");
+    note("                  OpenAI-compatible endpoint from the ENVIRONMENT and");
+    note("                  stream the SSE response back through the same gate.");
+    note("                  " FX_HOSTGATE_ENDPOINT_ENV " is the URL (required),");
+    note("                  " FX_HOSTGATE_KEY_ENV " an optional credential — both");
+    note("                  held by the host, NEVER crossing into the guest.  An");
+    note("                  absent or unreachable endpoint is a LOUD named SKIP");
+    note("                  (exit 77), never a silent green.");
     note("  --slave-file    where the pty slave path is published (one line)");
     note("  --log           THE ONE LOG: append-only JSONL, one row per call");
     note("                  (required — a proxy that records nothing is not");
@@ -5561,6 +6005,8 @@ int main(int argc, char **argv) {
             g_deny_list[g_ndeny++] = name;
         } else if (!strcmp(argv[i], "--require-justification")) {
             g_require_justify = 1;
+        } else if (!strcmp(argv[i], "--http")) {
+            g_http_mode = 1;
         } else if (!strcmp(argv[i], "--ops-policy-dir") && i + 1 < argc) {
             g_ops_dir = argv[++i];
         } else if (!strcmp(argv[i], "--calls-policy-dir") && i + 1 < argc) {
@@ -5601,7 +6047,11 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-    if (!upstream_path || !slave_file || !g_log_path) {
+    if (!slave_file || !g_log_path) {
+        usage();
+        return 2;
+    }
+    if (!g_http_mode && !upstream_path) {
         usage();
         return 2;
     }
@@ -5633,22 +6083,65 @@ int main(int argc, char **argv) {
      * moment it can be loud, and none of them may be skipped. */
     log_load();
 
-    /* the upstream canned stream, read whole once — every turn replays it
-     * from the start (the offline arm's provider is deterministic) */
-    FILE *up = fopen(upstream_path, "rb");
-    if (!up) die_errno("cannot open upstream");
-    if (fseek(up, 0, SEEK_END) != 0) die_errno("fseek upstream");
-    long ul = ftell(up);
-    if (ul <= 0) {
-        note("FATAL: upstream %s is empty/unmeasurable (%ld bytes)", upstream_path, ul);
-        return 1;
+    /* P10 — THE REAL LANE's endpoint, resolved from the ENVIRONMENT and held
+     * by the host.  Everything here runs BEFORE the slave path is published:
+     * an absent or unreachable endpoint is a LOUD named SKIP (exit 77), never
+     * a silent green — the proxy must not start (and the guest must never
+     * connect) against a lane that has no model behind it. */
+    if (g_http_mode) {
+        const char *endpoint = getenv(FX_HOSTGATE_ENDPOINT_ENV);
+        if (!endpoint || !*endpoint) {
+            note("SKIP (hostgate-http): --http given but %s is not set — the "
+                 "live lane has no endpoint to reach (the canned-file arm needs "
+                 "--upstream FILE instead).  A missing endpoint is a LOUD named "
+                 "SKIP, never a silent green.",
+                 FX_HOSTGATE_ENDPOINT_ENV);
+            return 77;
+        }
+        g_http_key = getenv(FX_HOSTGATE_KEY_ENV); /* may be NULL: no credential */
+        if (http_parse_url(endpoint, &g_http_host, &g_http_port, &g_http_path) !=
+            FH_HTTP_OK)
+            return 77;
+        long ht = http_timeout_seconds();
+        if (ht < 0) return 2;
+        g_http_timeout = ht;
+        /* the reachability probe: refuse to start if the endpoint cannot be
+         * reached NOW (a later refusal could only be louder after the guest
+         * has already connected) */
+        int probe = http_connect(g_http_host, g_http_port, FH_HTTP_CONNECT_TIMEOUT);
+        if (probe < 0) return 77;
+        close(probe);
+        note("http: endpoint %s:%d%s (%s); whole-exchange deadline %lds — the "
+             "endpoint and any credential are held by the HOST and never cross "
+             "into the guest",
+             g_http_host, g_http_port, g_http_path,
+             g_http_key && *g_http_key ? "credential from env" : "no credential",
+             g_http_timeout);
     }
-    rewind(up);
-    size_t upstream_len = (size_t)ul;
-    unsigned char *upstream = malloc(upstream_len);
-    if (!upstream) die_errno("malloc upstream");
-    if (fread(upstream, 1, upstream_len, up) != upstream_len) die_errno("fread upstream");
-    fclose(up);
+
+    /* the upstream canned stream, read whole once — every turn replays it
+     * from the start (the offline arm's provider is deterministic).  This is
+     * the CONTROL arm: byte-identical, untouched by the live lane. */
+    unsigned char *upstream = NULL;
+    size_t upstream_len = 0;
+    if (!g_http_mode) {
+        FILE *up = fopen(upstream_path, "rb");
+        if (!up) die_errno("cannot open upstream");
+        if (fseek(up, 0, SEEK_END) != 0) die_errno("fseek upstream");
+        long ul = ftell(up);
+        if (ul <= 0) {
+            note("FATAL: upstream %s is empty/unmeasurable (%ld bytes)",
+                 upstream_path, ul);
+            return 1;
+        }
+        rewind(up);
+        upstream_len = (size_t)ul;
+        upstream = malloc(upstream_len);
+        if (!upstream) die_errno("malloc upstream");
+        if (fread(upstream, 1, upstream_len, up) != upstream_len)
+            die_errno("fread upstream");
+        fclose(up);
+    }
 
     /* the PTY pair: master here, slave path handed to the guest */
     int master = posix_openpt(O_RDWR | O_NOCTTY);
@@ -5678,9 +6171,15 @@ int main(int argc, char **argv) {
     fclose(pub);
 
     note("slave: %s", slave_path);
-    note("upstream: %s (%zu bytes); turns: %s",
-         upstream_path, upstream_len,
-         max_turns < 0 ? "unlimited" : "bounded");
+    if (g_http_mode) {
+        note("upstream: HTTP %s:%d%s (the live lane; each turn POSTs the "
+             "rewritten frame and serves the streamed response)",
+             g_http_host, g_http_port, g_http_path);
+    } else {
+        note("upstream: %s (%zu bytes); turns: %s",
+             upstream_path, upstream_len,
+             max_turns < 0 ? "unlimited" : "bounded");
+    }
     note("log: %s (one JSONL row per call; %zu row(s) carried in, %zu deny-map "
          "key(s) — the record CONTINUES, it is never replaced)",
          g_log_path, g_load_rows, g_ndmap);
@@ -5782,26 +6281,58 @@ int main(int argc, char **argv) {
          * frame, and its rewrite is decided BEFORE anything crosses. */
         join_pass(fr.body, fr.last_frame_body_len, served);
         char *out_frame = outbound_pass(fr.body, fr.last_frame_body_len, served);
+        /* The send buffer is EXACTLY the frame outbound_pass RETURNED (P3
+         * SHOULD-FIX 4: the live lane must send the buffer the caller was
+         * handed, never a second rendering).  With no input array to
+         * substitute, the raw request frame is what goes up. */
+        const unsigned char *send_buf;
+        size_t send_len;
         if (out_frame) {
+            send_buf = (const unsigned char *)out_frame;
+            send_len = strlen(out_frame);
             if (g_dump_path) {
                 /* one compact JSON line per turn — the model-facing frame,
                  * AFTER the substitutions.  The dump records the RETURNED
-                 * frame (what would be sent), never a second rendering. */
+                 * frame (the SAME buffer the live lane POSTs), never a second
+                 * rendering. */
                 FILE *f = fopen(g_dump_path, "a");
                 if (!f) die_errno("cannot append --dump-requests");
-                fwrite(out_frame, 1, strlen(out_frame), f);
+                fwrite(out_frame, 1, send_len, f);
                 fputc('\n', f);
                 if (fflush(f) != 0 || fsync(fileno(f)) != 0)
                     die_errno("fsync dump");
                 fclose(f);
             }
-            free(out_frame);
+        } else {
+            send_buf = fr.body;
+            send_len = fr.last_frame_body_len;
         }
         subst_unresolved_check(served);
 
         size_t served_len = 0;
-        unsigned char *served_stream =
-            serve_stream(upstream, upstream_len, served, &served_len);
+        unsigned char *served_stream = NULL;
+        if (g_http_mode) {
+            /* THE REAL LANE: POST the returned frame to the live endpoint and
+             * run the streamed SSE through the SAME decode gate.  A failed
+             * exchange is a LOUD skip/failure (never a silent green). */
+            unsigned char *resp = NULL;
+            size_t resp_len = 0;
+            int rc = http_post(g_http_host, g_http_port, g_http_path, g_http_key,
+                               send_buf, send_len, &resp, &resp_len);
+            if (rc != FH_HTTP_OK) {
+                free(out_frame);
+                log_exit_report(served);
+                return rc; /* 77 = LOUD skip, 1 = loud failure */
+            }
+            note("turn %ld: HTTP %zu-byte request -> %zu-byte response",
+                 served, send_len, resp_len);
+            served_stream = serve_stream(resp, resp_len, served, &served_len);
+            free(resp);
+        } else {
+            served_stream = serve_stream(upstream, upstream_len, served,
+                                         &served_len);
+        }
+        free(out_frame);
 
         if (write_all(master, served_stream, served_len) != 0) {
             if (errno == EIO || errno == ENXIO || errno == EPIPE) {
