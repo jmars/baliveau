@@ -183,10 +183,25 @@
  * report that implies more than its records support is the failure mode
  * this whole project exists to argue against.
  *
- * Host tool (like the audit: native, no musl variant).  Links only the
- * vendored sha256.  Usage:
+ * Host tool (like the audit: native, no musl variant).  Links the
+ * vendored sha256 and yyjson (the host log and the guest transcript are
+ * JSON).  Usage:
  *   fx-report [--store DIR] [--fxstore BIN] [--max-config-lines N]
+ *             [--proxy-log FILE] [--transcript FILE]
  * Exit: 0 documented (no findings), 1 findings present, 2 tool error.
+ *
+ * THE CALL CLASS (P9, with --proxy-log and/or --transcript): the host
+ * proxy's ONE LOG (tools/fx-hostgate.c) joined, by call_id, to the guest's
+ * TRANSCRIPT (messages.jsonl).  The host gate delivers a denial by
+ * REWRITING the call's name to a reserved name and substituting a denial
+ * text; the guest records the REWRITTEN name and a generic sentinel and
+ * NEVER learns the true verb — so this join is the only place a denial's
+ * true name, verdict, author and reason are queryable together.  The seat
+ * surfaces the TRIPLE (call-record / call-verdict / call-outcome), the
+ * DISAGREEMENT (call-disagreement), the join's absences in BOTH directions
+ * (call-join, each its own row and meaning), and the log's echo telemetry
+ * (call-telemetry; NO LANE STOP by default — the deliberate G7 demotion).
+ * It READS both sides and never rewrites either.
  */
 
 #define _POSIX_C_SOURCE 200809L
@@ -202,7 +217,8 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#include "dhall.h" /* sha256_hex (vendored dhall-c/sha256.c) */
+#include "dhall.h"  /* sha256_hex (vendored dhall-c/sha256.c) */
+#include "yyjson.h" /* the host log and the guest transcript are JSON */
 
 /* ── knobs (every cap is LOUD on overflow: silently reporting a truncated
  *    view is exactly the silent pass this family refuses) ─────────────── */
@@ -364,6 +380,78 @@ typedef struct {
 static crow_t g_crows[MAX_CLAIM_ROWS];
 static unsigned g_ncrows;
 static int g_clob_present; /* the observation file existed */
+
+/* ── THE CALL CLASS (P9): the host proxy's ONE LOG joined, by call_id, to
+ *    the guest's TRANSCRIPT.  The host gate (tools/fx-hostgate.c) delivers
+ *    a denial by REWRITING the call's name to a reserved name and
+ *    substituting a denial text; the guest's transcript records the
+ *    REWRITTEN name + a generic sentinel and NEVER learns the true verb.
+ *    So the only place a denial's TRUE NAME, its VERDICT, its AUTHOR and
+ *    its REASON exist together is the host's log, and nothing joins that
+ *    log back to what the guest recorded until THIS class.  Every field
+ *    below is the log's own, carried VERBATIM: the seat surfaces the
+ *    triple (CLAIM/VERDICT/OUTCOME), the DISAGREEMENT, and the join's
+ *    absences, and derives nothing about the judgement. */
+
+/* One CALL row of the host log — the triple the seat is asked to make
+ * queryable.  verdict/author/allow_scope/refusal_name/reason are NULL when
+ * the row carries no verdict field (no policy ran: the P2 shape), and the
+ * seat must then render NO fabricated verdict (`NOT-RECORDED`, never
+ * "allowed"). */
+typedef struct {
+    char *call_id;        /* the join key — NEVER rewritten on either leg */
+    long turn;
+    int turn_set;
+    char *true_name;
+    char *justification;  /* the CLAIM, from the call's args */
+    int pending;
+    char *outcome;        /* the OUTCOME: the replayed function_call_output */
+    char *verdict;
+    char *author;
+    char *allow_scope;    /* the allowed row's own reading — VERBATIM */
+    char *refusal_name;
+    char *reason;
+    unsigned lineno;
+} hostcall_t;
+
+/* One telemetry row of the host log (types unjoined-output / echo-anomaly /
+ * unresolved-substitution): a RECORD of a join that could not be made — NOT
+ * a trigger (the deliberate G7 demotion). */
+typedef struct {
+    char *type;
+    char *call_id;
+    char *text;           /* `output`, or `true_name` for the subst anomaly */
+    long turn;
+    int turn_set;
+    unsigned lineno;
+} calltele_t;
+
+/* One call the GUEST recorded in its transcript (messages.jsonl): the
+ * assistant tool_call (the id + the REWRITTEN name + the args) and the
+ * role=tool result (the sentinel output), keyed by call_id. */
+typedef struct {
+    char *call_id;
+    char *name;      /* NULL when only a tool result was recorded */
+    int has_output;
+    char *output;
+    unsigned lineno;
+} guestcall_t;
+
+#define MAX_CALL_ROWS 65536
+#define MAX_TELE_ROWS 4096
+#define MAX_GUEST_ROWS 65536
+#define MAX_LOG_LINE (1u << 20) /* a row longer than this is refused LOUD */
+
+static hostcall_t g_hcalls[MAX_CALL_ROWS];
+static unsigned g_nhcalls;
+static calltele_t g_tele[MAX_TELE_ROWS];
+static unsigned g_ntele;
+static guestcall_t g_guest[MAX_GUEST_ROWS];
+static unsigned g_nguest;
+
+static const char *g_proxy_log;  /* --proxy-log: the host proxy's one log */
+static const char *g_transcript; /* --transcript: the guest's messages.jsonl */
+static int g_plog_present, g_tran_present; /* the named file existed */
 
 /* ── running fxstore (read-only subcommands only; the osier-share seat's
  *    pattern) ──────────────────────────────────────────────────────────── */
@@ -1064,6 +1152,12 @@ static const struct { const char *cls, *record, *absence; } TAXONOMY[] = {
     { "content-recurrence",
       "DERIVED: .recovery data rows whose trailing genhash is IDENTICAL (the .recovery header's own semantics: the same content re-failing)",
       "no-repeated-genhash=no-recurrence-within-the-surviving-rows" },
+    { "call",
+      "MEASURED — the host proxy's ONE LOG (tools/fx-hostgate.c --log, one JSONL row per decoded tool call) joined, by call_id, to the guest's TRANSCRIPT (messages.jsonl).  A call row carries the TRIPLE: the CLAIM (the model's true_name and the args, the justification among them), the VERDICT (an allowed row's author + allow_scope; a denied row's author + refusal_name + reason) and the OUTCOME (the replayed function_call_output), plus terminal turn-stats/proxy-exit rows.  The guest records only what CROSSED the gate (the REWRITTEN name fx_host_denied + a generic sentinel), so this join is the ONLY place a denial's true name, verdict, author and reason are queryable together.  The seat READS the log — byte-identical in, byte-identical out; it never re-renders or rewrites it.",
+      "TWO DIRECTIONS, the §1a gap-3 discipline, once per side: (i) BOTH records given and a call_id present in one and ABSENT from the other IS a MEASUREMENT — emitted as call-join ... FINDING (host-log-only: the host judged a call the transcript does not record; transcript-only: the guest recorded a call the host never judged) with its meaning stated, so a join that cannot fire FAILS OPEN IN THE RECORD (the P2 lesson); (ii) a side NOT GIVEN (no --proxy-log / no --transcript) is NOT-KNOWN — an absence row is emitted and its silence is NEVER read as 'no call'" },
+    { "call-telemetry",
+      "MEASURED — the ONE LOG's telemetry rows (types unjoined-output, echo-anomaly, unresolved-substitution), surfaced verbatim as call-telemetry records with their meanings stated",
+      "no-telemetry-row-in-the-log = no SUCH anomaly was recorded within the log this run holds — a MEASUREMENT of the log, never a claim that none occurred (the log may be a slice, and a row absent because no proxy ran is not 'no anomaly')" },
 };
 #define NTAX (sizeof TAXONOMY / sizeof TAXONOMY[0])
 
@@ -1132,8 +1226,461 @@ static const struct { const char *id, *text; } BOUNDS[] = {
       "the evaluator's LOCATION — host-side Python (policy/eval_claim.py over the le checkout) TODAY, a DEPLOYMENT STOPGAP; in-guest in the qemu lane (the le->Osier port emitting x64 via QBE) once the port lands — is a DEPLOYMENT DIFFERENCE WITH IDENTICAL SEMANTICS: the same closed agent lexicon (policy/claims-lexicon.ini), the same frozen policy (policy/claims-policy.dl, sha-pinned in policy/PINS), the same claim bytes, the same record format.  The verdict does not encode where the evaluator ran and the record does not say — because it does not matter: this row exists so the location can never silently become a reason to shrink the language again (round 1 chose a crippled template checker to avoid executing LE, and was overturned for exactly that)" },
     { "same-store-only",
       "this report is a function of ONE store directory; anything recorded elsewhere (the runtime log, the harness's own transcript, the audit's observation file) is out of domain, and the report never guesses at it — the ONE in-domain exception is the judge seat's claim observation <store>.fx-claim-obs (bound/claim-obs-is-host-side), which is the claim class's record, not a harness self-report" },
+    { "call-record-is-host-side",
+      "the host proxy's ONE LOG (tools/fx-hostgate.c --log) and the guest's TRANSCRIPT (messages.jsonl) are named by the CALLER (--proxy-log / --transcript); neither has a store-sibling default, so the call class is UNARMED unless a side is named.  The reporter only READS both — byte-identical in, byte-identical out — and never re-renders or rewrites either.  The two sides are CHECKABLE against each other by call_id (the join key, never rewritten on either leg), NOT authoritative over each other: the log records what the MODEL said and what the host judged, the transcript records what CROSSED the gate (the rewritten name + a generic sentinel for a denial)" },
+    { "call-auditing-not-proofing",
+      "the call class is AUDITING, not PROOFING (design record §6b): the guest's transcript records the REWRITTEN name (the reserved fx_host_denied) and a generic sentinel for a denied call — it NEVER learns the true verb — so a denial is AUDITABLE only by joining the guest's view to the host's log by call_id, and this seat makes that join QUERYABLE rather than implicit.  This seat derives NOTHING about the judgement: it surfaces the verdict, the author and the refusal name VERBATIM and never classifies a word it does not own.  The echo telemetry records (unjoined-output, echo-anomaly, unresolved-substitution) are RECORDS, NOT TRIGGERS — NO LANE STOP BY DEFAULT (the deliberate demotion of round-1 G7's fail-closed tripwire): under H2 the teeth are STRUCTURAL (the true name never crossed), so a mismatch is a disagreement instrument, not an enforcement hole, and a hard stop would make the gate brittle against innocent sentinel changes" },
 };
 #define NBOUND (sizeof BOUNDS / sizeof BOUNDS[0])
+
+/* ── THE CALL CLASS (P9): the host log <-> guest transcript join ───────── */
+
+/* Emit a free-text field on a tab-separated record: tab / newline / carriage
+ * return / backslash are escaped (the config-line convention) so a row
+ * cannot be TORN by model-controlled text, and the value is emitted
+ * VERBATIM otherwise — this seat never re-words a record it reads. */
+static void emit_text(const char *s) {
+    if (!s) { putchar('-'); return; }
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+        switch (*p) {
+        case '\\': fputs("\\\\", stdout); break;
+        case '\t': fputs("\\t", stdout); break;
+        case '\n': fputs("\\n", stdout); break;
+        case '\r': fputs("\\r", stdout); break;
+        default:
+            if (*p < 0x20 || *p == 0x7f) printf("\\x%02x", *p);
+            else putchar(*p);
+        }
+    }
+}
+
+static const char *jstr(yyjson_val *o, const char *k) {
+    yyjson_val *v = yyjson_obj_get(o, k);
+    return (v && yyjson_is_str(v)) ? yyjson_get_str(v) : NULL;
+}
+
+/* Render the turn field (an integer in the writer's shape, or absent). */
+static void jturn(yyjson_val *o, long *out, int *set) {
+    yyjson_val *v = yyjson_obj_get(o, "turn");
+    if (v && yyjson_is_int(v)) { *out = (long)yyjson_get_sint(v); *set = 1; }
+    else { *out = 0; *set = 0; }
+}
+
+/* The CLAIM: the justification the agent supplied, extracted from the call's
+ * ARGUMENTS.  The args are a JSON string (the writer's `json_str`); the
+ * justification is one property in it (the P5 tools schema makes it
+ * required).  A call that carries none is `-absent` — a MEASUREMENT of the
+ * args, not an error; args that are not JSON at all are named as such
+ * rather than silently read as absent. */
+static char *justification_of(const char *args) {
+    if (!args || !args[0]) return xstrdup("-absent");
+    yyjson_doc *d = yyjson_read(args, strlen(args), YYJSON_READ_NOFLAG);
+    if (!d) return xstrdup("-unparseable-args");
+    char *out = NULL;
+    yyjson_val *o = yyjson_doc_get_root(d);
+    if (yyjson_is_obj(o)) {
+        const char *j = jstr(o, "justification");
+        if (j) out = xstrdup(j);
+    }
+    yyjson_doc_free(d);
+    return out ? out : xstrdup("-absent");
+}
+
+/* The verdict WORD, surfaced VERBATIM.  A word this seat does not know must
+ * not be silently classified into the report's own vocabulary — the claim
+ * class's discipline, carried.  This ONE line is what MUT-CALL-CLASSIFY
+ * rewrites to reproduce the classification error. */
+static const char *call_verdict_word(const char *v) { return v; }
+
+/* The allowed row's own reading, carried VERBATIM (the P8 R5 finding: the
+ * seat must never re-derive what a judge already wrote).  This ONE line is
+ * what MUT-CALL-SCOPE rewrites to reproduce the re-derivation. */
+static const char *call_scope_text(const hostcall_t *H) { return H->allow_scope; }
+
+static int call_verdict_known(const char *v) {
+    return !strcmp(v, "allowed") || !strcmp(v, "denied");
+}
+
+/* Read the host proxy's ONE LOG — append-only JSONL, one row per call.  The
+ * reporter only READS it; it never re-renders or rewrites the file (the
+ * gate asserts the bytes are unchanged after a report run). */
+static void read_proxy_log(void) {
+    if (!g_proxy_log) return;
+    FILE *f = fopen(g_proxy_log, "r");
+    if (!f) {
+        if (errno == ENOENT) return; /* named but not there: absence is its own state */
+        die("cannot read %s: %s (a read error is not an absence)", g_proxy_log, strerror(errno));
+    }
+    g_plog_present = 1;
+    char *line = NULL;
+    size_t cap = 0;
+    ssize_t got;
+    unsigned ln = 0;
+    while ((got = getline(&line, &cap, f)) >= 0) {
+        ln++;
+        size_t l = (size_t)got;
+        while (l && (line[l - 1] == '\n' || line[l - 1] == '\r')) line[--l] = 0;
+        if (!l) continue; /* blank lines are not rows (the writer emits none) */
+        if (l > MAX_LOG_LINE)
+            die("%s:%u: row of %zu bytes exceeds the %u-byte cap — a report over a truncated row is a lie",
+                g_proxy_log, ln, l, MAX_LOG_LINE);
+        yyjson_doc *doc = yyjson_read(line, l, YYJSON_READ_NOFLAG);
+        if (!doc)
+            die("%s:%u: not JSON — a skipped row would silently drop a call from the account",
+                g_proxy_log, ln);
+        yyjson_val *o = yyjson_doc_get_root(doc);
+        if (!yyjson_is_obj(o)) {
+            yyjson_doc_free(doc);
+            die("%s:%u: a row that is not a JSON object is not this log's grammar", g_proxy_log, ln);
+        }
+        const char *type = jstr(o, "type");
+        if (!type) {
+            const char *cid = jstr(o, "call_id");
+            if (!cid) {
+                yyjson_doc_free(doc);
+                die("%s:%u: a row with neither `type` nor `call_id` is not this log's grammar",
+                    g_proxy_log, ln);
+            }
+            if (g_nhcalls >= MAX_CALL_ROWS) {
+                yyjson_doc_free(doc);
+                die("%s: more than %u call rows — raise MAX_CALL_ROWS", g_proxy_log, (unsigned)MAX_CALL_ROWS);
+            }
+            hostcall_t *H = &g_hcalls[g_nhcalls++];
+            memset(H, 0, sizeof *H);
+            H->call_id = xstrdup(cid);
+            jturn(o, &H->turn, &H->turn_set);
+            const char *tn = jstr(o, "true_name");
+            H->true_name = xstrdup(tn ? tn : "-");
+            H->justification = justification_of(jstr(o, "args"));
+            yyjson_val *pv = yyjson_obj_get(o, "pending");
+            H->pending = (pv && yyjson_is_bool(pv)) ? yyjson_get_bool(pv) : 0;
+            const char *oc = jstr(o, "outcome");
+            H->outcome = oc ? xstrdup(oc) : NULL;
+            const char *vd = jstr(o, "verdict");
+            H->verdict = vd ? xstrdup(vd) : NULL;
+            const char *au = jstr(o, "author");       H->author = au ? xstrdup(au) : NULL;
+            const char *as = jstr(o, "allow_scope");  H->allow_scope = as ? xstrdup(as) : NULL;
+            const char *rn = jstr(o, "refusal_name"); H->refusal_name = rn ? xstrdup(rn) : NULL;
+            const char *rs = jstr(o, "reason");       H->reason = rs ? xstrdup(rs) : NULL;
+            H->lineno = ln;
+        } else if (!strcmp(type, "unjoined-output") || !strcmp(type, "echo-anomaly") ||
+                   !strcmp(type, "unresolved-substitution")) {
+            if (g_ntele >= MAX_TELE_ROWS) {
+                yyjson_doc_free(doc);
+                die("%s: more than %u telemetry rows — raise MAX_TELE_ROWS", g_proxy_log, (unsigned)MAX_TELE_ROWS);
+            }
+            calltele_t *T = &g_tele[g_ntele++];
+            memset(T, 0, sizeof *T);
+            T->type = xstrdup(type);
+            const char *cid = jstr(o, "call_id");
+            T->call_id = xstrdup(cid ? cid : "-");
+            /* unresolved-substitution carries `true_name`; the other two `output`. */
+            const char *tx = jstr(o, !strcmp(type, "unresolved-substitution") ? "true_name" : "output");
+            T->text = tx ? xstrdup(tx) : NULL;
+            jturn(o, &T->turn, &T->turn_set);
+            T->lineno = ln;
+        } else if (!strcmp(type, "turn-stats") || !strcmp(type, "proxy-exit")) {
+            /* terminal / aggregate rows: no call_id join, not this class */
+        } else {
+            yyjson_doc_free(doc);
+            die("%s:%u: unknown row type \"%s\" — a newer proxy's row is not this seat's grammar "
+                "(refused, never silently skipped)", g_proxy_log, ln, type);
+        }
+        yyjson_doc_free(doc);
+    }
+    if (ferror(f)) die("read error on %s: %s", g_proxy_log, strerror(errno));
+    free(line);
+    fclose(f);
+}
+
+static guestcall_t *guest_find(const char *call_id) {
+    for (unsigned i = 0; i < g_nguest; i++)
+        if (!strcmp(g_guest[i].call_id, call_id)) return &g_guest[i];
+    return NULL;
+}
+
+/* Read the guest's transcripts (messages.jsonl): each line is a message
+ * (checkpoint.c msg_to_json).  A call is recorded TWICE — the assistant's
+ * tool_calls entry (id + the name that CROSSED the gate + the args) and the
+ * role=tool result (tool_call_id + content, the sentinel) — joined on the id. */
+static void read_transcript(void) {
+    if (!g_transcript) return;
+    FILE *f = fopen(g_transcript, "r");
+    if (!f) {
+        if (errno == ENOENT) return;
+        die("cannot read %s: %s (a read error is not an absence)", g_transcript, strerror(errno));
+    }
+    g_tran_present = 1;
+    char *line = NULL;
+    size_t cap = 0;
+    ssize_t got;
+    unsigned ln = 0;
+    while ((got = getline(&line, &cap, f)) >= 0) {
+        ln++;
+        size_t l = (size_t)got;
+        while (l && (line[l - 1] == '\n' || line[l - 1] == '\r')) line[--l] = 0;
+        if (!l) continue;
+        if (l > MAX_LOG_LINE)
+            die("%s:%u: message of %zu bytes exceeds the %u-byte cap — a report over a truncated message is a lie",
+                g_transcript, ln, l, MAX_LOG_LINE);
+        yyjson_doc *doc = yyjson_read(line, l, YYJSON_READ_NOFLAG);
+        if (!doc)
+            die("%s:%u: not JSON — a skipped message would silently drop a call from the account",
+                g_transcript, ln);
+        yyjson_val *o = yyjson_doc_get_root(doc);
+        if (yyjson_is_obj(o)) {
+            yyjson_val *tcs = yyjson_obj_get(o, "tool_calls");
+            if (tcs && yyjson_is_arr(tcs)) {
+                size_t idx, max;
+                yyjson_val *tc;
+                yyjson_arr_foreach(tcs, idx, max, tc) {
+                    const char *id = jstr(tc, "id");
+                    if (!id) continue;
+                    guestcall_t *g = guest_find(id);
+                    if (!g) {
+                        if (g_nguest >= MAX_GUEST_ROWS) {
+                            yyjson_doc_free(doc);
+                            die("%s: more than %u recorded calls — raise MAX_GUEST_ROWS",
+                                g_transcript, (unsigned)MAX_GUEST_ROWS);
+                        }
+                        g = &g_guest[g_nguest++];
+                        memset(g, 0, sizeof *g);
+                        g->call_id = xstrdup(id);
+                        g->lineno = ln;
+                    }
+                    const char *nm = jstr(tc, "name");
+                    if (nm && !g->name) g->name = xstrdup(nm);
+                }
+            }
+            const char *role = jstr(o, "role");
+            const char *tcid = jstr(o, "tool_call_id");
+            if (role && !strcmp(role, "tool") && tcid) {
+                guestcall_t *g = guest_find(tcid);
+                if (!g) { /* a result with no recorded call (a truncated run) */
+                    if (g_nguest >= MAX_GUEST_ROWS) {
+                        yyjson_doc_free(doc);
+                        die("%s: more than %u recorded calls — raise MAX_GUEST_ROWS",
+                            g_transcript, (unsigned)MAX_GUEST_ROWS);
+                    }
+                    g = &g_guest[g_nguest++];
+                    memset(g, 0, sizeof *g);
+                    g->call_id = xstrdup(tcid);
+                    g->lineno = ln;
+                }
+                if (!g->has_output) {
+                    const char *c = jstr(o, "content");
+                    g->output = xstrdup(c ? c : "-");
+                    g->has_output = 1;
+                }
+            }
+        }
+        yyjson_doc_free(doc);
+    }
+    if (ferror(f)) die("read error on %s: %s", g_transcript, strerror(errno));
+    free(line);
+    fclose(f);
+}
+
+/* The call class's counters (the human summary reads them). */
+static unsigned g_c_denied, g_c_allowed, g_c_nov, g_c_joined, g_c_hostonly,
+    g_c_tranonly, g_c_disagree, g_c_tele;
+
+static void emit_turn(long t, int set) {
+    if (set) printf("%ld", t); else putchar('-');
+}
+
+/* A join-direction absence: its OWN row, its OWN stated meaning, and a
+ * FINDING (the record SHOULD show the other side and does not).  `dir` is
+ * the direction; `why` says which is absent and why that is not a zero. */
+static void emit_join_absence(const char *call_id, const char *dir, const char *why) {
+    printf("call-join\t%s\t%s\tFINDING\tbound\t%s\n", call_id, dir, why);
+}
+
+/* Emit the whole call class — the triple per judged call, the discrepancy
+ * between the two records, the join's absences in BOTH directions, and the
+ * telemetry rows. */
+static void emit_calls(void) {
+    int any = (g_proxy_log != NULL) || (g_transcript != NULL);
+
+    for (unsigned i = 0; i < g_nhcalls; i++) {
+        hostcall_t *H = &g_hcalls[i];
+        guestcall_t *G = guest_find(H->call_id);
+
+        /* the CLAIM: the justification that rode in with the call */
+        printf("call-record\t%s\tturn\t", H->call_id);
+        emit_turn(H->turn, H->turn_set);
+        fputs("\ttrue-name\t", stdout);
+        emit_text(H->true_name);
+        fputs("\tjustification\t", stdout);
+        emit_text(H->justification);
+        fputs("\tMEASURED\n", stdout);
+
+        /* the VERDICT: the host's, with its author and refusal name.  NO
+         * fabricated verdict — a row with no verdict field reads NOT-RECORDED. */
+        if (!H->verdict) {
+            printf("call-verdict\t%s\tverdict\t-\tNOT-RECORDED\tbound\t"
+                   "no-verdict-field-no-policy-ran-on-this-call (NOT 'allowed')\n", H->call_id);
+            g_c_nov++;
+        } else {
+            const char *w = call_verdict_word(H->verdict);
+            printf("call-verdict\t%s\tverdict\t%s\tauthor\t", H->call_id, w);
+            emit_text(H->author ? H->author : "-");
+            fputs("\trefusal-name\t", stdout);
+            emit_text(H->refusal_name ? H->refusal_name : "-");
+            if (!strcmp(H->verdict, "allowed")) {
+                /* the allowed row's OWN reading, VERBATIM (never re-derived) */
+                fputs("\tallow-scope\t", stdout);
+                emit_text(call_scope_text(H));
+                g_c_allowed++;
+            } else {
+                fputs("\treason\t", stdout);
+                emit_text(H->reason ? H->reason : "-");
+                g_c_denied++;
+            }
+            fputs("\tMEASURED", stdout);
+            if (!call_verdict_known(H->verdict))
+                fputs("\tnote\tverdict-vocabulary-not-known-to-this-report-surfaced-verbatim-never-classified", stdout);
+            putchar('\n');
+        }
+
+        /* the OUTCOME: what actually came back (the replayed
+         * function_call_output the host observed) */
+        if (H->outcome) {
+            fputs("call-outcome\t", stdout);
+            emit_text(H->call_id);
+            fputs("\toutcome\t", stdout);
+            emit_text(H->outcome);
+            fputs("\tMEASURED\n", stdout);
+        } else {
+            printf("call-outcome\t%s\toutcome\t-\tNOT-RECORDED\tbound\t"
+                   "%s-no-function_call_output-was-replayed-to-the-host (NOT an empty outcome)\n",
+                   H->call_id, H->pending ? "pending-the-row-is-still-pending" : "unresolved");
+        }
+
+        /* the JOIN: absent in ONE direction is ITS OWN row; absent-in-neither
+         * is the triple above plus the disagreement below. */
+        if (G) {
+            g_c_joined++;
+            /* THE DISAGREEMENT IS THE INSTRUMENT: the guest recorded what
+             * CROSSED the gate, the host recorded what the model said and
+             * what it judged.  Two shapes: (a) the guest's name differs from
+             * the host's true name — the rewrite, the gate working; (b) the
+             * names AGREE while the host DENIED — the true name crossed a
+             * call the host refused, a rewrite MISS (the silent-allow
+             * direction), which the gate must be able to see.  Surfaced
+             * VERBATIM, never classified into a vocabulary this seat does
+             * not own. */
+            int name_differs = G->name && strcmp(G->name, H->true_name) != 0;
+            int crossed = G->name && !strcmp(G->name, H->true_name) &&
+                          H->verdict && !strcmp(H->verdict, "denied");
+            if (name_differs || crossed) {
+                fputs("call-disagreement\t", stdout);
+                emit_text(H->call_id);
+                fputs("\thost-name\t", stdout);
+                emit_text(H->true_name);
+                fputs("\tguest-name\t", stdout);
+                emit_text(G->name ? G->name : "-");
+                fputs("\thost-verdict\t", stdout);
+                emit_text(H->verdict ? H->verdict : "-");
+                fputs("\thost-author\t", stdout);
+                emit_text(H->author ? H->author : "-");
+                fputs("\thost-refusal\t", stdout);
+                emit_text(H->refusal_name ? H->refusal_name : "-");
+                fputs("\tguest-output\t", stdout);
+                emit_text(G->has_output ? G->output : "-");
+                fputs("\tDERIVED\t", stdout);
+                if (crossed)
+                    fputs("the guest recorded the TRUE name for a call the host DENIED — "
+                          "the guest accumulated what the rewriter was meant to replace, a "
+                          "REWRITE MISS (the silent-allow direction)", stdout);
+                else
+                    fputs("the guest's transcript records what CROSSED the gate (the rewritten "
+                          "name + a generic sentinel); the host log records what the MODEL said "
+                          "and what the host judged — the divergence IS the record of the gate "
+                          "working, verbatim from both records", stdout);
+                putchar('\n');
+                g_c_disagree++;
+            }
+        } else if (g_transcript) {
+            /* the host judged a call the guest never recorded */
+            emit_join_absence(H->call_id, "host-log-only",
+                "the host decoded and judged this call; the guest transcript holds NO tool_call "
+                "with this call_id (a rewrite miss, a crash, or a transcript from another run — "
+                "NOT 'no call occurred')");
+            g_c_hostonly++;
+            g_findings++;
+        }
+    }
+
+    /* the OTHER direction: the guest recorded a call the host never judged */
+    if (g_proxy_log) {
+        for (unsigned i = 0; i < g_nguest; i++) {
+            guestcall_t *G = &g_guest[i];
+            int in_log = 0;
+            for (unsigned j = 0; j < g_nhcalls; j++)
+                if (!strcmp(g_hcalls[j].call_id, G->call_id)) { in_log = 1; break; }
+            if (in_log) continue;
+            emit_join_absence(G->call_id, "transcript-only",
+                "the guest recorded this call; the host log holds NO row for it (the proxy did "
+                "not run for this span, or its log is from another run — NOT 'the host allowed it')");
+            g_c_tranonly++;
+            g_findings++;
+        }
+    }
+
+    /* the ECHO TELEMETRY: the log's own anomaly rows, surfaced as records.
+     * NO LANE STOP BY DEFAULT — the deliberate G7 demotion: under H2 the
+     * teeth are STRUCTURAL (the true name never crossed), so a mismatch is a
+     * disagreement instrument, not an enforcement hole, and a hard stop
+     * would make the gate brittle against innocent sentinel changes.  These
+     * rows therefore do NOT change this report's exit status. */
+    for (unsigned i = 0; i < g_ntele; i++) {
+        calltele_t *T = &g_tele[i];
+        const char *meaning;
+        if (!strcmp(T->type, "unjoined-output"))
+            meaning = "the guest replayed a function_call_output whose call_id matches no call "
+                      "the host ever decoded — the guest put words in the conversation; nothing "
+                      "executed (bound/call-auditing-not-proofing)";
+        else if (!strcmp(T->type, "echo-anomaly"))
+            meaning = "a DENIED call's output is not one of the two known sentinels — the guest's "
+                      "refusal shape changed; a disagreement recorded, never a trigger";
+        else
+            meaning = "a DENIED call whose outbound substitution never fired — the model would be "
+                      "uninformed of the reason";
+        fputs("call-telemetry\t", stdout);
+        emit_text(T->type);
+        fputs("\tcall_id\t", stdout);
+        emit_text(T->call_id);
+        fputs("\tturn\t", stdout);
+        emit_turn(T->turn, T->turn_set);
+        fputs("\toutput\t", stdout);
+        emit_text(T->text);
+        fputs("\tMEASURED\tnote\t", stdout);
+        fputs(meaning, stdout);
+        fputs(" — NO LANE STOP BY DEFAULT (the deliberate G7 demotion; these are records, not triggers)\n", stdout);
+        g_c_tele++;
+    }
+
+    /* the two sides' own absences (the §1a gap-3 discipline at the join): a
+     * side NOT given is NOT-KNOWN, never read as "no call". */
+    if (any) {
+        if (!g_proxy_log)
+            printf("absence\tproxy-log\tnot-given-the-host-proxy-s-one-log-was-not-supplied-so-the-"
+                   "host-side-of-the-call-join-is-NOT-KNOWN (NOT 'no call was judged')\tABSENT\n");
+        else if (!g_plog_present)
+            printf("absence\tproxy-log\tnot-durably-recorded-%s-does-not-exist-no-host-record-was-"
+                   "produced-so-the-host-side-of-the-call-join-is-NOT-KNOWN (NOT 'no call was "
+                   "judged')\tABSENT\n", g_proxy_log);
+        if (!g_transcript)
+            printf("absence\ttranscript\tnot-given-the-guest-transcript-messages-jsonl-was-not-"
+                   "supplied-so-the-guest-side-of-the-call-join-is-NOT-KNOWN (NOT 'no call was "
+                   "recorded')\tABSENT\n");
+        else if (!g_tran_present)
+            printf("absence\ttranscript\tnot-durably-recorded-%s-does-not-exist-no-guest-record-"
+                   "was-produced-so-the-guest-side-of-the-call-join-is-NOT-KNOWN (NOT 'no call was "
+                   "recorded')\tABSENT\n", g_transcript);
+    }
+}
 
 /* ── main ───────────────────────────────────────────────────────────────── */
 
@@ -1169,8 +1716,13 @@ int main(int argc, char **argv) {
             opt_max_config_lines = (unsigned)strtoul(argv[++i], NULL, 10);
         else if (!strncmp(argv[i], "--max-config-lines=", 19))
             opt_max_config_lines = (unsigned)strtoul(argv[i] + 19, NULL, 10);
+        else if (!strcmp(argv[i], "--proxy-log") && i + 1 < argc) g_proxy_log = argv[++i];
+        else if (!strncmp(argv[i], "--proxy-log=", 12)) g_proxy_log = argv[i] + 12;
+        else if (!strcmp(argv[i], "--transcript") && i + 1 < argc) g_transcript = argv[++i];
+        else if (!strncmp(argv[i], "--transcript=", 13)) g_transcript = argv[i] + 13;
         else if (!strcmp(argv[i], "--help")) {
-            printf("usage: fx-report [--store DIR] [--fxstore BIN] [--max-config-lines N]\n");
+            printf("usage: fx-report [--store DIR] [--fxstore BIN] [--max-config-lines N]"
+                   " [--proxy-log FILE] [--transcript FILE]\n");
             return 0;
         } else {
             fprintf(stderr, "fx-report: unknown argument '%s'\n", argv[i]);
@@ -1185,6 +1737,8 @@ int main(int argc, char **argv) {
     read_recovery();
     read_operator();
     read_claimobs();
+    read_proxy_log();
+    read_transcript();
     read_configs();
 
     /* ── the human header ─────────────────────────────────────────────── */
@@ -1477,6 +2031,13 @@ int main(int argc, char **argv) {
                    C->genhash, C->verdict);
     }
 
+    /* ── THE CALL CLASS (P9): the host proxy's ONE LOG, the guest's
+     * transcript, and the join between them by call_id.  MEASURED, and
+     * emitted only when a side was named (the class is unarmed otherwise —
+     * unlike the claim class, the log and the transcript live at paths the
+     * caller names, so there is no store-sibling default to read). ──────── */
+    emit_calls();
+
     /* ── the reconstruction: adjacent pairs, both inputs, the diff ────── */
     for (unsigned i = 1; i < g_nvers; i++) {
         version_t *A = &g_vers[i - 1], *B = &g_vers[i];
@@ -1563,6 +2124,19 @@ int main(int argc, char **argv) {
             h("claim records: %u row(s) in the observation — %u live generation(s) covered, %u NOT covered (named NOT-RECORDED above); verdicts ok %u, claimless %u (none-occurred, measured), skipped %u, disagreements %u%s.  A disagreement is a RECORD, not a reporter finding; the audit of the observation is the judge's own next run.",
               g_ncrows, n_cov, n_uncov, n_ok, n_cl, n_sk, n_dis,
               n_unk ? " (unknown verdict vocabulary: surfaced verbatim)" : "");
+    }
+    if (g_proxy_log || g_transcript) {
+        h("call records: the host log <-> guest transcript join by call_id — %u judged call(s) "
+          "(%u denied, %u allowed, %u with NO verdict recorded), %u joined to the transcript, "
+          "%u host-log-only and %u transcript-only (%s), %u disagreement(s) (the record of the "
+          "gate working, VERBATIM — not a reporter verdict), %u telemetry row(s) (records, NOT "
+          "triggers: no lane stop by default).",
+          g_nhcalls, g_c_denied, g_c_allowed, g_c_nov, g_c_joined, g_c_hostonly, g_c_tranonly,
+          (g_c_hostonly || g_c_tranonly) ? "each its own FINDING" : "the join fired in both directions",
+          g_c_disagree, g_c_tele);
+        if (!g_proxy_log || !g_transcript)
+            h("  (one side of the join was NOT given — its silence is NOT-KNOWN, named in the "
+              "absence records above, never read as 'no call'.)");
     }
     h("the reconstruction question — 'what changed between N and N+1, and from");
     h("which input?' — is answered by the config/config-line/config-diff records");

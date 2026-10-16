@@ -1389,6 +1389,33 @@ judges it; **claim + verdict + outcome are one record** and the **disagreement**
       and the three earlier fail-opens remain closed.
 - [ ] **THE STATED RESIDUAL:** this closes the **tool-call channel** only — a root agent in the guest
       can still run things directly, outside any tool call (§6b: *auditing, not proofing*).
+- [x] **P9 — THE REPORTER'S CALL CLASS** (**COMMITTED**; `coder`). The problem it solves: the host gate
+      delivers a denial by rewriting a call's name to `fx_host_denied` and substituting a denial text, so
+      the **guest's transcript records the rewritten name and a generic sentinel and never learns the true
+      verb** — meaning the host's one log is the ONLY place the true name, verdict, author and reason exist
+      together, and nothing joined it back to what the guest recorded. `tools/fx-report.c` gains
+      `--proxy-log` + `--transcript` and a `call` class following S2's claim class **shape** (not a second
+      one): the **triple by `call_id`** — `call-record` (the CLAIM = the justification from the call's
+      args, verbatim), `call-verdict` (author + refusal, `allow-scope` carried **verbatim**, **no fabricated
+      verdict** — no verdict field is `NOT-RECORDED`, never `allowed`), `call-outcome` (the replayed
+      `function_call_output`) — plus **`call-disagreement`** and **`call-join`**.
+      **THE DISAGREEMENT IS THE DELIVERABLE**, and I read it out of the gate's own artifacts:
+      `call-disagreement  call_00_DgJf…  host-name get_weather  guest-name fx_host_denied  host-verdict
+      denied  host-author denylist  host-refusal denied-by-denylist  guest-output "(tool call failed)"` —
+      the true verb the guest never learned, recovered by the join. **ABSENCE IN BOTH DIRECTIONS**, each a
+      FINDING with its own stated meaning: `call-join … host-log-only FINDING bound "the host decoded and
+      judged this call; the guest transcript holds NO tool_call with this call_id (a rewrite miss, a crash,
+      or a transcript from another run — NOT 'no call occurred')"`. The echo telemetry
+      (`unjoined-output` / `echo-anomaly` / `unresolved-substitution`) is surfaced as records with **no lane
+      stop**, the deliberate G7 demotion, stated at the site. The reporter only ever `fopen`s the log
+      **read-only**, and the gate asserts **byte-identity in and out**.
+      **DECISION (mine), on the two calls the implementer surfaced:** an unknown row type is a fail-closed
+      exit 2 (a reporter that silently skips a row type it does not know is the "instrument that cannot see"
+      failure), and a join-direction absence increments `g_findings` (exit 1) rather than being a mere
+      record — both KEPT, because in this check the absence really is an anomaly, and the row states so.
+      **I did NOT commission a review round for this slice** — it is the one read-only, non-enforcing seat in
+      the chain, and I verified its triple, its disagreement and both absence directions myself out of the
+      gate's kept artifacts. That is a judgement about risk, not a verification result.
 - [x] **P8 — RESUME, AND THE ONE LOG AS JOIN STATE** (**COMMITTED**; `coder`, then a review round and a fix
       round). **THE DEFECT I MEASURED FIRST, and it was not what the plan expected:** the log was rendered
       by an atomic whole-file rewrite from an in-memory array that started **empty and was never read

@@ -613,12 +613,15 @@ test-sibling-paths:
 # make its own assertion go blind).
 BIN_REPORT := build/fx-report
 
-test-report: $(BIN_REPORT)
+# P9: the call class reads the host proxy's one log and the guest transcript,
+# so the gate drives a REAL proxy run — the seat depends on the proxy and the
+# host-built agent (the same artifacts `make test-hostgate` builds).
+test-report: $(BIN_REPORT) $(BIN_HOSTGATE) $(BIN)
 	bash tests/test_fx_report.sh
 
-$(BIN_REPORT): tools/fx-report.c src/vendor/dhall-c/sha256.c src/vendor/dhall-c/dhall.h
+$(BIN_REPORT): tools/fx-report.c src/vendor/dhall-c/sha256.c src/vendor/dhall-c/dhall.h $(YYJSON_SRC)
 	@mkdir -p build
-	$(CC) $(CFLAGS) -Isrc/vendor/dhall-c $(LDFLAGS) -o $@ tools/fx-report.c src/vendor/dhall-c/sha256.c
+	$(CC) $(CFLAGS) -Isrc/vendor/dhall-c $(LDFLAGS) -o $@ tools/fx-report.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC)
 
 .PHONY: test-report
 

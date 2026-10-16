@@ -178,6 +178,43 @@
 #              CLAIM-LOUD-LONG: an over-long FINAL field — the one shape
 #              width limits cannot kill — is exit 2 naming the row shape,
 #              never a truncated MEASURED row.
+#   CALL (P9)   the host proxy's ONE LOG and the guest's TRANSCRIPT are
+#              JOINED by call_id, making a denial AUDITABLE: the host gate
+#              rewrites a denied call's name to a reserved name and
+#              substitutes a denial text, and the guest's transcript records
+#              the REWRITTEN name + a generic sentinel and NEVER learns the
+#              true verb — so the true name, the verdict, its author and its
+#              reason exist together ONLY in the host's log.  The arms drive
+#              a REAL proxy run (build/fx-hostgate + build/fx-agent, a fresh
+#              FX_AGENT_DATA per probe, the copy of the justified fixture,
+#              the dispatch-recording stub, every proxy TIME-BOUNDED) and
+#              read the REAL log + the REAL transcript, then assert the
+#              TRIPLE VERBATIM (call-record = the justification that rode in
+#              with the call; call-verdict = denied + author + refusal-name,
+#              and allow-scope VERBATIM on an allowed row — the P8 R5
+#              finding, never re-derived; call-outcome = the replayed
+#              function_call_output), the DISAGREEMENT (call-disagreement:
+#              the true verb vs the guest's fx_host_denied + its sentinel,
+#              same call_id, both VERBATIM — and its second shape, the
+#              REWRITE MISS where the guest recorded the TRUE name for a call
+#              the host DENIED), the join's ABSENCE in BOTH
+#              directions EACH as its own call-join FINDING with its own
+#              meaning (a join that cannot fire FAILS OPEN IN THE RECORD),
+#              the NOT-KNOWN discipline for a side not given, the
+#              no-fabricated-verdict rule, an unknown verdict word surfaced
+#              VERBATIM (never classified), the ECHO TELEMETRY rows
+#              (unjoined-output, echo-anomaly) surfaced as records with NO
+#              lane stop (the deliberate G7 demotion), the LOUD refusals
+#              (a non-JSON row, an unknown row type), and the reporter's
+#              NON-MODIFICATION of the log it reads (byte-identity in/out).
+#              INJECTION IS DECLARED: the one-sided join cases, the
+#              no-verdict row shape and the telemetry rows are built in
+#              COPIES of the real records (the real run joins cleanly, which
+#              the first arm asserts).  MUT-CALL-JOIN (the join emission
+#              disabled), MUT-CALL-CLASSIFY (an unknown verdict word mapped
+#              into the seat's own vocabulary) and MUT-CALL-SCOPE (allow_scope
+#              RE-DERIVED instead of carried) each blind exactly the arm that
+#              refuses their error.
 #   PINS        nothing depends on the position of HEAD: the citations in
 #              the tool's frozen retention table are pinned to FIXED
 #              revisions (fx-init ca9cb06, fxstore 0341650 — the trees the
@@ -266,6 +303,9 @@ grep -aq "no-observation-row-judge-not-run-since-publish" "$REPORT" \
     || fail "STALE BINARY: $REPORT does not contain this source's claim-coverage (NOT-RECORDED) marker"
 grep -aq "claim-evaluator-location" "$REPORT" \
     || fail "STALE BINARY: $REPORT does not contain this source's claim-evaluator-location bound row"
+grep -aq "no-verdict-field-no-policy-ran-on-this-call" "$REPORT" \
+    || fail "STALE BINARY: $REPORT does not contain this source's call-class no-fabricated-verdict marker"
+grep -aq "host-name" "$REPORT" || fail "STALE BINARY: $REPORT does not contain this source's call-disagreement row"
 
 TAB="$(printf '\t')"
 
@@ -611,9 +651,11 @@ grep -q "NO growth policy exists" "$WORK/out-s1" \
 # drops that row on BOTH sides (its text was amended in S2), so the row's
 # complete loss or an id change would otherwise pass the pin silently.
 NBOUNDROWS=$(grep -c "^bound${TAB}" "$WORK/out-s1")
-[ "$NBOUNDROWS" = "12" ] || fail "POLICY: expected the seat's 12 bound rows on every run, got $NBOUNDROWS (a row was silently dropped; 12 = the 8 pre-S2 rows + S2's 4 claim bounds)"
+[ "$NBOUNDROWS" = "14" ] || fail "POLICY: expected the seat's 14 bound rows on every run, got $NBOUNDROWS (a row was silently dropped; 14 = the 8 pre-S2 rows + S2's 4 claim bounds + P9's 2 call bounds)"
 grep -q "^bound${TAB}same-store-only${TAB}.*the ONE in-domain exception" "$WORK/out-s1" \
     || fail "POLICY: the amended same-store-only row must print on every run — the pin drops it on BOTH sides, so its loss or an id change is caught only here"
+grep -q "^bound${TAB}call-auditing-not-proofing${TAB}.*NO LANE STOP BY DEFAULT" "$WORK/out-s1" \
+    || fail "POLICY: the call class's auditing-not-proofing bound (the G7 demotion stated) must print on every run"
 
 # ══ OPERATOR: the derived class on the unattributed store ═══════════════
 report "$WORK/s2" "$WORK/out-s2"
@@ -844,8 +886,8 @@ chmod 644 "$WORK/loud4/.operator"
 mutbuild() { # mutbuild NAME SED-EXPR -> builds build/fx-report-<name>
     cp "$REPO/tools/fx-report.c" "$WORK/mut-$1.c"
     sed "$2" "$WORK/mut-$1.c" > "$WORK/mut-$1.c.new" && mv "$WORK/mut-$1.c.new" "$WORK/mut-$1.c"
-    cc -std=c11 -O2 -g -Wall -Wextra -Isrc/vendor/dhall-c -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
-        -o "$REPO/build/fx-report-$1" "$WORK/mut-$1.c" src/vendor/dhall-c/sha256.c \
+    cc -std=c11 -O2 -g -Wall -Wextra -Isrc/vendor/dhall-c -Isrc/vendor/yyjson -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
+        -o "$REPO/build/fx-report-$1" "$WORK/mut-$1.c" src/vendor/dhall-c/sha256.c src/vendor/yyjson/yyjson.c \
         || fail "MUTATION $1: the mutated source does not build"
 }
 
@@ -1177,6 +1219,9 @@ OPHDR
             /^taxonomy\tclaim\t/ { next }
             /^retention\tclaim rows/ { next }
             /^# claim records:/ { next }
+            /^taxonomy\tcall\t/ { next }
+            /^taxonomy\tcall-telemetry\t/ { next }
+            /^bound\tcall-/ { next }
             /^bound\tsame-store-only\t/ { next }
             { print }
         ' "$1" > "$2"
@@ -1210,10 +1255,312 @@ OPHDR
         || fail "MUT-ENROLL: the mutant must leave the COVERED generations untouched (the enrollment comparison is blind on exactly the uncovered one)"
 fi
 
+# ══ CALL (P9): the host proxy's ONE LOG <-> the guest's TRANSCRIPT ═══════
+# The host gate (tools/fx-hostgate.c) delivers a denial by REWRITING the
+# call's name to a reserved name and substituting a denial text; the guest's
+# transcript records the REWRITTEN name + a generic sentinel and NEVER learns
+# the true verb.  So a denial is AUDITABLE only by joining the guest's view to
+# the host's log by call_id — which is what this class makes queryable.  The
+# arms below drive a REAL proxy run (build/fx-hostgate + build/fx-agent, the
+# same shapes tests/test_hostgate.sh phase 11 uses) and read the REAL log the
+# proxy writes and the REAL transcript the guest writes.  FIXTURE HONESTY:
+# the one-sided join cases and the telemetry rows are INJECTED into COPIES of
+# the real records (declared at each arm) — the real run joins cleanly in both
+# directions, which the first arm asserts; nothing is injected into a file the
+# report is asked to read as a record.  EVERY proxy is TIME-BOUNDED and
+# killed if it outlives the bound; every probe gets a FRESH FX_AGENT_DATA.
+CALL_READY=1
+[ -x "$REPO/build/fx-hostgate" ] || CALL_READY=0
+[ -x "$REPO/build/fx-agent" ] || CALL_READY=0
+command -v python3 >/dev/null 2>&1 || CALL_READY=0
+if [ "$CALL_READY" = 0 ]; then
+    echo "test_fx_report: CALL ARMS SKIPPED — build/fx-hostgate and build/fx-agent (plus python3) are required to produce a REAL host log ('make test-hostgate' builds them)"
+fi
+if [ "$CALL_READY" = 1 ]; then
+    CALLID="call_00_DgJfXOD0j0bvOV7jB0tl0124"
+    JUST="the user asked for the weather in Paris; the call reads public weather data and touches nothing else"
+    SCOPE="seat-scoped: no operator denial at this seat; the in-guest floor and D2 still govern"
+
+    # the dispatch-recording stub, modelled on the real verbs server: the
+    # marker fires ONLY for the known verb (a stub that fired for
+    # fx_host_denied would make the marker assert vacuous —
+    # test_hostgate.sh phase 10 pins exactly this discipline).
+    cat > "$WORK/call_mcp.py" <<PYEOF
+#!/usr/bin/env python3
+import json, sys
+MARKER = "$WORK/call-marker"
+KNOWN = "get_weather"
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        req = json.loads(line)
+    except ValueError:
+        continue
+    m = req.get("method")
+    if m == "initialize":
+        print(json.dumps({"jsonrpc": "2.0", "id": req.get("id"), "result": {
+            "protocolVersion": req.get("params", {}).get("protocolVersion"),
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": "call-stub", "version": "0"}}}), flush=True)
+    elif m == "tools/call":
+        n = (req.get("params") or {}).get("name")
+        if n == KNOWN:
+            with open(MARKER, "a") as f:
+                f.write("dispatched %s\n" % n)
+            print(json.dumps({"jsonrpc": "2.0", "id": req.get("id"),
+                              "result": {"content": [{"type": "text", "text": "stub-ok-weather"}]}}), flush=True)
+        else:
+            print(json.dumps({"jsonrpc": "2.0", "id": req.get("id"),
+                              "error": {"code": -32602, "message": "unknown tool: %s" % n}}), flush=True)
+PYEOF
+    chmod +x "$WORK/call_mcp.py"
+    mkdir -p "$WORK/call-cfg"
+    cat > "$WORK/call-cfg/config.dhall" <<DHALLEOF
+{ agents = [ { name = "fx", agent_type = "agent",
+    mcp_servers = [ { command = "$WORK/call_mcp.py", args = [] : List Text } ] } ] }
+DHALLEOF
+    # the upstream is a COPY of the justified fixture (ADDED fixtures only;
+    # the repo's fixture is never modified).  Its call's args carry the
+    # justification the CLAIM is read from.
+    cp "$REPO/tests/fixtures/responses_justified.sse" "$WORK/call-up.sse" \
+        || fail "CALL: cannot copy the fixture"
+
+    call_wait_slave() { # PATHFILE PID ERRLOG
+        _i=0
+        while [ ! -s "$1" ] && [ "$_i" -lt 200 ]; do
+            kill -0 "$2" 2>/dev/null || fail "CALL: the proxy died before publishing its slave path ($(tail -2 "$3" 2>/dev/null | tr '\n' ' '))"
+            sleep 0.05
+            _i=$((_i + 1))
+        done
+        [ -s "$1" ] || fail "CALL: the proxy never published its slave path"
+    }
+    call_reap() { # PID ERRLOG
+        _i=0
+        while kill -0 "$1" 2>/dev/null && [ "$_i" -lt 400 ]; do # <= 40 s
+            sleep 0.1
+            _i=$((_i + 1))
+        done
+        if kill -0 "$1" 2>/dev/null; then
+            kill -9 "$1" 2>/dev/null
+            fail "CALL: the proxy (pid $1) did not exit within 40s — a hung proxy is a FAIL, never a hang"
+        fi
+    }
+    # call_run DENYNAME LOGFILE DATADIR — ONE real proxy run (--turns 2, the
+    # two-turn shape whose call the guest records), TIME-BOUNDED.
+    call_run() { # DENYNAME LOGFILE DATADIR
+        "$REPO/build/fx-hostgate" --upstream "$WORK/call-up.sse" \
+            --slave-file "$WORK/call-slave" --log "$2" --deny "$1" --turns 2 \
+            2> "$WORK/call-proxy.err" &
+        _pid=$!
+        call_wait_slave "$WORK/call-slave" "$_pid" "$WORK/call-proxy.err"
+        _dev="$(cat "$WORK/call-slave")"
+        FX_CHARDEV="$_dev" FX_AGENT_CONFIG_DIR="$WORK/call-cfg" \
+            FX_AGENT_DATA="$3" HOME="$WORK" \
+            "$REPO/build/fx-agent" -p call-p9-probe --agent fx --max-turns 2 --output text \
+            > "$WORK/call-agent.out" 2> "$WORK/call-agent.err" \
+            || fail "CALL: the guest run failed (see $WORK/call-agent.err)"
+        call_reap "$_pid" "$WORK/call-proxy.err"
+        wait "$_pid" 2>/dev/null
+        [ $? -eq 0 ] || fail "CALL: the proxy exited nonzero for --deny $1"
+    }
+
+    # ── the REAL denied run: the triple + the disagreement, joined ────────
+    call_run get_weather "$WORK/call-log-deny.jsonl" "$WORK/call-data-deny"
+    TR_DENY="$(ls "$WORK"/call-data-deny/sessions/*/messages.jsonl 2>/dev/null)"
+    [ -f "$TR_DENY" ] || fail "CALL: no guest transcript — the run is not the real scenario"
+    [ ! -e "$WORK/call-marker" ] || fail "CALL: the denied call EXECUTED (the marker is present) — this is not the denied shape"
+    SHA_LOG_BEFORE="$(sha256sum "$WORK/call-log-deny.jsonl" | cut -d' ' -f1)"
+
+    FXSTORE_BIN="$FXSTORE" "$REPORT" --store "$WORK/s1" \
+        --proxy-log "$WORK/call-log-deny.jsonl" --transcript "$TR_DENY" \
+        > "$WORK/out-call-deny" 2> "$WORK/out-call-deny.err"
+    [ $? -eq 0 ] || fail "CALL: the joined run must report cleanly (the join fired in both directions), got $? ($(head -3 "$WORK/out-call-deny.err"))"
+    # (1) THE TRIPLE, verbatim from the host log
+    grep -q "^call-record${TAB}$CALLID${TAB}turn${TAB}1${TAB}true-name${TAB}get_weather${TAB}justification${TAB}$JUST${TAB}MEASURED$" "$WORK/out-call-deny" \
+        || fail "CALL: the CLAIM (the justification that rode in with the call) is not surfaced verbatim"
+    grep -q "^call-verdict${TAB}$CALLID${TAB}verdict${TAB}denied${TAB}author${TAB}denylist${TAB}refusal-name${TAB}denied-by-denylist${TAB}reason${TAB}" "$WORK/out-call-deny" \
+        || fail "CALL: the VERDICT (with its author and its refusal name) is not surfaced"
+    grep -q "^call-outcome${TAB}$CALLID${TAB}outcome${TAB}(tool call failed)${TAB}MEASURED$" "$WORK/out-call-deny" \
+        || fail "CALL: the OUTCOME (the replayed function_call_output) is not surfaced"
+    grep -q "^call-verdict${TAB}$CALLID${TAB}verdict${TAB}allowed" "$WORK/out-call-deny" \
+        && fail "CALL: a verdict was FABRICATED for a denied call"
+    # (2) THE DISAGREEMENT — the true verb vs the guest's sentinel name, same call_id
+    grep -q "^call-disagreement${TAB}$CALLID${TAB}host-name${TAB}get_weather${TAB}guest-name${TAB}fx_host_denied${TAB}host-verdict${TAB}denied${TAB}host-author${TAB}denylist${TAB}host-refusal${TAB}denied-by-denylist${TAB}guest-output${TAB}(tool call failed)${TAB}DERIVED" "$WORK/out-call-deny" \
+        || fail "CALL: the disagreement (the true verb vs the guest's fx_host_denied, same call_id) is not surfaced"
+    # (3) the join fired BOTH directions: no absence row
+    grep -q "^call-join${TAB}" "$WORK/out-call-deny" \
+        && fail "CALL: a join-absence row on a run where BOTH records hold the call — the direction test is wrong"
+    # (4) the reporter did NOT modify the log it reads (byte-identity)
+    SHA_LOG_AFTER="$(sha256sum "$WORK/call-log-deny.jsonl" | cut -d' ' -f1)"
+    [ "$SHA_LOG_BEFORE" = "$SHA_LOG_AFTER" ] || fail "CALL: the reporter MODIFIED the log it reads — byte-identity in/out is broken"
+
+    # ── the REAL allowed run: allow_scope VERBATIM (the P8 R5 finding) ────
+    call_run not_a_verb "$WORK/call-log-allowed.jsonl" "$WORK/call-data-allowed"
+    TR_ACC="$(ls "$WORK"/call-data-allowed/sessions/*/messages.jsonl 2>/dev/null)"
+    [ -f "$TR_ACC" ] || fail "CALL: no transcript on the allowed run"
+    [ -f "$WORK/call-marker" ] || fail "CALL: the allowed call did NOT execute — this is not the allowed shape"
+    FXSTORE_BIN="$FXSTORE" "$REPORT" --store "$WORK/s1" \
+        --proxy-log "$WORK/call-log-allowed.jsonl" --transcript "$TR_ACC" \
+        > "$WORK/out-call-acc" 2>/dev/null
+    [ $? -eq 0 ] || fail "CALL: the allowed run must report cleanly"
+    grep -q "^call-verdict${TAB}$CALLID${TAB}verdict${TAB}allowed${TAB}author${TAB}denylist${TAB}refusal-name${TAB}-${TAB}allow-scope${TAB}$SCOPE${TAB}MEASURED$" "$WORK/out-call-acc" \
+        || fail "CALL: the allowed row's allow_scope is not carried VERBATIM (a re-derived scope is the P8 R5 defect)"
+    grep -q "^call-disagreement${TAB}" "$WORK/out-call-acc" \
+        && fail "CALL: a disagreement FABRICATED on an ALLOWED call (the two names agree — there is nothing to disagree about)"
+
+    # ── THE REWRITE-MISS SHAPE: the guest recorded the TRUE name for a call
+    #    the host DENIED — the silent-allow direction.  Built in a COPY of the
+    #    real transcript (declared) by replacing the guest's recorded name with
+    #    the host's true name, so the two names AGREE while the verdict is
+    #    still denied: a second, distinct disagreement shape.
+    sed 's/"name":"fx_host_denied"/"name":"get_weather"/' "$TR_DENY" > "$WORK/call-tr-crossed.jsonl"
+    grep -q '"name":"get_weather"' "$WORK/call-tr-crossed.jsonl" || fail "CALL-CROSSED setup: the sed matched nothing"
+    FXSTORE_BIN="$FXSTORE" "$REPORT" --store "$WORK/s1" \
+        --proxy-log "$WORK/call-log-deny.jsonl" --transcript "$WORK/call-tr-crossed.jsonl" \
+        > "$WORK/out-call-crossed" 2>/dev/null
+    [ $? -eq 0 ] || fail "CALL-CROSSED: a rewrite miss is a RECORD, not a reporter finding (exit 0), got $?"
+    grep -q "^call-disagreement${TAB}$CALLID${TAB}host-name${TAB}get_weather${TAB}guest-name${TAB}get_weather.*REWRITE MISS" "$WORK/out-call-crossed" \
+        || fail "CALL-CROSSED: the guest recording the TRUE name for a DENIED call must surface as a rewrite miss"
+
+    # ── ABSENCE, BOTH DIRECTIONS (each its OWN row + meaning + FINDING) ───
+    # INJECTED into COPIES of the real records (declared): the real run joins
+    # cleanly, so the one-sided cases are built.
+    cp "$WORK/call-log-deny.jsonl" "$WORK/call-log-hostonly.jsonl"
+    printf '%s\n' '{"ts":"2026-10-16T00:00:00Z","session":null,"run":null,"turn":9,"call_id":"call_HOSTONLY_9001","true_name":"fx_ls","args":"{}","pending":false,"outcome":"listing","verdict":"denied","author":"denylist","refusal_name":"denied-by-denylist","reason":"injected fixture row","denial_text":"(denied by host policy: injected fixture row)"}' >> "$WORK/call-log-hostonly.jsonl"
+    FXSTORE_BIN="$FXSTORE" "$REPORT" --store "$WORK/s1" \
+        --proxy-log "$WORK/call-log-hostonly.jsonl" --transcript "$TR_DENY" \
+        > "$WORK/out-call-hostonly" 2>/dev/null
+    [ $? -eq 1 ] || fail "CALL: a host-judged call the transcript does not record must be a FINDING (exit 1), got $?"
+    grep -q "^call-join${TAB}call_HOSTONLY_9001${TAB}host-log-only${TAB}FINDING${TAB}bound${TAB}" "$WORK/out-call-hostonly" \
+        || fail "CALL (direction 1): the host-log-only absence has no row of its own — the join that cannot fire reports NOTHING"
+
+    cp "$TR_DENY" "$WORK/call-tr-tranonly.jsonl"
+    printf '%s\n' '{"role":"assistant","content":"","tool_calls":[{"id":"call_TRANONLY_9002","name":"fx_write","arguments":"{}"}]}' >> "$WORK/call-tr-tranonly.jsonl"
+    FXSTORE_BIN="$FXSTORE" "$REPORT" --store "$WORK/s1" \
+        --proxy-log "$WORK/call-log-deny.jsonl" --transcript "$WORK/call-tr-tranonly.jsonl" \
+        > "$WORK/out-call-tranonly" 2>/dev/null
+    [ $? -eq 1 ] || fail "CALL: a transcript call the host never judged must be a FINDING (exit 1), got $?"
+    grep -q "^call-join${TAB}call_TRANONLY_9002${TAB}transcript-only${TAB}FINDING${TAB}bound${TAB}" "$WORK/out-call-tranonly" \
+        || fail "CALL (direction 2): the transcript-only absence has no row of its own"
+
+    # ── a side NOT GIVEN is NOT-KNOWN, never read as a zero ───────────────
+    FXSTORE_BIN="$FXSTORE" "$REPORT" --store "$WORK/s1" \
+        --proxy-log "$WORK/call-log-deny.jsonl" > "$WORK/out-call-one" 2>/dev/null
+    [ $? -eq 0 ] || fail "CALL: a one-sided join must not fabricate findings, got $?"
+    grep -q "^absence${TAB}transcript${TAB}not-given-the-guest-transcript" "$WORK/out-call-one" \
+        || fail "CALL: a NOT-given side must read NOT-KNOWN, not 'no call recorded'"
+    grep -q "^call-join${TAB}" "$WORK/out-call-one" \
+        && fail "CALL: with no transcript the join's guest direction is NOT-KNOWN — a per-call absence row would be a fabricated measurement"
+
+    # ── NO FABRICATED VERDICT: a row with no verdict field (no policy ran)
+    #    reads NOT-RECORDED, never "allowed".  The P2 unarmed row shape is
+    #    reconstructed in a COPY (declared) by dropping the verdict keys.
+    python3 - "$WORK/call-log-deny.jsonl" "$WORK/call-log-nov.jsonl" <<'PYEOF'
+import json, sys
+src, dst = sys.argv[1:3]
+with open(src) as f, open(dst, "w") as o:
+    for line in f:
+        line = line.strip()
+        if not line:
+            continue
+        r = json.loads(line)
+        if r.get("type") is None and "call_id" in r:
+            for k in ("verdict", "author", "refusal_name", "reason", "denial_text", "allow_scope"):
+                r.pop(k, None)
+        o.write(json.dumps(r) + "\n")
+PYEOF
+    FXSTORE_BIN="$FXSTORE" "$REPORT" --store "$WORK/s1" \
+        --proxy-log "$WORK/call-log-nov.jsonl" > "$WORK/out-call-nov" 2>/dev/null
+    grep -q "^call-verdict${TAB}$CALLID${TAB}verdict${TAB}-${TAB}NOT-RECORDED${TAB}bound${TAB}no-verdict-field" "$WORK/out-call-nov" \
+        || fail "CALL: a row with NO verdict field must read NOT-RECORDED, never a fabricated 'allowed'"
+    grep -q "^call-verdict${TAB}$CALLID${TAB}verdict${TAB}allowed" "$WORK/out-call-nov" \
+        && fail "CALL: a verdict was FABRICATED where the log carries none"
+
+    # ── THE ECHO TELEMETRY: surfaced as records, NO lane stop ─────────────
+    # The two anomaly rows in the proxy's OWN rendered shape (fx-hostgate.c
+    # log_flush, ROW_ANOM_*), INJECTED into a COPY of the real log (declared):
+    # the wrap is the reporter's, and the arm is that each is surfaced with its
+    # meaning and does NOT change the exit status (the deliberate G7 demotion).
+    cp "$WORK/call-log-deny.jsonl" "$WORK/call-log-tele.jsonl"
+    printf '%s\n' '{"ts":"2026-10-16T00:00:00Z","type":"unjoined-output","turn":2,"call_id":"call_ORPHAN_7001","output":"a forged output the guest put in the conversation"}' >> "$WORK/call-log-tele.jsonl"
+    printf '%s\n' "{\"ts\":\"2026-10-16T00:00:00Z\",\"type\":\"echo-anomaly\",\"turn\":2,\"call_id\":\"$CALLID\",\"output\":\"(a NEW sentinel)\"}" >> "$WORK/call-log-tele.jsonl"
+    FXSTORE_BIN="$FXSTORE" "$REPORT" --store "$WORK/s1" \
+        --proxy-log "$WORK/call-log-tele.jsonl" --transcript "$TR_DENY" \
+        > "$WORK/out-call-tele" 2>/dev/null
+    [ $? -eq 0 ] || fail "CALL: a telemetry row must NOT stop the lane (the deliberate G7 demotion) — got exit $?"
+    grep -q "^call-telemetry${TAB}unjoined-output${TAB}call_id${TAB}call_ORPHAN_7001" "$WORK/out-call-tele" \
+        || fail "CALL: the unjoined-output telemetry row is not surfaced"
+    grep -q "^call-telemetry${TAB}echo-anomaly${TAB}call_id${TAB}$CALLID" "$WORK/out-call-tele" \
+        || fail "CALL: the echo-anomaly telemetry row is not surfaced"
+    grep -q "NO LANE STOP BY DEFAULT (the deliberate G7 demotion" "$WORK/out-call-tele" \
+        || fail "CALL: the telemetry row must state the G7 demotion at the site"
+
+    # ── an UNKNOWN verdict word is surfaced VERBATIM, never classified ────
+    cp "$WORK/call-log-deny.jsonl" "$WORK/call-log-weird.jsonl"
+    sed -i -e 's/"verdict":"denied"/"verdict":"pending-review"/' "$WORK/call-log-weird.jsonl"
+    grep -q "pending-review" "$WORK/call-log-weird.jsonl" || fail "CALL-UNKNOWN setup: the sed matched nothing"
+    FXSTORE_BIN="$FXSTORE" "$REPORT" --store "$WORK/s1" \
+        --proxy-log "$WORK/call-log-weird.jsonl" --transcript "$TR_DENY" > "$WORK/out-call-weird" 2>/dev/null
+    [ $? -eq 0 ] || fail "CALL-UNKNOWN: an unknown verdict word is a record, not a finding"
+    grep -q "^call-verdict${TAB}$CALLID${TAB}verdict${TAB}pending-review${TAB}" "$WORK/out-call-weird" \
+        || fail "CALL-UNKNOWN: an unknown verdict word must surface VERBATIM"
+    grep -q "^call-verdict${TAB}$CALLID${TAB}verdict${TAB}pending-review.*note${TAB}verdict-vocabulary-not-known" "$WORK/out-call-weird" \
+        || fail "CALL-UNKNOWN: the not-classified note is missing"
+    grep -q "^call-verdict${TAB}$CALLID${TAB}verdict${TAB}allowed" "$WORK/out-call-weird" \
+        && fail "CALL-UNKNOWN: the seat CLASSIFIED a verdict word it does not own"
+
+    # ── LOUD: a log line that is not the grammar is exit 2, never skipped ─
+    cp "$WORK/call-log-deny.jsonl" "$WORK/call-log-corrupt.jsonl"
+    printf '%s\n' 'this is not a json row' >> "$WORK/call-log-corrupt.jsonl"
+    FXSTORE_BIN="$FXSTORE" "$REPORT" --store "$WORK/s1" \
+        --proxy-log "$WORK/call-log-corrupt.jsonl" > "$WORK/out-call-corrupt" 2>"$WORK/out-call-corrupt.err"
+    [ $? -eq 2 ] || fail "CALL-LOUD: a host-log row that is not JSON must be exit 2, got $?"
+    grep -q "not JSON" "$WORK/out-call-corrupt.err" || fail "CALL-LOUD: the refusal does not name the cause"
+    cp "$WORK/call-log-deny.jsonl" "$WORK/call-log-newtype.jsonl"
+    printf '%s\n' '{"ts":"2026-10-16T00:00:00Z","type":"some-future-row","turn":2}' >> "$WORK/call-log-newtype.jsonl"
+    FXSTORE_BIN="$FXSTORE" "$REPORT" --store "$WORK/s1" \
+        --proxy-log "$WORK/call-log-newtype.jsonl" > "$WORK/out-call-newtype" 2>"$WORK/out-call-newtype.err"
+    [ $? -eq 2 ] || fail "CALL-LOUD: an unknown host-log row type must be exit 2, got $?"
+    grep -q "unknown row type \"some-future-row\"" "$WORK/out-call-newtype.err" \
+        || fail "CALL-LOUD: the refusal does not name the unknown type"
+
+    # ── MUT-CALL-* : each mutant must make ITS OWN passing arm go blind ───
+    # MUT-CALL-JOIN (the join that cannot fire reports nothing): the join
+    # emission disabled — the ABSENCE arms must go blind.
+    mutbuild calljoin 's/call-join/join-disabled/'
+    FXSTORE_BIN="$FXSTORE" "$REPO/build/fx-report-calljoin" --store "$WORK/s1" \
+        --proxy-log "$WORK/call-log-hostonly.jsonl" --transcript "$TR_DENY" > "$WORK/out-mutcalljoin" 2>/dev/null
+    grep -q "^call-join${TAB}call_HOSTONLY_9001" "$WORK/out-mutcalljoin" \
+        && fail "MUT-CALL-JOIN: the absence arm still passes with the join emission disabled — the assertion is not load-bearing"
+
+    # MUT-CALL-CLASSIFY (a vocabulary the seat does not own): an unknown
+    # verdict word becomes "allowed".
+    mutbuild callclassify 's/static const char \*call_verdict_word(const char \*v) { return v; }/static const char *call_verdict_word(const char *v) { return (v \&\& !strcmp(v, "denied")) ? v : "allowed"; }/'
+    FXSTORE_BIN="$FXSTORE" "$REPO/build/fx-report-callclassify" --store "$WORK/s1" \
+        --proxy-log "$WORK/call-log-weird.jsonl" --transcript "$TR_DENY" > "$WORK/out-mutcallclassify" 2>/dev/null
+    grep -q "^call-verdict${TAB}$CALLID${TAB}verdict${TAB}pending-review" "$WORK/out-mutcallclassify" \
+        && fail "MUT-CALL-CLASSIFY: the unknown word still surfaces verbatim — the sed removed nothing (the arm is not load-bearing)"
+    grep -q "^call-verdict${TAB}$CALLID${TAB}verdict${TAB}allowed" "$WORK/out-mutcallclassify" \
+        || fail "MUT-CALL-CLASSIFY: the mutant did not reproduce the classification error the arm refuses"
+
+    # MUT-CALL-SCOPE (the P8 R5 re-derivation): allow_scope recomputed by the
+    # reporter instead of carried.
+    mutbuild callscope 's/static const char \*call_scope_text(const hostcall_t \*H) { return H->allow_scope; }/static const char *call_scope_text(const hostcall_t *H) { (void)H; return "seat-scoped: RECOMPUTED by the reporter"; }/'
+    FXSTORE_BIN="$FXSTORE" "$REPO/build/fx-report-callscope" --store "$WORK/s1" \
+        --proxy-log "$WORK/call-log-allowed.jsonl" --transcript "$TR_ACC" > "$WORK/out-mutcallscope" 2>/dev/null
+    grep -q "^call-verdict${TAB}$CALLID${TAB}verdict${TAB}allowed.*allow-scope${TAB}$SCOPE" "$WORK/out-mutcallscope" \
+        && fail "MUT-CALL-SCOPE: the allow_scope-verbatim assertion still passes with the scope re-derived — the arm is not load-bearing"
+    grep -q "RECOMPUTED by the reporter" "$WORK/out-mutcallscope" \
+        || fail "MUT-CALL-SCOPE: the mutant did not reproduce the re-derivation the arm refuses"
+fi
+
 # the mutants are gate artifacts, not seats — remove them so no stale
 # binary can later answer for the seat
 rm -f "$REPO/build/fx-report-class" "$REPO/build/fx-report-attrib" "$REPO/build/fx-report-finding" \
     "$REPO/build/fx-report-ops" "$REPO/build/fx-report-refuse" \
-    "$REPO/build/fx-report-claim" "$REPO/build/fx-report-enroll" "$REPO/build/fx-report-loudlong"
+    "$REPO/build/fx-report-claim" "$REPO/build/fx-report-enroll" "$REPO/build/fx-report-loudlong" \
+    "$REPO/build/fx-report-calljoin" "$REPO/build/fx-report-callclassify" "$REPO/build/fx-report-callscope"
 
 echo "test_fx_report: PASS — the reconstruction is answerable from the report alone (both inputs readable, the diff, the generation each produced), the taxonomy separates none-occurred from not-durably-recorded (a never-booted store says so; refusals cannot be counted), the operator class is MEASURED from the .operator journal where the journal exists and DERIVED only where it does not (the .recovery row, or the missing file) with the derivation RETAINED beside the journal for its own blind spots (and the mutations blind exactly their own arms), the gc retention carve-out is re-measured every run (a surviving snapshot's dir is retained, a pruned one's is reaped), the retention policy is the user's DECISION (UNBOUNDED, 2026-10-12) pinned where it prints — every row, its named cost, and the old 'NO policy exists' claim asserted ABSENT, and the output is byte-deterministic and independent of any self-report."
