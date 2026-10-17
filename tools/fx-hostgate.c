@@ -539,6 +539,18 @@ static char *reasons_breakdown_json(const char *const *names,
  * operator alias row.  A refusal-by-name, not a policy denial: the class is
  * simply unknown, so nothing executes. */
 #define FH_REFUSAL_UNCLASSED "unclassed-arg"
+/* S2-FIX 1 (the blocker): the totality check had no seat at all when the ops
+ * author was absent, so NOTHING was classed and a host tool executed its
+ * argument unjudged (a denylist-only configuration — --deny alone — is
+ * enough to arm the dispatch consult).  A refusal-by-name distinct from
+ * unclassed-arg: there the seat ran and found no class; here the seat did not
+ * run, so there is no judgement to rely on. */
+#define FH_REFUSAL_UNARMED_OPS "unarmed-ops"
+/* ...and the AUTHOR is the ABSENCE, not the operator: with no live ops seat
+ * there was no operator author to refuse, so a row reading author="ops" would
+ * claim an author that did not run (the rule three paragraphs up in the log
+ * writer).  A fifth, structural author name, on the same deny path. */
+#define FH_AUTHOR_UNARMED "unarmed"
 #define FH_AUTHOR_CLAIM "claim"
 #define FH_REFUSAL_CLAIM "denied-by-claim"
 /* A refusal-shaped entry that names NO refusing author: an item that never
@@ -904,7 +916,10 @@ static void log_flush(void) {
              * the justification check; on a denial it names the ONE author that refused, and
              * refusal_name is the by-name refusal (P3's denied-by-denylist,
              * P5's absent-/malformed-justification, P6's denied-by-ops,
-             * P7's denied-by-claim).
+             * P7's denied-by-claim, and S2-fix's `unarmed` — the structural
+             * author that refuses a CLASSED host call where no ops seat ran,
+             * because nothing classed the argument and an unjudged argument
+             * is not an allowed one).
              * reason/denial_text are real exactly for a denial, explicit
              * nulls otherwise. */
             if (r->verdict == VERDICT_DENIED) {
@@ -2508,26 +2523,116 @@ static char *host_exec_time(const char *path) {
     return s;
 }
 
-/* THE BOUND — deliberately small enough that the wrapped result ALWAYS fits
- * the record's FH_BOUND (512-byte) outcome cap: a host result the record
- * could not hold in full would be a record that disagrees with the wire, and
- * "refuse rather than truncate" means refusing the READ, never truncating the
- * RECORD.  A file longer than this bound is REFUSED (over-cap) — never read
- * partially. */
+/* THE CONTENT BOUND — the wrapped result must fit the record's FH_BOUND
+ * (512-byte) outcome cap, or the record and the wire disagree: "refuse rather
+ * than truncate" means refusing the READ, never truncating the RECORD.  A
+ * file longer than this bound is REFUSED (over-cap) — never read partially. */
 #define FH_HOST_CAT_MAX 256u
+
+/* S2-FIX 6: THE PATH BOUND.  The `path` argument is MODEL-CHOSEN and every
+ * result/refusal string embeds it, so the content bound alone did NOT make
+ * "always fits FH_BOUND" true — MEASURED by the S2 review: a 700-character
+ * classed path produced 777 bytes on the wire while the record rendered 512
+ * with a truncation marker (marked, but a record that disagrees with the wire
+ * the outbound leg mirrors).  "(%s: %s)" overhead is 13 bytes and the path
+ * appears once, so 200 + 256 + 13 = 469 <= 512, with room for the longest
+ * refusal tail.  An over-long path is REFUSED BY NAME with a LENGTH-ONLY
+ * message — embedding it would re-create the very overrun being refused.
+ * STATED, not fixed: an over-long path in a JUDGE-side denial reason is the
+ * denial leg's own shape (reason is built in a fixed buffer and the record
+ * bounds it at write with a marker); this bound is the host RESULT's. */
+#define FH_HOST_PATH_MAX 200u
+
+/* THE "NOT A PLAIN FILE" REFUSAL, named once — shared by the two ways the
+ * executor can meet a non-regular object: the OPEN refused it (O_NOFOLLOW on a
+ * final-component symlink returns ELOOP) and the TYPE check refused it (a
+ * FIFO, device or directory opens and is then refused before any read).
+ * Naming the class, not just the errno, is the point: "Too many levels of
+ * symbolic links" tells a reader what the kernel did, not what the seat
+ * decided. */
+static char *host_cat_not_plain(const char *path) {
+    char *s = xmalloc(strlen(path) + 352);
+    snprintf(s, strlen(path) + 352,
+             "(host_cat: REFUSED to read %s: not a plain file — host_cat "
+             "reads regular files only, so a symlink, FIFO, device or "
+             "directory is refused BY NAME (the class governs the "
+             "spelling; the spelling's resolution must not reach outside "
+             "it)", path);
+    return s;
+}
 
 static char *host_exec_cat(const char *path) {
     if (!path) {
         return xstrdup("(host_cat: REFUSED — no canonical path was handed to "
                        "the executor; this cannot happen on the judged path)");
     }
+    size_t plen = strlen(path);
+    if (plen > FH_HOST_PATH_MAX) {
+        char *s = xmalloc(320);
+        snprintf(s, 320,
+                 "(host_cat: REFUSED — the canonical path is %zu bytes, over "
+                 "the %u-byte path bound: the result must fit the record's "
+                 "%u-byte outcome cap, so an over-long path is refused rather "
+                 "than truncated (the path is not echoed here for the same "
+                 "reason)", plen, FH_HOST_PATH_MAX, (unsigned)FH_BOUND);
+        return s;
+    }
+#ifdef FH_MUTANT_NO_PLAINFILE
+    /* S2-FIX MUTATION BLIND (build/fx-hostgate-noplainfile): the pre-fix
+     * executor — a plain O_RDONLY open, no O_NOFOLLOW and no file-type check,
+     * exactly as S2 shipped it.  A data-classed SYMLINK to a protected file
+     * then reads the PROTECTED content (the class governs the spelling, the
+     * kernel resolves the link) and a FIFO BLOCKS the whole lane.  The gate's
+     * arms require this build to reach the protected content where the real
+     * build refuses. */
     int fd = open(path, O_RDONLY);
+#else
+    /* S2-FIX 2+3: THE CLASS GOVERNS THE SPELLING; THE OPEN FOLLOWS THE KERNEL.
+     * The judge classifies a canonical path NAME; what the kernel then opens
+     * is that name's RESOLUTION.  O_NOFOLLOW refuses a final-component
+     * symlink (the reproduced reach: a data-classed link reading a protected
+     * object), and O_NONBLOCK + the S_ISREG check below refuse every
+     * non-regular object BY NAME before any read — a writerless FIFO
+     * otherwise BLOCKS the whole single-lane proxy with no deadline anywhere
+     * around this executor (the S2 review's rc=124 hang), and a device node
+     * with a blocking read does the same.
+     * STATED RESIDUALS, NOT FIXED: (a) an INTERMEDIATE-directory symlink
+     * (a classed dir that is itself a link to /etc) needs
+     * openat2(RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS) or a /proc/self/fd
+     * re-canonicalization, which are kernel-version-dependent; (b) a HARDLINK
+     * cannot be refused by spelling at all — a hardlink IS a regular file at
+     * the classed name, so the operator's data-class grant means "I trust
+     * what these NAMES resolve to", and dir-level trust is transitive over
+     * hardlinks; (c) a REGULAR file whose backing store hangs (a dead network
+     * mount) would still block this lane — there is no deadline around the
+     * executor, and this fix does not add one (the S2 review's finding 3
+     * named the FIFO/device class, which IS closed here).  The gate pins (b)
+     * as a named residual. */
+    int fd = open(path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW);
+#endif
     if (fd < 0) {
+#ifndef FH_MUTANT_NO_PLAINFILE
+        /* O_NOFOLLOW on a final-component symlink fails HERE, with ELOOP —
+         * name the class rather than the kernel's phrasing. */
+        if (errno == ELOOP) return host_cat_not_plain(path);
+#endif
         char *s = xmalloc(strlen(path) + 128);
         snprintf(s, strlen(path) + 128,
                  "(host_cat: REFUSED to read %s: %s)", path, strerror(errno));
         return s;
     }
+#ifndef FH_MUTANT_NO_PLAINFILE
+    /* THE FILE-TYPE CHECK — what makes a FIFO/device a REFUSAL rather than a
+     * block (O_NONBLOCK alone turns a writerless FIFO into an empty read, and
+     * the model would be told the file was empty).  fstat on the OPENED
+     * descriptor, never the path: the type being judged is the type that was
+     * opened. */
+    struct stat st;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+        close(fd);
+        return host_cat_not_plain(path);
+    }
+#endif /* !FH_MUTANT_NO_PLAINFILE */
     char *buf = xmalloc(FH_HOST_CAT_MAX + 2);
     size_t total = 0;
     for (;;) {
@@ -2555,6 +2660,20 @@ static char *host_exec_cat(const char *path) {
         }
     }
     close(fd);
+    /* S2-FIX 5: NUL CONTENT IS REFUSED, NEVER TRUNCATED.  The result is
+     * rendered with %s, which stops at the first NUL: a file holding
+     * "HELLO\0SECRET-TAIL" used to reach the model as "HELLO" with NO marker
+     * — "refuse, never truncate" violated for every binary file (a db, a
+     * cert, a compressed blob).  Refuse BY NAME instead. */
+    if (memchr(buf, '\0', total)) {
+        free(buf);
+        char *s = xmalloc(strlen(path) + 320);
+        snprintf(s, strlen(path) + 320,
+                 "(host_cat: REFUSED to read %s: the content contains NUL "
+                 "bytes (it is not text) — refuse, never silently truncate "
+                 "the bytes after the first NUL", path);
+        return s;
+    }
     buf[total] = '\0';
     char *s = xmalloc(strlen(path) + total + 32);
     snprintf(s, strlen(path) + total + 32, "(host_cat: %s: %s)", path, buf);
@@ -2573,10 +2692,29 @@ struct host_tool {
  * set of things the host can run is a source-level constant — the same
  * cannot-invent-a-tool-name property the closed fx-* verb set gives the
  * guest.  host_cat is the first classed tool: `path` is the classed argument
- * (judged by the operator's alias table via D3), and max_read is its bound. */
+ * (judged by the operator's alias table via D3), and max_read is its bound.
+ * S2-FIX 4: arg_key is NOT decoration — the JUDGE extracts by it
+ * (ops_judge: whatever this table declares is what gets classed and
+ * totality-checked) and the startup contract below refuses an entry that
+ * declares a read and no key.  max_read is the registry's own statement that
+ * an argument IS read, which is what makes that refusal checkable. */
+#ifdef FH_MUTANT_EXTRA_UNCLASSED_TOOL
+/* S2-FIX 4 MUTATION BLIND (build/fx-hostgate-extrauncl): ONE EXTRA registry
+ * entry that declares a READ BOUND and NO classed argument key — S3's `fetch`
+ * shape, whose url would be neither classed nor totality-checked.  This build
+ * overrides the registry pin TOO, so the PRECEDENCE test is the startup
+ * contract: without it the proxy starts and the tool's argument crosses
+ * unjudged.  Never a product build. */
+#define FH_HOST_TOOL_EXTRA \
+    { "host_fetch", host_exec_cat, NULL, FH_HOST_CAT_MAX },
+#else
+#define FH_HOST_TOOL_EXTRA
+#endif
+
 static const struct host_tool fh_host_tools[] = {
     { FH_HOSTTOOL_NAME, host_exec_time, NULL, 0 },
     { "host_cat", host_exec_cat, "path", FH_HOST_CAT_MAX },
+    FH_HOST_TOOL_EXTRA
 };
 
 static size_t fh_host_tool_count(void) {
@@ -2608,9 +2746,12 @@ static void fh_host_tool_catalog(struct tbuf *t) {
 /* THE ONLY WAY IN.  Not finding the name is the guest's call to make (it
  * forwards verbatim); a default case here would be the "try anyway" executor
  * the plan ranks the second-most-likely-silently-wrong, so there is none.
- * COMPILED OUT under FH_MUTANT_NO_EXEC — the blind IS this lookup's absence
- * (see host_dispatch): nothing else reads the registry at run time. */
-#ifndef FH_MUTANT_NO_EXEC
+ * S2-FIX 1+4: NOT guarded by FH_MUTANT_NO_EXEC (the executing half is).  The
+ * ops seat's JUDGE needs this table too — to ask whether a tool declares a
+ * classed argument (ops_judge extracts by ht->arg_key) and whether an
+ * execution has a judging seat at all (call_judge's unarmed-ops refusal) —
+ * and the judge is NOT the dispatch: in the NO_EXEC build the seat still
+ * judges and still refuses, only the executor's lookup is the blinded half. */
 static const struct host_tool *fh_host_tool_find(const char *name) {
     if (!name) return NULL;
     for (size_t i = 0; i < fh_host_tool_count(); i++) {
@@ -2618,7 +2759,6 @@ static const struct host_tool *fh_host_tool_find(const char *name) {
     }
     return NULL;
 }
-#endif /* FH_MUTANT_NO_EXEC */
 
 /* THE REGISTRY'S CONTRACT CHECK — the SAME refusal posture (and the SAME
  * loop) fh_catalog_check applies to the reserved name, extended to every host
@@ -2643,6 +2783,28 @@ static void fh_host_tool_check(void) {
         exit(1);
     }
     free(t.p);
+    /* S2-FIX 4: THE CLASSED-ARGUMENT CONTRACT — a tool that READS an argument
+     * must DECLARE the key that argument is judged by.  The judge extracts by
+     * arg_key and the totality check only sees what was extracted, so an
+     * entry with a read bound and NO key is a tool whose argument would be
+     * neither classed nor checked: S3's `fetch`-with-a-url shape, which would
+     * put the slice's top risk back, silently, on the very next tool.
+     * REFUSING TO START is the only moment a reader can be told.
+     * host_time declares max_read 0 AND arg_key NULL on purpose — it takes no
+     * classed argument at all — so "reads nothing" is the honest exemption,
+     * and a table edit that gives host_time a read would trip this. */
+    for (size_t i = 0; i < fh_host_tool_count(); i++) {
+        const struct host_tool *ht = &fh_host_tools[i];
+        if (ht->max_read == 0 || ht->arg_key) continue;
+        note("FATAL: the host tool \"%s\" declares the read bound %zu but NO "
+             "classed argument key (arg_key) — its argument would never be "
+             "classed by the operator's alias table and never "
+             "totality-checked (the S3 `fetch` shape: a url nobody judges).  A "
+             "tool that reads an argument must declare the key it is judged "
+             "by; REFUSING TO START",
+             ht->name, ht->max_read);
+        exit(1);
+    }
 #ifdef FH_MUTANT_NO_HOST_COLLISION
     /* S1 MUTATION BLIND (build/fx-hostgate-nohostcoll): the collision and
      * charset loop is compiled OUT while the table itself is built with a
@@ -3473,11 +3635,18 @@ static void ops_seat_startup(const char *dir) {
     if (!dir) {
         /* THE NAMED "NO OPERATOR AUTHOR AT THIS SEAT" STATE: not an error,
          * never a silent allow-all — the in-guest floor and D2 still govern,
-         * and the P3 denylist is unaffected. */
+         * and the P3 denylist is unaffected.  S2-FIX 1: NOT BENIGN FOR HOST
+         * TOOLS — the startup line says so, because a host tool whose
+         * argument must be CLASSED is refused here (unarmed-ops): with no
+         * seat, nothing classes its path, so executing it would be executing
+         * an unjudged argument. */
         note("ops-policy: NONE — no --ops-policy-dir was given, so the "
              "operator author does not act at this seat (the in-guest seat "
              "still enforces the floor; this is a per-seat state, not an "
-             "error)");
+             "error).  A HOST TOOL whose argument must be CLASSED is REFUSED "
+             "at this seat (refusal_name=unarmed-ops): with no operator "
+             "author nothing classes the argument, and an unjudged argument is "
+             "not an allowed one");
         return;
     }
     ops_seat_load(dir);
@@ -3579,6 +3748,36 @@ static int ops_judge(const char *name, const char *args, char *why, size_t whyca
     const int is_host = fh_host_tool_is(name);
     if (!ops_write_verb(name) && !is_host) return OPS_OK;
 
+    /* S2-FIX 4: THE CLASSED ARGUMENT KEY COMES FROM THE REGISTRY, not from a
+     * literal.  The table declares the key per tool (arg_key) and the
+     * EXECUTOR already extracts by it (host_arg_canon) — the judge hardcoding
+     * "path" was the two-spellings hazard in the form of a two-KEYS hazard:
+     * today host_cat's key IS "path" (so the observable effect was
+     * deny-more-only: host_time carrying a path was judged though it declares
+     * none), but S3's `fetch` will declare `url`, and a judge extracting
+     * "path" would find nothing, return OPS_OK, and leave the url NEITHER
+     * classed NOR totality-checked — the slice's top risk, silently, on the
+     * next tool.  A host tool that declares NO classed key has nothing to
+     * judge and returns before extraction (the union of the two cases is what
+     * the fix means: judge the key the table names, and none means none). */
+    const char *argkey;
+    if (is_host) {
+#ifdef FH_MUTANT_OPS_LITERAL_KEY
+        /* S2-FIX 4 MUTATION BLIND (build/fx-hostgate-opslitkey): the PRE-FIX
+         * judge — every host tool judged by the literal "path".  The gate's
+         * arm requires host_time (arg_key NULL) to be DENIED for a protected
+         * path here and ALLOWED by the real build: the registry's declaration
+         * is what decides, not a coincidence of spellings. */
+        argkey = "path";
+#else
+        const struct host_tool *ht = fh_host_tool_find(name);
+        argkey = ht ? ht->arg_key : NULL;
+#endif
+        if (!argkey) return OPS_OK; /* declares no classed argument */
+    } else {
+        argkey = "path"; /* the write verbs' classed argument — unchanged */
+    }
+
     /* THE PATH — the per-call binding the in-guest seat resolves at startup.
      * Extracted from the call's arguments BY KEY (the guest's own discipline,
      * fx-verbs-server.c:2548-2557: every verb extracts by key) and
@@ -3589,7 +3788,7 @@ static int ops_judge(const char *name, const char *args, char *why, size_t whyca
     yyjson_val *root = doc ? yyjson_doc_get_root(doc) : NULL;
     const char *raw = NULL;
     if (yyjson_is_obj(root)) {
-        yyjson_val *pv = yyjson_obj_get(root, "path");
+        yyjson_val *pv = yyjson_obj_get(root, argkey);
         if (pv) raw = yyjson_get_str(pv);
     }
     if (!raw) { /* no path (or a non-string one): nothing to bind here — the
@@ -4575,6 +4774,39 @@ static int call_judge(const char *name, const char *args,
             *refusal_out = FH_REFUSAL_OPS;
             return 1;
         }
+        /* S2-FIX 1 (THE BLOCKER): A CLASSED ARGUMENT MUST NOT EXECUTE WHERE NO
+         * SEAT JUDGED IT.  The gate for execution is not "some policy is
+         * armed" — it is "the side that judges THIS argument actually ran".
+         * ops_judge returns OPS_OK when OPS.present is 0, which is the state
+         * of BOTH named non-error configurations (no --ops-policy-dir at all,
+         * and a policy with no live rule here) — and policy_armed() is TRUE in
+         * both once --deny is given, so host_dispatch used to execute every
+         * host tool anyway.  MEASURED by the S2 review on a denylist-only run:
+         * host_cat read a PROTECTED file, returned the content to the model,
+         * and wrote a row reading allowed+exec=host.  The totality check
+         * therefore VANISHED silently in the gate's own phase-71 shape: an
+         * unjudged argument is not an allowed one.  Refuse by name, on the
+         * ordinary denial path (true name never crosses, nothing executes).
+         * The refusal fires for a tool that DECLARES a classed argument and
+         * leaves host_time (arg_key NULL, nothing to class) alone. */
+        if (oj == OPS_OK && !ops_seat_present()) {
+            const struct host_tool *ht = fh_host_tool_find(name);
+            if (ht && ht->arg_key) {
+                snprintf(reason, reason_cap,
+                         "\"%s\" was REFUSED BY NAME unarmed-ops: this seat "
+                         "runs with NO operator author (--ops-policy-dir "
+                         "absent, or every rule inert at this seat), so "
+                         "nothing classed its \"%s\" argument — the totality "
+                         "check has no seat to run in, and an unjudged "
+                         "argument is not an allowed one.  Arm the seat "
+                         "(--ops-policy-dir with a policy that is live here) "
+                         "and class the path",
+                         name, ht->arg_key);
+                *author_out = FH_AUTHOR_UNARMED;
+                *refusal_out = FH_REFUSAL_UNARMED_OPS;
+                return 1;
+            }
+        }
     }
 #endif /* FH_MUTANT_NO_OPS_SEAT */
 #ifndef FH_MUTANT_NO_JUSTIFY_CHECK
@@ -4724,7 +4956,11 @@ static void tools_inject_json(struct tbuf *t) {
  *  - no policy armed -> NO EXECUTION.  The host runs a call only where an
  *    author judged it; an unarmed proxy would otherwise execute with no
  *    author at all (fail-open), so the call simply forwards and the guest
- *    refuses it.
+ *    refuses it.  S2-FIX 1 sharpened the OTHER half of this: an armed policy
+ *    whose OPS seat is absent judged nothing either, and the judge now
+ *    refuses a host tool that declares a classed argument by name
+ *    (unarmed-ops) — so this gate never sees a call whose classed argument
+ *    went unjudged (see call_judge).
  *  - the name is not in the registry -> not ours: the guest's call, verbatim.
  *  - a call_id already executed -> NOT executed again.  ONE outside effect
  *    per call_id, the same rule the record keeps (one row per call_id): a

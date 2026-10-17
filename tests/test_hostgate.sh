@@ -201,6 +201,13 @@ GATENOEXEC="$ROOT/build/fx-hostgate-noexec"           # the allowed-path registr
 # that matched no class row, or a protected path whose class was never
 # injected, EXECUTES where the real build refuses.
 GATEOPSNOCLASS="$ROOT/build/fx-hostgate-opsnoclass"
+# S2-FIX (the S2 review's findings): the executor hardening compiled out (a
+# plain O_RDONLY open: a data-classed symlink reads a protected file, a FIFO
+# blocks the lane), the judge's hardcoded "path" key, and the ONE registry
+# table plus an entry that declares a read and NO classed argument key.
+GATENOPLAINFILE="$ROOT/build/fx-hostgate-noplainfile"
+GATEOPSLITKEY="$ROOT/build/fx-hostgate-opslitkey"
+GATEEXTRAUNCL="$ROOT/build/fx-hostgate-extrauncl"
 FIX="${FX_FIXTURE_DIR:-$ROOT/tests/fixtures}"
 MARKER="FX-GUEST-LOOP-OK-8f31"
 SENTINEL="hostgate-p1-probe"
@@ -230,7 +237,8 @@ for b in "$GATENONAME" "$GATENONAMEBAD" "$GATECOLLIDE" "$GATEBADNAME" "$GATEBADP
          "$GATENOOPS" "$GATEOPSFLOOR" "$GATEOPSNOCANON" "$GATENOCLAIM" \
          "$GATENOEVALPIN" "$GATENOBOUND" "$GATENOLOGLOAD" \
          "$GATELOADUNB" "$GATENODEDUP" "$GATENOSCOPECARRY" \
-         "$GATEHOSTCOLL" "$GATEHOSTNOCOLL" "$GATENOEXEC" "$GATEOPSNOCLASS"; do
+         "$GATEHOSTCOLL" "$GATEHOSTNOCOLL" "$GATENOEXEC" "$GATEOPSNOCLASS" \
+         "$GATENOPLAINFILE" "$GATEOPSLITKEY" "$GATEEXTRAUNCL"; do
     [ -x "$b" ] || fail "phase 0: $b missing — run make first"
 done
 [ -f "$FIX/responses_simple.sse" ] || fail "phase 0: fixture $FIX/responses_simple.sse missing"
@@ -5762,11 +5770,15 @@ s2_policydir() {
 # s2_run <gate> <tag> <pdir> <path> [extra...] — one whole guest loop through a
 # bounded proxy over a host_cat fixture (path = the classed argument), with a
 # FRESH FX_AGENT_DATA dir and a fresh stub per probe.  Exports S2_RC,
-# S2_GUEST_RC, S2_DIR, S2_ERR, S2_LOG, S2_DUMP, S2_MARKER.
+# S2_GUEST_RC, S2_DIR, S2_ERR, S2_LOG, S2_DUMP, S2_MARKER.  pdir="NONE" omits
+# --ops-policy-dir ENTIRELY (the denylist-only/absent-seat configuration the
+# S2-FIX 1 arm exists for), so --deny is the only policy in the run.
 s2_run() {
     local gate="$1" tag="$2" pdir="$3" path="$4"
     shift 4
     local d="$TMP/s2-$tag"
+    local opsargs=()
+    [ "$pdir" = "NONE" ] || opsargs=(--ops-policy-dir "$pdir")
     mkdir -p "$d/data" "$d/cfg"
     make_refuse_stub "$d/stub.py" "$d/marker"
     cat > "$d/cfg/config.dhall" <<DHALL
@@ -5781,7 +5793,7 @@ DHALL
     ops_stream "$d/fixture.sse" "$S2TOOL" "$path" "$S2CALL"
     "$gate" --upstream "$d/fixture.sse" --slave-file "$d/slave" \
         --log "$d/log.jsonl" --dump-requests "$d/dump.jsonl" \
-        --ops-policy-dir "$pdir" --deny fx_write "$@" --turns 2 2> "$d/proxy.err" &
+        "${opsargs[@]}" --deny fx_write "$@" --turns 2 2> "$d/proxy.err" &
     local p=$!
     PROXIES="$PROXIES $p"
     wait_for_slave "$d/slave" "$p" "$d/proxy.err"
@@ -5960,5 +5972,251 @@ n=$(s2_out_n "$S2_DUMP" "len(o) > 400")
 [ "$n" -eq 0 ] || fail "phase 90: a huge read crossed — the bound truncated instead of refusing"
 echo "   OK over-cap: a file longer than the bound is REFUSED (the refusal names the bound), never read partially"
 
+# ── S2-FIX: THE S2 REVIEW'S ONE BLOCKER AND FOUR SHOULD-FIXES ─────────────
+#
+# Each arm below asserts a property whose ABSENCE the S2 review REPRODUCED
+# through the real built proxy, and (where a build can carry the pre-fix
+# shape) requires a PRE-FIX CONTROL of the SAME source to exhibit it — so no
+# arm can pass because its fixture was inert.
+
+echo "== phase 91: S2-FIX 1 (BLOCKER) — a CLASSED host tool does NOT execute where no ops seat judged it"
+# THE HOLE: with --deny (which arms policy_armed(), and so the dispatch
+# consult) and NO live operator author, the totality check had NO SEAT: every
+# path was classed nothing and executed.  The S2 review measured a PROTECTED
+# file's content reaching the model with a row reading allowed+exec=host in
+# this configuration, which is the gate's own phase-71 shape.
+UB="$TMP/s2f-unarmed"
+mkdir -p "$UB/work/prot" "$UB/work/data"
+printf 'PROTECTED-SECRET-CONTENT' > "$UB/work/prot/file.txt"
+cat > "$UB/aliases.tsv" <<TSV
+Protfile	Configpath	yes	$UB/work/prot/file.txt
+Datasub	Datadir	no	$UB/work/data/**
+TSV
+s2_policydir "$UB/pdir" "$UB/aliases.tsv"
+# (a) THE DENYLIST-ONLY CONFIGURATION: --deny fx_write, no --ops-policy-dir.
+s2_run "$GATE" unarmed-ops NONE "$UB/work/prot/file.txt"
+[ "$S2_GUEST_RC" -eq 0 ] || { sed -n '1,10p' "$S2_ERR" >&2; fail "phase 91: the guest run rc=$S2_GUEST_RC"; }
+[ "$S2_RC" -eq 0 ] || fail "phase 91: the proxy exited rc=$S2_RC"
+grep -q "host-execute call_id=" "$S2_ERR" \
+    && fail "phase 91: the denylist-only seat EXECUTED a classed host call — the totality check vanished with the seat"
+grep -qF "REFUSED at this seat (refusal_name=unarmed-ops)" "$S2_ERR" \
+    || { sed -n '1,12p' "$S2_ERR" >&2; fail "phase 91: the no-policy startup line does not say a classed host call is refused here"; }
+# THE AUTHOR IS THE ABSENCE, NOT THE OPERATOR: no ops author ran at this
+# seat, so a row saying author=ops would claim an author that did not run
+# (the honesty rule the log writer states for every other denial).  The row
+# names `unarmed` and refusal_name=unarmed-ops.
+n=$(pyq "$S2_LOG" "len([r for r in rows if r.get('call_id')=='$S2CALL' and r.get('verdict')=='denied' and r.get('author')=='unarmed' and r.get('refusal_name')=='unarmed-ops' and not r.get('exec')])")
+[ "$n" -eq 1 ] || { grep -F "$S2CALL" "$S2_LOG" >&2; fail "phase 91: no row carries verdict=denied author=unarmed refusal_name=unarmed-ops with no exec"; }
+n=$(s2_out_n "$S2_DUMP" "'unarmed-ops' in o")
+[ "$n" -ge 1 ] || { cat "$S2_DUMP" >&2; fail "phase 91: the unarmed-ops refusal did not reach the model"; }
+n=$(s2_out_n "$S2_DUMP" "'PROTECTED-SECRET-CONTENT' in o")
+[ "$n" -eq 0 ] || fail "phase 91: the PROTECTED content reached the model from a seat with no operator author"
+echo "   OK denylist-only: the classed host call is REFUSED BY NAME (unarmed-ops), nothing executes, the protected content never crosses"
+# (b) THE OTHER NAMED CONFIGURATION — the LOADED-BUT-INERT seat (phase 44's
+# D2-only artifact): OPS.present is 0 here too, so it is the SAME hole and the
+# SAME refusal, and an arm that only covered (a) would miss it.
+s2_run "$GATE" unarmed-inert "$TMP/p6-inert" "$UB/work/prot/file.txt"
+[ "$S2_GUEST_RC" -eq 0 ] || { sed -n '1,10p' "$S2_ERR" >&2; fail "phase 91: the inert-seat guest run rc=$S2_GUEST_RC"; }
+[ "$S2_RC" -eq 0 ] || fail "phase 91: the inert-seat proxy exited rc=$S2_RC"
+grep -q "host-execute call_id=" "$S2_ERR" \
+    && fail "phase 91: the LOADED-BUT-INERT seat executed a classed host call"
+n=$(pyq "$S2_LOG" "len([r for r in rows if r.get('call_id')=='$S2CALL' and r.get('author')=='unarmed' and r.get('refusal_name')=='unarmed-ops' and not r.get('exec')])")
+[ "$n" -eq 1 ] || fail "phase 91: the loaded-but-inert seat did not refuse with unarmed-ops"
+echo "   OK loaded-but-inert: the same refusal with the seat LOADED and no rule live — the hole was not the absent flag alone"
+# (c) THE ASYMMETRY — the PRE-FIX CONTROL (FH_MUTANT_NO_OPS_SEAT compiles the
+# whole seat out, which is the state the blocker left every call in) EXECUTES
+# the same call and the protected content CROSSES.  So (a)'s refusal is the
+# gate's doing, not the fixture's.
+s2_run "$GATENOOPS" unarmed-noops NONE "$UB/work/prot/file.txt"
+[ "$S2_GUEST_RC" -eq 0 ] || { sed -n '1,10p' "$S2_ERR" >&2; fail "phase 91: the control's guest run rc=$S2_GUEST_RC"; }
+[ "$S2_RC" -eq 0 ] || fail "phase 91: the control exited rc=$S2_RC"
+grep -q "host-execute call_id=" "$S2_ERR" \
+    || fail "phase 91: the PRE-FIX control did NOT execute the classed call — the arm is vacuous"
+n=$(pyq "$S2_LOG" "len([r for r in rows if r.get('call_id')=='$S2CALL' and r.get('exec')=='host'])")
+[ "$n" -ge 1 ] || fail "phase 91: the control's log carries no exec=host row"
+n=$(s2_out_n "$S2_DUMP" "'PROTECTED-SECRET-CONTENT' in o")
+[ "$n" -ge 1 ] || { cat "$S2_DUMP" >&2; fail "phase 91: the control did not hand the PROTECTED content to the model — the blocker's measured shape is not reproduced"; }
+echo "   OK asymmetry: with the seat compiled out the SAME call EXECUTES and the protected content reaches the model — the refusal is the seat's"
+
+echo "== phase 92: S2-FIX 2 — the class governs the SPELLING, the OPEN follows the kernel (symlink REFUSED)"
+# A data-classed SYMLINK to a PROTECTED file: the judge classes the spelling
+# (data subtree, not protected) and allows it; the kernel then resolves the
+# link.  The S2 review measured the PROTECTED content returned both ways.  The
+# fix opens with O_NOFOLLOW and refuses anything non-regular by name.
+LK="$TMP/s2f-link"
+mkdir -p "$LK/work/prot" "$LK/work/data"
+printf 'PROTECTED-SECRET-CONTENT' > "$LK/work/prot/file.txt"
+ln -s "$LK/work/prot/file.txt" "$LK/work/data/link.txt"
+cat > "$LK/aliases.tsv" <<TSV
+Protfile	Configpath	yes	$LK/work/prot/file.txt
+Datasub	Datadir	no	$LK/work/data/**
+TSV
+s2_policydir "$LK/pdir" "$LK/aliases.tsv"
+s2_run "$GATE" symlink "$LK/pdir" "$LK/work/data/link.txt"
+[ "$S2_GUEST_RC" -eq 0 ] || { sed -n '1,10p' "$S2_ERR" >&2; fail "phase 92: the guest run rc=$S2_GUEST_RC"; }
+[ "$S2_RC" -eq 0 ] || fail "phase 92: the proxy exited rc=$S2_RC"
+grep -q "host-execute call_id=" "$S2_ERR" \
+    || fail "phase 92: the classed symlink was not even EXECUTED (the arm must reach the executor to test it)"
+n=$(pyq "$S2_LOG" "len([r for r in rows if r.get('call_id')=='$S2CALL' and 'not a plain file' in (r.get('outcome') or '') and r.get('exec')=='host'])")
+[ "$n" -eq 1 ] || { grep -F "$S2CALL" "$S2_LOG" >&2; fail "phase 92: the executor did not REFUSE the symlink by name (not a plain file)"; }
+n=$(s2_out_n "$S2_DUMP" "'not a plain file' in o")
+[ "$n" -ge 1 ] || { cat "$S2_DUMP" >&2; fail "phase 92: the not-a-plain-file refusal did not reach the model"; }
+n=$(s2_out_n "$S2_DUMP" "'PROTECTED-SECRET-CONTENT' in o")
+[ "$n" -eq 0 ] || fail "phase 92: the PROTECTED content crossed through a data-classed symlink — the kernel resolved a spelling the judge classed"
+echo "   OK symlink: the classed link is refused BY NAME (not a plain file); the protected target is never read"
+# THE PRE-FIX CONTROL: the same source with the open hardening compiled out
+# reads the PROTECTED content through the same link.
+s2_run "$GATENOPLAINFILE" symlink-blind "$LK/pdir" "$LK/work/data/link.txt"
+[ "$S2_GUEST_RC" -eq 0 ] || { sed -n '1,10p' "$S2_ERR" >&2; fail "phase 92: the blind's guest run rc=$S2_GUEST_RC"; }
+[ "$S2_RC" -eq 0 ] || fail "phase 92: the blind exited rc=$S2_RC"
+n=$(s2_out_n "$S2_DUMP" "'PROTECTED-SECRET-CONTENT' in o")
+[ "$n" -ge 1 ] || { cat "$S2_DUMP" >&2; fail "phase 92: the PRE-FIX control did not read the protected content through the symlink — the arm is vacuous"; }
+echo "   OK asymmetry: with O_NOFOLLOW/the type check compiled out the SAME link reads the PROTECTED content — the refusal is the executor's"
+
+echo "== phase 92b: S2-FIX 2 — THE STATED RESIDUAL, PINNED: a HARDLINK is a regular file at a classed name"
+# A hardlink cannot be refused by SPELLING: the classed name IS a regular file
+# (the same inode as the protected one), so O_NOFOLLOW and the type check have
+# nothing to refuse.  The operator's data-class grant therefore means "I trust
+# what these NAMES resolve to", and directory-level trust is transitive over
+# hardlinks.  This arm exists so the residual is MACHINE-VISIBLE instead of a
+# comment a future reader trusts: it pins the CURRENT, wider behaviour, and it
+# FAILS the day someone actually closes it (openat2/RESOLVE_* or an inode-level
+# protected set) — with this arm to update, which is the point.  Nothing here
+# is an approval of the reach.
+ln "$LK/work/prot/file.txt" "$LK/work/data/hard.txt"
+s2_run "$GATE" hardlink "$LK/pdir" "$LK/work/data/hard.txt"
+[ "$S2_GUEST_RC" -eq 0 ] || { sed -n '1,10p' "$S2_ERR" >&2; fail "phase 92b: the guest run rc=$S2_GUEST_RC"; }
+[ "$S2_RC" -eq 0 ] || fail "phase 92b: the proxy exited rc=$S2_RC"
+n=$(s2_out_n "$S2_DUMP" "'PROTECTED-SECRET-CONTENT' in o")
+[ "$n" -ge 1 ] || { cat "$S2_DUMP" >&2; fail "phase 92b: the hardlink residual is GONE (the protected content did not cross) — that is an improvement, so update this arm and the executor's residual note instead of deleting them"; }
+n=$(pyq "$S2_LOG" "len([r for r in rows if r.get('call_id')=='$S2CALL' and r.get('verdict')=='allowed' and r.get('exec')=='host'])")
+[ "$n" -eq 1 ] || fail "phase 92b: the hardlink arm is not the scenario (no allowed+exec=host row)"
+echo "   OK residual PINNED: a data-classed HARDLINK still reads the protected inode (unfixable by spelling; stated in the executor) — the arm fails if it is ever closed"
+
+echo "== phase 93: S2-FIX 3 — a FIFO is REFUSED PROMPTLY (it used to HANG the whole proxy)"
+# MEASURED by the S2 review: guest rc=124, the proxy had to be SIGTERMed, no
+# result and no refusal anywhere — an unbounded BLOCK in a single-lane proxy
+# with no deadline around the executor.  O_NONBLOCK makes the open return;
+# the S_ISREG check on the OPENED fd is what makes it a REFUSAL rather than an
+# empty read.  This arm's bound is structural: a regression to blocking fails
+# on wait_for_proxy_exit's own 40 s bound (and the guest's 120 s timeout), so
+# the arm cannot hang either.
+FF="$TMP/s2f-fifo"
+mkdir -p "$FF/work/data"
+mkfifo "$FF/work/data/pipe"
+cat > "$FF/aliases.tsv" <<TSV
+Datasub	Datadir	no	$FF/work/data/**
+TSV
+s2_policydir "$FF/pdir" "$FF/aliases.tsv"
+s2_run "$GATE" fifo "$FF/pdir" "$FF/work/data/pipe"
+[ "$S2_GUEST_RC" -eq 0 ] || { sed -n '1,10p' "$S2_ERR" >&2; fail "phase 93: the guest run rc=$S2_GUEST_RC (124 = the FIFO hung the lane)"; }
+[ "$S2_RC" -eq 0 ] || fail "phase 93: the proxy exited rc=$S2_RC"
+n=$(pyq "$S2_LOG" "len([r for r in rows if r.get('call_id')=='$S2CALL' and 'not a plain file' in (r.get('outcome') or '') and r.get('exec')=='host'])")
+[ "$n" -eq 1 ] || { grep -F "$S2CALL" "$S2_LOG" >&2; fail "phase 93: the FIFO was not refused by name — the executor must not read it"; }
+n=$(s2_out_n "$S2_DUMP" "'not a plain file' in o")
+[ "$n" -ge 1 ] || { cat "$S2_DUMP" >&2; fail "phase 93: the FIFO refusal did not reach the model"; }
+echo "   OK fifo: the classed FIFO is refused BY NAME and the run COMPLETES — the lane is not blocked, and the refusal (not an empty read) is the answer"
+
+echo "== phase 94: S2-FIX 5 — NUL content is REFUSED BY NAME, never silently truncated"
+# The result used to be rendered with %s: "HELLO\0SECRET-TAIL" reached the
+# model as "HELLO" with NO marker — "refuse, never truncate" violated for
+# every binary file.
+NB="$TMP/s2f-nul"
+mkdir -p "$NB/work/data"
+printf 'HELLO\0SECRET-TAIL' > "$NB/work/data/bin.dat"
+cat > "$NB/aliases.tsv" <<TSV
+Datasub	Datadir	no	$NB/work/data/**
+TSV
+s2_policydir "$NB/pdir" "$NB/aliases.tsv"
+s2_run "$GATE" nul "$NB/pdir" "$NB/work/data/bin.dat"
+[ "$S2_GUEST_RC" -eq 0 ] || { sed -n '1,10p' "$S2_ERR" >&2; fail "phase 94: the guest run rc=$S2_GUEST_RC"; }
+[ "$S2_RC" -eq 0 ] || fail "phase 94: the proxy exited rc=$S2_RC"
+n=$(pyq "$S2_LOG" "len([r for r in rows if r.get('call_id')=='$S2CALL' and 'contains NUL' in (r.get('outcome') or '')])")
+[ "$n" -eq 1 ] || { grep -F "$S2CALL" "$S2_LOG" >&2; fail "phase 94: no row carries the NUL refusal"; }
+n=$(s2_out_n "$S2_DUMP" "'contains NUL' in o")
+[ "$n" -ge 1 ] || { cat "$S2_DUMP" >&2; fail "phase 94: the NUL refusal did not reach the model"; }
+n=$(s2_out_n "$S2_DUMP" "'SECRET-TAIL' in o")
+[ "$n" -eq 0 ] || fail "phase 94: the bytes after the NUL crossed (or the file was truncated silently)"
+n=$(s2_out_n "$S2_DUMP" "o.endswith(': HELLO)')")
+[ "$n" -eq 0 ] || fail "phase 94: the pre-fix shape (content cut at the first NUL with no marker) crossed"
+echo "   OK NUL: a file holding NUL bytes is refused BY NAME (contains NUL); no byte after the first NUL is silently dropped or delivered"
+
+echo "== phase 95: S2-FIX 4 — the JUDGE reads the registry's arg_key (and startup refuses an entry that declares none)"
+# (a) host_time declares NO classed argument (arg_key NULL): a path argument
+# riding along is NOT the dimension this tool is judged on, so it is neither
+# classed nor denied.  The pre-fix judge extracted the literal "path" for
+# EVERY host tool and denied it — the observable half of the two-keys hazard
+# that would leave S3's `fetch` url unjudged.
+S2TOOL_SAVE="$S2TOOL"
+S2TOOL="host_time"
+s2_run "$GATE" timekey "$UB/pdir" "$UB/work/prot/file.txt"
+S2TOOL="$S2TOOL_SAVE"
+[ "$S2_GUEST_RC" -eq 0 ] || { sed -n '1,10p' "$S2_ERR" >&2; fail "phase 95: the guest run rc=$S2_GUEST_RC"; }
+[ "$S2_RC" -eq 0 ] || fail "phase 95: the proxy exited rc=$S2_RC"
+grep -q "host-execute call_id=" "$S2_ERR" \
+    || fail "phase 95: host_time (which declares no classed argument) was not executed — the judge judged a key the registry does not name"
+n=$(pyq "$S2_LOG" "len([r for r in rows if r.get('call_id')=='$S2CALL' and r.get('verdict')=='allowed' and r.get('exec')=='host' and \"HOST's wall clock\" in (r.get('outcome') or '')])")
+[ "$n" -eq 1 ] || { grep -F "$S2CALL" "$S2_LOG" >&2; fail "phase 95: no allowed+exec=host row carrying host_time's own result"; }
+n=$(pyq "$S2_LOG" "len([r for r in rows if r.get('call_id')=='$S2CALL' and r.get('verdict')=='denied'])")
+[ "$n" -eq 0 ] || fail "phase 95: host_time was DENIED for a path it does not declare — the judge is still using a literal key"
+# (b) THE PRE-FIX CONTROL: the hardcoded "path" key denies the same call.
+s2_run "$GATEOPSLITKEY" timekey-blind "$UB/pdir" "$UB/work/prot/file.txt" 
+[ "$S2_GUEST_RC" -eq 0 ] || { sed -n '1,10p' "$S2_ERR" >&2; fail "phase 95: the blind's guest run rc=$S2_GUEST_RC"; }
+[ "$S2_RC" -eq 0 ] || fail "phase 95: the blind exited rc=$S2_RC"
+n=$(pyq "$S2_LOG" "len([r for r in rows if r.get('call_id')=='$S2CALL' and r.get('verdict')=='denied' and 'rule D3' in (r.get('reason') or '') and not r.get('exec')])")
+[ "$n" -eq 1 ] || { grep -F "$S2CALL" "$S2_LOG" >&2; fail "phase 95: the hardcoded-key control did not deny host_time — the arm cannot see the difference"; }
+echo "   OK arg_key: host_time (arg_key NULL) is ALLOWED with a path riding along, and DENIED by the hardcoded-key control — the registry's declaration decides"
+# (c) THE STARTUP CONTRACT: a registry entry that declares a READ and NO
+# classed key is S3's `fetch` shape (its url would be neither classed nor
+# totality-checked).  The REAL table starts; the table plus that one entry —
+# with the pin overridden so the PIN is not what refuses — must REFUSE TO
+# START, naming the tool.
+mkdir -p "$TMP/s2f-extra"
+timeout 20 "$GATE" --upstream "$TMP/upstream2.sse" \
+    --slave-file "$TMP/s2f-extra/slave-real" --log "$TMP/s2f-extra/log-real.jsonl" \
+    --turns 1 2> "$TMP/s2f-extra/err-real" &
+ER=$!
+PROXIES="$PROXIES $ER"
+wait_for_slave "$TMP/s2f-extra/slave-real" "$ER" "$TMP/s2f-extra/err-real"
+kill "$ER" 2>/dev/null
+wait "$ER" 2>/dev/null
+timeout 20 "$GATEEXTRAUNCL" --upstream "$TMP/upstream2.sse" \
+    --slave-file "$TMP/s2f-extra/slave-extra" --log "$TMP/s2f-extra/log-extra.jsonl" \
+    --turns 1 2> "$TMP/s2f-extra/err-extra"
+EXRC=$?
+[ "$EXRC" -ne 0 ] || { sed -n '1,6p' "$TMP/s2f-extra/err-extra" >&2; fail "phase 95: a registry entry declaring a read and NO arg_key did not refuse at startup (rc=$EXRC)"; }
+grep -qF "host_fetch" "$TMP/s2f-extra/err-extra" \
+    || { sed -n '1,6p' "$TMP/s2f-extra/err-extra" >&2; fail "phase 95: the startup refusal does not name the offending tool"; }
+grep -qF "NO classed argument key" "$TMP/s2f-extra/err-extra" \
+    || fail "phase 95: the startup refusal does not name the contract it enforces"
+[ -s "$TMP/s2f-extra/slave-extra" ] \
+    && fail "phase 95: the refusing build published its slave path — the refusal was not BEFORE the lane was published"
+echo "   OK startup contract: the real table STARTS, the table plus an entry with a read and no classed key REFUSES TO START naming it (before the slave path exists)"
+
+echo "== phase 96: S2-FIX 6 — the PATH is bounded too, so the record and the wire agree"
+# The content bound alone did NOT make "always fits FH_BOUND" true: the path is
+# MODEL-CHOSEN and every result/refusal text embeds it — the S2 review measured
+# a 700-character path producing 777 bytes on the wire while the record
+# rendered 512 with a truncation marker.  The executor now refuses a path over
+# FH_HOST_PATH_MAX BY NAME, with a LENGTH-ONLY message (echoing it would
+# re-create the overrun), so nothing this executor returns can exceed the cap.
+LG="$TMP/s2f-long"
+mkdir -p "$LG/work/data"
+LONGPATH="$LG/work/data/$(python3 -c 'print("a" * 700)')"
+cat > "$LG/aliases.tsv" <<TSV
+Datasub	Datadir	no	$LG/work/data/**
+TSV
+s2_policydir "$LG/pdir" "$LG/aliases.tsv"
+s2_run "$GATE" longpath "$LG/pdir" "$LONGPATH"
+[ "$S2_GUEST_RC" -eq 0 ] || { sed -n '1,10p' "$S2_ERR" >&2; fail "phase 96: the guest run rc=$S2_GUEST_RC"; }
+[ "$S2_RC" -eq 0 ] || fail "phase 96: the proxy exited rc=$S2_RC"
+n=$(pyq "$S2_LOG" "len([r for r in rows if r.get('call_id')=='$S2CALL' and 'path bound' in (r.get('outcome') or '') and r.get('exec')=='host'])")
+[ "$n" -eq 1 ] || { grep -F "$S2CALL" "$S2_LOG" >&2; fail "phase 96: the executor did not refuse the over-long path by name"; }
+n=$(s2_out_n "$S2_DUMP" "'path bound' in o")
+[ "$n" -ge 1 ] || { cat "$S2_DUMP" >&2; fail "phase 96: the path-bound refusal did not reach the model"; }
+n=$(s2_out_n "$S2_DUMP" "len(o) > 512")
+[ "$n" -eq 0 ] || fail "phase 96: the model was handed MORE than the record's 512-byte outcome cap — the record and the wire disagree"
+echo "   OK path bound: an over-long model-chosen path is REFUSED BY NAME with a length-only message; no result exceeds the record's cap"
+
 # ── THE PASS ECHO, with the LIVE observation folded in (P10-fix 5) ────────
-echo "PASS hostgate: the transparent proxy is stream-transparent (arm == control) and a mangling proxy is caught; the per-turn open/close mechanics hold through one proxy process; the one log JOINS every answered call by call_id and REPORTS every call it could not join; a join compiled out flips the pass by content; every model-controlled free-text field arrives MARKED while the join key renders verbatim; the DECODE GATE holds the channel invariant for a denied call (the true name never crosses) in the presence of interleaves, duplicate/never-opened dones, open-at-completed items and over-cap streams, with a pinned pre-fix control for each; the RESERVED NAME is a CHECKED property (it passes the guest's charset, collides with no verb of a catalog pinned by sha256 and cross-checked against the verbs server's own table, and the proxy REFUSES TO START on a collision — while the same source with the check compiled out starts and DISPATCHES the colliding name: the silent allow); and the JUSTIFICATION is required in the injected tools schema, judged on the argument accumulator the guest actually dispatches (a done-args-only judge is pinned and caught), denied BY NAME through the existing substitution on the outbound leg, and REPORTED BY A DENIAL-RATE INSTRUMENT whose own compiled-out mutant leaves the dead-agent shape invisible; and THE OPERATOR IS A REAL AUTHOR AT THIS SEAT (P6: the pinned ops policy, its PINS check, its alias table with the TWO-FORM grammar re-run here, and its per-call fact injection with the path canonicalized before matching) with the D1/D2 split NAMED in the startup line — D1 evaluated here, D2 and the compiled-in FLOOR enforced IN-GUEST ONLY because this seat can see neither — the D2 bound ASSERTED in both directions, the ALLOWED row carrying its own seat-scoped allow_scope qualifier (so a durable record cannot read as a permission the seat never grants) with the LOADED-BUT-INERT branch pinned by its own D2-only arm, and the seat's three failure directions each pinned against a control of the SAME source (fail-open when the seat is compiled out, over-deny when it binds the floor it cannot see, silent allow when it matches the raw path); and THE CLAIM AUTHOR AT THIS SEAT (P7) pins the file that COMPUTES every verdict (a swapped always-derives eval_calls.py is REFUSED at startup, while the same source with the evaluator exempt from the pin arms and lets the forbidden call CROSS and EXECUTE), BOUNDS the per-call evaluator (a hung one becomes a RECORDED refusal with its row written, while the same source with no deadline HANGS and writes NOTHING — the dead-agent instrument's blind spot), and refuses a folded verb-SYMBOL mapped by TWO runtime verbs at both check sites (--check-verbs and the seat's loader), so no shared symbol can let one contention justify two runtime verbs; and the ONE LOG SURVIVES A KILL/RESTART (the load is a gate: a corrupt log refuses LOUDLY and is left untouched) with its second role as the JOIN STATE rebuilt from it — a pre-restart denial is restored and substituted on the frame the model sees — while the SAME source with the load compiled out WIPES the record and leaves the denial un-restored, the replay is IDEMPOTENT (same bytes twice, and load->flush reproduces the carried lines exactly), and a REAL RESUMED GUEST RUN gets the true name and the reason back on the outbound leg; and the FIVE SHOULD-FIXES THE P8 REVIEW FOUND ARE CLOSED, each against its own PRE-FIX CONTROL of the SAME source: a crafted-but-valid DENIED row can no longer drive the outbound leg unbounded (the loader applies the writer's bound at LOAD, so a 1 MB denial_text is restored as 512 MARKED bytes, while the control emits the reviewer's 1,048,576 and a call_id longer than the wire could carry is refused); the seat writes ONE ROW PER call_id (a re-serve is a repeat, not a second call — no phantom UNRESOLVED at any exit, phase 59's own log holding 1 row for its one guest-side call — the control inflating it and reporting the phantom), with the LOADER matching the writer by REFUSING a duplicate row; the LOAD is LINEAR rather than quadratic (100,000 rows in well under a 20 s bound where the pre-fix binary measured 89.7 s) and the over-cap refusal names a way out the gate RUNS — the DENIED-row compaction, whose rebuilt map still holds every denial; --log is REFUSED AT THE DOOR unless it is a regular file this seat owns (a FIFO that hung the pre-fix shape silently under a bounded control, a device node a flush would have renamed over, a symlink that would have split the record, a directory, all loud before anything is served or written); and a CARRIED row keeps the reading it was written with (its own allow_scope, byte-for-byte, where the control REWORDS it to claim a seat that judged nothing), while the turn field is validated as a whole non-negative number and the CRLF normalization is announced instead of silent; and the LIVE LANE'S LIVENESS SIGNALLING is closed (P10-fix), so the availability half of 'never a silent green' is enforced too: a REACHABLE-BUT-BROKEN response — no header block at all, an LF-only or non-HTTP status line, a Content-Length the socket does not honour, a chunked body with no well-formed zero chunk, or a body past the DOCUMENTED 32 MiB cap — is a LOUD NAMED failure (rc=1) where the pre-fix shape ended rc=0 with the bytes (or the whole header block) served to a guest that reads EOF as a FINISH, while a clean close-delimited 200 still passes; the HTTP HEADER BLOCK is never served as the body (the raw stream the guest reads begins with the BODY's own bytes, captured from the device); a credential embedded in the endpoint URL is never printed (userinfo refused by name and shown as <redacted>@, a query shown as ?<redacted>, and a CR/LF in the URL or the key refused before it could be sent); and the live arm's own observation rides in this echo, so an arm whose model made no call cannot read as an arm that proved something. $LIVE_STATUS; a HOST-TOOL call is an ORDINARY function_call (the SAME judge, the SAME denial path) and only the ALLOWED path dispatches it to the compiled-in host registry, whose result reaches the model through the EXISTING outbound substitution keyed on call_id (the pinned pre-S1 proxy crosses the SENTINEL instead); a host tool that collides with a guest verb is REFUSED at startup; and the executor compiled out is caught on the wire as SILENT DEGRADATION (S1 does NOT yet exercise argument judgement — host_time takes no arguments); the exec map is rebuilt across a restart and one call_id is executed at most ONCE; and an executed host call whose substitution never fires is REPORTED as an unresolved-substitution row; and a POLICY FLIP ACROSS A RESUME cannot break the record or lie to the model (S1-fix): a row refreshed to DENIED drops its execution reading and the exec-map key, so the seat still LOADS what its own two runs wrote, a carried DENIED verdict BINDS THE EXECUTOR rather than only the row, a crafted verdict-less exec row is REFUSED at startup, and ONE UNARMED arm witnesses the fail-closed gate instead of assuming it; and S2 THE JUDGED ARGUMENTS + THE TOTALITY CHECK: host_cat(path) is a BOUNDED host-file read (over-cap is REFUSED, never truncated), its path is judged by the operator's alias table through the hosttool(W) bridge (D3 denies a PROTECTED class while every guest-verb arm stays byte-identical), an UNCLASSED path is REFUSED BY NAME (unclassed-arg) with nothing executed, and the two mutation blinds flip exactly their arms — FH_MUTANT_OPS_NO_CLASS (the plan's risk #1 made concrete: the protected AND unclassed paths EXECUTE) and FH_MUTANT_OPS_NO_CANON now gating HOST paths (a ../-spelling reaches the executor and reads the protected file in the mutant, is denied on the canonical path in the real build) — proving the ONE normaliser (fh_canon_abs) is shared by the classifying and executing sides"
+echo "PASS hostgate: the transparent proxy is stream-transparent (arm == control) and a mangling proxy is caught; the per-turn open/close mechanics hold through one proxy process; the one log JOINS every answered call by call_id and REPORTS every call it could not join; a join compiled out flips the pass by content; every model-controlled free-text field arrives MARKED while the join key renders verbatim; the DECODE GATE holds the channel invariant for a denied call (the true name never crosses) in the presence of interleaves, duplicate/never-opened dones, open-at-completed items and over-cap streams, with a pinned pre-fix control for each; the RESERVED NAME is a CHECKED property (it passes the guest's charset, collides with no verb of a catalog pinned by sha256 and cross-checked against the verbs server's own table, and the proxy REFUSES TO START on a collision — while the same source with the check compiled out starts and DISPATCHES the colliding name: the silent allow); and the JUSTIFICATION is required in the injected tools schema, judged on the argument accumulator the guest actually dispatches (a done-args-only judge is pinned and caught), denied BY NAME through the existing substitution on the outbound leg, and REPORTED BY A DENIAL-RATE INSTRUMENT whose own compiled-out mutant leaves the dead-agent shape invisible; and THE OPERATOR IS A REAL AUTHOR AT THIS SEAT (P6: the pinned ops policy, its PINS check, its alias table with the TWO-FORM grammar re-run here, and its per-call fact injection with the path canonicalized before matching) with the D1/D2 split NAMED in the startup line — D1 evaluated here, D2 and the compiled-in FLOOR enforced IN-GUEST ONLY because this seat can see neither — the D2 bound ASSERTED in both directions, the ALLOWED row carrying its own seat-scoped allow_scope qualifier (so a durable record cannot read as a permission the seat never grants) with the LOADED-BUT-INERT branch pinned by its own D2-only arm, and the seat's three failure directions each pinned against a control of the SAME source (fail-open when the seat is compiled out, over-deny when it binds the floor it cannot see, silent allow when it matches the raw path); and THE CLAIM AUTHOR AT THIS SEAT (P7) pins the file that COMPUTES every verdict (a swapped always-derives eval_calls.py is REFUSED at startup, while the same source with the evaluator exempt from the pin arms and lets the forbidden call CROSS and EXECUTE), BOUNDS the per-call evaluator (a hung one becomes a RECORDED refusal with its row written, while the same source with no deadline HANGS and writes NOTHING — the dead-agent instrument's blind spot), and refuses a folded verb-SYMBOL mapped by TWO runtime verbs at both check sites (--check-verbs and the seat's loader), so no shared symbol can let one contention justify two runtime verbs; and the ONE LOG SURVIVES A KILL/RESTART (the load is a gate: a corrupt log refuses LOUDLY and is left untouched) with its second role as the JOIN STATE rebuilt from it — a pre-restart denial is restored and substituted on the frame the model sees — while the SAME source with the load compiled out WIPES the record and leaves the denial un-restored, the replay is IDEMPOTENT (same bytes twice, and load->flush reproduces the carried lines exactly), and a REAL RESUMED GUEST RUN gets the true name and the reason back on the outbound leg; and the FIVE SHOULD-FIXES THE P8 REVIEW FOUND ARE CLOSED, each against its own PRE-FIX CONTROL of the SAME source: a crafted-but-valid DENIED row can no longer drive the outbound leg unbounded (the loader applies the writer's bound at LOAD, so a 1 MB denial_text is restored as 512 MARKED bytes, while the control emits the reviewer's 1,048,576 and a call_id longer than the wire could carry is refused); the seat writes ONE ROW PER call_id (a re-serve is a repeat, not a second call — no phantom UNRESOLVED at any exit, phase 59's own log holding 1 row for its one guest-side call — the control inflating it and reporting the phantom), with the LOADER matching the writer by REFUSING a duplicate row; the LOAD is LINEAR rather than quadratic (100,000 rows in well under a 20 s bound where the pre-fix binary measured 89.7 s) and the over-cap refusal names a way out the gate RUNS — the DENIED-row compaction, whose rebuilt map still holds every denial; --log is REFUSED AT THE DOOR unless it is a regular file this seat owns (a FIFO that hung the pre-fix shape silently under a bounded control, a device node a flush would have renamed over, a symlink that would have split the record, a directory, all loud before anything is served or written); and a CARRIED row keeps the reading it was written with (its own allow_scope, byte-for-byte, where the control REWORDS it to claim a seat that judged nothing), while the turn field is validated as a whole non-negative number and the CRLF normalization is announced instead of silent; and the LIVE LANE'S LIVENESS SIGNALLING is closed (P10-fix), so the availability half of 'never a silent green' is enforced too: a REACHABLE-BUT-BROKEN response — no header block at all, an LF-only or non-HTTP status line, a Content-Length the socket does not honour, a chunked body with no well-formed zero chunk, or a body past the DOCUMENTED 32 MiB cap — is a LOUD NAMED failure (rc=1) where the pre-fix shape ended rc=0 with the bytes (or the whole header block) served to a guest that reads EOF as a FINISH, while a clean close-delimited 200 still passes; the HTTP HEADER BLOCK is never served as the body (the raw stream the guest reads begins with the BODY's own bytes, captured from the device); a credential embedded in the endpoint URL is never printed (userinfo refused by name and shown as <redacted>@, a query shown as ?<redacted>, and a CR/LF in the URL or the key refused before it could be sent); and the live arm's own observation rides in this echo, so an arm whose model made no call cannot read as an arm that proved something. $LIVE_STATUS; a HOST-TOOL call is an ORDINARY function_call (the SAME judge, the SAME denial path) and only the ALLOWED path dispatches it to the compiled-in host registry, whose result reaches the model through the EXISTING outbound substitution keyed on call_id (the pinned pre-S1 proxy crosses the SENTINEL instead); a host tool that collides with a guest verb is REFUSED at startup; and the executor compiled out is caught on the wire as SILENT DEGRADATION (S1 does NOT yet exercise argument judgement — host_time takes no arguments); the exec map is rebuilt across a restart and one call_id is executed at most ONCE; and an executed host call whose substitution never fires is REPORTED as an unresolved-substitution row; and a POLICY FLIP ACROSS A RESUME cannot break the record or lie to the model (S1-fix): a row refreshed to DENIED drops its execution reading and the exec-map key, so the seat still LOADS what its own two runs wrote, a carried DENIED verdict BINDS THE EXECUTOR rather than only the row, a crafted verdict-less exec row is REFUSED at startup, and ONE UNARMED arm witnesses the fail-closed gate instead of assuming it; and S2 THE JUDGED ARGUMENTS + THE TOTALITY CHECK: host_cat(path) is a BOUNDED host-file read (over-cap is REFUSED, never truncated), its path is judged by the operator's alias table through the hosttool(W) bridge (D3 denies a PROTECTED class while every guest-verb arm stays byte-identical), an UNCLASSED path is REFUSED BY NAME (unclassed-arg) with nothing executed, and the two mutation blinds flip exactly their arms — FH_MUTANT_OPS_NO_CLASS (the plan's risk #1 made concrete: the protected AND unclassed paths EXECUTE) and FH_MUTANT_OPS_NO_CANON now gating HOST paths (a ../-spelling reaches the executor and reads the protected file in the mutant, is denied on the canonical path in the real build) — proving the ONE normaliser (fh_canon_abs) is shared by the classifying and executing sides; S2-FIX: the totality check NO LONGER vanishes with the seat — a classed host call under a denylist-only OR loaded-but-inert seat is REFUSED BY NAME (unarmed-ops, where the seat-compiled-out control EXECUTES it and hands the model a protected file), the executor opens O_NOFOLLOW|O_NONBLOCK and refuses anything non-regular BY NAME (a data-classed symlink reads the protected target in the no-plainfile control; a FIFO no longer hangs the lane), NUL content is refused instead of silently cut, the judge extracts the registry's arg_key (the hardcoded-key control denies host_time where the real build allows it, and a table entry that reads with no classed key REFUSES TO START), and the model-chosen path is bounded so no result exceeds the record's cap"

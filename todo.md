@@ -1241,6 +1241,30 @@ argument matching no operator class row is REFUSED BY NAME — rather than by a 
       and **never injects a `hosttool` fact** (verified — only the declaration appears there), so it keeps
       D2 and adds no host-tool denial of its own. The alternative was splitting the artifact per seat,
       which would double the pinned files and invite drift.
+      **S2-FIX — the review found a BLOCKER, and it was the slice's own top risk reached by a SUPPORTED
+      CONFIGURATION rather than an attack.** With a **denylist-only** config (the gate's own phase-71
+      shape) the ops seat is absent, `ops_judge` returned OK, and the executor gated only on "some policy
+      is armed" — so `host_cat` on a **protected** file **returned its content to the model** with a row
+      reading `allowed+exec=host`. **The totality check silently vanished whenever the classifying seat
+      was not armed.** Fixed: the gate is now *"the side that judges THIS argument ran"*, not *"some
+      policy is armed"*, with `author=unarmed` — the ABSENCE refused, never the operator (a row saying
+      `ops` would claim an author that did not run). It covers both named configurations (no dir, and
+      **loaded-but-inert**). *Orchestrator-verified by invoking:* denylist-only, `host_cat` on
+      `/fx/disk/agent-config.dhall` → `denied / author=unarmed / refusal=unarmed-ops`, no `exec`, nothing
+      ran. **Also fixed:** the class governed the SPELLING while the **open followed the kernel** — a
+      data-classed **symlink** to a protected file returned the protected content (now `O_NONBLOCK|
+      O_NOFOLLOW` + `S_ISREG` on the *opened* fd, refused by name); a **FIFO hung the whole proxy**
+      (`rc=124`, SIGTERM needed, no deadline — P10's discipline had not been carried); **NUL content was
+      silently truncated** (now refused by name); the judge **ignored the registry's `arg_key`** and
+      hardcoded `"path"` — harmless today but it would have left **S3's `fetch` URL neither classed nor
+      totality-checked** (now read from the registry, with a startup refusal for an entry that declares a
+      read and no classed key); and the path itself is bounded so record and wire agree. **One residual
+      is PINNED as a machine-visible arm rather than left as prose:** a **hardlink** is a regular file at
+      a classed name, so a data-classed hardlink to a protected inode still reads it — unfixable by
+      spelling, stated in the executor, and phase 92b fails if it ever changes silently. The implementer
+      also **corrected the reviewer**: the suggested "D1+D3 inert in-guest" wording is wrong — D1's four
+      facts ARE injected in-guest; the correct split is **D1+D2 live, D3 inert**, now named on that
+      seat's own startup line.
 
 - [ ] **THE OLD DESIGN ITEMS BELOW ARE NOW LARGELY SUPERSEDED** (kept for the reasoning they carry):
       **A closed, host-owned catalog of network PRIMITIVES** (`http.get`/`http.post` + allowed hosts,

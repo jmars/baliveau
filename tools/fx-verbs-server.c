@@ -1421,6 +1421,22 @@ static void ops_policy_startup(void) {
                     "%zu alias row(s), %zu served writable path(s), %zu class "
                     "fact(s))\n",
             dir, sha, OPS.n_rule, OPS.n_row, OPS.n_served, OPS.n_class);
+    /* THE SEAT'S SPLIT, SAID AT RUNTIME (S2 review, finding 7): the host seat
+     * names its own split (D1,D3 live / D2 inert) on every start, and the
+     * inertness in-guest used to live only in the comment above.  The honesty
+     * rule is bilateral.  THIS SEAT'S split, from what it actually injects:
+     * D1 and D2 LIVE (kind(fx_write,write), class/protected at the resolve,
+     * touches per call, writable+boot_verdict per call), D3 INERT — it never
+     * injects hosttool(...), so no host-tool denial can derive in-guest.
+     * (The review's suggested wording had D1 inert here too; D1's four facts
+     * are all injected at this seat, and the D1 deny arms are the gate's own
+     * evidence — the prescription was wrong on that half.)  A LINE only: no
+     * behaviour changes. */
+    fprintf(stderr, "fx-verbs: ops-policy: this seat evaluates D1 (path class "
+                    "x kind) and D2 (writable x boot_verdict); D3 is INERT "
+                    "HERE — this seat never injects hosttool(...), so a "
+                    "host-tool denial cannot derive in-guest and belongs to the "
+                    "HOST seat\n");
     OPS.present = 1; /* LAST: nothing above may observe a half-loaded policy */
     free(dir);
 }

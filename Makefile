@@ -335,6 +335,24 @@ BIN_HOSTGATE_NOEXEC := build/fx-hostgate-noexec
 # that matched no class row, or a protected path whose class was never
 # injected, EXECUTES where the real build refuses).
 BIN_HOSTGATE_OPSNOCLASS := build/fx-hostgate-opsnoclass
+# S2-FIX: THREE PRE-FIX CONTROLS for the S2 review's findings, each the SAME
+# source with exactly one behaviour compiled out, so each new arm is proved to
+# be able to fail on its own fixture:
+#   noplainfile (findings 2+3): the executor's O_NOFOLLOW/O_NONBLOCK/fstat
+#                hardening compiled out (a plain O_RDONLY open, exactly as S2
+#                shipped) — a data-classed SYMLINK then reads the PROTECTED
+#                content, and a FIFO blocks the lane.
+#   opslitkey   (finding 4): the judge extracts the literal "path" again
+#                instead of the registry's arg_key — host_time carrying a path
+#                is then judged (denied) although it declares no classed
+#                argument, which is the visible half of the S3 hazard.
+#   extrauncl   (finding 4, the startup half): the ONE registry table plus an
+#                entry that declares a read bound and NO classed argument key
+#                (S3's `fetch` shape), with the table pin overridden to the
+#                matching value so the PRECEDENCE is the contract check.
+BIN_HOSTGATE_NOPLAINFILE := build/fx-hostgate-noplainfile
+BIN_HOSTGATE_OPSLITKEY := build/fx-hostgate-opslitkey
+BIN_HOSTGATE_EXTRAUNCL := build/fx-hostgate-extrauncl
 
 test-hostgate: $(BIN_HOSTGATE) $(BIN_HOSTGATE_MUTANT) $(BIN_HOSTGATE_UNBOUND) \
                $(BIN_HOSTGATE_NOREWRITE) $(BIN_HOSTGATE_BLINDADD) \
@@ -349,7 +367,9 @@ test-hostgate: $(BIN_HOSTGATE) $(BIN_HOSTGATE_MUTANT) $(BIN_HOSTGATE_UNBOUND) \
                $(BIN_HOSTGATE_NOLOGLOAD) $(BIN_HOSTGATE_LOADUNBOUND) \
                $(BIN_HOSTGATE_NODEDUP) $(BIN_HOSTGATE_NOSCOPECARRY) \
                $(BIN_HOSTGATE_HOSTCOLLIDE) $(BIN_HOSTGATE_NOHOSTCOLL) \
-               $(BIN_HOSTGATE_NOEXEC) $(BIN_HOSTGATE_OPSNOCLASS) $(BIN)
+               $(BIN_HOSTGATE_NOEXEC) $(BIN_HOSTGATE_OPSNOCLASS) \
+               $(BIN_HOSTGATE_NOPLAINFILE) $(BIN_HOSTGATE_OPSLITKEY) \
+               $(BIN_HOSTGATE_EXTRAUNCL) $(BIN)
 	bash tests/test_hostgate.sh
 
 # P6 THE OPS AUTHOR: the engine whose reasoning the seat evaluates is the
@@ -526,6 +546,36 @@ $(BIN_HOSTGATE_OPSNOCANON): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YY
 $(BIN_HOSTGATE_OPSNOCLASS): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(DATALOG_DIR)/zig-out/lib/libdatalog.so | $(DATALOG_SHIM)
 	@mkdir -p build
 	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_MUTANT_OPS_NO_CLASS -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(HOSTGATE_LIBS)
+
+# ── S2-FIX: THE S2 REVIEW'S PRE-FIX CONTROLS ────────────────────────────────
+#
+# (1) THE EXECUTOR HARDENING COMPILED OUT (findings 2+3) — a plain O_RDONLY
+#     open, exactly as S2 shipped it: a data-classed SYMLINK to a protected
+#     file reads the PROTECTED content (the class governs the spelling, the
+#     kernel resolves the link), and a writerless FIFO blocks the whole lane.
+$(BIN_HOSTGATE_NOPLAINFILE): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(DATALOG_DIR)/zig-out/lib/libdatalog.so | $(DATALOG_SHIM)
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_MUTANT_NO_PLAINFILE -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(HOSTGATE_LIBS)
+
+# (2) THE JUDGE'S HARDCODED KEY (finding 4) — every host tool judged by the
+#     literal "path" instead of the registry's arg_key, so a tool that
+#     declares NO classed argument is judged anyway (host_time + a protected
+#     path is DENIED here and ALLOWED by the real build).
+$(BIN_HOSTGATE_OPSLITKEY): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(DATALOG_DIR)/zig-out/lib/libdatalog.so | $(DATALOG_SHIM)
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_MUTANT_OPS_LITERAL_KEY -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(HOSTGATE_LIBS)
+
+# (3) THE UNDECLARED CLASSED ARGUMENT (finding 4, startup half) — the ONE table
+#     plus an entry with a read bound and arg_key NULL ("host_fetch": S3's
+#     fetch shape), and its pin overridden so the PIN is not what refuses.  The
+#     real build starts (the arm's fixture is not the cause); this one must
+#     REFUSE TO START naming the tool, because without the contract its
+#     argument would be neither classed nor totality-checked.
+HOSTTOOL_EXTRA_PIN := -DFH_HOSTTOOL_SHA256='"3291e078767440a1177a2d006675a9086fc1ca277f781f99de75b9dd5e1877e8"'
+
+$(BIN_HOSTGATE_EXTRAUNCL): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(DATALOG_DIR)/zig-out/lib/libdatalog.so | $(DATALOG_SHIM)
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_MUTANT_EXTRA_UNCLASSED_TOOL $(HOSTTOOL_EXTRA_PIN) -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(HOSTGATE_LIBS)
 
 # ── P7 (THE CLAIM AUTHOR AT THE HOST SEAT) ──────────────────────────────────
 #
