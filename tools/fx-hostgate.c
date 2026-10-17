@@ -5396,17 +5396,64 @@ static char *g_http_path;
 static const char *g_http_key; /* FX_HOSTGATE_KEY, if any (never printed) */
 static long g_http_timeout = FH_HTTP_DEFAULT_TIMEOUT;
 
+/* The URL AS IT MAY BE PRINTED (P10-fix SHOULD-FIX 3): the userinfo
+ * (`user:pass@`) and the query string are REDACTED, because a credential
+ * commonly rides in one of them — the userinfo case was probed and reached
+ * stderr VERBATIM in these skip notes.  (A key in FX_HOSTGATE_KEY never
+ * reaches stderr at all; this covers the URL-embedded variant.)  The
+ * redaction is MARKED, not silent: a reader can see that something was there.
+ * Returns `buf`. */
+static const char *url_for_message(const char *url, char *buf, size_t n) {
+    const char *scheme_end = strstr(url, "://");
+    const char *p = scheme_end ? scheme_end + 3 : url;
+    const char *slash = strchr(p, '/');
+    const char *at = strchr(p, '@');
+    const char *ui = (at && (!slash || at < slash)) ? at : NULL; /* userinfo */
+    const char *host = ui ? ui + 1 : p;
+    const char *q = strchr(url, '?');
+    const char *body_end = q ? q : url + strlen(url);
+    size_t scheme_len = (size_t)(p - url); /* 0 when there is no scheme */
+    if (n == 0) return buf;
+    if (ui)
+        snprintf(buf, n, "%.*s<redacted>@%.*s", (int)scheme_len, url,
+                 (int)(body_end - host), host);
+    else
+        snprintf(buf, n, "%.*s%.*s", (int)scheme_len, url,
+                 (int)(body_end - host), host);
+    if (q) {
+        size_t w = strlen(buf);
+        if (w < n) snprintf(buf + w, n - w, "?<redacted>");
+    }
+    return buf;
+}
+
+/* The endpoint PATH as it may be PRINTED: the query string is REDACTED here
+ * for the same reason as url_for_message — a credential commonly rides in it,
+ * and a message is not a place to print one.  Returns `buf`. */
+static const char *path_for_message(char *buf, size_t n) {
+    if (n == 0) return buf;
+    size_t pl = strcspn(g_http_path ? g_http_path : "", "?");
+    int had_query = g_http_path && g_http_path[pl] == '?';
+    if (pl > n - 16) pl = n - 16;
+    memcpy(buf, g_http_path ? g_http_path : "", pl);
+    buf[pl] = '\0';
+    if (had_query) strcat(buf, "?<redacted>");
+    return buf;
+}
+
 /* Parse http://host[:port][/path] into host/port/path (all malloc'd).  Returns
  * FH_HTTP_OK, or FH_HTTP_SKIP with a named reason on stderr (unsupported
  * scheme, https — which this build refuses loudly — or a malformed URL). */
 static int http_parse_url(const char *url, char **host_out, int *port_out,
                           char **path_out) {
+    char safe[512];
+    const char *shown = url_for_message(url, safe, sizeof safe);
     const char *p = url;
     const char *scheme_end = strstr(p, "://");
     if (!scheme_end) {
         note("SKIP (hostgate-http): %s=%s is not a URL (expected "
              "http://host[:port]/path)",
-             FX_HOSTGATE_ENDPOINT_ENV, url);
+             FX_HOSTGATE_ENDPOINT_ENV, shown);
         return FH_HTTP_SKIP;
     }
     size_t scheme_len = (size_t)(scheme_end - p);
@@ -5414,12 +5461,28 @@ static int http_parse_url(const char *url, char **host_out, int *port_out,
         if (scheme_len == 5 && memcmp(p, "https", 5) == 0)
             note("SKIP (hostgate-http): %s uses https — this build speaks "
                  "plain HTTP only (the tree's NO-TLS structural decision); a "
-                 "TLS endpoint is REFUSED LOUDLY, never half-supported", url);
+                 "TLS endpoint is REFUSED LOUDLY, never half-supported", shown);
         else
-            note("SKIP (hostgate-http): unsupported URL scheme in %s", url);
+            note("SKIP (hostgate-http): unsupported URL scheme in %s", shown);
         return FH_HTTP_SKIP;
     }
     p = scheme_end + 3;
+    /* USERINFO IN THE URL (P10-fix SHOULD-FIX 3): `user:pass@` is a credential
+     * embedded in the endpoint URL, and it was reaching stderr VERBATIM.  This
+     * lane takes its credential from FX_HOSTGATE_KEY (the POST's Authorization
+     * header) and implements no other auth, so the embedded form is REFUSED BY
+     * NAME rather than half-supported — and it can never reach a message: the
+     * refusal prints the REDACTED URL. */
+    const char *slash0 = strchr(p, '/');
+    const char *at0 = strchr(p, '@');
+    if (at0 && (!slash0 || at0 < slash0)) {
+        note("SKIP (hostgate-http): %s carries userinfo (a credential embedded "
+             "in the endpoint URL) — this lane takes its credential from %s "
+             "only, sent in the POST's Authorization header; the URL-embedded "
+             "form is REFUSED LOUDLY, and never printed",
+             shown, FX_HOSTGATE_KEY_ENV);
+        return FH_HTTP_SKIP;
+    }
     const char *slash = strchr(p, '/');
     const char *hostpart_end = slash ? slash : p + strlen(p);
     const char *colon = NULL;
@@ -5432,7 +5495,7 @@ static int http_parse_url(const char *url, char **host_out, int *port_out,
     size_t host_len = colon ? (size_t)(colon - p) : (size_t)(hostpart_end - p);
     if (host_len == 0) {
         note("SKIP (hostgate-http): %s=%s has no host", FX_HOSTGATE_ENDPOINT_ENV,
-             url);
+             shown);
         return FH_HTTP_SKIP;
     }
     char *host = xmalloc(host_len + 1);
@@ -5443,7 +5506,7 @@ static int http_parse_url(const char *url, char **host_out, int *port_out,
         const char *ps = colon + 1;
         size_t plen = (size_t)(hostpart_end - ps);
         if (plen == 0 || plen >= 16) {
-            note("SKIP (hostgate-http): bad port in %s", url);
+            note("SKIP (hostgate-http): bad port in %s", shown);
             free(host);
             return FH_HTTP_SKIP;
         }
@@ -5453,13 +5516,23 @@ static int http_parse_url(const char *url, char **host_out, int *port_out,
         char *end = NULL;
         long v = strtol(pbuf, &end, 10);
         if (!end || *end != '\0' || v < 1 || v > 65535) {
-            note("SKIP (hostgate-http): bad port in %s", url);
+            note("SKIP (hostgate-http): bad port in %s", shown);
             free(host);
             return FH_HTTP_SKIP;
         }
         port = (int)v;
     }
     const char *path = slash ? slash : "/";
+    /* a CR/LF in a host or path is HEADER INJECTION shaped — it is refused
+     * here, before it could ever be written into a request head (P10-fix,
+     * SHOULD-FIX 3 hardening) */
+    if (strpbrk(host, "\r\n") || strpbrk(path, "\r\n")) {
+        note("SKIP (hostgate-http): %s contains a CR or LF — a header-injection "
+             "shaped endpoint is REFUSED, never sent",
+             shown);
+        free(host);
+        return FH_HTTP_SKIP;
+    }
     *host_out = host;
     *port_out = port;
     *path_out = xstrdup(path);
@@ -5632,7 +5705,11 @@ static int http_post(const char *host, int port, const char *path,
             return FH_HTTP_FAIL;
         }
         if (len == cap) {
-            if (cap >= FH_HTTP_MAX + 65536) {
+            /* the documented cap, MEASURED: tested on what has actually been
+             * read, BEFORE the doubling — testing `cap` here could only fire
+             * after the doubling had already passed FH_HTTP_MAX (the P10 review
+             * found the announced 32 MiB was 64 MiB in practice) */
+            if (len >= FH_HTTP_MAX) {
                 note("FAIL (hostgate-http): the response from %s:%d exceeds %u "
                      "bytes — refusing rather than dropping",
                      host, port, (unsigned)FH_HTTP_MAX);
@@ -5737,6 +5814,39 @@ static int http_post(const char *host, int port, const char *path,
     }
     close(fd);
 
+    /* ── THE FRAMING MUST AGREE (P10-fix SHOULD-FIX 1) ─────────────────────
+     * Exiting the read loop with no agreement about where the body ended is a
+     * REACHABLE-BUT-BROKEN response: the bytes may be garbage, a truncated
+     * item, or nothing at all — and the guest reads EOF as a synthesized
+     * FINISH, so this shape would otherwise end the run "successfully" with
+     * the model answer lost.  That is the silent green this gate exists to
+     * prevent, so every unagreed shape is a LOUD NAMED failure.  A CLEAN
+     * close-delimited 200 (this endpoint's own shape: HTTP/1.0, no
+     * Content-Length, no chunked, Connection: close) IS the agreement, and is
+     * untouched by these checks. */
+    if (!have_head) {
+        note("FAIL (hostgate-http): %s:%d sent no HTTP response header block "
+             "(no CRLFCRLF before EOF) — refusing to serve unframed bytes as a "
+             "stream",
+             host, port);
+        free(buf);
+        return FH_HTTP_FAIL;
+    }
+    if (len < 5 || strncmp((const char *)buf, "HTTP/", 5) != 0) {
+        note("FAIL (hostgate-http): %s:%d did not answer HTTP (unrecognized "
+             "status line) — refusing to serve it as a stream",
+             host, port);
+        free(buf);
+        return FH_HTTP_FAIL;
+    }
+    if (!chunked && content_len >= 0 && len - head_end < (size_t)content_len) {
+        note("FAIL (hostgate-http): %s:%d closed mid-stream — %zu of %ld "
+             "Content-Length bytes arrived",
+             host, port, len - head_end, content_len);
+        free(buf);
+        return FH_HTTP_FAIL;
+    }
+
     unsigned char *bodyp = buf + head_end;
     size_t body_n = len - head_end;
 
@@ -5745,20 +5855,35 @@ static int http_post(const char *host, int port, const char *path,
         unsigned char *plain = xmalloc(body_n + 1);
         size_t pn = 0;
         size_t i = 0;
+        int clean_end = 0; /* saw the well-formed terminating zero chunk */
         while (i < body_n) {
             /* a chunk-size line ends at \r\n */
             size_t ls = i;
             while (ls < body_n && !(bodyp[ls] == '\r' && ls + 1 < body_n &&
                                     bodyp[ls + 1] == '\n'))
                 ls++;
-            if (ls >= body_n) break; /* malformed tail: stop, keep what came */
+            if (ls >= body_n) break; /* malformed tail: no clean end */
             long cs = strtol((const char *)bodyp + i, NULL, 16);
             size_t dl = (size_t)(ls + 2); /* past the size line */
-            if (cs == 0) break;           /* last chunk */
+            if (cs == 0) {
+                clean_end = 1; /* the last chunk: the framing AGREED */
+                break;
+            }
             if (cs < 0 || (size_t)cs > body_n - dl) break;
             memcpy(plain + pn, bodyp + dl, (size_t)cs);
             pn += (size_t)cs;
             i = dl + (size_t)cs + 2; /* skip the chunk's trailing \r\n */
+        }
+        if (!clean_end) {
+            /* KEEPING WHAT CAME was the pre-fix behaviour (a lying chunk size
+             * or a truncated tail returned OK with the bytes it had) — the
+             * same silent green from the other framing side */
+            note("FAIL (hostgate-http): %s:%d sent a malformed or truncated "
+                 "chunked body (no well-formed zero chunk before EOF)",
+                 host, port);
+            free(plain);
+            free(buf);
+            return FH_HTTP_FAIL;
         }
         plain[pn] = '\0';
         free(buf);
@@ -5767,11 +5892,20 @@ static int http_post(const char *host, int port, const char *path,
         return FH_HTTP_OK;
     }
 
+    /* the BODY, not the header block (P10-fix SHOULD-FIX 2).  When the framing
+     * names an exact body length, the body ENDS there — bytes past it are not
+     * this response's.  The header block is dropped by MOVING the body to the
+     * front of the allocation, so what the caller receives is still a heap
+     * BASE it can free (an interior pointer would be a free() of a non-malloc
+     * address). */
+    if (content_len >= 0 && body_n > (size_t)content_len)
+        body_n = (size_t)content_len;
     buf = realloc(buf, len + 1);
     if (!buf) die_errno("realloc http response");
-    buf[len] = '\0';
+    if (body_n > 0 && head_end > 0) memmove(buf, buf + head_end, body_n);
+    buf[body_n] = '\0';
     *resp_out = buf;
-    *resp_len_out = len;
+    *resp_len_out = body_n;
     return FH_HTTP_OK;
 }
 
@@ -6099,6 +6233,12 @@ int main(int argc, char **argv) {
             return 77;
         }
         g_http_key = getenv(FX_HOSTGATE_KEY_ENV); /* may be NULL: no credential */
+        if (g_http_key && strpbrk(g_http_key, "\r\n")) {
+            note("SKIP (hostgate-http): %s contains a CR or LF — a header-"
+                 "injection shaped credential is REFUSED, never sent",
+                 FX_HOSTGATE_KEY_ENV);
+            return 77;
+        }
         if (http_parse_url(endpoint, &g_http_host, &g_http_port, &g_http_path) !=
             FH_HTTP_OK)
             return 77;
@@ -6111,10 +6251,15 @@ int main(int argc, char **argv) {
         int probe = http_connect(g_http_host, g_http_port, FH_HTTP_CONNECT_TIMEOUT);
         if (probe < 0) return 77;
         close(probe);
+        /* the path AS IT MAY BE PRINTED (P10-fix SHOULD-FIX 3): a credential
+         * commonly rides in the query string, so the query is REDACTED here —
+         * marked, never silently dropped */
+        char shown_path[256];
         note("http: endpoint %s:%d%s (%s); whole-exchange deadline %lds — the "
              "endpoint and any credential are held by the HOST and never cross "
              "into the guest",
-             g_http_host, g_http_port, g_http_path,
+             g_http_host, g_http_port,
+             path_for_message(shown_path, sizeof shown_path),
              g_http_key && *g_http_key ? "credential from env" : "no credential",
              g_http_timeout);
     }
@@ -6172,9 +6317,11 @@ int main(int argc, char **argv) {
 
     note("slave: %s", slave_path);
     if (g_http_mode) {
+        char shown_path[256];
         note("upstream: HTTP %s:%d%s (the live lane; each turn POSTs the "
              "rewritten frame and serves the streamed response)",
-             g_http_host, g_http_port, g_http_path);
+             g_http_host, g_http_port,
+             path_for_message(shown_path, sizeof shown_path));
     } else {
         note("upstream: %s (%zu bytes); turns: %s",
              upstream_path, upstream_len,
@@ -6326,6 +6473,19 @@ int main(int argc, char **argv) {
             }
             note("turn %ld: HTTP %zu-byte request -> %zu-byte response",
                  served, send_len, resp_len);
+            /* a 200 that carries no terminal response event is a DEAD LANE
+             * (P10-fix SHOULD-FIX 1(v)): the guest reads EOF as a finish, so
+             * the run would end with no model answer and nothing loud to say
+             * why.  This is a note, not a failure — the framing above is what
+             * decides rc; this makes the shape VISIBLE in the record. */
+            if (strstr((const char *)resp, "response.completed") == NULL &&
+                strstr((const char *)resp, "response.failed") == NULL &&
+                strstr((const char *)resp, "response.incomplete") == NULL)
+                note("WARNING (hostgate-http): the %zu-byte response carries no "
+                     "response.completed/failed/incomplete event — the guest "
+                     "will read EOF as a finish and the turn will serve a DEAD "
+                     "LANE (no model answer)",
+                     resp_len);
             served_stream = serve_stream(resp, resp_len, served, &served_len);
             free(resp);
         } else {

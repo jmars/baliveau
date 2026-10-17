@@ -286,6 +286,44 @@ os.close(fd)
 PY
 }
 
+# capture_frame <slave-path> <outfile> — drive_frame PLUS a CAPTURE of every
+# byte the proxy SERVED, i.e. the raw stream exactly as the guest reads it.
+# This is the instrument for the P10-fix header-strip property: the guest's
+# stream must not begin with an HTTP status line.  It also terminates on a
+# FAILED turn (the proxy's exit closes the master -> the reader gets EIO), and
+# it gives up after 5s of silence, so a proxy that serves nothing cannot hang
+# the gate (closing the device is the proxy's own turn-end cue).
+capture_frame() {
+    python3 - "$1" "$2" <<'PY'
+import json, os, select, sys, time
+fd = os.open(sys.argv[1], os.O_RDWR | os.O_APPEND)
+out = open(sys.argv[2], 'wb')
+frame = json.dumps({"model": "m", "stream": True,
+                    "input": [{"type": "message", "role": "user", "content": "hi"}]})
+os.write(fd, f"{len(frame)}\n{frame}".encode())
+deadline, idle = time.time() + 30, 0
+while time.time() < deadline:
+    r, _, _ = select.select([fd], [], [], 1)
+    if not r:
+        idle += 1
+        if idle >= 5:
+            break
+        continue
+    idle = 0
+    try:
+        b = os.read(fd, 65536)
+    except OSError:
+        break  # the master closed: EOF, as the guest sees it
+    if not b:
+        break
+    out.write(b)
+    if b.count(b"response.completed"):
+        break
+out.close()
+os.close(fd)
+PY
+}
+
 # The harness's runtime config: NO mcp servers (the staged lane's own shape,
 # tools/stage-guest.sh:337-345).  The `= [] : List ...` annotations are
 # MANDATORY — dhall-c cannot infer an unannotated empty list and the whole
@@ -4468,8 +4506,43 @@ echo "   OK writer/loader drift closed: an unarmed run's own record loads and CO
 #           enforcement property over HTTP + the credential boundary.
 # Phase 72: the REAL lane against the live provider — SKIPs loudly when the
 #           endpoint is absent/unreachable (never a silent green), else runs
-#           the whole loop and asserts the invariant.
+#           the whole loop and asserts the invariant, and its observation is
+#           carried into the final PASS echo (P10-fix 5).
+# Phase 73: THE P10-FIX — the liveness signalling of the lane: a
+#           REACHABLE-BUT-BROKEN response is a LOUD NAMED failure (the pre-fix
+#           shape was rc=0 with the bytes served), the HTTP HEADER BLOCK is
+#           never served as the body, a credential embedded in the endpoint
+#           URL is never printed, and the documented 32 MiB cap is the real
+#           one.
 LIVE_ENDPOINT="${FX_HOSTGATE_LIVE_ENDPOINT:-${FX_HOSTGATE_ENDPOINT:-}}"
+
+# redact_url <url> — the URL AS IT MAY BE PRINTED (P10-fix SHOULD-FIX 3):
+# userinfo and the query string are REDACTED, because a credential can ride in
+# either and a message is not a place to print one.  The redaction is MARKED,
+# never silent.
+redact_url() {
+    local u="$1" q="" scheme rest auth
+    case "$u" in *\?*) q="?<redacted>" ;; esac
+    u="${u%%\?*}"
+    case "$u" in
+        *://*@*)
+            scheme="${u%%://*}://"
+            rest="${u#*://}"
+            auth="${rest%%/*}"
+            u="$scheme<redacted>@${auth##*@}${rest#"$auth"}"
+            ;;
+    esac
+    printf '%s%s' "$u" "$q"
+}
+
+# THE LIVE OBSERVATION, carried into the FINAL PASS ECHO (P10-fix
+# NICE-TO-HAVE 5): phase 72's assertions are conditional on the live model
+# actually calling a tool, so with n==0 calls they run against nothing — the
+# arm proves NOTHING while the summary still reads as a pass.  A hard n==0 FAIL
+# would flake against a non-deterministic model, so the absence is made
+# VISIBLE: this line is printed in the PASS echo, where a reader cannot miss
+# what the live arm did or did not exercise.
+LIVE_STATUS="LIVE (phase 72): NOT RUN — no live endpoint was named"
 
 # make_live_stub <script> <read-marker> <ls-marker> — the two-verb dispatch
 # stub for the recorded live fixture (fx_read + fx_ls), each touching its OWN
@@ -4679,6 +4752,7 @@ echo "== phase 72: P10 THE REAL LANE — the live provider (SKIPs loudly offline
 # against the live model and the invariant is asserted.
 if [ -z "$LIVE_ENDPOINT" ]; then
     echo "   SKIP phase 72 (the real lane): FX_HOSTGATE_LIVE_ENDPOINT (or FX_HOSTGATE_ENDPOINT) is not set — no live endpoint was named, so the whole-loop-against-a-real-model arm cannot run"
+    LIVE_STATUS="LIVE (phase 72): NOT RUN — no live endpoint was named, so the whole-loop-against-a-real-model arm did not execute"
 elif ! python3 - "$LIVE_ENDPOINT" <<'PY'
 import sys, socket, urllib.parse
 u = urllib.parse.urlparse(sys.argv[1])
@@ -4692,7 +4766,8 @@ except Exception as e:
     print("unreachable: %s" % e); sys.exit(1)
 PY
 then
-    echo "   SKIP phase 72 (the real lane): $LIVE_ENDPOINT is unreachable — the live arm cannot run, and a substitute would measure a stand-in, not the provider"
+    echo "   SKIP phase 72 (the real lane): $(redact_url "$LIVE_ENDPOINT") is unreachable — the live arm cannot run, and a substitute would measure a stand-in, not the provider"
+    LIVE_STATUS="LIVE (phase 72): NOT RUN — the named endpoint is unreachable, and a substitute would measure a stand-in, not the provider"
 else
     rm -f "$TMP/marker-live-write"
     # a phase-72 stub: fx_write (the DENIED verb) touches the write marker if it
@@ -4788,9 +4863,251 @@ DHALL
     d=$(pyq "$TMP/p72.log.jsonl" "len([r for r in rows if r.get('verdict')=='denied'])")
     a=$(pyq "$TMP/p72.log.jsonl" "len([r for r in rows if r.get('verdict')=='allowed'])")
     echo "   LIVE observed: $n call(s) decoded; $d denied; $a allowed (the live model's own behaviour, recorded)"
+    LIVE_STATUS="LIVE (phase 72): $n call(s) decoded, $d denied, $a allowed"
     if [ "$n" -eq 0 ]; then
-        echo "   LIVE note: the live model made NO tool call this run — the invariant held trivially and no denial was exercised (a real observation: the model declined the offered tool)"
+        # VISIBLE, and not a FAIL: the model is non-deterministic, so refusing
+        # to run would flake — but an arm whose assertions ran against nothing
+        # must not read as an arm that proved something.
+        echo "   WARNING phase 72: the live model made NO tool call this run — the invariant held TRIVIALLY and NO denial was exercised, so this arm proved NOTHING about the enforcement property (the live model declined the offered tool; a real observation, not a failure)"
+        LIVE_STATUS="$LIVE_STATUS — THE LIVE ARM PROVED NOTHING (n=0: no call was made, so no denial was exercised)"
     fi
 fi
 
-echo "PASS hostgate: the transparent proxy is stream-transparent (arm == control) and a mangling proxy is caught; the per-turn open/close mechanics hold through one proxy process; the one log JOINS every answered call by call_id and REPORTS every call it could not join; a join compiled out flips the pass by content; every model-controlled free-text field arrives MARKED while the join key renders verbatim; the DECODE GATE holds the channel invariant for a denied call (the true name never crosses) in the presence of interleaves, duplicate/never-opened dones, open-at-completed items and over-cap streams, with a pinned pre-fix control for each; the RESERVED NAME is a CHECKED property (it passes the guest's charset, collides with no verb of a catalog pinned by sha256 and cross-checked against the verbs server's own table, and the proxy REFUSES TO START on a collision — while the same source with the check compiled out starts and DISPATCHES the colliding name: the silent allow); and the JUSTIFICATION is required in the injected tools schema, judged on the argument accumulator the guest actually dispatches (a done-args-only judge is pinned and caught), denied BY NAME through the existing substitution on the outbound leg, and REPORTED BY A DENIAL-RATE INSTRUMENT whose own compiled-out mutant leaves the dead-agent shape invisible; and THE OPERATOR IS A REAL AUTHOR AT THIS SEAT (P6: the pinned ops policy, its PINS check, its alias table with the TWO-FORM grammar re-run here, and its per-call fact injection with the path canonicalized before matching) with the D1/D2 split NAMED in the startup line — D1 evaluated here, D2 and the compiled-in FLOOR enforced IN-GUEST ONLY because this seat can see neither — the D2 bound ASSERTED in both directions, the ALLOWED row carrying its own seat-scoped allow_scope qualifier (so a durable record cannot read as a permission the seat never grants) with the LOADED-BUT-INERT branch pinned by its own D2-only arm, and the seat's three failure directions each pinned against a control of the SAME source (fail-open when the seat is compiled out, over-deny when it binds the floor it cannot see, silent allow when it matches the raw path); and THE CLAIM AUTHOR AT THIS SEAT (P7) pins the file that COMPUTES every verdict (a swapped always-derives eval_calls.py is REFUSED at startup, while the same source with the evaluator exempt from the pin arms and lets the forbidden call CROSS and EXECUTE), BOUNDS the per-call evaluator (a hung one becomes a RECORDED refusal with its row written, while the same source with no deadline HANGS and writes NOTHING — the dead-agent instrument's blind spot), and refuses a folded verb-SYMBOL mapped by TWO runtime verbs at both check sites (--check-verbs and the seat's loader), so no shared symbol can let one contention justify two runtime verbs; and the ONE LOG SURVIVES A KILL/RESTART (the load is a gate: a corrupt log refuses LOUDLY and is left untouched) with its second role as the JOIN STATE rebuilt from it — a pre-restart denial is restored and substituted on the frame the model sees — while the SAME source with the load compiled out WIPES the record and leaves the denial un-restored, the replay is IDEMPOTENT (same bytes twice, and load->flush reproduces the carried lines exactly), and a REAL RESUMED GUEST RUN gets the true name and the reason back on the outbound leg; and the FIVE SHOULD-FIXES THE P8 REVIEW FOUND ARE CLOSED, each against its own PRE-FIX CONTROL of the SAME source: a crafted-but-valid DENIED row can no longer drive the outbound leg unbounded (the loader applies the writer's bound at LOAD, so a 1 MB denial_text is restored as 512 MARKED bytes, while the control emits the reviewer's 1,048,576 and a call_id longer than the wire could carry is refused); the seat writes ONE ROW PER call_id (a re-serve is a repeat, not a second call — no phantom UNRESOLVED at any exit, phase 59's own log holding 1 row for its one guest-side call — the control inflating it and reporting the phantom), with the LOADER matching the writer by REFUSING a duplicate row; the LOAD is LINEAR rather than quadratic (100,000 rows in well under a 20 s bound where the pre-fix binary measured 89.7 s) and the over-cap refusal names a way out the gate RUNS — the DENIED-row compaction, whose rebuilt map still holds every denial; --log is REFUSED AT THE DOOR unless it is a regular file this seat owns (a FIFO that hung the pre-fix shape silently under a bounded control, a device node a flush would have renamed over, a symlink that would have split the record, a directory, all loud before anything is served or written); and a CARRIED row keeps the reading it was written with (its own allow_scope, byte-for-byte, where the control REWORDS it to claim a seat that judged nothing), while the turn field is validated as a whole non-negative number and the CRLF normalization is announced instead of silent"
+echo "== phase 73: P10-FIX — a REACHABLE-BUT-BROKEN response is LOUD, the HEADER BLOCK is not the body, a URL credential is never printed"
+# THE PRE-FIX SHAPE (measured by the P10 review against e0f0b86, with an
+# ASAN+UBSAN build): an unframed response, an LF-only header block, a non-HTTP
+# status line (ICY 200 OK), a lying Content-Length, a lying chunk size and a
+# 34 MiB body each ended rc=0 with the bytes — or the whole header block —
+# SERVED to the guest, which reads EOF as a synthesized FINISH: the run
+# "successfully" ends with the model answer lost or never produced.  That is
+# the availability half of "never a silent green", and every one of those
+# shapes is a LOUD NAMED failure now, while a CLEAN close-delimited 200 (this
+# endpoint's own shape) still passes.
+cp "$FIX/responses_simple.sse" "$TMP/p73-body.sse" \
+    || fail "phase 73: cannot copy the body fixture (a COPY, never the shared fixture)"
+[ -s "$TMP/p73-body.sse" ] || fail "phase 73: fixture responses_simple.sse missing — run make first / restore the fixture"
+
+# make_evil_endpoint <script> — a raw socket endpoint that answers EVERY
+# connection with ONE canned byte sequence chosen by <mode> (no HTTP library:
+# the point is to control the exact bytes on the wire, including the broken
+# ones).  The proxy's startup reachability probe connects and sends nothing,
+# which is absorbed by the same recv/sendall path.
+make_evil_endpoint() {
+    cat > "$1" <<'PY'
+import socket, sys
+MODE, PORTF, BODYF = sys.argv[1], sys.argv[2], sys.argv[3]
+BODY = open(BODYF, 'rb').read()
+HEAD = (b'HTTP/1.0 200 OK\r\nContent-Type: text/event-stream\r\n'
+        b'Connection: close\r\n\r\n')
+RAW = {
+    # no CRLFCRLF anywhere: no header block, so nothing agrees a framing
+    'garbage': b'this is not an HTTP response at all, and it never ends a header',
+    # LF-only header lines: again no CRLFCRLF terminator
+    'lfonly': b'HTTP/1.0 200 OK\nContent-Type: text/event-stream\n\n' + BODY,
+    # a status line that is not HTTP at all (the pre-fix code skipped the
+    # status check entirely here)
+    'icystatus': b'ICY 200 OK\r\nContent-Type: text/event-stream\r\n\r\n' + BODY,
+    # Content-Length claims 100000; the socket closes after 10 bytes
+    'cllie': (b'HTTP/1.0 200 OK\r\nContent-Type: text/event-stream\r\n'
+              b'Content-Length: 100000\r\n\r\n' + BODY[:10]),
+    # the chunk size line claims 10 bytes, 5 arrive, then EOF: no zero chunk
+    'chunklie': (b'HTTP/1.0 200 OK\r\nContent-Type: text/event-stream\r\n'
+                 b'Transfer-Encoding: chunked\r\n\r\nA\r\n' + BODY[:5] + b'\r\n'),
+    # a well-framed 200 (close-delimited) with NO body: the lane is DEAD, and
+    # only a note can say so — no framing rule is violated
+    'empty': HEAD,
+    # a well-framed close-delimited 200 carrying the body: MUST still pass
+    'clean': HEAD + BODY,
+}
+RESP = HEAD + b'x' * (33 * 1024 * 1024) if MODE == 'cap' else RAW[MODE]
+srv = socket.socket()
+srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+srv.bind(('127.0.0.1', 0))
+srv.listen(8)
+with open(PORTF, 'w') as f:
+    f.write(str(srv.getsockname()[1]))
+while True:
+    c, _ = srv.accept()
+    try:
+        c.settimeout(10)
+        c.recv(65536)
+        c.sendall(RESP)
+        # a graceful close (FIN) AFTER draining: closing with the request still
+        # unread sends RST, which DISCARDS the bytes this arm is about
+        c.shutdown(socket.SHUT_WR)
+        while c.recv(65536):
+            pass
+    except Exception:
+        pass
+    finally:
+        c.close()
+PY
+    chmod +x "$1"
+}
+make_evil_endpoint "$TMP/p73-evil.py"
+
+# ── (3) A CREDENTIAL EMBEDDED IN THE ENDPOINT URL ─────────────────────────
+# Pre-fix this printed the raw URL: 'SKIP ...: bad port in
+# http://user:secretpass@127.0.0.1:1/v1/responses'.  This lane takes its
+# credential from FX_HOSTGATE_KEY only, so the URL-embedded form is refused BY
+# NAME — and the refusal prints the REDACTED URL.
+FX_HOSTGATE_ENDPOINT="http://user:secretpass@127.0.0.1:1/v1/responses" \
+    "$GATE" --http --slave-file "$TMP/p73u.slave" --log "$TMP/p73u.log" --turns 1 \
+    > /dev/null 2> "$TMP/p73u.err"
+rc=$?
+[ "$rc" -eq 77 ] || fail "phase 73 (url credential): rc=$rc (want 77) — a credential embedded in the endpoint URL is refused by name"
+grep -qF "<redacted>@" "$TMP/p73u.err" \
+    || fail "phase 73 (url credential): the refusal does not MARK the redaction (no '<redacted>@') — a silent redaction is not a redaction a reader can trust"
+if grep -q "secretpass" "$TMP/p73u.err"; then
+    fail "phase 73 (url credential): THE URL-EMBEDDED CREDENTIAL WAS PRINTED VERBATIM to stderr (SHOULD-FIX 3)"
+fi
+echo "   OK url credential: rc=77, a named refusal, the userinfo prints as <redacted>@ — the credential never reaches a message"
+
+# ── (3b) HEADER-INJECTION HARDENING: a CR/LF in the URL or the key ────────
+FX_HOSTGATE_ENDPOINT=$'http://127.0.0.1:1/v1/responses\r\nX-Inject: yes' \
+    "$GATE" --http --slave-file "$TMP/p73crlf.slave" --log "$TMP/p73crlf.log" --turns 1 \
+    > /dev/null 2> "$TMP/p73crlf.err"
+rc=$?
+[ "$rc" -eq 77 ] || fail "phase 73 (crlf endpoint): rc=$rc (want 77) — a CR/LF in the endpoint must be refused, not written into a request head"
+grep -qF "contains a CR or LF" "$TMP/p73crlf.err" \
+    || fail "phase 73 (crlf endpoint): the refusal does not name the CR/LF"
+FX_HOSTGATE_ENDPOINT="http://127.0.0.1:1/v1/responses" \
+FX_HOSTGATE_KEY=$'secret-key\r\nX-Inject: yes' \
+    "$GATE" --http --slave-file "$TMP/p73crlfk.slave" --log "$TMP/p73crlfk.log" --turns 1 \
+    > /dev/null 2> "$TMP/p73crlfk.err"
+rc=$?
+[ "$rc" -eq 77 ] || fail "phase 73 (crlf key): rc=$rc (want 77) — a CR/LF in the key must be refused, not sent in a header"
+grep -qF "FX_HOSTGATE_KEY" "$TMP/p73crlfk.err" \
+    || fail "phase 73 (crlf key): the refusal does not name FX_HOSTGATE_KEY"
+if grep -q "secret-key" "$TMP/p73crlfk.err"; then
+    fail "phase 73 (crlf key): the KEY ITSELF was printed in the refusal"
+fi
+echo "   OK header-injection hardening: a CR/LF in the endpoint URL or in the key is REFUSED by name (rc=77), never sent, never printed"
+
+# ── (1)+(2)+(4) THE FRAMING ARMS ──────────────────────────────────────────
+# arm = <mode>:<want-rc>:<the words the note must carry>.  Every BROKEN framing
+# must exit rc=1 with a named failure (the pre-fix shape was rc=0 with the
+# bytes served); the two WELL-FRAMED shapes must still exit rc=0 — a framing
+# check that also refuses the clean close-delimited 200 would have "fixed" the
+# silent green by breaking the lane it protects.
+for arm in "garbage:1:no HTTP response header block" \
+           "lfonly:1:no HTTP response header block" \
+           "icystatus:1:did not answer HTTP" \
+           "cllie:1:closed mid-stream" \
+           "chunklie:1:malformed or truncated chunked body" \
+           "cap:1:exceeds 33554432 bytes" \
+           "clean:0:turn 1: served" \
+           "empty:0:WARNING (hostgate-http)"; do
+    mode="${arm%%:*}"
+    armrest="${arm#*:}"
+    rw="${armrest%%:*}"
+    want="${armrest#*:}"
+    rm -f "$TMP/p73-$mode.port" "$TMP/p73-$mode.err" "$TMP/p73-$mode.capture"
+    python3 "$TMP/p73-evil.py" "$mode" "$TMP/p73-$mode.port" "$TMP/p73-body.sse" \
+        2> "$TMP/p73-$mode.ep.err" &
+    EPID=$!
+    PROXIES="$PROXIES $EPID"
+    for i in $(seq 1 100); do [ -s "$TMP/p73-$mode.port" ] && break; sleep 0.05; done
+    [ -s "$TMP/p73-$mode.port" ] \
+        || fail "phase 73 ($mode): the evil endpoint never published its port"
+    EPORT=$(cat "$TMP/p73-$mode.port")
+    FX_HOSTGATE_ENDPOINT="http://127.0.0.1:$EPORT/v1/responses" \
+        timeout 120 "$GATE" --http --slave-file "$TMP/p73-$mode.slave" \
+        --log "$TMP/p73-$mode.log.jsonl" --turns 1 \
+        > /dev/null 2> "$TMP/p73-$mode.err" &
+    P73=$!
+    PROXIES="$PROXIES $P73"
+    wait_for_slave "$TMP/p73-$mode.slave" "$P73" "$TMP/p73-$mode.err"
+    capture_frame "$(cat "$TMP/p73-$mode.slave")" "$TMP/p73-$mode.capture"
+    wait "$P73"
+    prc=$?
+    if [ "$prc" -ne "$rw" ]; then
+        sed -n '1,6p' "$TMP/p73-$mode.err" >&2
+        fail "phase 73 ($mode): the proxy exited rc=$prc (want $rw) — a reachable-but-broken response is a SILENT GREEN, the pre-fix shape (or, for a well-framed response, the framing check is refusing a clean lane)"
+    fi
+    grep -qF "$want" "$TMP/p73-$mode.err" \
+        || fail "phase 73 ($mode): the proxy does not SAY '$want'"
+    kill "$EPID" 2>/dev/null
+    if [ "$rw" -eq 1 ]; then
+        grep -qF "FAIL (hostgate-http)" "$TMP/p73-$mode.err" \
+            || fail "phase 73 ($mode): the failure does not NAME itself as an HTTP-lane failure"
+        echo "   OK $mode: rc=1 with the NAMED failure '$want' (pre-fix: rc=0, the bytes served to the guest)"
+    else
+        echo "   OK $mode: rc=0 — a well-framed response still passes"
+    fi
+done
+
+# ── (2) THE HEADER BLOCK IS NOT THE BODY, and a well-framed body still serves ─
+# 'clean' is the control for the loop above: the SAME endpoint, the SAME
+# request, a well-framed close-delimited 200 — it must pass, and the stream the
+# GUEST READS must not begin with the HTTP header block.  Captured raw, the
+# pre-fix stream began 'HTTP/1.0 200 OK\r\nContent-Type: text/event-stream…'.
+[ "$(wc -c < "$TMP/p73-clean.capture")" -gt 0 ] \
+    || fail "phase 73 (clean): a well-framed close-delimited 200 served NOTHING — the framing check is refusing a clean response"
+head -c 5 "$TMP/p73-clean.capture" > "$TMP/p73-clean.head5"
+if [ "$(cat "$TMP/p73-clean.head5")" = "HTTP/" ]; then
+    fail "phase 73 (clean): the guest's stream BEGINS WITH A STATUS LINE — the HTTP header block is being served as the body (SHOULD-FIX 2)"
+fi
+if grep -q '^HTTP/' "$TMP/p73-clean.capture"; then
+    fail "phase 73 (clean): the served stream carries an HTTP status line — the header block was not stripped"
+fi
+head -c 60 "$TMP/p73-body.sse" > "$TMP/p73-want.head60"
+head -c 60 "$TMP/p73-clean.capture" > "$TMP/p73-got.head60"
+cmp -s "$TMP/p73-want.head60" "$TMP/p73-got.head60" \
+    || { echo "--- served ---"; head -c 120 "$TMP/p73-clean.capture"; echo; echo "--- body fixture ---"; head -c 120 "$TMP/p73-body.sse"; echo; fail "phase 73 (clean): the served stream does not begin with the BODY's own first bytes — the header block (or a prefix) is being served"; }
+grep -qF "response.completed" "$TMP/p73-clean.capture" \
+    || fail "phase 73 (clean): the served stream lost response.completed"
+# and the whole stream is the BODY, byte for byte: no header block, no prefix,
+# nothing dropped (the transparency the offline arm asserts, over HTTP)
+cmp -s "$TMP/p73-body.sse" "$TMP/p73-clean.capture" \
+    || fail "phase 73 (clean): the served stream is not byte-identical to the body fixture ($(wc -c < "$TMP/p73-clean.capture") vs $(wc -c < "$TMP/p73-body.sse") bytes)"
+echo "   OK clean: a well-framed close-delimited 200 still passes (rc=0) and the guest's stream is the BODY byte-for-byte, never a status line"
+
+# ── (1v) A 200 WITH NO TERMINAL EVENT IS A DEAD LANE — said LOUDLY ────────
+# 'empty' is well framed (nothing to refuse), so the framing checks cannot fail
+# it: what must NOT happen is a silent green.  The proxy says so, and the run
+# still ends rc=0 — a live provider that returns an empty 200 is a dead lane,
+# not a proxy failure, and the WARNING is what makes it visible.
+[ ! -s "$TMP/p73-empty.capture" ] \
+    || fail "phase 73 (empty): a 200 with no body served $(wc -c < "$TMP/p73-empty.capture") bytes (want 0) — the header block is being served as the body"
+grep -qF "WARNING (hostgate-http)" "$TMP/p73-empty.err" \
+    || fail "phase 73 (empty): a 200 carrying no response.completed was SILENT — the dead lane must say so (SHOULD-FIX 1(v))"
+echo "   OK empty: a well-framed 200 with no body serves 0 bytes (headers stripped) and the dead lane is NAMED with a WARNING"
+
+# ── (3) THE QUERY IS NOT PRINTED: a REAL HTTP server, a queried endpoint ──
+# The startup note printed the path WITH its query.  This arm drives the same
+# real-HTTP-server lane phase 71 uses, with a credential-shaped query.
+make_mock_endpoint "$TMP/p73-mock.py" "$TMP/p73-body.sse" "$TMP/p73-mock-body.bin" \
+    "$TMP/p73-mock-auth.txt" "$TMP/p73-mock-port"
+python3 "$TMP/p73-mock.py" "$TMP/p73-body.sse" "$TMP/p73-mock-body.bin" \
+    "$TMP/p73-mock-auth.txt" "$TMP/p73-mock-port" 2> "$TMP/p73-mock.err" &
+MOCK73=$!
+PROXIES="$PROXIES $MOCK73"
+for i in $(seq 1 100); do [ -s "$TMP/p73-mock-port" ] && break; sleep 0.05; done
+[ -s "$TMP/p73-mock-port" ] || fail "phase 73 (query): the mock endpoint never published its port"
+MOCK73PORT=$(cat "$TMP/p73-mock-port")
+FX_HOSTGATE_ENDPOINT="http://127.0.0.1:$MOCK73PORT/v1/responses?api_key=topsecret-query" \
+    timeout 120 "$GATE" --http --slave-file "$TMP/p73q.slave" --log "$TMP/p73q.log.jsonl" \
+    --turns 1 > /dev/null 2> "$TMP/p73q.err" &
+P73Q=$!
+PROXIES="$PROXIES $P73Q"
+wait_for_slave "$TMP/p73q.slave" "$P73Q" "$TMP/p73q.err"
+grep -qF "?<redacted>" "$TMP/p73q.err" \
+    || fail "phase 73 (query): the startup note does not MARK the redacted query (no '?<redacted>')"
+if grep -q "topsecret-query" "$TMP/p73q.err"; then
+    fail "phase 73 (query): THE QUERY WAS PRINTED VERBATIM in the startup note (SHOULD-FIX 3)"
+fi
+capture_frame "$(cat "$TMP/p73q.slave")" "$TMP/p73q.capture"
+wait "$P73Q"
+prc=$?
+[ "$prc" -eq 0 ] || { sed -n '1,6p' "$TMP/p73q.err" >&2; fail "phase 73 (query): the proxy exited rc=$prc against a real HTTP server"; }
+if grep -q '^HTTP/' "$TMP/p73q.capture"; then
+    fail "phase 73 (query): a REAL HTTP server's header block was served as the body"
+fi
+grep -qF "response.completed" "$TMP/p73q.capture" \
+    || fail "phase 73 (query): the served stream over a real HTTP server lost response.completed"
+kill "$MOCK73" 2>/dev/null
+echo "   OK query: the startup note redacts the query (?<redacted>, never 'topsecret-query'), the real server's response is clean-framed, and the header block is not served"
+
+# ── THE PASS ECHO, with the LIVE observation folded in (P10-fix 5) ────────
+echo "PASS hostgate: the transparent proxy is stream-transparent (arm == control) and a mangling proxy is caught; the per-turn open/close mechanics hold through one proxy process; the one log JOINS every answered call by call_id and REPORTS every call it could not join; a join compiled out flips the pass by content; every model-controlled free-text field arrives MARKED while the join key renders verbatim; the DECODE GATE holds the channel invariant for a denied call (the true name never crosses) in the presence of interleaves, duplicate/never-opened dones, open-at-completed items and over-cap streams, with a pinned pre-fix control for each; the RESERVED NAME is a CHECKED property (it passes the guest's charset, collides with no verb of a catalog pinned by sha256 and cross-checked against the verbs server's own table, and the proxy REFUSES TO START on a collision — while the same source with the check compiled out starts and DISPATCHES the colliding name: the silent allow); and the JUSTIFICATION is required in the injected tools schema, judged on the argument accumulator the guest actually dispatches (a done-args-only judge is pinned and caught), denied BY NAME through the existing substitution on the outbound leg, and REPORTED BY A DENIAL-RATE INSTRUMENT whose own compiled-out mutant leaves the dead-agent shape invisible; and THE OPERATOR IS A REAL AUTHOR AT THIS SEAT (P6: the pinned ops policy, its PINS check, its alias table with the TWO-FORM grammar re-run here, and its per-call fact injection with the path canonicalized before matching) with the D1/D2 split NAMED in the startup line — D1 evaluated here, D2 and the compiled-in FLOOR enforced IN-GUEST ONLY because this seat can see neither — the D2 bound ASSERTED in both directions, the ALLOWED row carrying its own seat-scoped allow_scope qualifier (so a durable record cannot read as a permission the seat never grants) with the LOADED-BUT-INERT branch pinned by its own D2-only arm, and the seat's three failure directions each pinned against a control of the SAME source (fail-open when the seat is compiled out, over-deny when it binds the floor it cannot see, silent allow when it matches the raw path); and THE CLAIM AUTHOR AT THIS SEAT (P7) pins the file that COMPUTES every verdict (a swapped always-derives eval_calls.py is REFUSED at startup, while the same source with the evaluator exempt from the pin arms and lets the forbidden call CROSS and EXECUTE), BOUNDS the per-call evaluator (a hung one becomes a RECORDED refusal with its row written, while the same source with no deadline HANGS and writes NOTHING — the dead-agent instrument's blind spot), and refuses a folded verb-SYMBOL mapped by TWO runtime verbs at both check sites (--check-verbs and the seat's loader), so no shared symbol can let one contention justify two runtime verbs; and the ONE LOG SURVIVES A KILL/RESTART (the load is a gate: a corrupt log refuses LOUDLY and is left untouched) with its second role as the JOIN STATE rebuilt from it — a pre-restart denial is restored and substituted on the frame the model sees — while the SAME source with the load compiled out WIPES the record and leaves the denial un-restored, the replay is IDEMPOTENT (same bytes twice, and load->flush reproduces the carried lines exactly), and a REAL RESUMED GUEST RUN gets the true name and the reason back on the outbound leg; and the FIVE SHOULD-FIXES THE P8 REVIEW FOUND ARE CLOSED, each against its own PRE-FIX CONTROL of the SAME source: a crafted-but-valid DENIED row can no longer drive the outbound leg unbounded (the loader applies the writer's bound at LOAD, so a 1 MB denial_text is restored as 512 MARKED bytes, while the control emits the reviewer's 1,048,576 and a call_id longer than the wire could carry is refused); the seat writes ONE ROW PER call_id (a re-serve is a repeat, not a second call — no phantom UNRESOLVED at any exit, phase 59's own log holding 1 row for its one guest-side call — the control inflating it and reporting the phantom), with the LOADER matching the writer by REFUSING a duplicate row; the LOAD is LINEAR rather than quadratic (100,000 rows in well under a 20 s bound where the pre-fix binary measured 89.7 s) and the over-cap refusal names a way out the gate RUNS — the DENIED-row compaction, whose rebuilt map still holds every denial; --log is REFUSED AT THE DOOR unless it is a regular file this seat owns (a FIFO that hung the pre-fix shape silently under a bounded control, a device node a flush would have renamed over, a symlink that would have split the record, a directory, all loud before anything is served or written); and a CARRIED row keeps the reading it was written with (its own allow_scope, byte-for-byte, where the control REWORDS it to claim a seat that judged nothing), while the turn field is validated as a whole non-negative number and the CRLF normalization is announced instead of silent; and the LIVE LANE'S LIVENESS SIGNALLING is closed (P10-fix), so the availability half of 'never a silent green' is enforced too: a REACHABLE-BUT-BROKEN response — no header block at all, an LF-only or non-HTTP status line, a Content-Length the socket does not honour, a chunked body with no well-formed zero chunk, or a body past the DOCUMENTED 32 MiB cap — is a LOUD NAMED failure (rc=1) where the pre-fix shape ended rc=0 with the bytes (or the whole header block) served to a guest that reads EOF as a FINISH, while a clean close-delimited 200 still passes; the HTTP HEADER BLOCK is never served as the body (the raw stream the guest reads begins with the BODY's own bytes, captured from the device); a credential embedded in the endpoint URL is never printed (userinfo refused by name and shown as <redacted>@, a query shown as ?<redacted>, and a CR/LF in the URL or the key refused before it could be sent); and the live arm's own observation rides in this echo, so an arm whose model made no call cannot read as an arm that proved something. $LIVE_STATUS"

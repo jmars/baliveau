@@ -1392,7 +1392,8 @@ judges it; **claim + verdict + outcome are one record** and the **disagreement**
 - [x] **P10 — THE REAL LANE** (**COMMITTED**; `engineer`). The proxy gains an **HTTP(S) upstream**
       (`--http`; endpoint/key/timeout from env, the key sent only in the Authorization header and **never
       printed, logged or crossed**), with a native plain-HTTP client (non-blocking connect+poll, per-read
-      and total deadlines, 32 MiB cap, close/content-length/chunked), and — required — a **LOUD NAMED SKIP
+      and total deadlines, a **32 MiB cap** (see the CORRECTION below), close/content-length/chunked
+      framing), and — required — a **LOUD NAMED SKIP
       (exit 77)** when the endpoint is absent, unreachable, https or malformed. The canned-file arm stays
       **byte-identical** (it is every existing phase's control). A live unauthenticated OpenAI-compatible
       endpoint serving the **Responses API over SSE** exists on this host at
@@ -1417,6 +1418,25 @@ judges it; **claim + verdict + outcome are one record** and the **disagreement**
       configured endpoint is plain http; hand-rolled TLS would be the silent-wrong surface); the live
       measurements are **n=1** — real, repeatable via phase 72, **not** a proof of invariant provider
       behaviour.
+      **P10-FIX — the review's three should-fixes, all closed.** The verdict was that the lane is **sound
+      for its stated invariant** (no silent allow on any of 16 hostile-response probes under ASAN/UBSAN,
+      the key boundary clean), but its **liveness signalling** was broken. *Orchestrator-verified by
+      invoking, with my own broken endpoints:* a response with **no HTTP status line** → was rc 0
+      (a SILENT GREEN), now **rc 1** *"did not answer HTTP (unrecognized status line) — refusing to serve
+      it"*; a **lying `Content-Length`** → was rc 0, now **rc 1** *"closed mid-stream — 20 of 9999
+      Content-Length bytes arrived"*; a legitimately **close-delimited** response still **rc 0**, and the
+      guest's stream now **begins `event: response.complete…`** rather than `HTTP/1.0 200 OK…`.
+      **CORRECTION (appended, not silently fixed):** the "32 MiB cap" I claimed in the P10 commit message
+      was **wrong by 2×** — the check fired only *after* the doubling, so the real cap was **64 MiB**
+      (the review measured 35,651,655 bytes accepted at rc 0). The check now tests before the doubling, so
+      the documented number is the real one. The commit message cannot be corrected in place; this is the
+      correction of record. Also fixed: a **credential embedded in the endpoint URL** was printed verbatim
+      in skip notes (now redacted, and userinfo in the endpoint is **refused by name** — the credential
+      comes from `FX_HOSTGATE_KEY` only, and the key was verified end-to-end to reach only the POST's
+      Authorization header); and **phase 72 no longer passes trivially** when the live model makes no call
+      (a distinct WARNING, with the LIVE observation folded into the PASS echo — deliberately not a hard
+      FAIL, which would flake against a live model). A defect was also found and fixed mid-pass: returning
+      an interior pointer from the header-strip made the caller `free()` it and the proxy aborted.
 - [x] **P9 — THE REPORTER'S CALL CLASS** (**COMMITTED**; `coder`). The problem it solves: the host gate
       delivers a denial by rewriting a call's name to `fx_host_denied` and substituting a denial text, so
       the **guest's transcript records the rewritten name and a generic sentinel and never learns the true
