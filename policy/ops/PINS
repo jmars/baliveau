@@ -2,9 +2,11 @@
 # discipline; fx-select/fx-report family).  name<TAB>sha256.
 # policy/ops/ops-policy.dl is produced ONLY by
 # 'python3 policy/ops/eval_ops.py --compile-policy' (make ops-policy-artifact,
-# the same call lints it), and policy/ops/ops-aliases.tsv is validated by
-# eval_ops.py --check-aliases.  A stale or swapped artifact fails LOUDLY:
+# the same call lints it), policy/ops/ops-aliases.tsv is validated by
+# eval_ops.py --check-aliases, and policy/ops/ops-hosts.tsv is validated by
+# eval_ops.py --check-hosts.  A stale or swapped artifact fails LOUDLY:
 # the release is artifact + PINS in the SAME commit.
-ops-lexicon.ini	b01330c2517493c203f066710d453936668ac282bd2c3d7706231ed3f3c091fa
+ops-lexicon.ini	8cb55c4249d11be2b3c7b60bf117fa4bcf8e31b3fa3ce371be5fd25050461f20
 ops-policy.dl	58362a09fbbb9c0ced08b32ff75b120749f651f48ab0b28e97752f79fa6168b1
 ops-aliases.tsv	29354b2b6c467662038a3a20c0dae13442016450f4d4c144dd8ad31b6eb00da0
+ops-hosts.tsv	d05ddaed021b2c0520d19a0bb5859a5a122a102d9001144072a1881be5b5ae07

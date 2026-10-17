@@ -1265,6 +1265,36 @@ argument matching no operator class row is REFUSED BY NAME — rather than by a 
       also **corrected the reviewer**: the suggested "D1+D3 inert in-guest" wording is wrong — D1's four
       facts ARE injected in-guest; the correct split is **D1+D2 live, D3 inert**, now named on that
       seat's own startup line.
+- [x] **S3 — THE HOST TOOL IS A DECLARED PROGRAM, WITH POLICY PARITY OF MECHANISM** (**UNCOMMITTED**;
+      `engineer`). **THE USER CORRECTED THE SHAPE TWICE, and both corrections made the design smaller:**
+      first *"the same as the tool call + policies but the calls run on the host, not HTTP specific"*, then
+      *"why are we building in http as a special thing when it could be handled by the standard host tool
+      policy/calling with a binary or something?"* — **so there is NO HTTP IN THE PROXY.** A registry entry
+      is now a **DECLARED PROGRAM** `{name, program, args, arg_key, reads_arg, deadline_ms, out_cap}`, and
+      the **one executor is a spawn** following `mcp_client.c`'s proven discipline (fork + `execve` with a
+      PATH-only scrubbed env, pipes, an explicit deadline and output cap). `http_get`, `host_time` and
+      `host_cat` are now **standalone binaries**, so P10's client stays the MODEL UPSTREAM's alone and
+      egress is not shaped around one protocol.
+      **THE GUARD THE USER ADDED, AND I FIRST GOT IT WRONG:** *"i dont mean apply the guest policy to host
+      tool calls, i mean allow the same mechanism, policies for host calls."* So the agent config's
+      `enabled_tools`/`disabled_tools` are **NOT** mirrored onto host tools — that is a guest-harness
+      dimension. What IS required is that a host call is judged by the **same `call_judge`, the same
+      authors, the same order, the same denial path and row shape**, with **no executor-specific policy
+      hook**. Phase 100 proves it: the SAME call denied through **each** author host-executed — the
+      `--deny` placeholder, the operator's D3, the totality `unclassed-arg`, the justification, and the
+      claim judgment — plus the asymmetry that compiling one author out lets it execute.
+      *Orchestrator-verified:* 194 OK / 0 FAIL; **gates rc=0**; and the program contract is proven —
+      **argv is argc=1 (the program only), and metacharacters reach the program VERBATIM on stdin, never
+      on the command line**; a hanging program is killed at the deadline, a flooding one is REFUSED at the
+      cap (never truncated), a non-zero exit is a REFUSAL (never a silent success), a missing program is
+      refused by name; and `http_get` refuses https / 3xx / non-http / IP literal / over-cap BY NAME.
+      **THE COST, stated in the source and here:** "run a declared program" is a **much larger lever** than
+      "the proxy does a GET", and on the host there is no VM to bound it — what restrains it is the
+      pinned, operator-authored registry, the scrubbed env, the cap, the deadline and the log, **not the
+      executor's narrowness**. **THE SEAT FOR SANDBOXING IS LEFT AND NOT BUILT** (user: *"later, we can use
+      palisade"*): the spawn is the one place a future sandbox attaches, one comment, no speculative hook.
+      *Guest code unchanged this round;* the only guest-facing edit is 3 lines of STAGING so the pinned set
+      includes `ops-hosts.tsv`.
 
 - [ ] **THE OLD DESIGN ITEMS BELOW ARE NOW LARGELY SUPERSEDED** (kept for the reasoning they carry):
       **A closed, host-owned catalog of network PRIMITIVES** (`http.get`/`http.post` + allowed hosts,

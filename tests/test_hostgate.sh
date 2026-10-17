@@ -208,6 +208,22 @@ GATEOPSNOCLASS="$ROOT/build/fx-hostgate-opsnoclass"
 GATENOPLAINFILE="$ROOT/build/fx-hostgate-noplainfile"
 GATEOPSLITKEY="$ROOT/build/fx-hostgate-opslitkey"
 GATEEXTRAUNCL="$ROOT/build/fx-hostgate-extrauncl"
+# S3 (THE DECLARED PROGRAMS): the host-tool binaries the spawn execs, and the
+# program-contract probe (an echo program + the mutant proxy that names it).
+HOSTTIME="$ROOT/build/fx-host-time"
+HOSTCAT="$ROOT/build/fx-host-cat"
+HOSTCATNOPLAIN="$ROOT/build/fx-host-cat-noplainfile"
+HTTPGET="$ROOT/build/fx-http-get"
+ECHOCONTRACT="$ROOT/build/fx-echo-contract"
+GATEECHO="$ROOT/build/fx-hostgate-echocontract"
+# S3 spawn-bounds probes (phase 98).
+SPAWNHANG="$ROOT/build/fx-spawn-hang"
+SPAWNFLOOD="$ROOT/build/fx-spawn-flood"
+SPAWNNONZERO="$ROOT/build/fx-spawn-nonzero"
+GATESPAWNHANG="$ROOT/build/fx-hostgate-spawnhang"
+GATESPAWNFLOOD="$ROOT/build/fx-hostgate-spawnflood"
+GATESPAWNNONZERO="$ROOT/build/fx-hostgate-spawnnonzero"
+GATESPAWNMISSING="$ROOT/build/fx-hostgate-spawnmissing"
 FIX="${FX_FIXTURE_DIR:-$ROOT/tests/fixtures}"
 MARKER="FX-GUEST-LOOP-OK-8f31"
 SENTINEL="hostgate-p1-probe"
@@ -238,7 +254,12 @@ for b in "$GATENONAME" "$GATENONAMEBAD" "$GATECOLLIDE" "$GATEBADNAME" "$GATEBADP
          "$GATENOEVALPIN" "$GATENOBOUND" "$GATENOLOGLOAD" \
          "$GATELOADUNB" "$GATENODEDUP" "$GATENOSCOPECARRY" \
          "$GATEHOSTCOLL" "$GATEHOSTNOCOLL" "$GATENOEXEC" "$GATEOPSNOCLASS" \
-         "$GATENOPLAINFILE" "$GATEOPSLITKEY" "$GATEEXTRAUNCL"; do
+         "$GATENOPLAINFILE" "$GATEOPSLITKEY" "$GATEEXTRAUNCL" \
+         "$HOSTTIME" "$HOSTCAT" "$HOSTCATNOPLAIN" "$HTTPGET" \
+         "$ECHOCONTRACT" "$GATEECHO" \
+         "$SPAWNHANG" "$SPAWNFLOOD" "$SPAWNNONZERO" \
+         "$GATESPAWNHANG" "$GATESPAWNFLOOD" "$GATESPAWNNONZERO" \
+         "$GATESPAWNMISSING"; do
     [ -x "$b" ] || fail "phase 0: $b missing — run make first"
 done
 [ -f "$FIX/responses_simple.sse" ] || fail "phase 0: fixture $FIX/responses_simple.sse missing"
@@ -1980,7 +2001,7 @@ names = [t.get("name") for t in tools]
 verbs_pinned = [v.strip() for v in open(sys.argv[2]) if v.strip()]
 assert names[:len(verbs_pinned)] == verbs, f"the injected guest catalog != the pinned one: {names[:len(verbs_pinned)]} vs {verbs}"
 host = names[len(verbs_pinned):]
-assert host == ["host_time", "host_cat"], f"the injected host-tool entries are {host}, want exactly ['host_time', 'host_cat']"
+assert host == ["host_time", "host_cat", "http_get"], f"the injected host-tool entries are {host}, want exactly ['host_time', 'host_cat', 'http_get']"
 assert "EXECUTED ON THE HOST" in tools[-1]["description"], tools[-1]["description"]
 for t in tools:
     p = t["parameters"]
@@ -1999,7 +2020,7 @@ n=$(pyq "$RT_DUMP" "len([1 for r in rows if 'tools' in r])")
 [ "$n" -eq 0 ] || fail "phase 29: the no-injection build STILL sent a tools array — the control is vacuous"
 n=$(pyq "$RT_LOG" "len([r for r in rows if r.get('verdict')=='denied' and r.get('refusal_name')=='absent-justification'])")
 [ "$n" -ge 1 ] || fail "phase 29: the no-injection build did not deny the unjustified call — the dead-agent shape needs BOTH halves (a check the model was never told about)"
-echo "   OK injection: the forwarded frame carries all 13 pinned verbs followed by the host-tool registry (host_time, host_cat — each whose description says the HOST executes it), each with justification REQUIRED, and the injection-compiled-out build sends none while still denying — the check the model was never told about"
+echo "   OK injection: the forwarded frame carries all 13 pinned verbs followed by the host-tool registry (host_time, host_cat, http_get — each whose description says the HOST executes it), each with justification REQUIRED, and the injection-compiled-out build sends none while still denying — the check the model was never told about"
 
 echo "== phase 30: P5 JUSTIFIED — the claim rides THROUGH the guest into the verb (zero guest change)"
 # responses_justified.sse is responses_tool.sse with the call's arguments
@@ -2692,19 +2713,20 @@ DHALL
     OG_MWW="$mww"
 }
 
-# ops_repin <dir> — recompute PINS for ops-aliases.tsv and ops-policy.dl in a
-# COPY of the policy dir, so a mutated table is a VALID pinned release: the
-# arm then tests the seat's check, not the pin's refusal.
+# ops_repin <dir> — recompute PINS for the ops policy artifacts in a COPY of
+# the policy dir, so a mutated table is a VALID pinned release: the arm then
+# tests the seat's check, not the pin's refusal.
 ops_repin() {
     local d="$1"
-    local tsv sha_dl sha_lex
+    local tsv hosts sha_dl sha_lex
     tsv=$(sha256sum "$d/ops-aliases.tsv" | cut -d' ' -f1)
+    hosts=$(sha256sum "$d/ops-hosts.tsv" | cut -d' ' -f1)
     sha_dl=$(sha256sum "$d/ops-policy.dl" | cut -d' ' -f1)
     sha_lex=$(sha256sum "$d/ops-lexicon.ini" | cut -d' ' -f1)
     grep -v '^ops-aliases.tsv' "$d/PINS" | grep -v '^ops-policy.dl' \
-        | grep -v '^ops-lexicon.ini' > "$d/PINS.new"
-    printf 'ops-lexicon.ini\t%s\nops-policy.dl\t%s\nops-aliases.tsv\t%s\n' \
-        "$sha_lex" "$sha_dl" "$tsv" >> "$d/PINS.new"
+        | grep -v '^ops-lexicon.ini' | grep -v '^ops-hosts.tsv' > "$d/PINS.new"
+    printf 'ops-lexicon.ini\t%s\nops-policy.dl\t%s\nops-aliases.tsv\t%s\nops-hosts.tsv\t%s\n' \
+        "$sha_lex" "$sha_dl" "$tsv" "$hosts" >> "$d/PINS.new"
     mv "$d/PINS.new" "$d/PINS"
 }
 
@@ -2746,7 +2768,7 @@ kill "$P6S" 2>/dev/null
 wait "$P6S" 2>/dev/null
 for want in "2 LIVE at this seat (D1,D3)" "INERT AT THIS SEAT (D2)" \
             "boot_verdict" "never injects writable" "THE FLOOR" \
-            "enforced IN-GUEST ONLY" "has NO floor of its own" "2 host tool(s) bound"; do
+            "enforced IN-GUEST ONLY" "has NO floor of its own" "3 host tool(s) bound"; do
     grep -qF "$want" "$TMP/p6-start/err" \
         || { sed -n '1,8p' "$TMP/p6-start/err" >&2; fail "phase 38: the startup line does not name '$want' — the seat does not say what it does and does not enforce"; }
 done
@@ -2892,7 +2914,7 @@ if [ ! -x "$ROOT/build/fx-verbs-server" ]; then
 else
 mkdir -p "$TMP/p6-inguest/root/usr/fx-agent/policy" "$TMP/p6-inguest/run/fx"
 cp "$OPS_DIR"/ops-policy.dl "$OPS_DIR"/ops-aliases.tsv "$OPS_DIR"/ops-lexicon.ini \
-   "$OPS_DIR"/PINS "$TMP/p6-inguest/root/usr/fx-agent/policy/"
+   "$OPS_DIR"/ops-hosts.tsv "$OPS_DIR"/PINS "$TMP/p6-inguest/root/usr/fx-agent/policy/"
 python3 - "$ROOT" "$TMP/p6-inguest" <<'PY'
 import json, os, subprocess, sys
 root, tmp = sys.argv[1], sys.argv[2]
@@ -5177,8 +5199,8 @@ S1TOOL="host_time"
 S1CALL="call_00_DgJfXOD0j0bvOV7jB0tl0124"
 # restated HERE, independently of the source (the phase-26 discipline: two
 # edits have to agree before a re-pin can pass unnoticed)
-S1_PIN="06b64025cc9d7f6435e35e931c84dcae6eaf646a930218c7bdca953e8d44c55a"
-S1_COLL_PIN="88638ce0cf6d71e4b4bd0890724e935597dd8f656c295501dc53a859df32c34a"
+S1_PIN="7e34902eed13322afca835373b00a5774d617f01edf7b22d287ed5c425e93f3c"
+S1_COLL_PIN="77d7697877d6623e20e868ffeb161bcf50bf420fc56b5cb81839aaca422b11a7"
 
 # make_refuse_stub <script> <marker> — the guest lane's MCP server for S1: it
 # touches the marker for EVERY tools/call (the witness that the call CROSSED to
@@ -5283,7 +5305,8 @@ echo "== phase 74: S1 THE REGISTRY — a SECOND closed list, pinned, and disjoin
 # at rest.  The pin is restated HERE independently of the source.  S2 appends
 # host_cat (the first classed tool), so the list and pin are re-pinned.
 S1TOOLS="host_time
-host_cat"
+host_cat
+http_get"
 "$GATE" --print-host-tools > "$TMP/s1-tools.txt" 2>/dev/null \
     || fail "phase 74: --print-host-tools failed"
 "$GATE" --print-host-tools-sha > "$TMP/s1-tools.sha" 2>/dev/null \
@@ -5299,7 +5322,7 @@ for h in $S1TOOLS; do
         fail "phase 74: '$h' is ALSO in the pinned guest catalog — the two lists are not disjoint, so the pins do not separate the executors"
     fi
 done
-echo "   OK registry: two host tools (host_time, host_cat), pinned at $S1_PIN and disjoint from the 13 pinned guest verbs"
+echo "   OK registry: three host tools (host_time, host_cat, http_get), pinned at $S1_PIN and disjoint from the 13 pinned guest verbs"
 
 echo "== phase 75: S1 (a) ALLOWED -> EXECUTED -> SUBSTITUTED, and the pinned PRE-S1 control crosses UNSUBSTITUTED"
 # The REAL build: the call is judged (denylist armed, host_time NOT on it ->
@@ -6217,6 +6240,388 @@ n=$(s2_out_n "$S2_DUMP" "'path bound' in o")
 n=$(s2_out_n "$S2_DUMP" "len(o) > 512")
 [ "$n" -eq 0 ] || fail "phase 96: the model was handed MORE than the record's 512-byte outcome cap — the record and the wire disagree"
 echo "   OK path bound: an over-long model-chosen path is REFUSED BY NAME with a length-only message; no result exceeds the record's cap"
+
+# ── S3: THE HOST TOOL IS A DECLARED PROGRAM ────────────────────────────────
+#
+# The S3 shape correction: NO HTTP in the proxy.  A host tool's executor is a
+# DECLARED PROGRAM (command + args in the registry), spawned per call with the
+# mcp_client.c discipline — fork + execve with a SCRUBBED env, pipes, an
+# explicit DEADLINE and OUTPUT CAP, the call's arguments ON STDIN AS JSON and
+# NEVER interpolated into the command line.  http_get is a STANDALONE BINARY
+# carrying the refusals as the call's result.  Policy is UNCHANGED in shape:
+# the same call_judge, the same authors, the same denial path and row shape.
+
+S3TOOL="http_get"
+S3CALL="call_S3_GET_0001"
+
+# s3_url_stream <dest> <name> <url> <call-id> — one function_call carrying a
+# `url` argument (the same real-provider shape ops_stream builds: arguments:""
+# in added, every byte in the DELTAS, the full args in the done/completed —
+# the delta delivery is load-bearing: the host judges the ACCUMULATOR).
+s3_url_stream() {
+    python3 - "$@" <<'PY'
+import json, sys
+dest, name, url, cid = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+iid = "item_S3_URL_1"
+args = json.dumps({"url": url})
+def fc(status):
+    return {"type": "function_call", "id": iid, "status": status,
+            "arguments": args, "call_id": cid, "name": name}
+ev = []
+seq = 0
+def add(e, p):
+    global seq
+    seq += 1
+    p = dict(p)
+    p["type"] = "response.%s" % e
+    p["sequence_number"] = seq
+    ev.append(("response." + e, json.dumps(p)))
+add("output_item.added", {"item": {"type": "function_call", "id": iid,
+    "status": "in_progress", "arguments": "", "call_id": cid, "name": name},
+    "output_index": 1})
+add("function_call_arguments.delta", {"delta": args, "item_id": iid, "output_index": 1})
+add("function_call_arguments.done", {"arguments": args, "item_id": iid, "output_index": 1})
+add("output_item.done", {"item": fc("completed"), "output_index": 1})
+add("completed", {"response": {"id": "p", "status": "completed", "output": [fc("completed")]}})
+open(dest, "w").write("".join("event: %s\ndata: %s\n\n" % (e, p) for e, p in ev))
+PY
+}
+
+# s3_hostsdir <dir> <hosts-tsv> — a COPY of the pinned policy dir with the
+# AUTHORITY table REPLACED and re-pinned (a valid pinned release).  The alias
+# table comes along unchanged (the seat requires both, pinned).
+s3_hostsdir() {
+    local d="$1" tsv="$2"
+    cp -r "$OPS_DIR" "$d"
+    cp "$tsv" "$d/ops-hosts.tsv"
+    ops_repin "$d"
+}
+
+# s3_url_run <gate> <tag> <pdir> <url> [extra...] — one whole guest loop through
+# a bounded proxy over an http_get fixture (url = the classed argument), fresh
+# FX_AGENT_DATA and stub per probe.  pdir="NONE" omits --ops-policy-dir.
+s3_url_run() {
+    local gate="$1" tag="$2" pdir="$3" url="$4"
+    shift 4
+    local d="$TMP/s3-$tag"
+    local opsargs=()
+    [ "$pdir" = "NONE" ] || opsargs=(--ops-policy-dir "$pdir")
+    mkdir -p "$d/data" "$d/cfg"
+    make_refuse_stub "$d/stub.py" "$d/marker"
+    cat > "$d/cfg/config.dhall" <<DHALL
+{ agents =
+  [ { name = "fx"
+    , agent_type = "agent"
+    , mcp_servers = [ { command = "$d/stub.py", args = [] : List Text } ]
+    }
+  ]
+}
+DHALL
+    s3_url_stream "$d/fixture.sse" "$S3TOOL" "$url" "$S3CALL"
+    "$gate" --upstream "$d/fixture.sse" --slave-file "$d/slave" \
+        --log "$d/log.jsonl" --dump-requests "$d/dump.jsonl" \
+        "${opsargs[@]}" --deny fx_write "$@" --turns 2 2> "$d/proxy.err" &
+    local p=$!
+    PROXIES="$PROXIES $p"
+    wait_for_slave "$d/slave" "$p" "$d/proxy.err"
+    local dev
+    dev=$(cat "$d/slave")
+    FX_CHARDEV="$dev" FX_AGENT_CONFIG_DIR="$d/cfg" \
+    FX_AGENT_DATA="$d/data" HOME="$d" \
+        timeout 120 "$BIN" -p "s3 probe" --agent fx --max-turns 2 --output text \
+        > "$d/guest.out" 2>&1
+    S3_GUEST_RC=$?
+    wait_for_proxy_exit "$p" "$d/proxy.err"
+    wait "$p"
+    S3_RC=$?
+    S3_DIR="$d"; S3_ERR="$d/proxy.err"; S3_LOG="$d/log.jsonl"
+    S3_DUMP="$d/dump.jsonl"; S3_MARKER="$d/marker"; S3_DATA="$d/data"
+}
+
+# s3_out_n <dump> <predicate over `o`> — count http_get outputs for S3CALL.
+s3_out_n() {
+    python3 - "$1" "$2" "$S3CALL" <<'PY'
+import json, sys
+dump, pred, cid = sys.argv[1], sys.argv[2], sys.argv[3]
+n = 0
+for line in open(dump):
+    line = line.strip()
+    if not line:
+        continue
+    f = json.loads(line)
+    for it in f.get("input", []):
+        if it.get("type") == "function_call_output" and it.get("call_id") == cid:
+            o = it.get("output") or ""
+            if eval(pred):
+                n += 1
+print(n)
+PY
+}
+
+echo "== phase 97: S3 THE PROGRAM CONTRACT — args reach the program VERBATIM on stdin, NEVER on argv"
+# The substitute echo program (build/fx-echo-contract) prints its argv and its
+# stdin.  The mutant proxy names it in place of host_cat, so a host_cat call
+# whose `path` carries shell metacharacters proves: (a) argv carries ONLY the
+# registry's program (none of the call's bytes), and (b) the args JSON arrives
+# verbatim on stdin (nothing interpreted — no shell ran).
+PC="$TMP/s3-contract"
+mkdir -p "$PC/data"
+# a path with spaces, $(...), ; and a backtick — the shell-dangerous set
+PC_PATH="$PC/data/a\$(cat)\$NASTY;b\`id\`c d e"
+cat > "$PC/aliases.tsv" <<TSV
+Datasub	Datadir	no	$PC/data/**
+TSV
+s2_policydir "$PC/pdir" "$PC/aliases.tsv"
+S2TOOL_SAVE="$S2TOOL"; S2CALL_SAVE="$S2CALL"
+S2TOOL="host_cat"; S2CALL="call_S3_CONTRACT_1"
+s2_run "$GATEECHO" contract "$PC/pdir" "$PC_PATH"
+S2TOOL="$S2TOOL_SAVE"; S2CALL="$S2CALL_SAVE"
+[ "$S2_GUEST_RC" -eq 0 ] || { sed -n '1,10p' "$S2_ERR" >&2; fail "phase 97: the guest run rc=$S2_GUEST_RC"; }
+[ "$S2_RC" -eq 0 ] || fail "phase 97: the proxy exited rc=$S2_RC"
+grep -q "host-execute call_id=" "$S2_ERR" \
+    || fail "phase 97: the echo program was not spawned — the arm is vacuous"
+n=$(pyq "$S2_LOG" "len([r for r in rows if r.get('call_id')=='call_S3_CONTRACT_1' and 'ARGV:' in (r.get('outcome') or '') and 'STDIN:' in (r.get('outcome') or '')])")
+[ "$n" -eq 1 ] || { grep -F "call_S3_CONTRACT_1" "$S2_LOG" >&2; fail "phase 97: no row carries the echo program's ARGV+STDIN output"; }
+out=$(pyq "$S2_LOG" "[r['outcome'] for r in rows if r.get('call_id')=='call_S3_CONTRACT_1'][0]")
+# (a) argv carries ONLY the registry's program — none of the call's metacharacters
+argvline=$(printf '%s\n' "$out" | sed -n '1p')
+echo "$argvline" | grep -q '^ARGV:1:' \
+    || fail "phase 97: argv is not argc=1 (the registry's program + no fixed args) — '$argvline'"
+if echo "$argvline" | grep -qF '$(cat)' || echo "$argvline" | grep -qF '`id`' || echo "$argvline" | grep -q ';'; then
+    fail "phase 97: the call's metacharacters appear in the spawn's ARGV — the args were interpolated into the command line"
+fi
+# (b) stdin carries the args JSON VERBATIM: the metacharacters are intact
+echo "$out" | grep -qF '$(cat)' \
+    || fail "phase 97: '\$(cat)' did not reach the program verbatim on stdin"
+echo "$out" | grep -qF '`id`' \
+    || fail "phase 97: the backtick did not reach the program verbatim on stdin"
+echo "$out" | grep -qF ';b' \
+    || fail "phase 97: the ';' did not reach the program verbatim on stdin"
+echo "   OK contract: argv is argc=1 (the registry's program only); the metacharacters reach the program verbatim on stdin and never on the command line"
+
+echo "== phase 98: S3 THE SPAWN'S BOUNDS — deadline, output cap, non-zero exit, missing program"
+# A data-classed path (allowed by D3/totality), so each probe reaches the spawn.
+SB="$TMP/s3-bounds"
+mkdir -p "$SB/data"
+printf 'ok' > "$SB/data/file.txt"
+cat > "$SB/aliases.tsv" <<TSV
+Datasub	Datadir	no	$SB/data/**
+TSV
+s2_policydir "$SB/pdir" "$SB/aliases.tsv"
+SBTOOL_SAVE="$S2TOOL"; SBCALL_SAVE="$S2CALL"
+S2TOOL="host_cat"; S2CALL="call_S3_BOUNDS_1"
+# (a) a program that HANGS is killed at the deadline (2s in this mutant build)
+s2_run "$GATESPAWNHANG" hang "$SB/pdir" "$SB/data/file.txt"
+[ "$S2_GUEST_RC" -eq 0 ] || { sed -n '1,10p' "$S2_ERR" >&2; fail "phase 98: the hang run's guest rc=$S2_GUEST_RC"; }
+[ "$S2_RC" -eq 0 ] || fail "phase 98: the hang run's proxy exited rc=$S2_RC"
+n=$(pyq "$S2_LOG" "len([r for r in rows if r.get('call_id')=='call_S3_BOUNDS_1' and 'deadline' in (r.get('outcome') or '') and r.get('exec')=='host'])")
+[ "$n" -eq 1 ] || { grep -F "call_S3_BOUNDS_1" "$S2_LOG" >&2; fail "phase 98: the hang was not killed at the deadline with a named refusal"; }
+echo "   OK deadline: a program that hangs is killed at the deadline; the refusal is the call's result"
+# (b) a program that FLOODS stdout is capped (never silently truncated)
+s2_run "$GATESPAWNFLOOD" flood "$SB/pdir" "$SB/data/file.txt"
+[ "$S2_GUEST_RC" -eq 0 ] || { sed -n '1,10p' "$S2_ERR" >&2; fail "phase 98: the flood run's guest rc=$S2_GUEST_RC"; }
+[ "$S2_RC" -eq 0 ] || fail "phase 98: the flood run's proxy exited rc=$S2_RC"
+n=$(pyq "$S2_LOG" "len([r for r in rows if r.get('call_id')=='call_S3_BOUNDS_1' and 'output cap' in (r.get('outcome') or '') and r.get('exec')=='host'])")
+[ "$n" -eq 1 ] || { grep -F "call_S3_BOUNDS_1" "$S2_LOG" >&2; fail "phase 98: the flood was not refused by the output cap"; }
+echo "   OK cap: a program that floods stdout is REFUSED by the output cap, never truncated"
+# (c) a program that EXITS NON-ZERO yields a REFUSAL (never a silent empty success)
+s2_run "$GATESPAWNNONZERO" nonzero "$SB/pdir" "$SB/data/file.txt"
+[ "$S2_GUEST_RC" -eq 0 ] || { sed -n '1,10p' "$S2_ERR" >&2; fail "phase 98: the nonzero run's guest rc=$S2_GUEST_RC"; }
+[ "$S2_RC" -eq 0 ] || fail "phase 98: the nonzero run's proxy exited rc=$S2_RC"
+n=$(pyq "$S2_LOG" "len([r for r in rows if r.get('call_id')=='call_S3_BOUNDS_1' and 'exited non-zero' in (r.get('outcome') or '') and r.get('exec')=='host'])")
+[ "$n" -eq 1 ] || { grep -F "call_S3_BOUNDS_1" "$S2_LOG" >&2; fail "phase 98: the non-zero exit was not refused by name"; }
+echo "   OK non-zero: a non-zero exit is a REFUSAL as the call's result, never a silent empty success"
+# (d) a MISSING / not-executable program is refused BY NAME
+s2_run "$GATESPAWNMISSING" missing "$SB/pdir" "$SB/data/file.txt"
+[ "$S2_GUEST_RC" -eq 0 ] || { sed -n '1,10p' "$S2_ERR" >&2; fail "phase 98: the missing run's guest rc=$S2_GUEST_RC"; }
+[ "$S2_RC" -eq 0 ] || fail "phase 98: the missing run's proxy exited rc=$S2_RC"
+n=$(pyq "$S2_LOG" "len([r for r in rows if r.get('call_id')=='call_S3_BOUNDS_1' and 'fx-spawn-missing' in (r.get('outcome') or '') and r.get('exec')=='host'])")
+[ "$n" -eq 1 ] || { grep -F "call_S3_BOUNDS_1" "$S2_LOG" >&2; fail "phase 98: the missing program was not refused BY NAME"; }
+echo "   OK missing: a missing/not-executable program is refused BY NAME"
+S2TOOL="$SBTOOL_SAVE"; S2CALL="$SBCALL_SAVE"
+
+echo "== phase 99: S3 http_get — an allowed fetch returns real bytes; https / 3xx / non-http / IP literal / over-cap refused BY NAME"
+# The authority table for the gate's own fetch: localhost is TRUSTED (so the
+# ops seat allows it and the spawn runs); evil.example.com is BLOCKED (D3).
+# The endpoint is a local HTTP server on 127.0.0.1; the url names localhost,
+# which getaddrinfo resolves to the loopback the server binds.
+HG="$TMP/s3-http"
+mkdir -p "$HG"
+cat > "$HG/responses.py" <<'PY'
+import socket, sys
+MODE, PORTF, BODYF = sys.argv[1], sys.argv[2], sys.argv[3]
+BODY = open(BODYF, 'rb').read()
+HEAD = (b'HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n')
+REDIR = b'HTTP/1.0 302 Found\r\nLocation: http://elsewhere/\r\nConnection: close\r\n\r\n'
+CAP = HEAD + b'X' * (2 * 1024 * 1024)
+srv = socket.socket()
+srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+srv.bind(('127.0.0.1', 0))
+srv.listen(8)
+with open(PORTF, 'w') as f:
+    f.write(str(srv.getsockname()[1]))
+while True:
+    c, _ = srv.accept()
+    try:
+        c.settimeout(10)
+        c.recv(65536)
+        resp = {'clean': HEAD + BODY, 'redirect': REDIR, 'cap': CAP}[MODE]
+        c.sendall(resp)
+        c.shutdown(socket.SHUT_WR)
+        while c.recv(65536):
+            pass
+    except Exception:
+        pass
+    finally:
+        c.close()
+PY
+printf 'REAL-FETCH-BYTES-0f6b' > "$HG/body.txt"
+python3 "$HG/responses.py" clean "$HG/port-clean" "$HG/body.txt" &
+HG_CLEAN=$!
+PROXIES="$PROXIES $HG_CLEAN"
+python3 "$HG/responses.py" redirect "$HG/port-redir" "$HG/body.txt" &
+HG_REDIR=$!
+PROXIES="$PROXIES $HG_REDIR"
+python3 "$HG/responses.py" cap "$HG/port-cap" "$HG/body.txt" &
+HG_CAP=$!
+PROXIES="$PROXIES $HG_CAP"
+for pf in "$HG/port-clean" "$HG/port-redir" "$HG/port-cap"; do
+    for i in $(seq 1 100); do [ -s "$pf" ] && break; sleep 0.05; done
+    [ -s "$pf" ] || fail "phase 99: the http server never published its port ($pf)"
+done
+PORT_CLEAN=$(cat "$HG/port-clean"); PORT_REDIR=$(cat "$HG/port-redir"); PORT_CAP=$(cat "$HG/port-cap")
+cat > "$HG/hosts.tsv" <<TSV
+localhost	Trustedhost	no
+evil.example.com	Blockedhost	yes
+TSV
+s3_hostsdir "$HG/pdir" "$HG/hosts.tsv"
+# (a) an ALLOWED fetch returns real bytes (localhost is trusted, classed)
+s3_url_run "$GATE" allowed "$HG/pdir" "http://localhost:$PORT_CLEAN/x"
+[ "$S3_GUEST_RC" -eq 0 ] || { sed -n '1,10p' "$S3_ERR" >&2; fail "phase 99: the allowed run's guest rc=$S3_GUEST_RC"; }
+[ "$S3_RC" -eq 0 ] || fail "phase 99: the allowed run's proxy exited rc=$S3_RC"
+grep -q "host-execute call_id=" "$S3_ERR" \
+    || fail "phase 99: the allowed fetch was not executed"
+n=$(s3_out_n "$S3_DUMP" "'REAL-FETCH-BYTES-0f6b' in o")
+[ "$n" -ge 1 ] || { cat "$S3_DUMP" >&2; fail "phase 99: the fetched bytes did not reach the model"; }
+n=$(pyq "$S3_LOG" "len([r for r in rows if r.get('call_id')=='$S3CALL' and r.get('verdict')=='allowed' and r.get('exec')=='host' and 'REAL-FETCH-BYTES-0f6b' in (r.get('outcome') or '')])")
+[ "$n" -eq 1 ] || { grep -F "$S3CALL" "$S3_LOG" >&2; fail "phase 99: no allowed+exec=host row whose outcome is the fetched bytes"; }
+echo "   OK allowed: a trusted host fetches real bytes, substituted over the sentinel"
+# (b) https refused BY NAME (the binary's own refusal, as the call's result)
+s3_url_run "$GATE" https "$HG/pdir" "https://localhost:$PORT_CLEAN/x"
+[ "$S3_GUEST_RC" -eq 0 ] || { sed -n '1,10p' "$S3_ERR" >&2; fail "phase 99: the https run's guest rc=$S3_GUEST_RC"; }
+[ "$S3_RC" -eq 0 ] || fail "phase 99: the https run's proxy exited rc=$S3_RC"
+grep -q "host-execute call_id=" "$S3_ERR" \
+    || fail "phase 99: the https url was not executed (the binary must run and refuse)"
+n=$(s3_out_n "$S3_DUMP" "'uses https' in o")
+[ "$n" -ge 1 ] || { cat "$S3_DUMP" >&2; fail "phase 99: the https refusal did not reach the model"; }
+echo "   OK https: refused BY NAME (the binary carries it; no TLS stack)"
+# (c) 3xx never followed (refused BY NAME)
+s3_url_run "$GATE" redirect "$HG/pdir" "http://localhost:$PORT_REDIR/x"
+[ "$S3_GUEST_RC" -eq 0 ] || { sed -n '1,10p' "$S3_ERR" >&2; fail "phase 99: the redirect run's guest rc=$S3_GUEST_RC"; }
+[ "$S3_RC" -eq 0 ] || fail "phase 99: the redirect run's proxy exited rc=$S3_RC"
+grep -q "host-execute call_id=" "$S3_ERR" \
+    || fail "phase 99: the redirect was not executed (the binary must run and refuse)"
+n=$(s3_out_n "$S3_DUMP" "'a redirect' in o")
+[ "$n" -ge 1 ] || { cat "$S3_DUMP" >&2; fail "phase 99: the 3xx refusal did not reach the model"; }
+echo "   OK 3xx: a redirect is refused BY NAME, never followed"
+# (d) non-http scheme refused BY NAME
+s3_url_run "$GATE" nonhttp "$HG/pdir" "ftp://localhost:$PORT_CLEAN/x"
+[ "$S3_GUEST_RC" -eq 0 ] || { sed -n '1,10p' "$S3_ERR" >&2; fail "phase 99: the non-http run's guest rc=$S3_GUEST_RC"; }
+[ "$S3_RC" -eq 0 ] || fail "phase 99: the non-http run's proxy exited rc=$S3_RC"
+grep -q "host-execute call_id=" "$S3_ERR" \
+    || fail "phase 99: the non-http url was not executed (the binary must run and refuse)"
+n=$(s3_out_n "$S3_DUMP" "'unsupported URL scheme' in o")
+[ "$n" -ge 1 ] || { cat "$S3_DUMP" >&2; fail "phase 99: the non-http refusal did not reach the model"; }
+echo "   OK non-http: refused BY NAME (only the http scheme is spoken)"
+# (e) IP literal refused — unclassable BY CONSTRUCTION (the authority 127.0.0.1
+# matches NO host row, so the totality check refuses it unclassed-arg)
+s3_url_run "$GATE" ipliteral "$HG/pdir" "http://127.0.0.1:$PORT_CLEAN/x"
+[ "$S3_GUEST_RC" -eq 0 ] || { sed -n '1,10p' "$S3_ERR" >&2; fail "phase 99: the IP-literal run's guest rc=$S3_GUEST_RC"; }
+[ "$S3_RC" -eq 0 ] || fail "phase 99: the IP-literal run's proxy exited rc=$S3_RC"
+grep -q "host-execute call_id=" "$S3_ERR" \
+    && fail "phase 99: the IP-literal url EXECUTED — it is unclassable and must be refused by the totality check"
+n=$(pyq "$S3_LOG" "len([r for r in rows if r.get('call_id')=='$S3CALL' and r.get('refusal_name')=='unclassed-arg' and not r.get('exec')])")
+[ "$n" -eq 1 ] || { grep -F "$S3CALL" "$S3_LOG" >&2; fail "phase 99: the IP literal was not refused unclassed-arg"; }
+n=$(s3_out_n "$S3_DUMP" "'unclassed-arg' in o")
+[ "$n" -ge 1 ] || { cat "$S3_DUMP" >&2; fail "phase 99: the IP-literal refusal did not reach the model"; }
+echo "   OK IP literal: refused unclassed-arg (unclassable by construction — no host row names an IP)"
+# (f) over-cap refused BY NAME (the binary's own body cap)
+s3_url_run "$GATE" overcap "$HG/pdir" "http://localhost:$PORT_CAP/x"
+[ "$S3_GUEST_RC" -eq 0 ] || { sed -n '1,10p' "$S3_ERR" >&2; fail "phase 99: the over-cap run's guest rc=$S3_GUEST_RC"; }
+[ "$S3_RC" -eq 0 ] || fail "phase 99: the over-cap run's proxy exited rc=$S3_RC"
+grep -q "host-execute call_id=" "$S3_ERR" \
+    || fail "phase 99: the over-cap fetch was not executed (the binary must run and refuse)"
+n=$(s3_out_n "$S3_DUMP" "'byte bound' in o")
+[ "$n" -ge 1 ] || { cat "$S3_DUMP" >&2; fail "phase 99: the over-cap refusal did not reach the model"; }
+n=$(s3_out_n "$S3_DUMP" "len(o) > 4096")
+[ "$n" -eq 0 ] || fail "phase 99: a huge body crossed — the binary's cap truncated instead of refusing"
+echo "   OK over-cap: a response over the binary's bound is REFUSED BY NAME, never dropped"
+
+echo "== phase 100: S3 POLICY PARITY OF MECHANISM — the SAME call denied through EACH author, host-executed"
+# The pragmatic test: a policy that would deny a guest verb must deny the same
+# call when host-executed — through the SAME call_judge, the SAME authors, the
+# SAME order, the SAME denial path and row shape.  No executor-specific hook.
+# (a) the --deny placeholder denies http_get exactly as it denies a guest verb
+s3_url_run "$GATE" denylist "$HG/pdir" "http://localhost:$PORT_CLEAN/x" --deny http_get
+[ "$S3_GUEST_RC" -eq 0 ] || { sed -n '1,10p' "$S3_ERR" >&2; fail "phase 100: the denylist run's guest rc=$S3_GUEST_RC"; }
+[ "$S3_RC" -eq 0 ] || fail "phase 100: the denylist run's proxy exited rc=$S3_RC"
+grep -q "host-execute call_id=" "$S3_ERR" \
+    && fail "phase 100: --deny http_get still EXECUTED the call — the denylist author did not deny it"
+n=$(pyq "$S3_LOG" "len([r for r in rows if r.get('call_id')=='$S3CALL' and r.get('verdict')=='denied' and r.get('author')=='denylist' and r.get('refusal_name')=='denied-by-denylist' and not r.get('exec')])")
+[ "$n" -eq 1 ] || { grep -F "$S3CALL" "$S3_LOG" >&2; fail "phase 100: no ordinary denylist denial row for http_get"; }
+n=$(s3_out_n "$S3_DUMP" "o.startswith('(denied by host policy:')")
+[ "$n" -ge 1 ] || { cat "$S3_DUMP" >&2; fail "phase 100: the denylist denial did not reach the model"; }
+echo "   OK denylist: --deny http_get is the ordinary denylist denial (same path, same row shape)"
+# (b) the operator's classing/totality on arg_key: a PROTECTED host is denied by
+# D3 (the SAME rule that denies a protected guest write path)
+s3_url_run "$GATE" protected "$HG/pdir" "http://evil.example.com/x"
+[ "$S3_GUEST_RC" -eq 0 ] || { sed -n '1,10p' "$S3_ERR" >&2; fail "phase 100: the protected run's guest rc=$S3_GUEST_RC"; }
+[ "$S3_RC" -eq 0 ] || fail "phase 100: the protected run's proxy exited rc=$S3_RC"
+grep -q "host-execute call_id=" "$S3_ERR" \
+    && fail "phase 100: the protected host EXECUTED — D3 did not deny it"
+n=$(pyq "$S3_LOG" "len([r for r in rows if r.get('call_id')=='$S3CALL' and r.get('verdict')=='denied' and r.get('author')=='ops' and r.get('refusal_name')=='denied-by-ops' and 'rule D3' in (r.get('reason') or '') and not r.get('exec')])")
+[ "$n" -eq 1 ] || { grep -F "$S3CALL" "$S3_LOG" >&2; fail "phase 100: no D3 denial row for the protected host"; }
+echo "   OK ops: a protected host is denied by the SAME D3 rule (author=ops, denied-by-ops, rule D3 named)"
+# (c) the totality check on arg_key: an UNCLASSED host is refused unclassed-arg
+s3_url_run "$GATE" unclassed "$HG/pdir" "http://unclassed.example.com/x"
+[ "$S3_GUEST_RC" -eq 0 ] || { sed -n '1,10p' "$S3_ERR" >&2; fail "phase 100: the unclassed run's guest rc=$S3_GUEST_RC"; }
+[ "$S3_RC" -eq 0 ] || fail "phase 100: the unclassed run's proxy exited rc=$S3_RC"
+grep -q "host-execute call_id=" "$S3_ERR" \
+    && fail "phase 100: the unclassed host EXECUTED — the totality check did not refuse it"
+n=$(pyq "$S3_LOG" "len([r for r in rows if r.get('call_id')=='$S3CALL' and r.get('refusal_name')=='unclassed-arg' and not r.get('exec')])")
+[ "$n" -eq 1 ] || { grep -F "$S3CALL" "$S3_LOG" >&2; fail "phase 100: no unclassed-arg refusal for the unclassed host"; }
+echo "   OK totality: an unclassed host is refused unclassed-arg (the same totality as host_cat's path)"
+# (d) the justification author: absent justification is denied by name (the same
+# P5 check a guest verb gets)
+s3_url_run "$GATE" nojust "$HG/pdir" "http://localhost:$PORT_CLEAN/x" --require-justification
+[ "$S3_GUEST_RC" -eq 0 ] || { sed -n '1,10p' "$S3_ERR" >&2; fail "phase 100: the no-justification run's guest rc=$S3_GUEST_RC"; }
+[ "$S3_RC" -eq 0 ] || fail "phase 100: the no-justification run's proxy exited rc=$S3_RC"
+grep -q "host-execute call_id=" "$S3_ERR" \
+    && fail "phase 100: the unjustified http_get EXECUTED — the justification author did not deny it"
+n=$(pyq "$S3_LOG" "len([r for r in rows if r.get('call_id')=='$S3CALL' and r.get('verdict')=='denied' and r.get('author')=='justification' and r.get('refusal_name')=='absent-justification' and not r.get('exec')])")
+[ "$n" -eq 1 ] || { grep -F "$S3CALL" "$S3_LOG" >&2; fail "phase 100: no absent-justification denial for http_get"; }
+echo "   OK justification: --require-justification denies http_get (absent-justification) — the same P5 check"
+# (e) the claim author: an armed claim seat fails CLOSED on an unmapped host tool
+# (http_get has no calls-verbs row, so its justification cannot be judged — the
+# ordinary claim denial path).  This is the SAME mechanism a guest verb gets.
+s3_url_run "$GATE" claim "$HG/pdir" "http://localhost:$PORT_CLEAN/x" --calls-policy-dir "$CALLS_DIR"
+[ "$S3_GUEST_RC" -eq 0 ] || { sed -n '1,10p' "$S3_ERR" >&2; fail "phase 100: the claim run's guest rc=$S3_GUEST_RC"; }
+[ "$S3_RC" -eq 0 ] || fail "phase 100: the claim run's proxy exited rc=$S3_RC"
+grep -q "host-execute call_id=" "$S3_ERR" \
+    && fail "phase 100: the claim-denied http_get EXECUTED"
+n=$(pyq "$S3_LOG" "len([r for r in rows if r.get('call_id')=='$S3CALL' and r.get('verdict')=='denied' and r.get('author')=='claim' and r.get('refusal_name')=='denied-by-claim' and not r.get('exec')])")
+[ "$n" -eq 1 ] || { grep -F "$S3CALL" "$S3_LOG" >&2; fail "phase 100: no claim denial for http_get"; }
+echo "   OK claim: an armed claim seat denies http_get (denied-by-claim, fail-closed on the unmapped verb) — the same path a guest verb takes"
+# (f) THE ASYMMETRY — the PRE-FIX CONTROL (FH_MUTANT_NO_OPS_SEAT) denies NOTHING
+# where the real build denies the protected host by D3.
+s3_url_run "$GATENOOPS" noops "$HG/pdir" "http://evil.example.com/x"
+[ "$S3_GUEST_RC" -eq 0 ] || { sed -n '1,10p' "$S3_ERR" >&2; fail "phase 100: the control's guest rc=$S3_GUEST_RC"; }
+[ "$S3_RC" -eq 0 ] || fail "phase 100: the control exited rc=$S3_RC"
+grep -q "host-execute call_id=" "$S3_ERR" \
+    || fail "phase 100: the NO_OPS_SEAT control did NOT execute the protected host — the arm is vacuous"
+n=$(pyq "$S3_LOG" "len([r for r in rows if r.get('call_id')=='$S3CALL' and r.get('exec')=='host'])")
+[ "$n" -ge 1 ] || fail "phase 100: the control's log carries no exec=host row"
+echo "   OK asymmetry: with the ops author compiled out, the SAME protected-host call EXECUTES — the denial is the seat's, not the fixture's"
 
 # ── THE PASS ECHO, with the LIVE observation folded in (P10-fix 5) ────────
 echo "PASS hostgate: the transparent proxy is stream-transparent (arm == control) and a mangling proxy is caught; the per-turn open/close mechanics hold through one proxy process; the one log JOINS every answered call by call_id and REPORTS every call it could not join; a join compiled out flips the pass by content; every model-controlled free-text field arrives MARKED while the join key renders verbatim; the DECODE GATE holds the channel invariant for a denied call (the true name never crosses) in the presence of interleaves, duplicate/never-opened dones, open-at-completed items and over-cap streams, with a pinned pre-fix control for each; the RESERVED NAME is a CHECKED property (it passes the guest's charset, collides with no verb of a catalog pinned by sha256 and cross-checked against the verbs server's own table, and the proxy REFUSES TO START on a collision — while the same source with the check compiled out starts and DISPATCHES the colliding name: the silent allow); and the JUSTIFICATION is required in the injected tools schema, judged on the argument accumulator the guest actually dispatches (a done-args-only judge is pinned and caught), denied BY NAME through the existing substitution on the outbound leg, and REPORTED BY A DENIAL-RATE INSTRUMENT whose own compiled-out mutant leaves the dead-agent shape invisible; and THE OPERATOR IS A REAL AUTHOR AT THIS SEAT (P6: the pinned ops policy, its PINS check, its alias table with the TWO-FORM grammar re-run here, and its per-call fact injection with the path canonicalized before matching) with the D1/D2 split NAMED in the startup line — D1 evaluated here, D2 and the compiled-in FLOOR enforced IN-GUEST ONLY because this seat can see neither — the D2 bound ASSERTED in both directions, the ALLOWED row carrying its own seat-scoped allow_scope qualifier (so a durable record cannot read as a permission the seat never grants) with the LOADED-BUT-INERT branch pinned by its own D2-only arm, and the seat's three failure directions each pinned against a control of the SAME source (fail-open when the seat is compiled out, over-deny when it binds the floor it cannot see, silent allow when it matches the raw path); and THE CLAIM AUTHOR AT THIS SEAT (P7) pins the file that COMPUTES every verdict (a swapped always-derives eval_calls.py is REFUSED at startup, while the same source with the evaluator exempt from the pin arms and lets the forbidden call CROSS and EXECUTE), BOUNDS the per-call evaluator (a hung one becomes a RECORDED refusal with its row written, while the same source with no deadline HANGS and writes NOTHING — the dead-agent instrument's blind spot), and refuses a folded verb-SYMBOL mapped by TWO runtime verbs at both check sites (--check-verbs and the seat's loader), so no shared symbol can let one contention justify two runtime verbs; and the ONE LOG SURVIVES A KILL/RESTART (the load is a gate: a corrupt log refuses LOUDLY and is left untouched) with its second role as the JOIN STATE rebuilt from it — a pre-restart denial is restored and substituted on the frame the model sees — while the SAME source with the load compiled out WIPES the record and leaves the denial un-restored, the replay is IDEMPOTENT (same bytes twice, and load->flush reproduces the carried lines exactly), and a REAL RESUMED GUEST RUN gets the true name and the reason back on the outbound leg; and the FIVE SHOULD-FIXES THE P8 REVIEW FOUND ARE CLOSED, each against its own PRE-FIX CONTROL of the SAME source: a crafted-but-valid DENIED row can no longer drive the outbound leg unbounded (the loader applies the writer's bound at LOAD, so a 1 MB denial_text is restored as 512 MARKED bytes, while the control emits the reviewer's 1,048,576 and a call_id longer than the wire could carry is refused); the seat writes ONE ROW PER call_id (a re-serve is a repeat, not a second call — no phantom UNRESOLVED at any exit, phase 59's own log holding 1 row for its one guest-side call — the control inflating it and reporting the phantom), with the LOADER matching the writer by REFUSING a duplicate row; the LOAD is LINEAR rather than quadratic (100,000 rows in well under a 20 s bound where the pre-fix binary measured 89.7 s) and the over-cap refusal names a way out the gate RUNS — the DENIED-row compaction, whose rebuilt map still holds every denial; --log is REFUSED AT THE DOOR unless it is a regular file this seat owns (a FIFO that hung the pre-fix shape silently under a bounded control, a device node a flush would have renamed over, a symlink that would have split the record, a directory, all loud before anything is served or written); and a CARRIED row keeps the reading it was written with (its own allow_scope, byte-for-byte, where the control REWORDS it to claim a seat that judged nothing), while the turn field is validated as a whole non-negative number and the CRLF normalization is announced instead of silent; and the LIVE LANE'S LIVENESS SIGNALLING is closed (P10-fix), so the availability half of 'never a silent green' is enforced too: a REACHABLE-BUT-BROKEN response — no header block at all, an LF-only or non-HTTP status line, a Content-Length the socket does not honour, a chunked body with no well-formed zero chunk, or a body past the DOCUMENTED 32 MiB cap — is a LOUD NAMED failure (rc=1) where the pre-fix shape ended rc=0 with the bytes (or the whole header block) served to a guest that reads EOF as a FINISH, while a clean close-delimited 200 still passes; the HTTP HEADER BLOCK is never served as the body (the raw stream the guest reads begins with the BODY's own bytes, captured from the device); a credential embedded in the endpoint URL is never printed (userinfo refused by name and shown as <redacted>@, a query shown as ?<redacted>, and a CR/LF in the URL or the key refused before it could be sent); and the live arm's own observation rides in this echo, so an arm whose model made no call cannot read as an arm that proved something. $LIVE_STATUS; a HOST-TOOL call is an ORDINARY function_call (the SAME judge, the SAME denial path) and only the ALLOWED path dispatches it to the compiled-in host registry, whose result reaches the model through the EXISTING outbound substitution keyed on call_id (the pinned pre-S1 proxy crosses the SENTINEL instead); a host tool that collides with a guest verb is REFUSED at startup; and the executor compiled out is caught on the wire as SILENT DEGRADATION (S1 does NOT yet exercise argument judgement — host_time takes no arguments); the exec map is rebuilt across a restart and one call_id is executed at most ONCE; and an executed host call whose substitution never fires is REPORTED as an unresolved-substitution row; and a POLICY FLIP ACROSS A RESUME cannot break the record or lie to the model (S1-fix): a row refreshed to DENIED drops its execution reading and the exec-map key, so the seat still LOADS what its own two runs wrote, a carried DENIED verdict BINDS THE EXECUTOR rather than only the row, a crafted verdict-less exec row is REFUSED at startup, and ONE UNARMED arm witnesses the fail-closed gate instead of assuming it; and S2 THE JUDGED ARGUMENTS + THE TOTALITY CHECK: host_cat(path) is a BOUNDED host-file read (over-cap is REFUSED, never truncated), its path is judged by the operator's alias table through the hosttool(W) bridge (D3 denies a PROTECTED class while every guest-verb arm stays byte-identical), an UNCLASSED path is REFUSED BY NAME (unclassed-arg) with nothing executed, and the two mutation blinds flip exactly their arms — FH_MUTANT_OPS_NO_CLASS (the plan's risk #1 made concrete: the protected AND unclassed paths EXECUTE) and FH_MUTANT_OPS_NO_CANON now gating HOST paths (a ../-spelling reaches the executor and reads the protected file in the mutant, is denied on the canonical path in the real build) — proving the ONE normaliser (fh_canon_abs) is shared by the classifying and executing sides; S2-FIX: the totality check NO LONGER vanishes with the seat — a classed host call under a denylist-only OR loaded-but-inert seat is REFUSED BY NAME (unarmed-ops, where the seat-compiled-out control EXECUTES it and hands the model a protected file), the executor opens O_NOFOLLOW|O_NONBLOCK and refuses anything non-regular BY NAME (a data-classed symlink reads the protected target in the no-plainfile control; a FIFO no longer hangs the lane), NUL content is refused instead of silently cut, the judge extracts the registry's arg_key (the hardcoded-key control denies host_time where the real build allows it, and a table entry that reads with no classed key REFUSES TO START), and the model-chosen path is bounded so no result exceeds the record's cap"

@@ -1083,7 +1083,7 @@ s4.wait(timeout=5)
 import hashlib
 
 POL_SRC = os.path.join(os.getcwd(), "policy", "ops")
-POL_FILES = ("ops-policy.dl", "ops-aliases.tsv", "ops-lexicon.ini", "PINS")
+POL_FILES = ("ops-policy.dl", "ops-aliases.tsv", "ops-lexicon.ini", "ops-hosts.tsv", "PINS")
 REPO_DL_SHA = [l.split("\t")[1].strip()
                for l in open(os.path.join(POL_SRC, "PINS")).read().splitlines()
                if l.startswith("ops-policy.dl\t")][0]

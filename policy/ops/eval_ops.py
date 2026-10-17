@@ -301,6 +301,84 @@ def _check_aliases(args) -> None:
               f"\tcoverage={coverage}\t{pattern}")
 
 
+# ── S3: the authority table (ops-hosts.tsv) ───────────────────────────────
+def _check_hosts(args) -> None:
+    """Validate the pinned AUTHORITY table against the lexicon: every row's
+    argclass is declared with sort `argclass`, the protected flag is yes/no,
+    and the HOST pattern is one of the two stated forms (an EXACT host with
+    no glob characters, or a '*.suffix' that covers exactly one label under
+    the suffix).  Any other shape has unstated coverage and is refused."""
+    lexicon = _load_lexicon(args.policy_lexicon)
+    argclass_names = {
+        n.lower() for n, s in lexicon.names.items() if s == "argclass"
+    }
+    seen: dict[str, str] = {}
+    rows = []
+    for lineno, line in enumerate(_read(args.hosts, "host table").splitlines(), 1):
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        fields = line.split("\t")
+        if len(fields) != 3 or not all(f.strip() for f in fields):
+            _tool_error(
+                f"{args.hosts}:{lineno}: a host row is "
+                "pattern<TAB>argclass<TAB>protected "
+                f"({len(fields)} field(s): {line!r})"
+            )
+        pattern, argclass, protected = (f.strip() for f in fields)
+        if argclass.lower() not in argclass_names:
+            _refuse(
+                "host-foreign-sort",
+                f"{args.hosts}:{lineno}: the argclass '{argclass}' is not "
+                "declared in the lexicon's [names] with sort 'argclass'",
+            )
+        if protected not in ("yes", "no"):
+            _refuse(
+                "host-protected-flag",
+                f"{args.hosts}:{lineno}: the protected flag is "
+                f"'{protected}', not 'yes' or 'no'",
+            )
+        if not pattern or any(c in pattern for c in "?["):
+            _refuse(
+                "host-ambiguous-pattern",
+                f"{args.hosts}:{lineno}: the pattern '{pattern}' is neither "
+                "of the two stated shapes -- an EXACT host or a '*.suffix'",
+            )
+        if pattern.startswith("*"):
+            if not pattern.startswith("*.") or len(pattern) < 3 \
+                    or "*" in pattern[1:]:
+                _refuse(
+                    "host-ambiguous-pattern",
+                    f"{args.hosts}:{lineno}: the pattern '{pattern}' is not "
+                    "the stated '*.suffix' form (a '*' only as the first of "
+                    "two leading chars, then one label and a suffix)",
+                )
+        elif "*" in pattern:
+            _refuse(
+                "host-ambiguous-pattern",
+                f"{args.hosts}:{lineno}: the pattern '{pattern}' has a '*' "
+                "not in the leading '*.suffix' position",
+            )
+        coverage = "suffix" if pattern.startswith("*.") else "exact"
+        if pattern in seen:
+            _refuse(
+                "host-duplicate",
+                f"{args.hosts}:{lineno}: the host pattern '{pattern}' is "
+                f"already mapped on line {seen[pattern]}",
+            )
+        seen[pattern] = str(lineno)
+        rows.append((pattern, argclass, protected, coverage))
+    if not rows:
+        _refuse(
+            "host-table-empty",
+            f"{args.hosts}: the authority table carries no rows -- every url "
+            "would be unclassified",
+        )
+    print(f"# fx-ops: host table OK -- {args.hosts} ({len(rows)} row(s))")
+    for pattern, argclass, protected, coverage in rows:
+        print(f"host\t{pattern}\t{argclass.lower()}\tprotected={protected}"
+              f"\tcoverage={coverage}")
+
+
 # ── the two-author boundary instrument ────────────────────────────────────
 def _compile_sentence(args) -> None:
     lexicon = _load_lexicon(args.policy_lexicon)
@@ -333,22 +411,28 @@ def main(argv=None) -> int:
     parser.add_argument("--check-aliases", action="store_true",
                         help="validate the pinned alias table and exit")
     parser.add_argument("--aliases")
+    parser.add_argument("--check-hosts", action="store_true",
+                        help="validate the pinned authority table and exit")
+    parser.add_argument("--hosts")
     parser.add_argument("--compile-sentence", action="store_true",
                         help="compile one LE sentence against the lexicon")
     parser.add_argument("--sentence")
     args = parser.parse_args(argv)
 
     modes = [bool(args.compile_policy), bool(args.check_aliases),
-             bool(args.compile_sentence)]
+             bool(args.check_hosts), bool(args.compile_sentence)]
     if sum(modes) != 1:
         _tool_error("exactly one of --compile-policy, --check-aliases, "
-                    "--compile-sentence is required")
+                    "--check-hosts, --compile-sentence is required")
     if args.compile_policy:
         needed = [("--policy-lexicon", args.policy_lexicon),
                   ("--policy-le", args.policy_le)]
     elif args.check_aliases:
         needed = [("--policy-lexicon", args.policy_lexicon),
                   ("--aliases", args.aliases)]
+    elif args.check_hosts:
+        needed = [("--policy-lexicon", args.policy_lexicon),
+                  ("--hosts", args.hosts)]
     else:
         needed = [("--policy-lexicon", args.policy_lexicon),
                   ("--sentence", args.sentence)]
@@ -360,6 +444,9 @@ def main(argv=None) -> int:
         return 0
     if args.check_aliases:
         _check_aliases(args)
+        return 0
+    if args.check_hosts:
+        _check_hosts(args)
         return 0
     _compile_sentence(args)
     return 0

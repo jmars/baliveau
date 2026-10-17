@@ -368,12 +368,12 @@ echo "stage-guest: chardev.sse = $FIXTURE with $NSUB occurrence(s) of \"hello\" 
 # mode 444: /usr/fx-agent is in NO writable set, and the mode restates it.
 POLICYDIR="$ROOTDIR/usr/fx-agent/policy"
 mkdir -p "$POLICYDIR" || fail "cannot create $POLICYDIR"
-for pf in ops-policy.dl ops-aliases.tsv ops-lexicon.ini PINS; do
+for pf in ops-policy.dl ops-aliases.tsv ops-lexicon.ini ops-hosts.tsv PINS; do
     [ -f "$REPO/policy/ops/$pf" ] || fail "policy/ops/$pf missing (the pinned set is incomplete)"
     cp "$REPO/policy/ops/$pf" "$POLICYDIR/$pf" || fail "cannot stage policy/ops/$pf"
     chmod 444 "$POLICYDIR/$pf"
 done
-echo "stage-guest: policy -> $POLICYDIR (ops-policy.dl, ops-aliases.tsv, ops-lexicon.ini, PINS)"
+echo "stage-guest: policy -> $POLICYDIR (ops-policy.dl, ops-aliases.tsv, ops-lexicon.ini, ops-hosts.tsv, PINS)"
 
 # ─── the fx-init SERVICE configs ─────────────────────────────────────────
 # Shape copied from fx-init/m3/config-console.dhall (the PROVEN console-service

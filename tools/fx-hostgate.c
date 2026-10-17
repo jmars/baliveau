@@ -2503,217 +2503,108 @@ static int fh_catalog_nth(size_t idx, char *buf, size_t cap) {
  * or the pin check refuses — the refusal names both shas). */
 #ifndef FH_HOSTTOOL_SHA256
 #define FH_HOSTTOOL_SHA256 \
-    "06b64025cc9d7f6435e35e931c84dcae6eaf646a930218c7bdca953e8d44c55a"
+    "7e34902eed13322afca835373b00a5774d617f01edf7b22d287ed5c425e93f3c"
 #endif
 
-/* THE EXECUTORS.  host_time reads NO argument (its exec ignores the path);
- * host_cat is the FIRST CLASSED TOOL — its `path` argument is the classed
- * dimension judged by the operator's alias table (D3), and the executor opens
- * EXACTLY the canonical spelling the judge classified (the normaliser crux).
- * Both return malloc'd results. */
-static char *host_exec_time(const char *path) {
-    (void)path;
-    char clock[40];
-    now_ts(clock, sizeof clock);
-    const char *tail =
-        " (host_time: the HOST's wall clock, UTC; executed on the host side of "
-        "the chardev, not in the guest)";
-    char *s = xmalloc(strlen(clock) + strlen(tail) + 1);
-    snprintf(s, strlen(clock) + strlen(tail) + 1, "%s%s", clock, tail);
-    return s;
-}
-
-/* THE CONTENT BOUND — the wrapped result must fit the record's FH_BOUND
- * (512-byte) outcome cap, or the record and the wire disagree: "refuse rather
- * than truncate" means refusing the READ, never truncating the RECORD.  A
- * file longer than this bound is REFUSED (over-cap) — never read partially. */
-#define FH_HOST_CAT_MAX 256u
-
-/* S2-FIX 6: THE PATH BOUND.  The `path` argument is MODEL-CHOSEN and every
- * result/refusal string embeds it, so the content bound alone did NOT make
- * "always fits FH_BOUND" true — MEASURED by the S2 review: a 700-character
- * classed path produced 777 bytes on the wire while the record rendered 512
- * with a truncation marker (marked, but a record that disagrees with the wire
- * the outbound leg mirrors).  "(%s: %s)" overhead is 13 bytes and the path
- * appears once, so 200 + 256 + 13 = 469 <= 512, with room for the longest
- * refusal tail.  An over-long path is REFUSED BY NAME with a LENGTH-ONLY
- * message — embedding it would re-create the very overrun being refused.
- * STATED, not fixed: an over-long path in a JUDGE-side denial reason is the
- * denial leg's own shape (reason is built in a fixed buffer and the record
- * bounds it at write with a marker); this bound is the host RESULT's. */
-#define FH_HOST_PATH_MAX 200u
-
-/* THE "NOT A PLAIN FILE" REFUSAL, named once — shared by the two ways the
- * executor can meet a non-regular object: the OPEN refused it (O_NOFOLLOW on a
- * final-component symlink returns ELOOP) and the TYPE check refused it (a
- * FIFO, device or directory opens and is then refused before any read).
- * Naming the class, not just the errno, is the point: "Too many levels of
- * symbolic links" tells a reader what the kernel did, not what the seat
- * decided. */
-static char *host_cat_not_plain(const char *path) {
-    char *s = xmalloc(strlen(path) + 352);
-    snprintf(s, strlen(path) + 352,
-             "(host_cat: REFUSED to read %s: not a plain file — host_cat "
-             "reads regular files only, so a symlink, FIFO, device or "
-             "directory is refused BY NAME (the class governs the "
-             "spelling; the spelling's resolution must not reach outside "
-             "it)", path);
-    return s;
-}
-
-static char *host_exec_cat(const char *path) {
-    if (!path) {
-        return xstrdup("(host_cat: REFUSED — no canonical path was handed to "
-                       "the executor; this cannot happen on the judged path)");
-    }
-    size_t plen = strlen(path);
-    if (plen > FH_HOST_PATH_MAX) {
-        char *s = xmalloc(320);
-        snprintf(s, 320,
-                 "(host_cat: REFUSED — the canonical path is %zu bytes, over "
-                 "the %u-byte path bound: the result must fit the record's "
-                 "%u-byte outcome cap, so an over-long path is refused rather "
-                 "than truncated (the path is not echoed here for the same "
-                 "reason)", plen, FH_HOST_PATH_MAX, (unsigned)FH_BOUND);
-        return s;
-    }
-#ifdef FH_MUTANT_NO_PLAINFILE
-    /* S2-FIX MUTATION BLIND (build/fx-hostgate-noplainfile): the pre-fix
-     * executor — a plain O_RDONLY open, no O_NOFOLLOW and no file-type check,
-     * exactly as S2 shipped it.  A data-classed SYMLINK to a protected file
-     * then reads the PROTECTED content (the class governs the spelling, the
-     * kernel resolves the link) and a FIFO BLOCKS the whole lane.  The gate's
-     * arms require this build to reach the protected content where the real
-     * build refuses. */
-    int fd = open(path, O_RDONLY);
-#else
-    /* S2-FIX 2+3: THE CLASS GOVERNS THE SPELLING; THE OPEN FOLLOWS THE KERNEL.
-     * The judge classifies a canonical path NAME; what the kernel then opens
-     * is that name's RESOLUTION.  O_NOFOLLOW refuses a final-component
-     * symlink (the reproduced reach: a data-classed link reading a protected
-     * object), and O_NONBLOCK + the S_ISREG check below refuse every
-     * non-regular object BY NAME before any read — a writerless FIFO
-     * otherwise BLOCKS the whole single-lane proxy with no deadline anywhere
-     * around this executor (the S2 review's rc=124 hang), and a device node
-     * with a blocking read does the same.
-     * STATED RESIDUALS, NOT FIXED: (a) an INTERMEDIATE-directory symlink
-     * (a classed dir that is itself a link to /etc) needs
-     * openat2(RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS) or a /proc/self/fd
-     * re-canonicalization, which are kernel-version-dependent; (b) a HARDLINK
-     * cannot be refused by spelling at all — a hardlink IS a regular file at
-     * the classed name, so the operator's data-class grant means "I trust
-     * what these NAMES resolve to", and dir-level trust is transitive over
-     * hardlinks; (c) a REGULAR file whose backing store hangs (a dead network
-     * mount) would still block this lane — there is no deadline around the
-     * executor, and this fix does not add one (the S2 review's finding 3
-     * named the FIFO/device class, which IS closed here).  The gate pins (b)
-     * as a named residual. */
-    int fd = open(path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW);
+/* THE DECLARED PROGRAMS.  A host tool's executor is NOT a compiled-in
+ * function — it is a DECLARED PROGRAM (command + args in this ONE table),
+ * spawned per call by host_exec below with the mcp_client.c discipline
+ * (fork + execvpe with a SCRUBBED env — never system() — pipes, an explicit
+ * DEADLINE and an explicit OUTPUT CAP), and the call's arguments go ON STDIN
+ * AS JSON, NEVER interpolated into the command line.  host_time reads no
+ * argument; host_cat's `path` and http_get's `url` are the classed
+ * dimensions judged by the operator (D3), so each declares its arg_key.
+ *
+ * THE COST, STATED (the brief's instruction): "run a declared program" is a
+ * MUCH LARGER lever than "the proxy does a GET", and on the host there is no
+ * VM to bound it.  What restrains a host tool is: the registry being
+ * operator-authored and PINNED, the SCRUBBED env, the per-call DEADLINE, the
+ * OUTPUT CAP, and the ONE LOG — not the executor's own narrowness.  A
+ * hostile or buggy program can do anything the host user can; the gate keeps
+ * that lever PINNED, BOUNDED and VISIBLE, not narrow.
+ *
+ * THE SANDBOX SEAT (deliberately NOT built — the user: "later, we can use
+ * palisade to add some sandboxing on the host tool calls"): the spawn in
+ * host_exec is the ONE place a future sandbox attaches.  No speculative
+ * abstraction, no half-built hook — just this comment marking the seat.
+ *
+ * PROGRAM RESOLUTION: each `program` is a NAME (e.g. "fx-http-get").  The
+ * child is spawned with a PATH-only env (the mcp_client discipline — the
+ * daemon's full environ never crosses, so no secret leaks) whose PATH is the
+ * proxy's own executable directory, so the pinned registry never hardcodes a
+ * build path and the binaries travel next to the proxy.
+ *
+ * THE PROGRAM CONTRACT (stdin -> stdout), minimal and pinned by the gate:
+ *   stdin   the call's arguments AS JSON, verbatim;
+ *   stdout  the RESULT (refusals ARE the result, exit 0);
+ *   exit != 0 a hard parse error -> the SPAWN renders a named refusal.
+ */
+#ifndef FH_HOSTTOOL_DEADLINE_MS
+#define FH_HOSTTOOL_DEADLINE_MS 60000u /* per-call spawn deadline (60s) */
 #endif
-    if (fd < 0) {
-#ifndef FH_MUTANT_NO_PLAINFILE
-        /* O_NOFOLLOW on a final-component symlink fails HERE, with ELOOP —
-         * name the class rather than the kernel's phrasing. */
-        if (errno == ELOOP) return host_cat_not_plain(path);
+#ifndef FH_HOSTTOOL_OUT_CAP
+#define FH_HOSTTOOL_OUT_CAP 512u       /* per-call stdout cap — MUST equal the
+                                        * record's FH_BOUND, so the result the
+                                        * spawn delivers and the outcome the
+                                        * record writes are the SAME bytes
+                                        * (the S2-fix record/wire agreement:
+                                        * a spawn that let more through would
+                                        * truncate the record behind the wire) */
 #endif
-        char *s = xmalloc(strlen(path) + 128);
-        snprintf(s, strlen(path) + 128,
-                 "(host_cat: REFUSED to read %s: %s)", path, strerror(errno));
-        return s;
-    }
-#ifndef FH_MUTANT_NO_PLAINFILE
-    /* THE FILE-TYPE CHECK — what makes a FIFO/device a REFUSAL rather than a
-     * block (O_NONBLOCK alone turns a writerless FIFO into an empty read, and
-     * the model would be told the file was empty).  fstat on the OPENED
-     * descriptor, never the path: the type being judged is the type that was
-     * opened. */
-    struct stat st;
-    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
-        close(fd);
-        return host_cat_not_plain(path);
-    }
-#endif /* !FH_MUTANT_NO_PLAINFILE */
-    char *buf = xmalloc(FH_HOST_CAT_MAX + 2);
-    size_t total = 0;
-    for (;;) {
-        ssize_t n = read(fd, buf + total, FH_HOST_CAT_MAX + 1 - total);
-        if (n < 0) {
-            if (errno == EINTR) continue;
-            close(fd);
-            free(buf);
-            char *s = xmalloc(strlen(path) + 128);
-            snprintf(s, strlen(path) + 128,
-                     "(host_cat: REFUSED to read %s: %s)", path, strerror(errno));
-            return s;
-        }
-        if (n == 0) break;
-        total += (size_t)n;
-        if (total > FH_HOST_CAT_MAX) {
-            close(fd);
-            free(buf);
-            char *s = xmalloc(strlen(path) + 128);
-            snprintf(s, strlen(path) + 128,
-                     "(host_cat: REFUSED to read %s: the file exceeds the "
-                     "%u-byte bound — refuse, never truncate)",
-                     path, FH_HOST_CAT_MAX);
-            return s;
-        }
-    }
-    close(fd);
-    /* S2-FIX 5: NUL CONTENT IS REFUSED, NEVER TRUNCATED.  The result is
-     * rendered with %s, which stops at the first NUL: a file holding
-     * "HELLO\0SECRET-TAIL" used to reach the model as "HELLO" with NO marker
-     * — "refuse, never truncate" violated for every binary file (a db, a
-     * cert, a compressed blob).  Refuse BY NAME instead. */
-    if (memchr(buf, '\0', total)) {
-        free(buf);
-        char *s = xmalloc(strlen(path) + 320);
-        snprintf(s, strlen(path) + 320,
-                 "(host_cat: REFUSED to read %s: the content contains NUL "
-                 "bytes (it is not text) — refuse, never silently truncate "
-                 "the bytes after the first NUL", path);
-        return s;
-    }
-    buf[total] = '\0';
-    char *s = xmalloc(strlen(path) + total + 32);
-    snprintf(s, strlen(path) + total + 32, "(host_cat: %s: %s)", path, buf);
-    free(buf);
-    return s;
-}
 
 struct host_tool {
     const char *name;
-    char *(*exec)(const char *path); /* the classed canonical path, or NULL */
-    const char *arg_key;             /* the argument key that is classed; NULL = none */
-    size_t max_read;                 /* the read bound (0 = no read) */
+    const char *program;        /* the declared program (a sibling binary name) */
+    const char *const *args;    /* argv[1..]; NULL = none */
+    const char *arg_key;        /* the classed argument key; NULL = reads no argument */
+    int         reads_arg;      /* the registry's OWN claim that the program reads an
+                                 * argument (the startup contract: reads_arg => arg_key) */
+    unsigned long deadline_ms;  /* the per-call spawn deadline */
+    size_t       out_cap;       /* the per-call stdout cap */
 };
+
+/* The program NAMES are build-time overridable for the gate's mutation arms
+ * (the same same-source discipline FH_HOSTTOOL_NAME uses): the noplainfile
+ * blind must spawn the MUTANT host_cat child, so its proxy build overrides
+ * FH_HOST_CAT_PROGRAM.  The real registry names the real binaries. */
+#ifndef FH_HOST_TIME_PROGRAM
+#define FH_HOST_TIME_PROGRAM "fx-host-time"
+#endif
+#ifndef FH_HOST_CAT_PROGRAM
+#define FH_HOST_CAT_PROGRAM "fx-host-cat"
+#endif
+#ifndef FH_HTTP_GET_PROGRAM
+#define FH_HTTP_GET_PROGRAM "fx-http-get"
+#endif
 
 /* THE CLOSED TABLE.  A call is executed only if its name is found HERE, so the
  * set of things the host can run is a source-level constant — the same
  * cannot-invent-a-tool-name property the closed fx-* verb set gives the
- * guest.  host_cat is the first classed tool: `path` is the classed argument
- * (judged by the operator's alias table via D3), and max_read is its bound.
- * S2-FIX 4: arg_key is NOT decoration — the JUDGE extracts by it
- * (ops_judge: whatever this table declares is what gets classed and
- * totality-checked) and the startup contract below refuses an entry that
- * declares a read and no key.  max_read is the registry's own statement that
- * an argument IS read, which is what makes that refusal checkable. */
+ * guest.  host_cat (path) and http_get (url) are the classed tools; their
+ * arguments are judged by the operator's tables (ops-aliases.tsv for the
+ * path dimension, ops-hosts.tsv for the authority dimension) via D3, and an
+ * argument matching NO class row is refused by name (unclassed-arg). */
 #ifdef FH_MUTANT_EXTRA_UNCLASSED_TOOL
 /* S2-FIX 4 MUTATION BLIND (build/fx-hostgate-extrauncl): ONE EXTRA registry
- * entry that declares a READ BOUND and NO classed argument key — S3's `fetch`
- * shape, whose url would be neither classed nor totality-checked.  This build
- * overrides the registry pin TOO, so the PRECEDENCE test is the startup
- * contract: without it the proxy starts and the tool's argument crosses
- * unjudged.  Never a product build. */
+ * entry that claims it READS an argument but declares NO classed key — S3's
+ * `fetch` shape, whose url would be neither classed nor totality-checked.
+ * This build overrides the registry pin TOO, so the PRECEDENCE test is the
+ * startup contract: without it the proxy starts and the tool's argument
+ * crosses unjudged.  Never a product build. */
 #define FH_HOST_TOOL_EXTRA \
-    { "host_fetch", host_exec_cat, NULL, FH_HOST_CAT_MAX },
+    { "host_fetch", FH_HOST_CAT_PROGRAM, NULL, NULL, 1, \
+      FH_HOSTTOOL_DEADLINE_MS, FH_HOSTTOOL_OUT_CAP },
 #else
 #define FH_HOST_TOOL_EXTRA
 #endif
 
 static const struct host_tool fh_host_tools[] = {
-    { FH_HOSTTOOL_NAME, host_exec_time, NULL, 0 },
-    { "host_cat", host_exec_cat, "path", FH_HOST_CAT_MAX },
+    { FH_HOSTTOOL_NAME, FH_HOST_TIME_PROGRAM, NULL, NULL, 0,
+      FH_HOSTTOOL_DEADLINE_MS, FH_HOSTTOOL_OUT_CAP },
+    { "host_cat", FH_HOST_CAT_PROGRAM, NULL, "path", 1,
+      FH_HOSTTOOL_DEADLINE_MS, FH_HOSTTOOL_OUT_CAP },
+    { "http_get", FH_HTTP_GET_PROGRAM, NULL, "url", 1,
+      FH_HOSTTOOL_DEADLINE_MS, FH_HOSTTOOL_OUT_CAP },
     FH_HOST_TOOL_EXTRA
 };
 
@@ -2760,6 +2651,189 @@ static const struct host_tool *fh_host_tool_find(const char *name) {
     return NULL;
 }
 
+/* The proxy's own executable directory (readlink /proc/self/exe -> dirname),
+ * for the scrubbed child PATH.  Returns malloc'd, or NULL. */
+static char *host_exe_dir(void) {
+    char exe[PATH_MAX];
+    ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1);
+    if (n <= 0) return NULL;
+    exe[n] = '\0';
+    char *slash = strrchr(exe, '/');
+    if (!slash) return NULL;
+    *slash = '\0';
+    return xstrdup(exe);
+}
+
+/* THE SPAWN — the ONE executor, and the ONE place a future sandbox attaches
+ * (palisade, later; see the S1 header).  fork + execvpe with a SCRUBBED
+ * PATH-only env (the mcp_client.c discipline: the daemon's full environ never
+ * crosses — no FX_HOSTGATE_KEY, no other secret), the call's arguments on
+ * STDIN AS JSON (never interpolated into the command line), an explicit
+ * DEADLINE, and an explicit OUTPUT CAP.  Returns a malloc'd result string
+ * (the program's stdout, or a NAMED refusal). */
+static char *host_exec(const struct host_tool *ht, const char *args_json) {
+    char *exe_dir = host_exe_dir();
+    if (!exe_dir)
+        return xstrdup("(hostgate: REFUSED — this proxy's own executable "
+                       "directory cannot be resolved (/proc/self/exe), so the "
+                       "declared program cannot be found; a missing program is "
+                       "refused by name, never a silent empty success)");
+
+    int inpipe[2], outpipe[2];
+    if (pipe(inpipe) != 0) { free(exe_dir); return xstrdup("(hostgate: REFUSED — cannot create the spawn pipe)"); }
+    if (pipe(outpipe) != 0) {
+        close(inpipe[0]); close(inpipe[1]); free(exe_dir);
+        return xstrdup("(hostgate: REFUSED — cannot create the spawn pipe)");
+    }
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(inpipe[0]); close(inpipe[1]); close(outpipe[0]); close(outpipe[1]);
+        free(exe_dir);
+        return xstrdup("(hostgate: REFUSED — fork failed)");
+    }
+    if (pid == 0) {
+        /* CHILD: stdin <- our pipe, stdout -> our pipe, stderr -> /dev/null,
+         * and a PATH-only env (the scrubbed env: exe_dir PATH, nothing else).
+         * The proxy's other fds are left as mcp_client leaves them; fd hygiene
+         * is the future sandbox's seat, not this slice's. */
+        dup2(inpipe[0], 0);
+        dup2(outpipe[1], 1);
+        int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0) dup2(devnull, 2);
+        close(inpipe[0]); close(inpipe[1]); close(outpipe[0]); close(outpipe[1]);
+        if (devnull >= 0) close(devnull);
+        /* A PATH-only env (the scrubbed env: the proxy's own dir PATH, nothing
+         * else — never the daemon's environ, so no secret crosses).  NOTE:
+         * execvpe is NOT used here, because this host's glibc 2.44 resolves
+         * execvpe's PATH search against the AMBIENT environ's PATH, not the
+         * scrubbed envp PATH (MEASURED — a bare name would resolve against the
+         * parent's PATH, which is exactly the scrub this env exists to give).
+         * The program is therefore resolved to a FULL PATH below and exec'd
+         * with execve — explicit, and independent of the ambient PATH. */
+        size_t plen = strlen("PATH=") + strlen(exe_dir) + 1;
+        char *path_env = malloc(plen);
+        char *envp[2];
+        if (path_env) {
+            snprintf(path_env, plen, "PATH=%s", exe_dir);
+            envp[0] = path_env;
+        } else {
+            envp[0] = (char *)"PATH=/usr/bin:/bin";
+        }
+        envp[1] = NULL;
+        size_t n_args = 0;
+        while (ht->args && ht->args[n_args]) n_args++;
+        char **argv = malloc(sizeof(char *) * (n_args + 2));
+        if (!argv) _exit(127);
+        size_t flen = strlen(exe_dir) + 1 + strlen(ht->program) + 1;
+        char *full = malloc(flen);
+        if (!full) _exit(127);
+        snprintf(full, flen, "%s/%s", exe_dir, ht->program);
+        argv[0] = full;
+        for (size_t i = 0; i < n_args; i++) argv[i + 1] = (char *)ht->args[i];
+        argv[n_args + 1] = NULL;
+        execve(full, argv, envp);
+        _exit(127); /* exec failed: the parent renders "not executable" */
+    }
+    close(inpipe[0]);
+    close(outpipe[1]);
+
+    /* the call's arguments ON STDIN AS JSON, then close it (the child sees
+     * EOF) — NEVER on the command line. */
+    size_t alen = args_json ? strlen(args_json) : 0;
+    if (alen > 0 && write_all(inpipe[1], (const unsigned char *)args_json, alen) != 0) {
+        /* the child exited before reading: the reap below sees its status */
+    }
+    close(inpipe[1]);
+
+    /* read stdout, bounded by the deadline and the cap */
+    struct tbuf out = {0};
+    size_t cap_used = 0;
+    struct timespec start;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    double deadline = (double)start.tv_sec + (double)start.tv_nsec / 1e9
+                    + (double)ht->deadline_ms / 1000.0;
+    int timed_out = 0, over_cap = 0;
+    for (;;) {
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        double nowf = (double)now.tv_sec + (double)now.tv_nsec / 1e9;
+        if (nowf >= deadline) { timed_out = 1; break; }
+        struct pollfd pfd = { outpipe[0], POLLIN, 0 };
+        int ms = (int)((deadline - nowf) * 1000.0);
+        if (ms < 1) ms = 1;
+        int pr = poll(&pfd, 1, ms);
+        if (pr < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        if (pr == 0) { timed_out = 1; break; }
+        char tmp[4096];
+        ssize_t rn = read(outpipe[0], tmp, sizeof tmp);
+        if (rn < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        if (rn == 0) break; /* child closed stdout */
+        if (cap_used + (size_t)rn > ht->out_cap) { over_cap = 1; break; }
+        tb_put(&out, tmp, (size_t)rn);
+        cap_used += (size_t)rn;
+    }
+    close(outpipe[0]);
+
+    /* reap the child: kill on timeout/over-cap; a hung child is bounded by
+     * the deadline, never left running. */
+    int status = 0;
+    if (timed_out || over_cap) kill(pid, SIGKILL);
+    double reap_dl = (double)start.tv_sec + (double)start.tv_nsec / 1e9
+                   + (double)ht->deadline_ms / 1000.0 + 2.0;
+    for (;;) {
+        pid_t r = waitpid(pid, &status, WNOHANG);
+        if (r == pid) break;
+        if (r < 0) { status = -1; break; }
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        double nowf = (double)now.tv_sec + (double)now.tv_nsec / 1e9;
+        if (nowf >= reap_dl) { kill(pid, SIGKILL); waitpid(pid, &status, 0); break; }
+        struct timespec ts = { 0, 20000000 };
+        nanosleep(&ts, NULL);
+    }
+    free(exe_dir);
+
+    if (timed_out) {
+        free(out.p);
+        char *s = xmalloc(224);
+        snprintf(s, 224, "(hostgate: REFUSED — the host tool \"%s\" exceeded "
+                 "its %lu ms deadline and was killed; the deadline is the "
+                 "spawn's bound, never a silent hang)", ht->name, ht->deadline_ms);
+        return s;
+    }
+    if (over_cap) {
+        free(out.p);
+        char *s = xmalloc(224);
+        snprintf(s, 224, "(hostgate: REFUSED — the host tool \"%s\" wrote more "
+                 "than %zu bytes to stdout; the output cap refused it, never "
+                 "silently truncated)", ht->name, ht->out_cap);
+        return s;
+    }
+    if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+        if (!out.p) out.p = xstrdup("");
+        return out.p;
+    }
+    /* a non-zero exit (including a failed exec: a missing / not-executable
+     * program) is a REFUSAL, never a silent empty success */
+    free(out.p);
+    char *s = xmalloc(256);
+    snprintf(s, 256,
+             "(hostgate: REFUSED — the host tool's program \"%s\" %s; a "
+             "non-zero exit, or a missing/not-executable program, is a REFUSAL "
+             "by name, never a silent empty success)",
+             ht->program,
+             status == -1 ? "could not be reaped" :
+             WIFSIGNALED(status) ? "was killed by a signal" :
+             "exited non-zero");
+    return s;
+}
+
 /* THE REGISTRY'S CONTRACT CHECK — the SAME refusal posture (and the SAME
  * loop) fh_catalog_check applies to the reserved name, extended to every host
  * tool.  A collision is a SILENT ALLOW in both directions: a host tool named
@@ -2786,23 +2860,23 @@ static void fh_host_tool_check(void) {
     /* S2-FIX 4: THE CLASSED-ARGUMENT CONTRACT — a tool that READS an argument
      * must DECLARE the key that argument is judged by.  The judge extracts by
      * arg_key and the totality check only sees what was extracted, so an
-     * entry with a read bound and NO key is a tool whose argument would be
-     * neither classed nor checked: S3's `fetch`-with-a-url shape, which would
-     * put the slice's top risk back, silently, on the very next tool.
-     * REFUSING TO START is the only moment a reader can be told.
-     * host_time declares max_read 0 AND arg_key NULL on purpose — it takes no
+     * entry that claims a read (reads_arg) and NO key is a tool whose
+     * argument would be neither classed nor checked: S3's `fetch`-with-a-url
+     * shape, which would put the slice's top risk back, silently, on the very
+     * next tool.  REFUSING TO START is the only moment a reader can be told.
+     * host_time declares reads_arg 0 AND arg_key NULL on purpose — it takes no
      * classed argument at all — so "reads nothing" is the honest exemption,
      * and a table edit that gives host_time a read would trip this. */
     for (size_t i = 0; i < fh_host_tool_count(); i++) {
         const struct host_tool *ht = &fh_host_tools[i];
-        if (ht->max_read == 0 || ht->arg_key) continue;
-        note("FATAL: the host tool \"%s\" declares the read bound %zu but NO "
-             "classed argument key (arg_key) — its argument would never be "
-             "classed by the operator's alias table and never "
+        if (!ht->reads_arg || ht->arg_key) continue;
+        note("FATAL: the host tool \"%s\" declares that it reads an argument "
+             "(reads_arg) but NO classed argument key (arg_key) — its argument "
+             "would never be classed by the operator's tables and never "
              "totality-checked (the S3 `fetch` shape: a url nobody judges).  A "
              "tool that reads an argument must declare the key it is judged "
              "by; REFUSING TO START",
-             ht->name, ht->max_read);
+             ht->name);
         exit(1);
     }
 #ifdef FH_MUTANT_NO_HOST_COLLISION
@@ -3035,6 +3109,7 @@ static void fh_catalog_check(void) {
  */
 #define FH_OPS_DL       "ops-policy.dl"
 #define FH_OPS_TSV      "ops-aliases.tsv"
+#define FH_OPS_HOSTS    "ops-hosts.tsv" /* S3: the authority class table */
 #define FH_OPS_PINS     "PINS"
 #define FH_OPS_MAX_FILE (1024u * 1024u) /* the artifact cap, FXV_OPS_MAX_FILE's */
 
@@ -3065,6 +3140,19 @@ typedef struct {
     char *pattern;      /* EXACT '<path>' or the SUBTREE form: <path> slash star star */
 } FhOpsRow;
 
+/* S3: one AUTHORITY class row (ops-hosts.tsv).  The classed argument is a
+ * host (the url's authority, normalized — scheme dropped, host lowercased,
+ * port dropped), judged through the SAME D3 rule as a path: the class and
+ * protected facts ride the SAME `class`/`protected` relations, so there is
+ * deliberately NO second predicate and NO second policy path (the brief's
+ * "no parallel policy path"). */
+typedef struct {
+    char *argclass;   /* the raw surface, for the refusals */
+    char *class_sym;  /* FOLDED — the symbol the class/protected facts carry */
+    int   prot;       /* protected=yes -> the seat injects protected(<class>) */
+    char *pattern;    /* EXACT 'host' or the SUFFIX form '*.suffix' */
+} FhHostsRow;
+
 static struct {
     int   loaded;   /* a policy dir was given AND every startup check passed */
     int   present;  /* ...AND at least one rule is LIVE at this seat */
@@ -3081,6 +3169,8 @@ static struct {
     char  live[256];    /* the LIVE rules' positional names */
     FhOpsRow *row;
     size_t n_row;
+    FhHostsRow *hrow;   /* S3: the authority class rows (ops-hosts.tsv) */
+    size_t n_hrow;
 } OPS;
 
 /* "Did an author that CAN REFUSE actually run at this seat?" — the honesty
@@ -3227,13 +3317,14 @@ static char *ops_read_file(const char *path, size_t *len_out) {
  * the operator's diagnosis is "which bytes did I expect vs which am I
  * holding". */
 static void ops_verify_pins(const char *dir, const char *pins_path,
-                            char **dl_out, char **tsv_out, char *dl_sha_out) {
+                            char **dl_out, char **tsv_out, char **hosts_out,
+                            char *dl_sha_out) {
     size_t plen = 0;
     char *pins = ops_read_file(pins_path, &plen);
     if (!pins)
         ops_gate_die("%s cannot be read: %s — a present policy dir must carry "
                      "a verifiable pin set", pins_path, strerror(errno));
-    int saw_dl = 0, saw_tsv = 0;
+    int saw_dl = 0, saw_tsv = 0, saw_hosts = 0;
     char *save = NULL;
     for (char *line = strtok_r(pins, "\n", &save); line;
          line = strtok_r(NULL, "\n", &save)) {
@@ -3249,8 +3340,10 @@ static void ops_verify_pins(const char *dir, const char *pins_path,
         if (cr) *cr = '\0';
         int is_dl = strcmp(name, FH_OPS_DL) == 0;
         int is_tsv = strcmp(name, FH_OPS_TSV) == 0;
+        int is_hosts = strcmp(name, FH_OPS_HOSTS) == 0;
         if (is_dl) saw_dl = 1;
         if (is_tsv) saw_tsv = 1;
+        if (is_hosts) saw_hosts = 1;
         char path[PATH_MAX];
         int n = snprintf(path, sizeof path, "%s/%s", dir, name);
         if (n <= 0 || n >= (int)sizeof path)
@@ -3278,14 +3371,18 @@ static void ops_verify_pins(const char *dir, const char *pins_path,
         } else if (is_tsv) {
             free(*tsv_out);
             *tsv_out = bytes;
+        } else if (is_hosts) {
+            free(*hosts_out);
+            *hosts_out = bytes;
         } else {
             free(bytes);
         }
     }
     free(pins);
-    if (!saw_dl || !saw_tsv)
-        ops_gate_die("%s does not pin both %s and %s — the loaded artifacts "
-                     "would go unverified", pins_path, FH_OPS_DL, FH_OPS_TSV);
+    if (!saw_dl || !saw_tsv || !saw_hosts)
+        ops_gate_die("%s does not pin %s, %s and %s — the loaded artifacts "
+                     "would go unverified", pins_path, FH_OPS_DL, FH_OPS_TSV,
+                     FH_OPS_HOSTS);
 }
 
 /* THE PATTERN GRAMMAR — the TWO FORMS ops-aliases.tsv states and
@@ -3416,6 +3513,123 @@ static void ops_load_aliases(const char *path, char *tsv_owned) {
                      "table is empty and every path would be unclassified", path);
 }
 
+/* S3: THE AUTHORITY NORMALIZER — extract the HOST from a url for classing
+ * (scheme dropped, host lowercased, port dropped; the operator's trust is in
+ * the HOST name, not the scheme or port).  A url carrying userinfo, or with
+ * no host, returns NULL — the seat treats that as unclassable (refused by the
+ * totality check or, on the allowed path, by the http_get program itself).
+ * The http_get program (tools/fx-http-get.c) parses the same url for its own
+ * fetching; the two agree on the host because both extract it the same way. */
+static char *authority_of(const char *url) {
+    const char *scheme_end = strstr(url, "://");
+    if (!scheme_end) return NULL;
+    const char *p = scheme_end + 3;
+    const char *slash = strchr(p, '/');
+    const char *at = strchr(p, '@');
+    if (at && (!slash || at < slash)) return NULL; /* userinfo: unclassable */
+    const char *hostpart_end = slash ? slash : p + strlen(p);
+    const char *colon = NULL;
+    for (const char *q = p; q < hostpart_end; q++)
+        if (*q == ':') { colon = q; break; }
+    size_t host_len = colon ? (size_t)(colon - p) : (size_t)(hostpart_end - p);
+    if (host_len == 0) return NULL;
+    char *host = xmalloc(host_len + 1);
+    memcpy(host, p, host_len);
+    host[host_len] = '\0';
+    for (size_t i = 0; i < host_len; i++)
+        host[i] = (char)tolower((unsigned char)host[i]);
+    return host;
+}
+
+/* THE AUTHORITY PATTERN GRAMMAR — TWO FORMS, enforced at pin time
+ * (eval_ops.py --check-hosts) AND re-run at this seat: an EXACT host (no
+ * glob characters) or a SUFFIX '*.suffix' (matches exactly one label under
+ * the suffix).  Any other shape is refused: coverage nobody stated is a
+ * silent allow-all. */
+static int host_pattern_valid(const char *p) {
+    size_t l = strlen(p);
+    if (l == 0) return 0;
+    if (p[0] == '*') {
+        if (l < 3 || p[1] != '.') return 0;
+        for (size_t i = 2; i < l; i++) if (p[i] == '*') return 0;
+        return 1;
+    }
+    return strpbrk(p, "*?[") == NULL;
+}
+
+/* The authority pattern matcher.  Compiled out under FH_MUTANT_OPS_NO_CLASS
+ * (its only caller is the class-injection loop, which that blind removes). */
+#ifndef FH_MUTANT_OPS_NO_CLASS
+static int host_pattern_hits(const char *pattern, const char *host) {
+    size_t pl = strlen(pattern);
+    if (pl >= 2 && pattern[0] == '*' && pattern[1] == '.') {
+        const char *suffix = pattern + 2; /* "example.com" */
+        size_t sl = strlen(suffix);
+        size_t hl = strlen(host);
+        if (hl > sl && host[hl - sl - 1] == '.' && strcmp(host + hl - sl, suffix) == 0)
+            return 1;
+        return 0;
+    }
+    return strcmp(pattern, host) == 0;
+}
+#endif /* !FH_MUTANT_OPS_NO_CLASS */
+
+/* The authority table: pattern<TAB>argclass<TAB>protected, '#' comments —
+ * parsed and validated here (grammar above, duplicate patterns, the yes/no
+ * flag, proper-noun class surfaces), because a malformed row must refuse
+ * loudly, never half-match.  `tsv_owned` is the verified bytes the pin check
+ * kept. */
+static void ops_load_hosts(const char *path, char *tsv_owned) {
+    char *tsv = tsv_owned;
+    size_t cap = 8;
+    OPS.hrow = xmalloc(cap * sizeof *OPS.hrow);
+    char *save = NULL;
+    for (char *line = strtok_r(tsv, "\n", &save); line;
+         line = strtok_r(NULL, "\n", &save)) {
+        while (*line == ' ' || *line == '\t') line++;
+        size_t ll = strlen(line);
+        if (ll > 0 && line[ll - 1] == '\r') line[ll - 1] = '\0';
+        if (!*line || *line == '#') continue;
+        char *f[3];
+        int nf = 0;
+        char *lsave = NULL;
+        for (char *tok = strtok_r(line, "\t", &lsave); tok && nf < 3;
+             tok = strtok_r(NULL, "\t", &lsave))
+            f[nf++] = tok;
+        if (nf != 3)
+            ops_gate_die("%s: a host row is pattern<TAB>argclass<TAB>protected, "
+                         "got %d field(s)", path, nf);
+        if (strcmp(f[2], "yes") != 0 && strcmp(f[2], "no") != 0)
+            ops_gate_die("%s: the protected flag is '%s', not yes|no", path, f[2]);
+        if (!host_pattern_valid(f[0]))
+            ops_gate_die("%s: the pattern '%s' is neither of the two stated "
+                         "forms — an EXACT host or a '*.suffix'; an ambiguous "
+                         "glob covers a set nobody stated", path, f[0]);
+        if (OPS.n_hrow == cap) {
+            cap *= 2;
+            OPS.hrow = realloc(OPS.hrow, cap * sizeof *OPS.hrow);
+            if (!OPS.hrow) die_errno("realloc host rows");
+        }
+        FhHostsRow *r = &OPS.hrow[OPS.n_hrow];
+        memset(r, 0, sizeof *r);
+        r->argclass = xstrdup(f[1]);
+        r->pattern = xstrdup(f[0]);
+        r->class_sym = xmalloc(strlen(f[1]) + 1);
+        if (!ops_fold_proper(r->class_sym, strlen(f[1]) + 1, f[1]))
+            ops_gate_die("%s: the argclass '%s' is not a proper noun (ASCII "
+                         "letters only)", path, f[1]);
+        for (size_t i = 0; i < OPS.n_hrow; i++)
+            if (strcmp(OPS.hrow[i].pattern, r->pattern) == 0)
+                ops_gate_die("%s: the host pattern '%s' is mapped twice", path, f[0]);
+        r->prot = (strcmp(f[2], "yes") == 0);
+        OPS.n_hrow++;
+    }
+    free(tsv);
+    if (OPS.n_hrow == 0)
+        ops_gate_die("%s carries no host rows — the authority binding table is "
+                     "empty and every url would be unclassified", path);
+}
+
 /* How many write verbs the pinned set names (the startup line counts rather
  * than asserting a literal). */
 static size_t ops_write_verb_count(void) {
@@ -3510,16 +3724,19 @@ static void ops_seat_load(const char *dir) {
     struct stat st;
     if (stat(dir, &st) != 0 || !S_ISDIR(st.st_mode))
         ops_gate_die("%s is not a readable directory — a --ops-policy-dir must "
-                     "name the directory holding %s, %s and %s",
-                     dir, FH_OPS_PINS, FH_OPS_DL, FH_OPS_TSV);
+                     "name the directory holding %s, %s, %s and %s",
+                     dir, FH_OPS_PINS, FH_OPS_DL, FH_OPS_TSV, FH_OPS_HOSTS);
     snprintf(OPS.dir, sizeof OPS.dir, "%s", dir);
 
-    char pins_path[PATH_MAX], tsv_path[PATH_MAX];
+    char pins_path[PATH_MAX], tsv_path[PATH_MAX], hosts_path[PATH_MAX];
     snprintf(pins_path, sizeof pins_path, "%s/%s", dir, FH_OPS_PINS);
     snprintf(tsv_path, sizeof tsv_path, "%s/%s", dir, FH_OPS_TSV);
+    snprintf(hosts_path, sizeof hosts_path, "%s/%s", dir, FH_OPS_HOSTS);
     char *tsv_bytes = NULL;
-    ops_verify_pins(dir, pins_path, &OPS.dl_text, &tsv_bytes, OPS.sha);
+    char *hosts_bytes = NULL;
+    ops_verify_pins(dir, pins_path, &OPS.dl_text, &tsv_bytes, &hosts_bytes, OPS.sha);
     ops_load_aliases(tsv_path, tsv_bytes);
+    ops_load_hosts(hosts_path, hosts_bytes);
 
     /* the scratch db: process-lifetime state, removed at exit.  A HOST temp
      * dir (never the store, never the guest's /run — this seat is host-side). */
@@ -3614,16 +3831,26 @@ static void ops_seat_load(const char *dir) {
                          "add refuses, never silently proceeds)", hn);
     }
 
-    /* THE STARTUP-HALF FACTS — protected(<class>) for every protected=yes row.
-     * class-level, exactly as the in-guest seat injects it; the per-call
-     * class(<path>,<class>) facts are what make it bite (D1 needs BOTH for
-     * the SAME path). */
+    /* THE STARTUP-HALF FACTS — protected(<class>) for every protected=yes row,
+     * for BOTH dimensions (path aliases and authority hosts).  class-level,
+     * exactly as the in-guest seat injects it; the per-call
+     * class(<path-or-host>,<class>) facts are what make it bite (D1/D3 need
+     * BOTH for the SAME value).  The SAME `protected` relation carries both
+     * dimensions, so D3 fires for a protected host exactly as it does for a
+     * protected path — one rule, one denial path. */
     for (size_t i = 0; i < OPS.n_row; i++) {
         if (!OPS.row[i].prot) continue;
         uint32_t pf[1] = { dl_intern_str(OPS.db, OPS.row[i].class_sym) };
         if (!pf[0] || dl_add_fact(OPS.db, "protected", pf, 1) < 0)
             ops_gate_die("cannot inject the protected fact for %s",
                          OPS.row[i].pathclass);
+    }
+    for (size_t i = 0; i < OPS.n_hrow; i++) {
+        if (!OPS.hrow[i].prot) continue;
+        uint32_t pf[1] = { dl_intern_str(OPS.db, OPS.hrow[i].class_sym) };
+        if (!pf[0] || dl_add_fact(OPS.db, "protected", pf, 1) < 0)
+            ops_gate_die("cannot inject the protected fact for %s",
+                         OPS.hrow[i].argclass);
     }
 }
 
@@ -3670,21 +3897,23 @@ static void ops_seat_startup(const char *dir) {
 #endif
     note("ops-policy: seat %s — %zu rule(s) loaded from the pinned artifact "
          "(sha256 %.16s..), %zu LIVE at this seat (%s), %zu INERT here (%s); "
-         "%zu alias row(s), %zu write verb(s) bound, %zu host tool(s) bound",
+         "%zu alias row(s), %zu host row(s), %zu write verb(s) bound, %zu host "
+         "tool(s) bound",
          OPS.present ? "ARMED" : "LOADED-BUT-INERT",
          OPS.n_rule, OPS.sha, OPS.n_live, OPS.live[0] ? OPS.live : "(none)",
          OPS.n_inert, OPS.inert[0] ? OPS.inert : "(none)", OPS.n_row,
-         ops_write_verb_count(), fh_host_tool_count());
+         OPS.n_hrow, ops_write_verb_count(), fh_host_tool_count());
     if (OPS.present) {
         note("ops-policy: LIVE AT THIS SEAT (%s) — a rule whose body needs only "
              "the facts this seat can DERIVE.  Facts injected: "
              "kind(<write verb>,write) at startup; hosttool(<host tool>) at "
-             "startup from the ONE registry table; touches(<verb>,<canon path>) "
-             "and class(<canon path>,<class>) PER CALL (the target path is in "
-             "the call's arguments, canonicalized before matching) against the "
-             "pinned alias table; protected(<class>) at startup for every "
-             "protected=yes row.  D1 and D3 are the rule classes this seat can "
-             "evaluate, and a host tool whose path matches NO alias row is "
+             "startup from the ONE registry table; touches(<verb>,<value>) and "
+             "class(<value>,<class>) PER CALL — a PATH is canonicalized and "
+             "matched against the pinned alias table, a URL is normalized to "
+             "its authority and matched against the pinned host table; "
+             "protected(<class>) at startup for every protected=yes row of "
+             "BOTH tables.  D1 and D3 are the rule classes this seat can "
+             "evaluate, and a host tool whose argument matches NO row is "
              "REFUSED BY NAME (unclassed-arg), never executed.",
              OPS.live);
         note("ops-policy: INERT AT THIS SEAT (%s) — loaded from the SAME pinned "
@@ -3738,6 +3967,26 @@ static void ops_seat_startup(const char *dir) {
 enum { OPS_OK = 0, OPS_DENY = 1, OPS_UNCLASSED = 2 };
 
 #ifndef FH_MUTANT_NO_OPS_SEAT
+/* S3: the classed dimension's table + matcher, selected by argkey (a PATH
+ * uses the alias table and ops_pattern_hits; a URL uses the host table and
+ * host_pattern_hits).  The class facts ride the SAME `class` relation either
+ * way, so D3 is the SAME rule for both dimensions. */
+static size_t ops_dim_count(int is_url) {
+    return is_url ? OPS.n_hrow : OPS.n_row;
+}
+static const char *ops_dim_pattern(int is_url, size_t i) {
+    return is_url ? OPS.hrow[i].pattern : OPS.row[i].pattern;
+}
+static const char *ops_dim_class(int is_url, size_t i) {
+    return is_url ? OPS.hrow[i].class_sym : OPS.row[i].class_sym;
+}
+#ifndef FH_MUTANT_OPS_NO_CLASS
+static int ops_dim_hits(int is_url, const char *pattern, const char *canon) {
+    return is_url ? host_pattern_hits(pattern, canon)
+                  : ops_pattern_hits(pattern, canon);
+}
+#endif /* !FH_MUTANT_OPS_NO_CLASS */
+
 static int ops_judge(const char *name, const char *args, char *why, size_t whycap) {
     if (!OPS.present) return OPS_OK;
     /* S2: THE WIDENED GATE — the seat now judges write verbs OR host tools.
@@ -3777,12 +4026,18 @@ static int ops_judge(const char *name, const char *args, char *why, size_t whyca
     } else {
         argkey = "path"; /* the write verbs' classed argument — unchanged */
     }
+    /* S3: the classed argument's DIMENSION — a PATH (host_cat, and the write
+     * verbs) is canonicalized and matched against ops-aliases.tsv; a URL
+     * (http_get) is normalized to its AUTHORITY and matched against
+     * ops-hosts.tsv.  The SAME touches/class/protected facts and the SAME D3
+     * rule carry both — no second predicate, no second policy path. */
+    const int is_url = (strcmp(argkey, "url") == 0);
 
-    /* THE PATH — the per-call binding the in-guest seat resolves at startup.
-     * Extracted from the call's arguments BY KEY (the guest's own discipline,
-     * fx-verbs-server.c:2548-2557: every verb extracts by key) and
-     * CANONICALIZED before matching, so an equivalent spelling of a protected
-     * path is denied here exactly as it is denied in-guest. */
+    /* THE CLASSED ARGUMENT — the per-call binding the in-guest seat resolves
+     * at startup.  Extracted from the call's arguments BY KEY (the guest's own
+     * discipline, fx-verbs-server.c:2548-2557: every verb extracts by key) and
+     * NORMALIZED before matching, so an equivalent spelling of a protected
+     * path/authority is denied here exactly as it is denied in-guest. */
     if (!args || !*args) return 0;
     yyjson_doc *doc = yyjson_read(args, strlen(args), 0);
     yyjson_val *root = doc ? yyjson_doc_get_root(doc) : NULL;
@@ -3791,28 +4046,32 @@ static int ops_judge(const char *name, const char *args, char *why, size_t whyca
         yyjson_val *pv = yyjson_obj_get(root, argkey);
         if (pv) raw = yyjson_get_str(pv);
     }
-    if (!raw) { /* no path (or a non-string one): nothing to bind here — the
-                * in-guest seat refuses the malformed call itself. */
+    if (!raw) { /* no argument (or a non-string one): nothing to bind here — the
+                * in-guest seat / the program refuses the malformed call itself. */
         if (doc) yyjson_doc_free(doc);
         return OPS_OK;
     }
     char *apath;
+    if (is_url) {
+        apath = authority_of(raw);
+    } else {
 #ifdef FH_MUTANT_OPS_NO_CANON
-    /* P6 CANONICALIZATION BLIND (build/fx-hostgate-opsnocanon): match the RAW
-     * path string against the pinned patterns.  Enables the host-seat SILENT
-     * ALLOW this blind is the control for.  S2: the EXECUTOR still
-     * canonicalizes (fh_canon_abs), so this blind makes the classifier and
-     * executor DISAGREE — the exact failure the gate's host-path arm exposes. */
-    if (raw[0] != '/') {
-        if (doc) yyjson_doc_free(doc);
-        return OPS_OK;
-    }
-    apath = xstrdup(raw);
+        /* P6 CANONICALIZATION BLIND (build/fx-hostgate-opsnocanon): match the
+         * RAW path string against the pinned patterns.  Enables the host-seat
+         * SILENT ALLOW this blind is the control for.  S2: the EXECUTOR still
+         * canonicalizes, so this blind makes the classifier and executor
+         * DISAGREE — the exact failure the gate's host-path arm exposes. */
+        if (raw[0] != '/') {
+            if (doc) yyjson_doc_free(doc);
+            return OPS_OK;
+        }
+        apath = xstrdup(raw);
 #else
-    apath = fh_canon_abs(raw);
+        apath = fh_canon_abs(raw);
 #endif
-    if (!apath) { /* non-absolute or root-escaping: the in-guest seat refuses
-                   * the same call (fx-verbs-server.c:1935-1958). */
+    }
+    if (!apath) { /* unclassable (non-absolute/root-escaping path, or a url
+                   * with userinfo / no host): the program refuses it. */
         if (doc) yyjson_doc_free(doc);
         return OPS_OK;
     }
@@ -3842,17 +4101,17 @@ static int ops_judge(const char *name, const char *args, char *why, size_t whyca
         }
     }
 #endif
-    /* THE RESOLVE, per call: class(<path>, <class>) for every row whose
-     * pattern hits the canonical path — the same loop the in-guest seat runs
-     * at startup over its served set, here over the ONE path the call names.
-     * S2: the match count feeds the TOTALITY CHECK below (a host tool whose
-     * path matches NO row is refused by name). */
+    /* THE RESOLVE, per call: class(<path-or-host>, <class>) for every row
+     * whose pattern hits the normalized argument — the same loop the in-guest
+     * seat runs at startup over its served set, here over the ONE value the
+     * call names.  S2: the match count feeds the TOTALITY CHECK below (a host
+     * tool whose argument matches NO row is refused by name). */
 #ifndef FH_MUTANT_OPS_NO_CLASS
     int n_matched = 0;
-    for (size_t i = 0; i < OPS.n_row; i++) {
-        if (!ops_pattern_hits(OPS.row[i].pattern, apath)) continue;
+    for (size_t i = 0; i < ops_dim_count(is_url); i++) {
+        if (!ops_dim_hits(is_url, ops_dim_pattern(is_url, i), apath)) continue;
         n_matched++;
-        uint32_t cf[2] = { p, dl_intern_str(OPS.db, OPS.row[i].class_sym) };
+        uint32_t cf[2] = { p, dl_intern_str(OPS.db, ops_dim_class(is_url, i)) };
         if (!cf[1] || dl_add_fact(OPS.db, "class", cf, 2) < 0) {
             snprintf(why, whycap, "cannot inject the class fact for %s (the "
                                   "folding contract is machine-checked) — "
@@ -3911,9 +4170,9 @@ static int ops_judge(const char *name, const char *args, char *why, size_t whyca
      * S2: compiled out under FH_MUTANT_OPS_NO_CLASS for the same reason the
      * add is — nothing was added, so there is nothing to retract. */
 #ifndef FH_MUTANT_OPS_NO_CLASS
-    for (size_t i = 0; i < OPS.n_row; i++) {
-        if (!ops_pattern_hits(OPS.row[i].pattern, apath)) continue;
-        uint32_t cf[2] = { p, dl_intern_str(OPS.db, OPS.row[i].class_sym) };
+    for (size_t i = 0; i < ops_dim_count(is_url); i++) {
+        if (!ops_dim_hits(is_url, ops_dim_pattern(is_url, i), apath)) continue;
+        uint32_t cf[2] = { p, dl_intern_str(OPS.db, ops_dim_class(is_url, i)) };
         if (!cf[1] || dl_delete_fact(OPS.db, "class", cf, 2) < 0) delbad = 1;
     }
 #endif /* !FH_MUTANT_OPS_NO_CLASS */
@@ -3926,27 +4185,29 @@ static int ops_judge(const char *name, const char *args, char *why, size_t whyca
 
     if (rows == 0) {
 #ifndef FH_MUTANT_OPS_NO_CLASS
-        /* S2: THE TOTALITY CHECK — the point of the slice.  A HOST TOOL's path
-         * argument must be CLASSED against the operator's alias table; a path
-         * that matched NO row has an unknown class, and the host REFUSES IT BY
-         * NAME (unclassed-arg) with NOTHING EXECUTED.  The operator must not
-         * have to enumerate what is forbidden — anything they have not
-         * classified is not permitted.  A WRITE verb is deliberately NOT
-         * covered: an unclassed write stays untightened-not-loosened (the
-         * in-guest floor governs), exactly the pre-S2 behaviour. */
+        /* S2: THE TOTALITY CHECK — the point of the slice.  A HOST TOOL's
+         * classed argument (its path OR its url's authority) must be CLASSED
+         * against the operator's table; a value that matched NO row has an
+         * unknown class, and the host REFUSES IT BY NAME (unclassed-arg) with
+         * NOTHING EXECUTED.  The operator must not have to enumerate what is
+         * forbidden — anything they have not classified is not permitted.  A
+         * WRITE verb is deliberately NOT covered: an unclassed write stays
+         * untightened-not-loosened (the in-guest floor governs), exactly the
+         * pre-S2 behaviour. */
         if (is_host && n_matched == 0) {
             snprintf(why, whycap,
-                     "the host tool %s named the path %s, which matches NO "
-                     "alias row in the pinned alias table (policy/ops/"
-                     "ops-aliases.tsv) — the path's class is unknown, so the "
-                     "host refuses to execute it by name (unclassed-arg); "
-                     "classify it in the alias table, or do not call it",
-                     name, apath);
+                     "the host tool %s named the %s %s, which matches NO row "
+                     "in the pinned operator table (policy/ops/%s) — the "
+                     "argument's class is unknown, so the host refuses to "
+                     "execute it by name (unclassed-arg); classify it in the "
+                     "table, or do not call it",
+                     name, is_url ? "authority" : "path", apath,
+                     is_url ? FH_OPS_HOSTS : FH_OPS_TSV);
             free(apath);
             if (delbad) {
                 snprintf(why, whycap, "cannot retract the per-call facts AND "
-                                      "the path is unclassed — refusing, never "
-                                      "allowing");
+                                      "the argument is unclassed — refusing, "
+                                      "never allowing");
                 return OPS_DENY;
             }
             return OPS_UNCLASSED;
@@ -4965,30 +5226,12 @@ static void tools_inject_json(struct tbuf *t) {
  *  - a call_id already executed -> NOT executed again.  ONE outside effect
  *    per call_id, the same rule the record keeps (one row per call_id): a
  *    re-served item is the upstream repeating itself, not a second call. */
-/* S2: extract + canonicalize a host tool's classed argument.  THE ONE
- * normaliser on the EXECUTING side: this calls fh_canon_abs — the SAME single
- * function ops_judge (the CLASSIFYING side) uses — so the spelling the judge
- * classed is the spelling the executor opens.  There is deliberately no second
- * canonicalization to drift.  Returns malloc'd, or NULL when there is no
- * classed argument (arg_key NULL) or the argument is absent/unparseable.
- * Compiled out under FH_MUTANT_NO_EXEC (its only caller is host_dispatch's
- * executing branch, which that blind removes). */
-#ifndef FH_MUTANT_NO_EXEC
-static char *host_arg_canon(const struct host_tool *ht, const char *args) {
-    if (!ht->arg_key || !args || !*args) return NULL;
-    yyjson_doc *doc = yyjson_read(args, strlen(args), 0);
-    yyjson_val *root = doc ? yyjson_doc_get_root(doc) : NULL;
-    const char *raw = NULL;
-    if (yyjson_is_obj(root)) {
-        yyjson_val *pv = yyjson_obj_get(root, ht->arg_key);
-        if (pv) raw = yyjson_get_str(pv);
-    }
-    char *apath = raw ? fh_canon_abs(raw) : NULL;
-    if (doc) yyjson_doc_free(doc);
-    return apath;
-}
-#endif /* !FH_MUTANT_NO_EXEC */
-
+/* S3: the argument is no longer extracted/canonicalized HERE — the DECLARED
+ * PROGRAM does that (the call's arguments go on stdin AS JSON, verbatim, and
+ * the program extracts by its own key).  The judge (ops_judge) still
+ * classifies the same key from the same JSON, and both sides run the SAME
+ * canonicalizer (the proxy's fh_canon_abs and the program's copy), so the
+ * spelling the judge classed is the spelling the program opens. */
 static void host_dispatch(const char *name, const char *call_id, long turn,
                           struct row *r, const char *args) {
 #ifdef FH_MUTANT_NO_EXEC
@@ -5030,9 +5273,7 @@ static void host_dispatch(const char *name, const char *call_id, long turn,
              turn, call_id, name, r->turn);
         return;
     }
-    char *path = host_arg_canon(ht, args);
-    char *res = ht->exec(path);
-    free(path);
+    char *res = host_exec(ht, args);
     emap_put(call_id, res, turn);
     if (r) {
         free(r->outcome);

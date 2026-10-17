@@ -101,13 +101,14 @@ EVAL="$OPS/eval_ops.py"
 LEX="$OPS/ops-lexicon.ini"
 POLICY="$OPS/ops-policy.le"
 TSV="$OPS/ops-aliases.tsv"
+HOSTS="$OPS/ops-hosts.tsv"
 ART="$OPS/ops-policy.dl"
 PINS="$OPS/PINS"
 FIX="$REPO/tests/fixtures/ops"
 CLAIMS_LEX="$REPO/policy/claims-lexicon.ini"
 CLAIMS_PLEX="$REPO/policy/policy-lexicon.ini"
 
-for f in "$EVAL" "$LEX" "$POLICY" "$TSV" "$ART" "$PINS" \
+for f in "$EVAL" "$LEX" "$POLICY" "$TSV" "$HOSTS" "$ART" "$PINS" \
          "$FIX/policy-vacuous.le" "$FIX/policy-foreign-head.le" \
          "$FIX/naive-spelling.le" "$FIX/ops-sentence-justified.le" \
          "$FIX/claims-sentence-denied.le" "$FIX/deny-protected-ok.tsv" \
@@ -257,6 +258,15 @@ sed -e "s@^Agentdata	Datadir	no	/fx/disk/agent-data\$@Agentdata	Datadir	no	/fx/d
 cmp -s "$TSV" "$W/ambig.tsv" && fail "the ambiguous-pattern sed matched NOTHING"
 grep -q '/fx/disk/agent-data/\*$' "$W/ambig.tsv" || fail "the ambiguous mutant does not carry the trailing single star"
 arm b0g-alias-ambiguous-pattern 1 'alias-ambiguous-pattern' --check-aliases --aliases "$W/ambig.tsv" --policy-lexicon "$LEX"
+# b0h (S3): the AUTHORITY table is validated with its own two-form grammar
+# (exact host / '*.suffix'), the argclass sort, and the protected flag.
+arm b0h-hosts-ok 0 'host table OK' --check-hosts --hosts "$HOSTS" --policy-lexicon "$LEX"
+sed -e "s@^example.com	Blockedhost@example.com	Blockedhostx@" "$HOSTS" > "$W/foreignhost.tsv"
+cmp -s "$HOSTS" "$W/foreignhost.tsv" && fail "the hosts sed matched NOTHING"
+arm b0i-host-foreign-sort 1 'host-foreign-sort' --check-hosts --hosts "$W/foreignhost.tsv" --policy-lexicon "$LEX"
+sed -e "s@^example.com@*example.com@" "$HOSTS" > "$W/ambighost.tsv"
+cmp -s "$HOSTS" "$W/ambighost.tsv" && fail "the hosts ambiguous sed matched NOTHING"
+arm b0j-host-ambiguous-pattern 1 'host-ambiguous-pattern' --check-hosts --hosts "$W/ambighost.tsv" --policy-lexicon "$LEX"
 
 echo "test_ops_policy: -- B1 the pin: determinism, artifact, shas --"
 python3 "$EVAL" --compile-policy --policy-le "$POLICY" --policy-lexicon "$LEX" >"$W/policy.1" 2>"$W/policy.err" \
@@ -267,11 +277,12 @@ cmp -s "$W/policy.1" "$W/policy.2" || fail "two ops policy compiles are NOT byte
 grep -c '^denied(' "$W/policy.1" > "$W/headcount"
 [ "$(cat "$W/headcount")" = 3 ] || fail "the ops policy artifact does not conclude exactly three denied rules ($(cat "$W/headcount"))"
 cmp -s "$W/policy.1" "$ART" || fail "policy/ops/ops-policy.dl is NOT the artifact a fresh compile produces -- regenerate it with 'make ops-policy-artifact' and update policy/ops/PINS in the same commit"
-for pair in 'ops-policy.dl' 'ops-lexicon.ini' 'ops-aliases.tsv'; do
+for pair in 'ops-policy.dl' 'ops-lexicon.ini' 'ops-aliases.tsv' 'ops-hosts.tsv'; do
     case $pair in
         ops-policy.dl) sha_file=$(sha256sum "$W/policy.1" | cut -d' ' -f1) ;;
         ops-lexicon.ini) sha_file=$(sha256sum "$LEX" | cut -d' ' -f1) ;;
         ops-aliases.tsv) sha_file=$(sha256sum "$TSV" | cut -d' ' -f1) ;;
+        ops-hosts.tsv) sha_file=$(sha256sum "$HOSTS" | cut -d' ' -f1) ;;
     esac
     sha_pin=$(grep "^$pair" "$PINS" | cut -f2)
     [ "$sha_file" = "$sha_pin" ] || fail "$pair: the pinned sha is $sha_pin, the file hashes to $sha_file -- the pin and the artifact have drifted"

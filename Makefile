@@ -274,6 +274,15 @@ $(BIN_SELECT): tools/fx-select.c
 # append-only host log — and the gate's bound phase must flip on it by
 # content too.
 BIN_HOSTGATE := build/fx-hostgate
+# S3 (THE DECLARED PROGRAMS): the host-tool programs the registry names, each
+# a STANDALONE binary the spawn execs with a scrubbed env — the proxy carries
+# NO http and NO compiled-in per-tool executor.  fx-host-cat-noplainfile is
+# the FH_MUTANT_NO_PLAINFILE CHILD (the S2-fix open hardening compiled out),
+# spawned by the mutant PROXY via -DFH_HOST_CAT_PROGRAM override.
+BIN_HOST_TIME := build/fx-host-time
+BIN_HOST_CAT := build/fx-host-cat
+BIN_HOST_CAT_NOPLAIN := build/fx-host-cat-noplainfile
+BIN_HTTP_GET := build/fx-http-get
 BIN_HOSTGATE_MUTANT := build/fx-hostgate-mutant
 BIN_HOSTGATE_UNBOUND := build/fx-hostgate-unbound
 BIN_HOSTGATE_NOREWRITE := build/fx-hostgate-norewrite
@@ -369,7 +378,12 @@ test-hostgate: $(BIN_HOSTGATE) $(BIN_HOSTGATE_MUTANT) $(BIN_HOSTGATE_UNBOUND) \
                $(BIN_HOSTGATE_HOSTCOLLIDE) $(BIN_HOSTGATE_NOHOSTCOLL) \
                $(BIN_HOSTGATE_NOEXEC) $(BIN_HOSTGATE_OPSNOCLASS) \
                $(BIN_HOSTGATE_NOPLAINFILE) $(BIN_HOSTGATE_OPSLITKEY) \
-               $(BIN_HOSTGATE_EXTRAUNCL) $(BIN)
+               $(BIN_HOSTGATE_EXTRAUNCL) $(BIN) \
+               $(BIN_HOST_TIME) $(BIN_HOST_CAT) $(BIN_HOST_CAT_NOPLAIN) \
+               $(BIN_HTTP_GET) $(BIN_ECHO_CONTRACT) $(BIN_HOSTGATE_ECHOCONTRACT) \
+               $(BIN_SPAWN_HANG) $(BIN_SPAWN_FLOOD) $(BIN_SPAWN_NONZERO) \
+               $(BIN_HOSTGATE_SPAWNHANG) $(BIN_HOSTGATE_SPAWNFLOOD) \
+               $(BIN_HOSTGATE_SPAWNNONZERO) $(BIN_HOSTGATE_SPAWNMISSING)
 	bash tests/test_hostgate.sh
 
 # P6 THE OPS AUTHOR: the engine whose reasoning the seat evaluates is the
@@ -549,13 +563,15 @@ $(BIN_HOSTGATE_OPSNOCLASS): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YY
 
 # ── S2-FIX: THE S2 REVIEW'S PRE-FIX CONTROLS ────────────────────────────────
 #
-# (1) THE EXECUTOR HARDENING COMPILED OUT (findings 2+3) — a plain O_RDONLY
-#     open, exactly as S2 shipped it: a data-classed SYMLINK to a protected
-#     file reads the PROTECTED content (the class governs the spelling, the
-#     kernel resolves the link), and a writerless FIFO blocks the whole lane.
+# (1) THE EXECUTOR HARDENING COMPILED OUT (findings 2+3) — S3: the hardening
+#     now lives in the CHILD (tools/fx-host-cat.c); this MUTANT PROXY just
+#     names the MUTANT CHILD (built below with FH_MUTANT_NO_PLAINFILE) so the
+#     blind's asymmetry is real: the real proxy spawns the hardened child, the
+#     mutant spawns the plain-open one.  A data-classed SYMLINK to a protected
+#     file reads the PROTECTED content, and a writerless FIFO blocks the lane.
 $(BIN_HOSTGATE_NOPLAINFILE): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(DATALOG_DIR)/zig-out/lib/libdatalog.so | $(DATALOG_SHIM)
 	@mkdir -p build
-	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_MUTANT_NO_PLAINFILE -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(HOSTGATE_LIBS)
+	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_HOST_CAT_PROGRAM='"fx-host-cat-noplainfile"' -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(HOSTGATE_LIBS)
 
 # (2) THE JUDGE'S HARDCODED KEY (finding 4) — every host tool judged by the
 #     literal "path" instead of the registry's arg_key, so a tool that
@@ -571,11 +587,84 @@ $(BIN_HOSTGATE_OPSLITKEY): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJ
 #     real build starts (the arm's fixture is not the cause); this one must
 #     REFUSE TO START naming the tool, because without the contract its
 #     argument would be neither classed nor totality-checked.
-HOSTTOOL_EXTRA_PIN := -DFH_HOSTTOOL_SHA256='"3291e078767440a1177a2d006675a9086fc1ca277f781f99de75b9dd5e1877e8"'
+HOSTTOOL_EXTRA_PIN := -DFH_HOSTTOOL_SHA256='"aa456278e4f1b4c7a929ba1e819752124f1cb9df340e063e4abacc96e5c0cd1a"'
 
 $(BIN_HOSTGATE_EXTRAUNCL): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(DATALOG_DIR)/zig-out/lib/libdatalog.so | $(DATALOG_SHIM)
 	@mkdir -p build
 	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_MUTANT_EXTRA_UNCLASSED_TOOL $(HOSTTOOL_EXTRA_PIN) -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(HOSTGATE_LIBS)
+
+# ── S3: THE DECLARED PROGRAMS (the host-tool binaries the spawn execs) ─────
+#
+# Each is a STANDALONE binary (yyjson only, no datalog, no dhall-c) speaking
+# the stdin->stdout contract: the call's args JSON on stdin, the RESULT on
+# stdout, exit 0 for a well-formed call.  The proxy's spawn (host_exec) execs
+# them with a scrubbed PATH-only env; the program name is resolved next to the
+# proxy's own exe.  fx-host-cat-noplainfile is the FH_MUTANT_NO_PLAINFILE
+# CHILD for the S2-fix phase-92/93 blind (the open hardening compiled out).
+$(BIN_HOST_TIME): tools/fx-host-time.c
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ tools/fx-host-time.c
+
+$(BIN_HOST_CAT): tools/fx-host-cat.c $(YYJSON_SRC)
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ tools/fx-host-cat.c $(YYJSON_SRC)
+
+$(BIN_HOST_CAT_NOPLAIN): tools/fx-host-cat.c $(YYJSON_SRC)
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_MUTANT_NO_PLAINFILE -o $@ tools/fx-host-cat.c $(YYJSON_SRC)
+
+$(BIN_HTTP_GET): tools/fx-http-get.c $(YYJSON_SRC)
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ tools/fx-http-get.c $(YYJSON_SRC)
+
+# THE PROGRAM-CONTRACT PROBE (gate phase 97): a substitute DECLARED PROGRAM
+# that echoes its argv AND its stdin, so the gate proves the spawn passes the
+# call's arguments VERBATIM on stdin and NEVER on the command line.  The
+# mutant proxy below names it in place of host_cat.
+BIN_ECHO_CONTRACT := build/fx-echo-contract
+BIN_HOSTGATE_ECHOCONTRACT := build/fx-hostgate-echocontract
+
+$(BIN_ECHO_CONTRACT): tests/fixtures/echo_argv_stdin.c
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ tests/fixtures/echo_argv_stdin.c
+
+$(BIN_HOSTGATE_ECHOCONTRACT): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(DATALOG_DIR)/zig-out/lib/libdatalog.so | $(DATALOG_SHIM)
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_HOST_CAT_PROGRAM='"fx-echo-contract"' -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(HOSTGATE_LIBS)
+
+# THE SPAWN-BOUNDS PROBES (gate phase 98): each is a substitute program (or a
+# missing one) named by a mutant proxy, exercising one spawn bound — the
+# deadline, the output cap, the non-zero exit, and a missing program.
+BIN_SPAWN_HANG := build/fx-spawn-hang
+BIN_SPAWN_FLOOD := build/fx-spawn-flood
+BIN_SPAWN_NONZERO := build/fx-spawn-nonzero
+BIN_HOSTGATE_SPAWNHANG := build/fx-hostgate-spawnhang
+BIN_HOSTGATE_SPAWNFLOOD := build/fx-hostgate-spawnflood
+BIN_HOSTGATE_SPAWNNONZERO := build/fx-hostgate-spawnnonzero
+BIN_HOSTGATE_SPAWNMISSING := build/fx-hostgate-spawnmissing
+
+$(BIN_SPAWN_HANG): tests/fixtures/spawn_hang.c
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ tests/fixtures/spawn_hang.c
+$(BIN_SPAWN_FLOOD): tests/fixtures/spawn_flood.c
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ tests/fixtures/spawn_flood.c
+$(BIN_SPAWN_NONZERO): tests/fixtures/spawn_nonzero.c
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ tests/fixtures/spawn_nonzero.c
+
+$(BIN_HOSTGATE_SPAWNHANG): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(DATALOG_DIR)/zig-out/lib/libdatalog.so | $(DATALOG_SHIM)
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_HOST_CAT_PROGRAM='"fx-spawn-hang"' -DFH_HOSTTOOL_DEADLINE_MS=2000 -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(HOSTGATE_LIBS)
+$(BIN_HOSTGATE_SPAWNFLOOD): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(DATALOG_DIR)/zig-out/lib/libdatalog.so | $(DATALOG_SHIM)
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_HOST_CAT_PROGRAM='"fx-spawn-flood"' -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(HOSTGATE_LIBS)
+$(BIN_HOSTGATE_SPAWNNONZERO): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(DATALOG_DIR)/zig-out/lib/libdatalog.so | $(DATALOG_SHIM)
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_HOST_CAT_PROGRAM='"fx-spawn-nonzero"' -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(HOSTGATE_LIBS)
+$(BIN_HOSTGATE_SPAWNMISSING): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(DATALOG_DIR)/zig-out/lib/libdatalog.so | $(DATALOG_SHIM)
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_HOST_CAT_PROGRAM='"fx-spawn-missing"' -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(HOSTGATE_LIBS)
 
 # ── P7 (THE CLAIM AUTHOR AT THE HOST SEAT) ──────────────────────────────────
 #
@@ -652,7 +741,7 @@ $(BIN_HOSTGATE_NOSCOPECARRY): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(
 #     slave path is published: a host tool that shadows a guest verb is executed
 #     by the host AND dispatched by the guest under one name.
 HOSTTOOL_COLLIDING_NAME := -DFH_HOSTTOOL_NAME='"fx_read"'
-HOSTTOOL_COLLIDING_PIN := -DFH_HOSTTOOL_SHA256='"88638ce0cf6d71e4b4bd0890724e935597dd8f656c295501dc53a859df32c34a"'
+HOSTTOOL_COLLIDING_PIN := -DFH_HOSTTOOL_SHA256='"77d7697877d6623e20e868ffeb161bcf50bf420fc56b5cb81839aaca422b11a7"'
 
 $(BIN_HOSTGATE_HOSTCOLLIDE): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(DATALOG_DIR)/zig-out/lib/libdatalog.so | $(DATALOG_SHIM)
 	@mkdir -p build
