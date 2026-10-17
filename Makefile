@@ -322,6 +322,14 @@ BIN_HOSTGATE_NOLOGLOAD := build/fx-hostgate-nologload
 BIN_HOSTGATE_LOADUNBOUND := build/fx-hostgate-loadunbound
 BIN_HOSTGATE_NODEDUP := build/fx-hostgate-nodedup
 BIN_HOSTGATE_NOSCOPECARRY := build/fx-hostgate-noscopecarry
+# S1 (THE HOST-TOOL REGISTRY + host_time): the collision arm's two builds and
+# the dispatch blind.  The two colliding builds override the ONE table name AND
+# its pin together (a build that overrides only the name refuses on the stale
+# pin instead of on the collision, which would make the arm prove the wrong
+# thing); the difference between them is exactly the collision check.
+BIN_HOSTGATE_HOSTCOLLIDE := build/fx-hostgate-hostcollide
+BIN_HOSTGATE_NOHOSTCOLL := build/fx-hostgate-nohostcoll
+BIN_HOSTGATE_NOEXEC := build/fx-hostgate-noexec
 
 test-hostgate: $(BIN_HOSTGATE) $(BIN_HOSTGATE_MUTANT) $(BIN_HOSTGATE_UNBOUND) \
                $(BIN_HOSTGATE_NOREWRITE) $(BIN_HOSTGATE_BLINDADD) \
@@ -334,7 +342,9 @@ test-hostgate: $(BIN_HOSTGATE) $(BIN_HOSTGATE_MUTANT) $(BIN_HOSTGATE_UNBOUND) \
                $(BIN_HOSTGATE_OPSNOCANON) $(BIN_HOSTGATE_NOCLAIM) \
                $(BIN_HOSTGATE_NOEVALPIN) $(BIN_HOSTGATE_NOBOUND) \
                $(BIN_HOSTGATE_NOLOGLOAD) $(BIN_HOSTGATE_LOADUNBOUND) \
-               $(BIN_HOSTGATE_NODEDUP) $(BIN_HOSTGATE_NOSCOPECARRY) $(BIN)
+               $(BIN_HOSTGATE_NODEDUP) $(BIN_HOSTGATE_NOSCOPECARRY) \
+               $(BIN_HOSTGATE_HOSTCOLLIDE) $(BIN_HOSTGATE_NOHOSTCOLL) \
+               $(BIN_HOSTGATE_NOEXEC) $(BIN)
 	bash tests/test_hostgate.sh
 
 # P6 THE OPS AUTHOR: the engine whose reasoning the seat evaluates is the
@@ -567,6 +577,37 @@ $(BIN_HOSTGATE_NODEDUP): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSO
 $(BIN_HOSTGATE_NOSCOPECARRY): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(DATALOG_DIR)/zig-out/lib/libdatalog.so | $(DATALOG_SHIM)
 	@mkdir -p build
 	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_MUTANT_NO_SCOPE_CARRY -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(HOSTGATE_LIBS)
+
+# ── S1 (THE HOST-TOOL REGISTRY) ──────────────────────────────────────────────
+#
+# (1) THE COLLISION ARM, REAL BUILD — the ONE registry table with a name that
+#     IS a guest verb (fx_read), pinned correctly so the pin check passes and
+#     the COLLISION check is what refuses.  Startup refusal, exit 1, before the
+#     slave path is published: a host tool that shadows a guest verb is executed
+#     by the host AND dispatched by the guest under one name.
+HOSTTOOL_COLLIDING_NAME := -DFH_HOSTTOOL_NAME='"fx_read"'
+HOSTTOOL_COLLIDING_PIN := -DFH_HOSTTOOL_SHA256='"a9205537dcec3564d60e5d4dadf07bd52c75a27b4b5d78a4f4b8291727acc495"'
+
+$(BIN_HOSTGATE_HOSTCOLLIDE): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(DATALOG_DIR)/zig-out/lib/libdatalog.so | $(DATALOG_SHIM)
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) $(HOSTTOOL_COLLIDING_NAME) $(HOSTTOOL_COLLIDING_PIN) -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(HOSTGATE_LIBS)
+
+# (2) THE SAME BUILD WITH THE COLLISION CHECK COMPILED OUT — it STARTS, and the
+#     colliding call is EXECUTED BY THE HOST: the silent allow measured end to
+#     end (the gate's dispatch marker is the witness).
+$(BIN_HOSTGATE_NOHOSTCOLL): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(DATALOG_DIR)/zig-out/lib/libdatalog.so | $(DATALOG_SHIM)
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_MUTANT_NO_HOST_COLLISION $(HOSTTOOL_COLLIDING_NAME) $(HOSTTOOL_COLLIDING_PIN) -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(HOSTGATE_LIBS)
+
+# (3) THE DISPATCH BLIND — FH_MUTANT_NO_EXEC compiles the registry lookup out of
+#     the allowed path.  The call forwards to the guest, the guest answers
+#     -32602, and the model is handed "(tool call failed)" where the HOST's
+#     result belonged: SILENT DEGRADATION (the outside effect never happened and
+#     nothing in the record says the executor was missing).  The gate's arm
+#     asserts the sentinel CROSSES on the wire capture.
+$(BIN_HOSTGATE_NOEXEC): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(DATALOG_DIR)/zig-out/lib/libdatalog.so | $(DATALOG_SHIM)
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_MUTANT_NO_EXEC -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(HOSTGATE_LIBS)
 
 .PHONY: test-hostgate
 

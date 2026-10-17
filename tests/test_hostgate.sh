@@ -191,6 +191,11 @@ GATENOLOGLOAD="$ROOT/build/fx-hostgate-nologload"    # P8 PRE-FIX control: the s
 GATELOADUNB="$ROOT/build/fx-hostgate-loadunbound"    # R1: the LOAD-time bound compiled out (a loaded row trusted verbatim)
 GATENODEDUP="$ROOT/build/fx-hostgate-nodedup"        # R2: a fresh row per OBSERVATION (the inflation + the phantom)
 GATENOSCOPECARRY="$ROOT/build/fx-hostgate-noscopecarry"  # R5: the carried allow_scope ignored and recomputed (the reword)
+# S1 (the host-tool registry + host_time): the colliding-name pair and the
+# dispatch blind, every one from the SAME source.
+GATEHOSTCOLL="$ROOT/build/fx-hostgate-hostcollide"     # host tool named fx_read -> REFUSES at startup
+GATEHOSTNOCOLL="$ROOT/build/fx-hostgate-nohostcoll"   # the same name with the collision check compiled out (executes)
+GATENOEXEC="$ROOT/build/fx-hostgate-noexec"           # the allowed-path registry lookup compiled out (silent degradation)
 FIX="${FX_FIXTURE_DIR:-$ROOT/tests/fixtures}"
 MARKER="FX-GUEST-LOOP-OK-8f31"
 SENTINEL="hostgate-p1-probe"
@@ -219,7 +224,8 @@ for b in "$GATENONAME" "$GATENONAMEBAD" "$GATECOLLIDE" "$GATEBADNAME" "$GATEBADP
          "$GATENOTOOLS" "$GATENOJUST" "$GATENODRATE" "$GATEDONEARGS" \
          "$GATENOOPS" "$GATEOPSFLOOR" "$GATEOPSNOCANON" "$GATENOCLAIM" \
          "$GATENOEVALPIN" "$GATENOBOUND" "$GATENOLOGLOAD" \
-         "$GATELOADUNB" "$GATENODEDUP" "$GATENOSCOPECARRY"; do
+         "$GATELOADUNB" "$GATENODEDUP" "$GATENOSCOPECARRY" \
+         "$GATEHOSTCOLL" "$GATEHOSTNOCOLL" "$GATENOEXEC"; do
     [ -x "$b" ] || fail "phase 0: $b missing — run make first"
 done
 [ -f "$FIX/responses_simple.sse" ] || fail "phase 0: fixture $FIX/responses_simple.sse missing"
@@ -227,6 +233,7 @@ done
 [ -f "$FIX/responses_interleaved.sse" ] || fail "phase 0: fixture $FIX/responses_interleaved.sse missing"
 [ -f "$FIX/responses_sequential.sse" ] || fail "phase 0: fixture $FIX/responses_sequential.sse missing"
 [ -f "$FIX/responses_justified.sse" ] || fail "phase 0: fixture $FIX/responses_justified.sse missing"
+[ -f "$FIX/responses_host_time.sse" ] || fail "phase 0: fixture $FIX/responses_host_time.sse missing"
 
 TMP=$(mktemp -d)
 PROXIES=""
@@ -1954,7 +1961,14 @@ f = frames[0]
 assert "tools" in f, "the forwarded frame carries NO tools array — the model is never told"
 tools = f["tools"]
 names = [t.get("name") for t in tools]
-assert names == verbs, f"the injected catalog != the pinned one: {names} vs {verbs}"
+# S1: the injected catalog is the pinned guest verbs FOLLOWED BY the compiled-in
+# host-tool registry — two closed lists, each injected from its own table, and
+# the model is told which side executes (the description says so).
+verbs_pinned = [v.strip() for v in open(sys.argv[2]) if v.strip()]
+assert names[:len(verbs_pinned)] == verbs, f"the injected guest catalog != the pinned one: {names[:len(verbs_pinned)]} vs {verbs}"
+host = names[len(verbs_pinned):]
+assert host == ["host_time"], f"the injected host-tool entries are {host}, want exactly ['host_time']"
+assert "EXECUTED ON THE HOST" in tools[-1]["description"], tools[-1]["description"]
 for t in tools:
     p = t["parameters"]
     assert p["required"] == ["justification"], (t["name"], p.get("required"))
@@ -1972,7 +1986,7 @@ n=$(pyq "$RT_DUMP" "len([1 for r in rows if 'tools' in r])")
 [ "$n" -eq 0 ] || fail "phase 29: the no-injection build STILL sent a tools array — the control is vacuous"
 n=$(pyq "$RT_LOG" "len([r for r in rows if r.get('verdict')=='denied' and r.get('refusal_name')=='absent-justification'])")
 [ "$n" -ge 1 ] || fail "phase 29: the no-injection build did not deny the unjustified call — the dead-agent shape needs BOTH halves (a check the model was never told about)"
-echo "   OK injection: the forwarded frame carries all 13 pinned verbs with justification REQUIRED, and the injection-compiled-out build sends none while still denying — the check the model was never told about"
+echo "   OK injection: the forwarded frame carries all 13 pinned verbs followed by the host-tool registry (host_time, whose description says the HOST executes it), each with justification REQUIRED, and the injection-compiled-out build sends none while still denying — the check the model was never told about"
 
 echo "== phase 30: P5 JUSTIFIED — the claim rides THROUGH the guest into the verb (zero guest change)"
 # responses_justified.sse is responses_tool.sse with the call's arguments
@@ -5109,5 +5123,385 @@ grep -qF "response.completed" "$TMP/p73q.capture" \
 kill "$MOCK73" 2>/dev/null
 echo "   OK query: the startup note redacts the query (?<redacted>, never 'topsecret-query'), the real server's response is clean-framed, and the header block is not served"
 
+# ── S1: THE HOST-TOOL REGISTRY + host_time, END TO END ─────────────────────
+#
+# THE SHAPE (the design record's, not re-litigated here): a host-executed tool
+# call is an ORDINARY function_call in the proxied stream.  call_judge runs
+# IDENTICALLY for a host tool and a guest verb — denial does NOT fork per
+# executor, and the denied arm below drives the EXISTING fx_host_denied path —
+# and only on the ALLOWED path does a registry lookup decide "execute here"
+# instead of "forward verbatim to the guest".  The result reaches the model
+# through the EXISTING outbound substitution, keyed on call_id.
+#
+# DIRECTION (stated up front, and it is the reason for the mutation blind):
+# AN EXECUTOR THAT IS MISSING IS A SILENT DEGRADATION.  The host never runs the
+# call, the guest answers -32602 for a name that is no guest verb, the model is
+# handed "(tool call failed)" — and every policy line in the record still looks
+# protective (verdict allowed, one row, no anomaly).  So the arms assert the
+# WIRE (the dumped model-facing frame), never the exit status, and the
+# FH_MUTANT_NO_EXEC build must be caught THERE.
+#
+# THE ASYMMETRY PAIR: (a) the real build EXECUTES and the next request's frame
+# carries the REAL host result substituted over the guest's sentinel; (a') the
+# PINNED PRE-S1 PROXY — built from a PINNED REVISION, never HEAD (the
+# test_outcome.sh lesson: HEAD becomes the fixed source the moment this lands
+# and every asymmetry here goes vacuous) — serves the SAME fixture through the
+# same guest loop and the sentinel crosses UNSUBSTITUTED.  If that pinned
+# source is unavailable (shallow clone) or identical to the working tree, the
+# arm SKIPS OUT LOUD; the fixed half is asserted unconditionally either way.
+#
+# WHAT S1 DOES NOT CLAIM: host_time takes NO arguments of its own, so the
+# plan's #1 risk — a host call silently permitted because its ARGUMENT matched
+# no class row — is NOT exercised here.  It arrives with the classed tools.
+PRES1_REV=835ac49
+S1TOOL="host_time"
+S1CALL="call_00_DgJfXOD0j0bvOV7jB0tl0124"
+# restated HERE, independently of the source (the phase-26 discipline: two
+# edits have to agree before a re-pin can pass unnoticed)
+S1_PIN="711ee0fe960b5dd2378ce0a283ec44c04f4c242ae04ba65ed64d790ac660f792"
+S1_COLL_PIN="a9205537dcec3564d60e5d4dadf07bd52c75a27b4b5d78a4f4b8291727acc495"
+
+# make_refuse_stub <script> <marker> — the guest lane's MCP server for S1: it
+# touches the marker for EVERY tools/call (the witness that the call CROSSED to
+# the guest — the plan's n_tool_calls > 0 precondition) and answers -32602, the
+# real verbs server's refusal for a name that is no verb
+# (fx-verbs-server.c:2669-2674).  Zero guest change.
+make_refuse_stub() { # <script-path> <marker-path>
+    cat > "$1" <<PY
+#!/usr/bin/env python3
+import json, sys
+MARKER = "$2"
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        req = json.loads(line)
+    except ValueError:
+        continue
+    m = req.get("method")
+    if m == "initialize":
+        print(json.dumps({"jsonrpc": "2.0", "id": req.get("id"), "result": {
+            "protocolVersion": req.get("params", {}).get("protocolVersion"),
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": "hostgate-refuse-stub", "version": "0"}}}),
+            flush=True)
+    elif m == "tools/call":
+        name = (req.get("params") or {}).get("name")
+        with open(MARKER, "a") as f:
+            f.write("guest dispatched %s\n" % name)
+        print(json.dumps({"jsonrpc": "2.0", "id": req.get("id"),
+                          "error": {"code": -32602,
+                                    "message": "unknown tool: %s" % name}}),
+              flush=True)
+PY
+    chmod +x "$1"
+}
+
+# s1_run <gate> <tag> <fixture> [extra argv...] — ONE whole guest loop through
+# a bounded proxy over the S1 fixture, with a FRESH FX_AGENT_DATA dir and a
+# fresh config/stub per probe (never a shared one).  Sets S1_RC (the proxy),
+# S1_GUEST_RC, S1_DIR, S1_ERR, S1_LOG, S1_DUMP, S1_MARKER, S1_DATA.
+s1_run() {
+    local gate="$1" tag="$2" fixt="$3"
+    shift 3
+    local d="$TMP/s1-$tag"
+    mkdir -p "$d/data" "$d/cfg"
+    make_refuse_stub "$d/stub.py" "$d/marker"
+    cat > "$d/cfg/config.dhall" <<DHALL
+{ agents =
+  [ { name = "fx"
+    , agent_type = "agent"
+    , mcp_servers = [ { command = "$d/stub.py", args = [] : List Text } ]
+    }
+  ]
+}
+DHALL
+    "$gate" --upstream "$fixt" --slave-file "$d/slave" --log "$d/log.jsonl" \
+        --dump-requests "$d/dump.jsonl" "$@" --turns 2 2> "$d/proxy.err" &
+    local p=$!
+    PROXIES="$PROXIES $p"
+    wait_for_slave "$d/slave" "$p" "$d/proxy.err"
+    local dev
+    dev=$(cat "$d/slave")
+    FX_CHARDEV="$dev" FX_AGENT_CONFIG_DIR="$d/cfg" \
+    FX_AGENT_DATA="$d/data" HOME="$d" \
+        timeout 120 "$BIN" -p "s1 probe" --agent fx --max-turns 2 --output text \
+        > "$d/guest.out" 2>&1
+    S1_GUEST_RC=$?
+    wait_for_proxy_exit "$p" "$d/proxy.err"
+    wait "$p"
+    S1_RC=$?
+    S1_DIR="$d"; S1_ERR="$d/proxy.err"; S1_LOG="$d/log.jsonl"
+    S1_DUMP="$d/dump.jsonl"; S1_MARKER="$d/marker"; S1_DATA="$d/data"
+}
+
+# s1_out_n <dump> <predicate over `o`> — count the function_call_output entries
+# in the DUMPED (model-facing) frames for the S1 call_id whose output matches
+# the predicate.
+s1_out_n() {
+    python3 - "$1" "$2" "$S1CALL" <<'PY'
+import json, sys
+dump, pred, cid = sys.argv[1], sys.argv[2], sys.argv[3]
+n = 0
+for line in open(dump):
+    line = line.strip()
+    if not line:
+        continue
+    f = json.loads(line)
+    for it in f.get("input", []):
+        if it.get("type") == "function_call_output" and it.get("call_id") == cid:
+            o = it.get("output") or ""
+            if eval(pred):
+                n += 1
+print(n)
+PY
+}
+
+echo "== phase 74: S1 THE REGISTRY — a SECOND closed list, pinned, and disjoint from the guest's"
+# The registry is a compiled-in table BESIDE the guest mirror, printed with its
+# pin so a reader can tell "what the guest can do" from "what the host executes"
+# at rest.  The pin is restated HERE independently of the source.
+"$GATE" --print-host-tools > "$TMP/s1-tools.txt" 2>/dev/null \
+    || fail "phase 74: --print-host-tools failed"
+"$GATE" --print-host-tools-sha > "$TMP/s1-tools.sha" 2>/dev/null \
+    || fail "phase 74: --print-host-tools-sha failed"
+[ "$(cat "$TMP/s1-tools.txt")" = "$S1TOOL" ] \
+    || fail "phase 74: the host-tool registry is '$(cat "$TMP/s1-tools.txt")', want exactly '$S1TOOL' — the closed list drifted"
+got=$(cat "$TMP/s1-tools.sha")
+[ "$got" = "$S1_PIN" ] \
+    || fail "phase 74: the registry hashes to $got, the gate restates $S1_PIN — the table was edited without a re-pin"
+"$GATE" --print-catalog > "$TMP/s1-verbs.txt" 2>/dev/null
+if grep -qxF "$S1TOOL" "$TMP/s1-verbs.txt"; then
+    fail "phase 74: '$S1TOOL' is ALSO in the pinned guest catalog — the two lists are not disjoint, so the pins do not separate the executors"
+fi
+echo "   OK registry: one host tool ($S1TOOL), pinned at $S1_PIN and disjoint from the 13 pinned guest verbs"
+
+echo "== phase 75: S1 (a) ALLOWED -> EXECUTED -> SUBSTITUTED, and the pinned PRE-S1 control crosses UNSUBSTITUTED"
+# The REAL build: the call is judged (denylist armed, host_time NOT on it ->
+# allowed), the registry EXECUTES it, the item still crosses verbatim (the
+# guest dispatches it and answers -32602), and the NEXT request's frame carries
+# the REAL host result where the guest's sentinel was.
+s1_run "$GATE" real "$FIX/responses_host_time.sse" --deny fx_write
+[ "$S1_GUEST_RC" -eq 0 ] || { sed -n '1,10p' "$S1_ERR" >&2; fail "phase 75: the guest run rc=$S1_GUEST_RC"; }
+[ "$S1_RC" -eq 0 ] || fail "phase 75: the proxy exited rc=$S1_RC"
+grep -q "host-execute call_id=" "$S1_ERR" \
+    || fail "phase 75: the proxy never marked the host execution (no 'host-execute') — the executor did not run"
+grep -q "guest dispatched $S1TOOL" "$S1_MARKER" 2>/dev/null \
+    || fail "phase 75: the guest never dispatched the call — it did not cross to the guest (the n_tool_calls>0 precondition)"
+# THE SHAPE, not the exit status: the dumped frame's output for THIS call is a
+# host wall clock, never the guest's sentinel.
+n=$(s1_out_n "$S1_DUMP" "'(host_time:' in o")
+[ "$n" -ge 1 ] || { cat "$S1_DUMP" >&2; fail "phase 75: the model-facing frame carries NO host result for $S1CALL — the substitution never fired"; }
+n=$(s1_out_n "$S1_DUMP" "o == '(tool call failed)'")
+[ "$n" -eq 0 ] || fail "phase 75: the model-facing frame STILL carries the guest's sentinel for $S1CALL — the host result did not replace it"
+# THE RECORD: one row, allowed, exec=host, and its outcome is the result the
+# model actually read (not the sentinel the join saw first).
+n=$(pyq "$S1_LOG" "len([r for r in rows if r.get('call_id')=='$S1CALL' and r.get('verdict')=='allowed' and r.get('exec')=='host' and r.get('pending')==False and '(host_time:' in (r.get('outcome') or '')])")
+[ "$n" -eq 1 ] || { grep -F "$S1CALL" "$S1_LOG" >&2; fail "phase 75: the log does not carry exactly one allowed exec=host row for $S1CALL whose outcome is the host result"; }
+# the call crossed with its TRUE NAME (host calls are never rewritten) and the
+# guest recorded its own refusal — both halves of "ordinary function_call".
+grep -q "$S1TOOL" "$S1_DATA"/sessions/*/messages.jsonl \
+    || fail "phase 75: the guest transcript does not carry the TRUE name $S1TOOL — an allowed host call must cross un-rewritten"
+grep -q "tool call failed" "$S1_DATA"/sessions/*/messages.jsonl \
+    || fail "phase 75: the guest transcript carries no refusal for the host tool — the guest did not dispatch it"
+echo "   OK substituted: allowed -> host-execute -> the dumped next request carries the real wall clock over the guest's sentinel; the log row is allowed + exec=host + outcome = that result"
+
+# THE PRE-FIX CONTROL: THE PINNED PRE-S1 PROXY (a PINNED REVISION, never HEAD),
+# serving the SAME fixture through the SAME guest loop.
+PRES1_SKIP=""
+PREDL=""
+mkdir -p "$TMP/pres1"
+if ! git -C "$ROOT" cat-file -e "$PRES1_REV^{commit}" 2>/dev/null; then
+    PRES1_SKIP="pinned revision $PRES1_REV unavailable (shallow clone or rewritten history)"
+elif ! git -C "$ROOT" show "$PRES1_REV:tools/fx-hostgate.c" > "$TMP/pres1/fx-hostgate.c" 2>/dev/null; then
+    PRES1_SKIP="cannot extract tools/fx-hostgate.c at $PRES1_REV"
+elif cmp -s "$TMP/pres1/fx-hostgate.c" "$ROOT/tools/fx-hostgate.c"; then
+    PRES1_SKIP="the pinned pre-S1 source is IDENTICAL to the working tree — the asymmetry would compare the code to itself"
+else
+    PREDL="${DATALOG_DIR:-}"
+    if [ -z "$PREDL" ] && [ -e "$ROOT/../datalog-dafsa/zig-out/lib/libdatalog.so" ]; then
+        PREDL="$ROOT/../datalog-dafsa"
+    fi
+    if [ -z "$PREDL" ] && [ -e "$HOME/fixpoint-linux/datalog-dafsa/zig-out/lib/libdatalog.so" ]; then
+        PREDL="$HOME/fixpoint-linux/datalog-dafsa"
+    fi
+    [ -n "$PREDL" ] || PRES1_SKIP="no datalog sibling is resolvable, so the pinned proxy cannot be linked"
+fi
+if [ -z "$PRES1_SKIP" ]; then
+    cc -std=c11 -O2 -Wall -Wextra \
+        -I"$ROOT/src" -I"$ROOT/src/agent" -I"$ROOT/src/vendor/dhall-c" \
+        -I"$ROOT/src/vendor/yyjson" -I"$ROOT/build/include" \
+        -I"$ROOT/src/vendor/tomlc99" -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
+        -o "$TMP/pres1/fx-hostgate" "$TMP/pres1/fx-hostgate.c" \
+        "$ROOT/src/vendor/dhall-c/sha256.c" "$ROOT/src/vendor/yyjson/yyjson.c" \
+        -L"$PREDL/zig-out/lib" -Wl,-rpath,"$PREDL/zig-out/lib" -ldatalog \
+        2> "$TMP/pres1/cc.err" \
+        || PRES1_SKIP="the pinned pre-S1 source does not compile ($(tail -1 "$TMP/pres1/cc.err"))"
+fi
+if [ -n "$PRES1_SKIP" ]; then
+    echo "   SKIP phase 75 (pre-fix control): $PRES1_SKIP — the ASYMMETRY half did not run, so what the pinned proxy does with this fixture is UNMEASURED here (the fixed half above is asserted either way)"
+else
+    s1_run "$TMP/pres1/fx-hostgate" pres1 "$FIX/responses_host_time.sse" --deny fx_write
+    [ "$S1_GUEST_RC" -eq 0 ] || { sed -n '1,10p' "$S1_ERR" >&2; fail "phase 75 (control): the guest run rc=$S1_GUEST_RC"; }
+    [ "$S1_RC" -eq 0 ] || fail "phase 75 (control): the pinned proxy exited rc=$S1_RC"
+    grep -q "guest dispatched $S1TOOL" "$S1_MARKER" 2>/dev/null \
+        || fail "phase 75 (control): the call never reached the guest through the pinned proxy — the control is not the same scenario"
+    # THE ASYMMETRY: the SAME fixture, the SAME guest loop, and the sentinel
+    # crosses UNSUBSTITUTED (the pinned proxy has no host registry at all).
+    n=$(s1_out_n "$S1_DUMP" "o == '(tool call failed)'")
+    [ "$n" -ge 1 ] || { cat "$S1_DUMP" >&2; fail "phase 75 (control): the pinned pre-S1 proxy carried no sentinel — the control does not reproduce the pre-fix shape"; }
+    n=$(s1_out_n "$S1_DUMP" "'(host_time:' in o")
+    [ "$n" -eq 0 ] || fail "phase 75 (control): the pinned pre-S1 proxy carried a host result — the substitution above is not this slice's doing"
+    n=$(pyq "$S1_LOG" "len([r for r in rows if r.get('exec')])")
+    [ "$n" -eq 0 ] || fail "phase 75 (control): the pinned pre-S1 proxy wrote a row with an exec field — it has no exec field"
+    echo "   OK asymmetry: the SAME fixture crosses with the sentinel UNSUBSTITUTED through the pinned pre-S1 proxy ($PRES1_REV) — the substitution is this slice's doing, not the scenario's"
+fi
+
+echo "== phase 76: S1 (b) --deny host_time — the EXISTING denial path, and NO executor run"
+# The deny decision must NOT fork per executor: a denied host call takes the
+# same path as a denied guest verb — the fx_host_denied rewrite, the deny-map
+# substitution, the denylist author — and the host NEVER runs it (the dispatch
+# marker is absent).  A host tool judged by a different rule would be a second
+# gate.
+s1_run "$GATE" deny "$FIX/responses_host_time.sse" --deny "$S1TOOL"
+[ "$S1_GUEST_RC" -eq 0 ] || { sed -n '1,10p' "$S1_ERR" >&2; fail "phase 76: the guest run rc=$S1_GUEST_RC"; }
+[ "$S1_RC" -eq 0 ] || fail "phase 76: the proxy exited rc=$S1_RC"
+grep -q "host-execute call_id=" "$S1_ERR" \
+    && fail "phase 76: the proxy EXECUTED a denied host call — the deny decision forked per executor (a second gate)"
+grep -q "guest dispatched fx_host_denied" "$S1_MARKER" 2>/dev/null \
+    || fail "phase 76: the guest did not receive the RESERVED name — the denial was not the existing one"
+n=$(pyq "$S1_LOG" "len([r for r in rows if r.get('call_id')=='$S1CALL' and r.get('verdict')=='denied' and r.get('author')=='denylist' and r.get('refusal_name')=='denied-by-denylist' and not r.get('exec')])")
+[ "$n" -eq 1 ] || { grep -F "$S1CALL" "$S1_LOG" >&2; fail "phase 76: the denied host call's row is not the ordinary denylist denial (author/refusal) with no exec field"; }
+n=$(s1_out_n "$S1_DUMP" "o.startswith('(denied by host policy:')")
+[ "$n" -ge 1 ] || fail "phase 76: the model-facing frame does not carry the denial text — the existing substitution did not fire"
+n=$(s1_out_n "$S1_DUMP" "'(host_time:' in o")
+[ "$n" -eq 0 ] || fail "phase 76: a host result crossed for a DENIED call"
+echo "   OK denied, not executed: the existing fx_host_denied rewrite + denial-text substitution, the denylist author, and NO host-execute marker"
+
+echo "== phase 77: S1 (c) A COLLIDING HOST TOOL NAME IS REFUSED AT STARTUP (and its blind executes it)"
+# A host tool named after a guest verb is TWO EXECUTORS UNDER ONE NAME: the
+# host runs it and the guest dispatches it.  The refusal is at startup, before
+# the slave path is published (the P4 posture, extended in the SAME loop).
+# The colliding build is the SAME table with ONE name changed AND its pin
+# re-pinned, so the refusal that fires is the COLLISION and not a stale pin.
+got=$("$GATEHOSTCOLL" --print-host-tools-sha 2>/dev/null)
+[ "$got" = "$S1_COLL_PIN" ] \
+    || fail "phase 77: the colliding build's registry pin is '$got', the gate restates $S1_COLL_PIN — a stale pin would make the refusal prove the wrong thing"
+[ "$got" != "$S1_PIN" ] \
+    || fail "phase 77: the colliding build carries the REAL registry pin — the name override did not reach the table"
+"$GATEHOSTCOLL" --print-host-tools 2>/dev/null | grep -qxF "fx_read" \
+    || fail "phase 77: the colliding build's registry does not carry fx_read — the arm does not build the collision"
+rm -f "$TMP/s1-coll.slave"
+"$GATEHOSTCOLL" --upstream "$FIX/responses_host_time.sse" \
+    --slave-file "$TMP/s1-coll.slave" --log "$TMP/s1-coll.log" --turns 1 \
+    > /dev/null 2> "$TMP/s1-coll.err"
+rc=$?
+[ "$rc" -eq 1 ] || fail "phase 77: the colliding registry exited rc=$rc (want 1) — it must REFUSE"
+grep -q "COLLIDES with catalog verb" "$TMP/s1-coll.err" \
+    || fail "phase 77: the refusal does not name the collision"
+grep -q "REFUSING TO START" "$TMP/s1-coll.err" \
+    || fail "phase 77: the refusal is not loud"
+[ ! -s "$TMP/s1-coll.slave" ] \
+    || fail "phase 77: the slave path was published BEFORE the refusal — the refusal came too late to be the only moment it could be said"
+# THE MUTATION BLIND: the collision check compiled out with the SAME colliding
+# name — the proxy STARTS and the colliding call is EXECUTED BY THE HOST while
+# the guest dispatches the same name.  The gate catches the silent allow by the
+# dispatch marker AND the guest's own dispatch.
+sed "s/$S1TOOL/fx_read/g" "$FIX/responses_host_time.sse" > "$TMP/s1-fxread.sse"
+s1_run "$GATEHOSTNOCOLL" coll "$TMP/s1-fxread.sse" --deny fx_status
+[ "$S1_GUEST_RC" -eq 0 ] || { sed -n '1,10p' "$S1_ERR" >&2; fail "phase 77: the blind's guest run rc=$S1_GUEST_RC"; }
+[ "$S1_RC" -eq 0 ] || fail "phase 77: the blind exited rc=$S1_RC — it must START (that is the whole failure)"
+grep -q "host-execute call_id=" "$S1_ERR" \
+    || fail "phase 77: the blind did not EXECUTE the colliding call — the arm is vacuous"
+n=$(pyq "$S1_LOG" "len([r for r in rows if r.get('true_name')=='fx_read' and r.get('exec')=='host'])")
+[ "$n" -ge 1 ] || fail "phase 77: the blind's log carries no exec=host row for the colliding name"
+grep -q "guest dispatched fx_read" "$S1_MARKER" 2>/dev/null \
+    || fail "phase 77: the guest did not dispatch the colliding name — the double execution was not measured"
+echo "   OK collision: refused at startup (before the slave path), and the check-compiled-out build STARTS and executes fx_read while the guest dispatches it too — the silent allow the refusal prevents"
+
+echo "== phase 78: S1 (d) MUTATION BLIND FH_MUTANT_NO_EXEC — the sentinel CROSSES (silent degradation)"
+# The registry lookup compiled out of the allowed path.  Everything looks
+# protective — verdict allowed, one row, exit 0 — and the model is handed the
+# guest's own "(tool call failed)" in place of the result.  This is the arm the
+# DIRECTION exists for: the wire capture is the only witness.
+s1_run "$GATENOEXEC" noexec "$FIX/responses_host_time.sse" --deny fx_write
+[ "$S1_GUEST_RC" -eq 0 ] || { sed -n '1,10p' "$S1_ERR" >&2; fail "phase 78: the blind's guest run rc=$S1_GUEST_RC"; }
+[ "$S1_RC" -eq 0 ] || fail "phase 78: the blind exited rc=$S1_RC — the degradation is SILENT to the exit status, by construction"
+n=$(s1_out_n "$S1_DUMP" "o == '(tool call failed)'")
+[ "$n" -ge 1 ] || { cat "$S1_DUMP" >&2; fail "phase 78: the blind did NOT forward the sentinel — the arm does not reproduce the degradation"; }
+n=$(s1_out_n "$S1_DUMP" "'(host_time:' in o")
+[ "$n" -eq 0 ] || fail "phase 78: a host result crossed in the blind — the registry lookup is not what was blinded"
+n=$(pyq "$S1_LOG" "len([r for r in rows if r.get('exec')])")
+[ "$n" -eq 0 ] || fail "phase 78: the blind wrote an exec field — the executor is supposed to be absent"
+n=$(pyq "$S1_LOG" "len([r for r in rows if r.get('call_id')=='$S1CALL' and r.get('verdict')=='allowed'])")
+[ "$n" -eq 1 ] || fail "phase 78: the blind's row is not the protective 'allowed' one — the degradation shape is not the one the direction names"
+echo "   OK blind caught: rc=0, verdict allowed, NO exec row, and '(tool call failed)' crosses on the wire in place of the result — an absent executor is a SILENT DEGRADATION, caught only by the capture"
+
+echo "== phase 79: S1 THE INSTRUMENT EXTENDS — an EXECUTED host call whose substitution never fires is REPORTED"
+# The other direction of the same instrument (the pre-fix control of phase 20 is
+# the deny case): the host really ran the call, and the next request frame
+# arrives WITHOUT the function_call_output — the substitution window closes
+# unfired.  A record that stayed silent here would be the silent degradation
+# itself, so the anomaly row must appear, naming the call by its tool NAME (a
+# result in a name field would read as a call the model never made).
+D79="$TMP/s1-unres"
+mkdir -p "$D79"
+"$GATE" --upstream "$FIX/responses_host_time.sse" --slave-file "$D79/slave" \
+    --log "$D79/log.jsonl" --deny fx_write --turns 2 2> "$D79/err" &
+P79=$!
+PROXIES="$PROXIES $P79"
+wait_for_slave "$D79/slave" "$P79" "$D79/err"
+# TWO bare request frames (the bound phases' driver): the first decodes and
+# EXECUTES the served call, the second carries no output for it.
+for turn79 in 1 2; do
+    drive_frame "$(cat "$D79/slave")"
+done
+wait_for_proxy_exit "$P79" "$D79/err"
+wait "$P79"
+prc=$?
+[ "$prc" -eq 0 ] || fail "phase 79: the proxy exited rc=$prc"
+grep -q "host-execute call_id=" "$D79/err" \
+    || fail "phase 79: the call never executed — the arm does not reproduce the window"
+n=$(pyq "$D79/log.jsonl" "len([r for r in rows if r.get('type')=='unresolved-substitution' and r.get('call_id')=='$S1CALL' and r.get('true_name')=='$S1TOOL'])")
+[ "$n" -eq 1 ] || { grep "unresolved" "$D79/log.jsonl" >&2; fail "phase 79: an EXECUTED host call whose substitution never fired produced NO anomaly row — the instrument does not extend to the exec map, so this degradation would be silent"; }
+grep -q "EXECUTED ON THE HOST on turn 1" "$D79/err" \
+    || fail "phase 79: the anomaly is not said out loud on stderr either"
+echo "   OK instrument: an executed host call whose outbound substitution never fires is REPORTED (one unresolved-substitution row naming the tool) — the silent degradation is made loud"
+
+echo "== phase 80: S1 ONE OUTSIDE EFFECT PER call_id — a RESUME does not re-execute, and the exec row is carried BYTE-FOR-BYTE"
+# The record keeps ONE row per call_id, so the executor runs at most ONCE per
+# call_id — including across a restart, where the log is the join state: a
+# re-served item is the upstream repeating a call, never a second one.  A
+# re-execution here would be a duplicate outside effect (a second HTTP POST, in
+# the tools this registry is for) with no row to say so.
+D80="$TMP/s1-resume"
+mkdir -p "$D80"
+cp "$TMP/s1-real/log.jsonl" "$D80/log.jsonl"
+cp "$D80/log.jsonl" "$D80/before.jsonl"
+head -1 "$D80/before.jsonl" > "$D80/before1"
+"$GATE" --upstream "$FIX/responses_host_time.sse" --slave-file "$D80/slave" \
+    --log "$D80/log.jsonl" --deny fx_write --turns 1 2> "$D80/err" &
+P80=$!
+PROXIES="$PROXIES $P80"
+wait_for_slave "$D80/slave" "$P80" "$D80/err"
+grep -q "exec map with 1" "$D80/err" \
+    || fail "phase 80: the restart did not rebuild the exec map from the record — a resumed run's replayed output would cross UNSUBSTITUTED"
+drive_frame "$(cat "$D80/slave")"
+wait_for_proxy_exit "$P80" "$D80/err"
+wait "$P80"
+prc=$?
+[ "$prc" -eq 0 ] || fail "phase 80: the resumed proxy exited rc=$prc"
+grep -q "ALREADY EXECUTED ON THE HOST" "$D80/err" \
+    || fail "phase 80: the resumed run re-served the call and did not say it was already executed"
+grep -q "host-execute call_id=" "$D80/err" \
+    && fail "phase 80: the resumed run EXECUTED the call AGAIN — a re-served call_id is not a second call (a duplicate outside effect)"
+head -1 "$D80/log.jsonl" > "$D80/after1"
+cmp -s "$D80/before1" "$D80/after1" \
+    || { diff "$D80/before1" "$D80/after1" >&2; fail "phase 80: the carried host-executed row was REWORDED by the reload — a record must keep its own reading of which side ran"; }
+n=$(pyq "$D80/log.jsonl" "len([r for r in rows if r.get('call_id')=='$S1CALL'])")
+[ "$n" -eq 1 ] || fail "phase 80: the resumed run left $n rows for one call_id (the record's one-row rule)"
+echo "   OK resume: the exec map is rebuilt (1 key), the re-served call is NOT executed again, and the carried row is byte-identical"
+
 # ── THE PASS ECHO, with the LIVE observation folded in (P10-fix 5) ────────
-echo "PASS hostgate: the transparent proxy is stream-transparent (arm == control) and a mangling proxy is caught; the per-turn open/close mechanics hold through one proxy process; the one log JOINS every answered call by call_id and REPORTS every call it could not join; a join compiled out flips the pass by content; every model-controlled free-text field arrives MARKED while the join key renders verbatim; the DECODE GATE holds the channel invariant for a denied call (the true name never crosses) in the presence of interleaves, duplicate/never-opened dones, open-at-completed items and over-cap streams, with a pinned pre-fix control for each; the RESERVED NAME is a CHECKED property (it passes the guest's charset, collides with no verb of a catalog pinned by sha256 and cross-checked against the verbs server's own table, and the proxy REFUSES TO START on a collision — while the same source with the check compiled out starts and DISPATCHES the colliding name: the silent allow); and the JUSTIFICATION is required in the injected tools schema, judged on the argument accumulator the guest actually dispatches (a done-args-only judge is pinned and caught), denied BY NAME through the existing substitution on the outbound leg, and REPORTED BY A DENIAL-RATE INSTRUMENT whose own compiled-out mutant leaves the dead-agent shape invisible; and THE OPERATOR IS A REAL AUTHOR AT THIS SEAT (P6: the pinned ops policy, its PINS check, its alias table with the TWO-FORM grammar re-run here, and its per-call fact injection with the path canonicalized before matching) with the D1/D2 split NAMED in the startup line — D1 evaluated here, D2 and the compiled-in FLOOR enforced IN-GUEST ONLY because this seat can see neither — the D2 bound ASSERTED in both directions, the ALLOWED row carrying its own seat-scoped allow_scope qualifier (so a durable record cannot read as a permission the seat never grants) with the LOADED-BUT-INERT branch pinned by its own D2-only arm, and the seat's three failure directions each pinned against a control of the SAME source (fail-open when the seat is compiled out, over-deny when it binds the floor it cannot see, silent allow when it matches the raw path); and THE CLAIM AUTHOR AT THIS SEAT (P7) pins the file that COMPUTES every verdict (a swapped always-derives eval_calls.py is REFUSED at startup, while the same source with the evaluator exempt from the pin arms and lets the forbidden call CROSS and EXECUTE), BOUNDS the per-call evaluator (a hung one becomes a RECORDED refusal with its row written, while the same source with no deadline HANGS and writes NOTHING — the dead-agent instrument's blind spot), and refuses a folded verb-SYMBOL mapped by TWO runtime verbs at both check sites (--check-verbs and the seat's loader), so no shared symbol can let one contention justify two runtime verbs; and the ONE LOG SURVIVES A KILL/RESTART (the load is a gate: a corrupt log refuses LOUDLY and is left untouched) with its second role as the JOIN STATE rebuilt from it — a pre-restart denial is restored and substituted on the frame the model sees — while the SAME source with the load compiled out WIPES the record and leaves the denial un-restored, the replay is IDEMPOTENT (same bytes twice, and load->flush reproduces the carried lines exactly), and a REAL RESUMED GUEST RUN gets the true name and the reason back on the outbound leg; and the FIVE SHOULD-FIXES THE P8 REVIEW FOUND ARE CLOSED, each against its own PRE-FIX CONTROL of the SAME source: a crafted-but-valid DENIED row can no longer drive the outbound leg unbounded (the loader applies the writer's bound at LOAD, so a 1 MB denial_text is restored as 512 MARKED bytes, while the control emits the reviewer's 1,048,576 and a call_id longer than the wire could carry is refused); the seat writes ONE ROW PER call_id (a re-serve is a repeat, not a second call — no phantom UNRESOLVED at any exit, phase 59's own log holding 1 row for its one guest-side call — the control inflating it and reporting the phantom), with the LOADER matching the writer by REFUSING a duplicate row; the LOAD is LINEAR rather than quadratic (100,000 rows in well under a 20 s bound where the pre-fix binary measured 89.7 s) and the over-cap refusal names a way out the gate RUNS — the DENIED-row compaction, whose rebuilt map still holds every denial; --log is REFUSED AT THE DOOR unless it is a regular file this seat owns (a FIFO that hung the pre-fix shape silently under a bounded control, a device node a flush would have renamed over, a symlink that would have split the record, a directory, all loud before anything is served or written); and a CARRIED row keeps the reading it was written with (its own allow_scope, byte-for-byte, where the control REWORDS it to claim a seat that judged nothing), while the turn field is validated as a whole non-negative number and the CRLF normalization is announced instead of silent; and the LIVE LANE'S LIVENESS SIGNALLING is closed (P10-fix), so the availability half of 'never a silent green' is enforced too: a REACHABLE-BUT-BROKEN response — no header block at all, an LF-only or non-HTTP status line, a Content-Length the socket does not honour, a chunked body with no well-formed zero chunk, or a body past the DOCUMENTED 32 MiB cap — is a LOUD NAMED failure (rc=1) where the pre-fix shape ended rc=0 with the bytes (or the whole header block) served to a guest that reads EOF as a FINISH, while a clean close-delimited 200 still passes; the HTTP HEADER BLOCK is never served as the body (the raw stream the guest reads begins with the BODY's own bytes, captured from the device); a credential embedded in the endpoint URL is never printed (userinfo refused by name and shown as <redacted>@, a query shown as ?<redacted>, and a CR/LF in the URL or the key refused before it could be sent); and the live arm's own observation rides in this echo, so an arm whose model made no call cannot read as an arm that proved something. $LIVE_STATUS"
+echo "PASS hostgate: the transparent proxy is stream-transparent (arm == control) and a mangling proxy is caught; the per-turn open/close mechanics hold through one proxy process; the one log JOINS every answered call by call_id and REPORTS every call it could not join; a join compiled out flips the pass by content; every model-controlled free-text field arrives MARKED while the join key renders verbatim; the DECODE GATE holds the channel invariant for a denied call (the true name never crosses) in the presence of interleaves, duplicate/never-opened dones, open-at-completed items and over-cap streams, with a pinned pre-fix control for each; the RESERVED NAME is a CHECKED property (it passes the guest's charset, collides with no verb of a catalog pinned by sha256 and cross-checked against the verbs server's own table, and the proxy REFUSES TO START on a collision — while the same source with the check compiled out starts and DISPATCHES the colliding name: the silent allow); and the JUSTIFICATION is required in the injected tools schema, judged on the argument accumulator the guest actually dispatches (a done-args-only judge is pinned and caught), denied BY NAME through the existing substitution on the outbound leg, and REPORTED BY A DENIAL-RATE INSTRUMENT whose own compiled-out mutant leaves the dead-agent shape invisible; and THE OPERATOR IS A REAL AUTHOR AT THIS SEAT (P6: the pinned ops policy, its PINS check, its alias table with the TWO-FORM grammar re-run here, and its per-call fact injection with the path canonicalized before matching) with the D1/D2 split NAMED in the startup line — D1 evaluated here, D2 and the compiled-in FLOOR enforced IN-GUEST ONLY because this seat can see neither — the D2 bound ASSERTED in both directions, the ALLOWED row carrying its own seat-scoped allow_scope qualifier (so a durable record cannot read as a permission the seat never grants) with the LOADED-BUT-INERT branch pinned by its own D2-only arm, and the seat's three failure directions each pinned against a control of the SAME source (fail-open when the seat is compiled out, over-deny when it binds the floor it cannot see, silent allow when it matches the raw path); and THE CLAIM AUTHOR AT THIS SEAT (P7) pins the file that COMPUTES every verdict (a swapped always-derives eval_calls.py is REFUSED at startup, while the same source with the evaluator exempt from the pin arms and lets the forbidden call CROSS and EXECUTE), BOUNDS the per-call evaluator (a hung one becomes a RECORDED refusal with its row written, while the same source with no deadline HANGS and writes NOTHING — the dead-agent instrument's blind spot), and refuses a folded verb-SYMBOL mapped by TWO runtime verbs at both check sites (--check-verbs and the seat's loader), so no shared symbol can let one contention justify two runtime verbs; and the ONE LOG SURVIVES A KILL/RESTART (the load is a gate: a corrupt log refuses LOUDLY and is left untouched) with its second role as the JOIN STATE rebuilt from it — a pre-restart denial is restored and substituted on the frame the model sees — while the SAME source with the load compiled out WIPES the record and leaves the denial un-restored, the replay is IDEMPOTENT (same bytes twice, and load->flush reproduces the carried lines exactly), and a REAL RESUMED GUEST RUN gets the true name and the reason back on the outbound leg; and the FIVE SHOULD-FIXES THE P8 REVIEW FOUND ARE CLOSED, each against its own PRE-FIX CONTROL of the SAME source: a crafted-but-valid DENIED row can no longer drive the outbound leg unbounded (the loader applies the writer's bound at LOAD, so a 1 MB denial_text is restored as 512 MARKED bytes, while the control emits the reviewer's 1,048,576 and a call_id longer than the wire could carry is refused); the seat writes ONE ROW PER call_id (a re-serve is a repeat, not a second call — no phantom UNRESOLVED at any exit, phase 59's own log holding 1 row for its one guest-side call — the control inflating it and reporting the phantom), with the LOADER matching the writer by REFUSING a duplicate row; the LOAD is LINEAR rather than quadratic (100,000 rows in well under a 20 s bound where the pre-fix binary measured 89.7 s) and the over-cap refusal names a way out the gate RUNS — the DENIED-row compaction, whose rebuilt map still holds every denial; --log is REFUSED AT THE DOOR unless it is a regular file this seat owns (a FIFO that hung the pre-fix shape silently under a bounded control, a device node a flush would have renamed over, a symlink that would have split the record, a directory, all loud before anything is served or written); and a CARRIED row keeps the reading it was written with (its own allow_scope, byte-for-byte, where the control REWORDS it to claim a seat that judged nothing), while the turn field is validated as a whole non-negative number and the CRLF normalization is announced instead of silent; and the LIVE LANE'S LIVENESS SIGNALLING is closed (P10-fix), so the availability half of 'never a silent green' is enforced too: a REACHABLE-BUT-BROKEN response — no header block at all, an LF-only or non-HTTP status line, a Content-Length the socket does not honour, a chunked body with no well-formed zero chunk, or a body past the DOCUMENTED 32 MiB cap — is a LOUD NAMED failure (rc=1) where the pre-fix shape ended rc=0 with the bytes (or the whole header block) served to a guest that reads EOF as a FINISH, while a clean close-delimited 200 still passes; the HTTP HEADER BLOCK is never served as the body (the raw stream the guest reads begins with the BODY's own bytes, captured from the device); a credential embedded in the endpoint URL is never printed (userinfo refused by name and shown as <redacted>@, a query shown as ?<redacted>, and a CR/LF in the URL or the key refused before it could be sent); and the live arm's own observation rides in this echo, so an arm whose model made no call cannot read as an arm that proved something. $LIVE_STATUS; a HOST-TOOL call is an ORDINARY function_call (the SAME judge, the SAME denial path) and only the ALLOWED path dispatches it to the compiled-in host registry, whose result reaches the model through the EXISTING outbound substitution keyed on call_id (the pinned pre-S1 proxy crosses the SENTINEL instead); a host tool that collides with a guest verb is REFUSED at startup; and the executor compiled out is caught on the wire as SILENT DEGRADATION (S1 does NOT yet exercise argument judgement — host_time takes no arguments); the exec map is rebuilt across a restart and one call_id is executed at most ONCE; and an executed host call whose substitution never fires is REPORTED as an unresolved-substitution row"

@@ -533,6 +533,13 @@ static char *reasons_breakdown_json(const char *const *names,
  * carry an empty denial where a real one is owed. */
 #define FH_REASON_UNJUDGED_ITEM "item never completed and was not judged"
 
+/* S1: THE EXECUTOR FIELD'S ONE VALUE.  A call row carries `exec` exactly when
+ * the HOST ran the call (the guest executes everything else, which is the
+ * default and renders nothing).  A closed vocabulary of two spellings — the
+ * field's absence and this one — so the loader can refuse anything else by
+ * name rather than carrying an unreadable binding. */
+#define FH_EXEC_HOST "host"
+
 /* Bounded copy of a free-text field: capped at FH_BOUND bytes with an
  * explicit truncation marker naming the original length when cut. */
 #ifdef FH_MUTANT_NO_BOUND
@@ -632,6 +639,13 @@ struct row {
      * was written; NULL means "this process wrote the row", and only then is
      * the scope computed from the seats that are live now. */
     char *allow_scope;
+    /* S1: WHICH SIDE EXECUTED THE CALL — "host" on a host-executed row, NULL
+     * everywhere else (guest rows render byte-identically, which is the
+     * offline qemu arms' control).  A FIELD, not a derivation from the
+     * registry: the registry changes by re-pin, and a row must carry ITS OWN
+     * reading of its scope (the P6-fix R5 lesson) — a name that later becomes
+     * (or ceases to be) a host tool must not rewrite history. */
+    char *exec;
     long turns_served;      /* ROW_EXIT */
     size_t *unresolved_idx; /* ROW_EXIT: indices of still-pending rows */
     size_t n_unresolved;
@@ -860,6 +874,15 @@ static void log_flush(void) {
                     r->ts, r->turn, jid, jname, jargs,
                     r->pending ? "true" : "false",
                     jout ? jout : "null");
+            /* S1: `exec` renders ONLY where present, so a guest row is
+             * BYTE-IDENTICAL to the pre-S1 record (the offline arms' control).
+             * It sits between the call's own fields and the verdict fields
+             * because it answers "who ran this" beside "was it allowed". */
+            if (r->exec) {
+                char *jexec = json_str(r->exec);
+                fprintf(f, ",\"exec\":%s", jexec);
+                free(jexec);
+            }
             /* P3/P5/P6/P7: the verdict fields render ONLY when a policy actually
              * ran (the brief's honesty rule).  `author` names what ran — the
              * placeholder denylist, the ops policy at this seat (P6), the
@@ -1515,6 +1538,61 @@ static struct deny_key *dmap_put(const char *call_id, const char *true_name,
     return k;
 }
 
+/* ── S1: THE EXEC MAP — the SECOND substitution map, BESIDE the deny map ────
+ *
+ * The deny map holds what the HOST refuses; this one holds what the HOST ran.
+ * Same key (call_id — never a name, never a position), same discipline: the
+ * outbound pass substitutes the stored host result into the guest's
+ * function_call_output UNCONDITIONALLY ON MEMBERSHIP (never on the text, which
+ * the guest controls), and the entry's substitution window is the join's own
+ * window, reported when it closes unfired (the SAME unresolved-substitution
+ * instrument, extended rather than duplicated).
+ *
+ * DENY-MAP PRECEDENCE IS BY CONSTRUCTION, not by ordering: a denied call was
+ * never executed, so no call_id is ever in both maps.
+ *
+ * NOT INDEXED, deliberately (the deny map is: P8-fix R3, because the LOAD
+ * scanned it once per row).  This map is never loaded in full — see log_load,
+ * which puts only the EXEC rows — and a run's host calls are a handful; the
+ * linear scan is the honest size of the structure, and the population is a
+ * closed compiled-in registry, not model text. */
+struct exec_key {
+    char *call_id;
+    char *output; /* the bounded host result, as the model will read it */
+    long exec_turn;
+    int subst_pending;
+};
+static struct exec_key *g_emap;
+static size_t g_nemap, g_emapcap;
+
+static struct exec_key *emap_find(const char *call_id) {
+    if (!call_id) return NULL;
+    for (size_t i = 0; i < g_nemap; i++) {
+        if (strcmp(g_emap[i].call_id, call_id) == 0) return &g_emap[i];
+    }
+    return NULL;
+}
+
+static struct exec_key *emap_put(const char *call_id, const char *output,
+                                 long turn) {
+    struct exec_key *e = emap_find(call_id);
+    if (!e) {
+        if (g_nemap == g_emapcap) {
+            g_emapcap = g_emapcap ? g_emapcap * 2 : 8;
+            g_emap = realloc(g_emap, g_emapcap * sizeof *g_emap);
+            if (!g_emap) die_errno("realloc exec map");
+        }
+        e = &g_emap[g_nemap++];
+        memset(e, 0, sizeof *e);
+        e->call_id = xstrdup(call_id);
+    }
+    free(e->output);
+    e->output = xstrdup(output ? output : "");
+    e->exec_turn = turn;
+    e->subst_pending = 1;
+    return e;
+}
+
 /* ── P8: THE LOG IS LOADED AT STARTUP — IT IS THE JOIN STATE ────────────────
  *
  * WHY THIS EXISTS AT ALL.  The one log has TWO roles: the audit record and
@@ -1955,6 +2033,37 @@ static void log_load(void) {
         r->verdict = verdict;
         const char *out = log_str(root, "outcome", lineno);
         r->outcome = out ? LOAD_BOUND(out) : NULL;
+        /* S1: `exec` is an OPTIONAL field, and a CARRIED row keeps it — a
+         * loaded row re-renders through the same writer, so not reading it
+         * here would silently DROP the field from the record on the next
+         * flush (the P6-fix R5 reword class: the record rewording itself).
+         * Two shapes are refused by name because they are text this seat
+         * cannot write: an unknown binding, and a DENIED row that claims it
+         * executed. */
+        {
+            const char *ex = log_str_opt(root, "exec", lineno);
+            if (ex) {
+                if (strcmp(ex, FH_EXEC_HOST) != 0)
+                    log_refuse("line %d carries the UNKNOWN exec binding "
+                               "\"%s\" — this seat writes only \"%s\"",
+                               lineno, ex, FH_EXEC_HOST);
+                if (verdict == VERDICT_DENIED)
+                    log_refuse("line %d is a DENIED row that also claims "
+                               "exec=%s.  A denied call is never executed (the "
+                               "deny decision forks nothing, and the executor "
+                               "is on the allowed path only), so these two "
+                               "readings cannot both be this seat's",
+                               lineno, ex);
+                if (!r->outcome)
+                    log_refuse("line %d claims exec=%s with NO outcome — an "
+                               "executed call's result IS what the substitution "
+                               "delivers, and substituting an empty string "
+                               "would put a BLANK tool result in front of the "
+                               "model",
+                               lineno, ex);
+                r->exec = xstrdup(ex);
+            }
+        }
         if (verdict == VERDICT_DENIED) {
             r->author = LOAD_BOUND(log_str_req(root, "author", lineno));
             r->refusal_name =
@@ -1983,6 +2092,19 @@ static void log_load(void) {
              * recorded one. */
             const char *scope = log_str_opt(root, "allow_scope", lineno);
             r->allow_scope = scope ? xstrdup(scope) : NULL;
+            /* S1: THE EXEC MAP IS REBUILT WITH THE DENY MAP — every carried
+             * host-executed row (answered or not) is put back, exactly as a
+             * denial is, because the guest REPLAYS old function_call_outputs
+             * in a resumed run's conversation and each of those must still be
+             * substituted with the result the host produced.  The window flag
+             * is the row's own: still-pending means the substitution never
+             * fired, and this run's unresolved-substitution instrument will
+             * say so if it does not fire now either. */
+            if (r->exec) {
+                struct exec_key *e =
+                    emap_put(cid, r->outcome ? r->outcome : "", r->turn);
+                if (e) e->subst_pending = r->pending ? 1 : 0;
+            }
         }
         /* P8-fix (R3): index the loaded call row, so the one-row-per-call_id
          * check above and the per-item lookups below are O(1) — the linear
@@ -2003,10 +2125,11 @@ static void log_load(void) {
     g_load_rows = g_nrows;
     note("log: LOADED %zu row(s) from %s — %zu call row(s) (%zu denied, %zu "
          "still pending), %zu carried telemetry/terminal row(s); the deny map "
-         "is REBUILT with %zu key(s), so pre-restart denials are restored and "
+         "is REBUILT with %zu key(s) and the exec map with %zu, so "
+         "pre-restart denials AND host-executed results are restored and "
          "substituted on this run's outbound leg",
          g_nrows, g_log_path, g_load_calls, g_load_denied, g_load_pending,
-         g_load_rows - g_load_calls, g_ndmap);
+         g_load_rows - g_load_calls, g_ndmap, g_nemap);
 #endif /* FH_MUTANT_NO_LOG_LOAD */
 }
 
@@ -2030,13 +2153,21 @@ static void log_state_print(void) {
         if (r->pending) pending++;
     }
     printf("log-state rows=%zu calls=%zu denied=%zu pending=%zu history=%zu "
-           "dmap=%zu carried=%zu\n",
-           g_nrows, calls, denied, pending, hist, g_ndmap, g_load_rows);
+           "dmap=%zu exec=%zu carried=%zu\n",
+           g_nrows, calls, denied, pending, hist, g_ndmap, g_nemap, g_load_rows);
     for (size_t i = 0; i < g_ndmap; i++) {
         printf("dmap %s\t%s\t%s\tpending=%d\n", g_dmap[i].call_id,
                g_dmap[i].true_name ? g_dmap[i].true_name : "",
                g_dmap[i].denial_text ? g_dmap[i].denial_text : "",
                g_dmap[i].subst_pending);
+    }
+    /* S1: the exec map is the OTHER substitution state a resumed run enforces,
+     * so the canonical digest describes it the same way (the rows carry the
+     * binding; this is what the outbound leg will actually write). */
+    for (size_t i = 0; i < g_nemap; i++) {
+        printf("emap %s\t%s\tpending=%d\n", g_emap[i].call_id,
+               g_emap[i].output ? g_emap[i].output : "",
+               g_emap[i].subst_pending);
     }
 }
 
@@ -2186,8 +2317,10 @@ static const char fh_verb_catalog[] =
 /* validate_identifier's charset, MIRRORED (src/runner.c:49-70):
  * ^[A-Za-z0-9._-]+$ and not starting with '-'.  Mirrored on purpose — the
  * guest's rule IS the contract the reserved name must satisfy, and the proxy
- * must not "improve" it into a rule the guest does not enforce. */
-#ifndef FH_MUTANT_NO_NAME_CONTRACT
+ * must not "improve" it into a rule the guest does not enforce.
+ * The PREDICATE is not the contract: FH_MUTANT_NO_NAME_CONTRACT blinds the
+ * CHECK (the reserved-name refusal), never this mirror of the guest's own
+ * rule — which S1's host-tool check consults as well. */
 static int fh_identifier_ok(const char *s) {
     if (!s || !*s) return 0;
     if (s[0] == '-') return 0;
@@ -2199,8 +2332,6 @@ static int fh_identifier_ok(const char *s) {
     }
     return 1;
 }
-
-#endif /* FH_MUTANT_NO_NAME_CONTRACT */
 
 /* Catalog accessors: count the lines; copy the idx-th name into buf. */
 static size_t fh_catalog_count(void) {
@@ -2230,11 +2361,219 @@ static int fh_catalog_nth(size_t idx, char *buf, size_t cap) {
     return 0;
 }
 
+/* ── S1: THE HOST-TOOL REGISTRY — THE EXECUTOR DIMENSION ────────────────────
+ *
+ * A host-executed tool call is an ORDINARY function_call in the proxied
+ * stream.  It is judged by call_judge EXACTLY as a guest verb is (denial does
+ * NOT fork per executor: the deny decision and the fx_host_denied rewrite are
+ * the same code path for both), and ONLY on the allowed path does this
+ * registry decide "execute here" instead of "forward to the guest".  The
+ * result reaches the model through the EXISTING outbound substitution, keyed
+ * on call_id (the exec map) — no third author, no type layer, no new row type
+ * and no new reporter class.
+ *
+ * THE TABLE IS A SECOND CLOSED VOCABULARY, BESIDE the guest mirror and NOT
+ * MERGED WITH IT.  fh_verb_catalog is a NAME LIST whose only jobs are the
+ * reserved-name collision check and the injected tools array; a host tool
+ * carries what that list must not grow (an executor binding, and later its
+ * argument classes and compiled-in ceilings).  Merging them would re-pin the
+ * guest mirror on every host-tool addition and blur "what the guest can do"
+ * against "what the host executes" in the one list the P4 contract prints.
+ * Nothing about a call's SHAPE tells a reader which side owns it; the two
+ * pinned name lists do, and both are printable at rest (--print-catalog,
+ * --print-host-tools) with their pins.
+ *
+ * WHAT THE PIN COVERS, stated as narrowly as it is true: the registry's NAME
+ * LIST, one name per line in table order, rendered from this ONE table (there
+ * is deliberately no second spelling of the names to drift against).  An
+ * executor REBINDING (host_time made to run something else) is C code and is
+ * not covered by the pin — it is a reviewed edit, and the honest claim is
+ * "the closed vocabulary is pinned", not "the behaviour is".
+ *
+ * S1 IS THE MECHANISM PROOF, NOT THE AUTHORITY: host_time takes NO arguments
+ * of its own (zero classed dimensions), so the argument-judgement risk the
+ * plan ranks FIRST — a host call silently permitted because its argument
+ * matched no class row — is NOT exercised here and must not be claimed as
+ * covered.  It arrives with the classed tools.
+ *
+ * FAILURE DIRECTION, named: an executor that is missing (registry lookup
+ * compiled out, or the name never in the table) is a SILENT DEGRADATION —
+ * the call forwards to the guest, the guest refuses the unknown name with
+ * -32602, the model reads "(tool call failed)" while the logs look
+ * protective.  That is why the gate drives the FH_MUTANT_NO_EXEC build
+ * through the same fixture and asserts the sentinel CROSSES. */
+
+/* The name is a BUILD-TIME override for the gate's collision arms only (the
+ * same same-source discipline FH_RESERVED_NAME uses): the real registry has
+ * exactly the names below. */
+#ifndef FH_HOSTTOOL_NAME
+#define FH_HOSTTOOL_NAME "host_time"
+#endif
+
+#define FH_HOSTTOOL_PROVENANCE \
+    "tools/fx-hostgate.c: the S1 compiled-in host-tool table"
+/* sha256 (lowercase hex) over the rendered name list; RE-PIN after an edit:
+ *   build/fx-hostgate --print-host-tools-sha
+ * (a build that overrides FH_HOSTTOOL_NAME must override this pin with it,
+ * or the pin check refuses — the refusal names both shas). */
+#ifndef FH_HOSTTOOL_SHA256
+#define FH_HOSTTOOL_SHA256 \
+    "711ee0fe960b5dd2378ce0a283ec44c04f4c242ae04ba65ed64d790ac660f792"
+#endif
+
+/* THE EXECUTOR.  It reads NO argument: the call's arguments (one of which may
+ * be the host-level `justification`, judged by call_judge BEFORE this point)
+ * are not read here at all, which is what makes S1's proof about the ROUTE
+ * rather than about any authority.  The result is bounded by construction. */
+static char *host_exec_time(void) {
+    char clock[40];
+    now_ts(clock, sizeof clock);
+    const char *tail =
+        " (host_time: the HOST's wall clock, UTC; executed on the host side of "
+        "the chardev, not in the guest)";
+    char *s = xmalloc(strlen(clock) + strlen(tail) + 1);
+    snprintf(s, strlen(clock) + strlen(tail) + 1, "%s%s", clock, tail);
+    return s;
+}
+
+struct host_tool {
+    const char *name;
+    char *(*exec)(void); /* returns a malloc'd result */
+};
+
+/* THE CLOSED TABLE.  A call is executed only if its name is found HERE, so the
+ * set of things the host can run is a source-level constant — the same
+ * cannot-invent-a-tool-name property the closed fx-* verb set gives the
+ * guest. */
+static const struct host_tool fh_host_tools[] = {
+    { FH_HOSTTOOL_NAME, host_exec_time },
+};
+
+static size_t fh_host_tool_count(void) {
+    return sizeof fh_host_tools / sizeof fh_host_tools[0];
+}
+
+/* The registry's PINNED BYTES, rendered from the ONE table. */
+static void fh_host_tool_catalog(struct tbuf *t) {
+    for (size_t i = 0; i < fh_host_tool_count(); i++) {
+        tb_puts(t, fh_host_tools[i].name);
+        tb_puts(t, "\n");
+    }
+}
+
+/* THE ONLY WAY IN.  Not finding the name is the guest's call to make (it
+ * forwards verbatim); a default case here would be the "try anyway" executor
+ * the plan ranks the second-most-likely-silently-wrong, so there is none.
+ * COMPILED OUT under FH_MUTANT_NO_EXEC — the blind IS this lookup's absence
+ * (see host_dispatch): nothing else reads the registry at run time. */
+#ifndef FH_MUTANT_NO_EXEC
+static const struct host_tool *fh_host_tool_find(const char *name) {
+    if (!name) return NULL;
+    for (size_t i = 0; i < fh_host_tool_count(); i++) {
+        if (strcmp(fh_host_tools[i].name, name) == 0) return &fh_host_tools[i];
+    }
+    return NULL;
+}
+#endif /* FH_MUTANT_NO_EXEC */
+
+/* THE REGISTRY'S CONTRACT CHECK — the SAME refusal posture (and the SAME
+ * loop) fh_catalog_check applies to the reserved name, extended to every host
+ * tool.  A collision is a SILENT ALLOW in both directions: a host tool named
+ * `fx_read` is executed by the host AND dispatched by the guest on the same
+ * call; a name the guest cannot parse degrades the call's shape on the
+ * chardev.  Both are refusals at startup, before the slave path is published,
+ * because "the proxy started" is the last moment a reader could be told. */
+static void fh_host_tool_check(void) {
+    char got[65];
+    struct tbuf t = {0};
+    fh_host_tool_catalog(&t);
+    sha256_hex(t.len ? t.p : "", t.len, got);
+    if (strcmp(got, FH_HOSTTOOL_SHA256) != 0) {
+        free(t.p);
+        note("FATAL: the pinned host-tool registry (%s) hashes to %s, but the "
+             "compiled pin is %s — the table was edited without a re-pin, so "
+             "the collision check would be checking bytes the pin does not "
+             "describe.  RE-PIN (--print-host-tools-sha) or restore the table; "
+             "REFUSING TO START",
+             FH_HOSTTOOL_PROVENANCE, got, FH_HOSTTOOL_SHA256);
+        exit(1);
+    }
+    free(t.p);
+#ifdef FH_MUTANT_NO_HOST_COLLISION
+    /* S1 MUTATION BLIND (build/fx-hostgate-nohostcoll): the collision and
+     * charset loop is compiled OUT while the table itself is built with a
+     * COLLIDING name (FH_HOSTTOOL_NAME = a guest verb).  The proxy STARTS and
+     * the colliding call is EXECUTED BY THE HOST — the silent allow this
+     * refusal exists to prevent; the gate's arm must catch it by the dispatch
+     * marker.  The PIN check above is deliberately NOT blinded: a stale pin is
+     * a different property. */
+    note("S1 HOST-TOOL CONTRACT: COMPILED OUT (FH_MUTANT_NO_HOST_COLLISION) — "
+         "host-tool names are NOT checked against the guest's charset, the "
+         "reserved name or the pinned verb catalog; a collision would be a "
+         "silent allow");
+#else
+    size_t nverbs = fh_catalog_count();
+    char name[128];
+    for (size_t i = 0; i < fh_host_tool_count(); i++) {
+        const char *hn = fh_host_tools[i].name;
+        if (!fh_identifier_ok(hn)) {
+            note("FATAL: the host tool \"%s\" does NOT match the guest's "
+                 "validate_identifier charset ^[A-Za-z0-9._-]+$ (and must not "
+                 "start with '-' — src/runner.c:49-70).  The name crosses the "
+                 "chardev as the call's name, so an unparseable one is a "
+                 "silent shape degradation; REFUSING TO START",
+                 hn);
+            exit(1);
+        }
+        if (strcmp(hn, FH_RESERVED_NAME) == 0) {
+            note("FATAL: the host tool \"%s\" IS the reserved denial name — "
+                 "the host would execute what the record reserves for a "
+                 "refusal; REFUSING TO START",
+                 hn);
+            exit(1);
+        }
+        for (size_t v = 0; v < nverbs; v++) {
+            if (!fh_catalog_nth(v, name, sizeof name)) continue;
+            if (strcmp(name, hn) == 0) {
+                note("FATAL: the host tool \"%s\" COLLIDES with catalog verb "
+                     "\"%s\" (%s).  The call would be EXECUTED BY THE HOST and "
+                     "ALSO DISPATCHED BY THE GUEST under one name — two "
+                     "executors, one reading = a SILENT ALLOW; REFUSING TO "
+                     "START",
+                     hn, name, FH_CATALOG_PROVENANCE);
+                exit(1);
+            }
+        }
+        for (size_t j = 0; j < i; j++) {
+            if (strcmp(fh_host_tools[j].name, hn) == 0) {
+                note("FATAL: the host tool \"%s\" appears TWICE in the "
+                     "registry — the dispatch lookup would resolve to one "
+                     "entry and the pin would describe two; REFUSING TO START",
+                     hn);
+                exit(1);
+            }
+        }
+    }
+    note("S1 host-tool contract: %zu host tool(s) pass the guest's identifier "
+         "charset, collide with neither the reserved name nor any of the %zu "
+         "pinned catalog verb(s), and are unique; registry sha256 %.12s.. "
+         "(pinned), %s",
+         fh_host_tool_count(), nverbs, got, FH_HOSTTOOL_PROVENANCE);
+#endif /* FH_MUTANT_NO_HOST_COLLISION */
+}
+
 /* THE CONTRACT CHECK — a STARTUP REFUSAL, loud and non-zero, before the slave
  * path is published: the three properties P4 exists to make checked.  A
  * refusal is the only honest output here; "the proxy ran but the reserved
  * name was callable" has no log line that could make it visible in time. */
 static void fh_catalog_check(void) {
+    /* S1: the host-tool registry's own contract — the SAME check, one loop and
+     * one refusal posture extended to every host tool, at the SAME moment
+     * (before the slave path is published).  It runs BEFORE the name-contract
+     * blind below: the registry PIN and the collision are different properties
+     * from the reserved name's, and the collision has its OWN blind
+     * (FH_MUTANT_NO_HOST_COLLISION). */
+    fh_host_tool_check();
 #ifdef FH_MUTANT_NO_NAME_CONTRACT
     /* P4 MUTATION BLIND (build/fx-hostgate-nonamecheck): the whole contract
      * is compiled OUT.  The gate's arms pair it with a colliding / bad-charset
@@ -4076,7 +4415,14 @@ static const char *authors_ran(void) {
 
 /* THE INJECTED CATALOG — one tool per pinned verb, `justification` a REQUIRED
  * string property so the schema itself demands the claim.  Built from the same
- * fh_verb_catalog the collision check uses: one list, one provenance. */
+ * fh_verb_catalog the collision check uses: one list, one provenance.
+ *
+ * S1: the HOST-TOOL REGISTRY is appended from its OWN table (one list each,
+ * one provenance each — the injection is a third reader of the closed
+ * vocabularies and drifts against neither because it holds no name of its
+ * own).  A host tool's entry has the SAME shape: the justification is the
+ * host-level claim the judge reads, and the tool's own arguments are the
+ * executor's business (S1's host_time reads none). */
 #ifndef FH_MUTANT_NO_TOOLS_INJECT
 static void tools_inject_json(struct tbuf *t) {
     tb_puts(t, "[");
@@ -4098,10 +4444,89 @@ static void tools_inject_json(struct tbuf *t) {
                 "(absent-justification).\"}},\"required\":[\"justification\"],"
                 "\"additionalProperties\":true}}");
     }
+    for (size_t i = 0; i < fh_host_tool_count(); i++) {
+        if (n || i) tb_puts(t, ",");
+        tb_puts(t, "{\"type\":\"function\",\"name\":\"");
+        tb_puts(t, fh_host_tools[i].name);
+        tb_puts(t,
+                "\",\"description\":\"hostgate: EXECUTED ON THE HOST (the "
+                "guest has no such verb); it takes no arguments of its own. "
+                "The justification is the claim the host judges before "
+                "anything runs\",\"parameters\":{\"type\":\"object\","
+                "\"properties\":{\"justification\":{\"type\":\"string\","
+                "\"description\":\"REQUIRED: why this call is being made "
+                "(what it is for, and what it is expected to affect). A call "
+                "without one is denied by name "
+                "(absent-justification).\"}},\"required\":[\"justification\"],"
+                "\"additionalProperties\":true}}");
+    }
     tb_puts(t, "]");
 }
 
 #endif /* FH_MUTANT_NO_TOOLS_INJECT */
+
+/* ── S1: THE ALLOWED-PATH DISPATCH — THE ONE PLACE AN OUTSIDE EFFECT HAPPENS ─
+ *
+ * Called at the decode's allowed branch ONLY, AFTER call_judge returned
+ * "not denied": the executor is a leaf of the judgement, never a second
+ * judge.  It cannot deny, it cannot rewrite the item, and it does not decide
+ * whether the call crosses to the guest — the call ALWAYS crosses (the guest
+ * must see it: turn.n_tool_calls > 0, or the loop ends the run dressed as a
+ * completion), and the guest's -32602 for the unknown name is REPLACED on the
+ * outbound leg by the result stored here.
+ *
+ * THREE PROPERTIES THAT ARE REFUSALS RATHER THAN DEFAULTS:
+ *  - no policy armed -> NO EXECUTION.  The host runs a call only where an
+ *    author judged it; an unarmed proxy would otherwise execute with no
+ *    author at all (fail-open), so the call simply forwards and the guest
+ *    refuses it.
+ *  - the name is not in the registry -> not ours: the guest's call, verbatim.
+ *  - a call_id already executed -> NOT executed again.  ONE outside effect
+ *    per call_id, the same rule the record keeps (one row per call_id): a
+ *    re-served item is the upstream repeating itself, not a second call. */
+static void host_dispatch(const char *name, const char *call_id, long turn,
+                          struct row *r) {
+#ifdef FH_MUTANT_NO_EXEC
+    /* S1 MUTATION BLIND (build/fx-hostgate-noexec): the registry LOOKUP is
+     * compiled out, so every call forwards to the guest — including the ones
+     * the registry owns.  The guest answers -32602, the model reads
+     * "(tool call failed)", and EVERYTHING ELSE LOOKS PROTECTIVE: that is the
+     * silent degradation this slice must be able to catch, and the gate's arm
+     * asserts the sentinel CROSSES UNSUBSTITUTED on the wire capture. */
+    note("turn %ld: HOST-TOOL DISPATCH COMPILED OUT (FH_MUTANT_NO_EXEC) — "
+         "call_id=%s name=%s forwards to the guest; the model will be handed "
+         "the guest's own sentinel in place of the result",
+         turn, call_id, name);
+    (void)r;
+#else
+    if (!policy_armed()) return;
+    const struct host_tool *ht = fh_host_tool_find(name);
+    if (!ht) return;
+    if (r && r->exec) {
+        note("turn %ld: call_id=%s (name=%s) was ALREADY EXECUTED ON THE HOST "
+             "(turn %ld) — a re-served item is the upstream repeating a call, "
+             "not a second one, so it is NOT executed again",
+             turn, call_id, name, r->turn);
+        return;
+    }
+    char *res = ht->exec();
+    emap_put(call_id, res, turn);
+    if (r) {
+        free(r->outcome);
+        r->outcome = xstrdup(res);
+        free(r->exec);
+        r->exec = xstrdup(FH_EXEC_HOST);
+    }
+    log_flush();
+    note("turn %ld: host-execute call_id=%s name=%s -> EXECUTED ON THE HOST; "
+         "the result is armed for the outbound substitution (the guest still "
+         "receives the call verbatim and answers it with its own sentinel: "
+         "-32602 for a name that is no guest verb)",
+         turn, call_id, name);
+    free(res);
+#endif /* FH_MUTANT_NO_EXEC */
+}
+
 /* ── the decode gate: judge at item completion, rewrite the name ────────── */
 
 #ifndef FH_MUTANT_NO_REWRITE /* the control build forwards even denied calls */
@@ -4883,12 +5308,23 @@ static unsigned char *serve_stream(const unsigned char *buf, size_t len,
 #endif
                                 free(denial);
                             } else {
-                                row_call_record(cid, nm, jargs, turn,
-                                                policy_armed() ? VERDICT_ALLOWED
-                                                               : VERDICT_NONE,
-                                                policy_armed() ? authors_ran()
-                                                               : NULL,
-                                                NULL, NULL, NULL);
+                                struct row *rr =
+                                    row_call_record(cid, nm, jargs, turn,
+                                                    policy_armed() ? VERDICT_ALLOWED
+                                                                   : VERDICT_NONE,
+                                                    policy_armed() ? authors_ran()
+                                                                   : NULL,
+                                                    NULL, NULL, NULL);
+                                /* S1: THE ALLOWED-PATH DISPATCH.  The judge
+                                 * has already run IDENTICALLY for a host tool
+                                 * and a guest verb; only here — and only
+                                 * after it did not deny — does the registry
+                                 * decide whether the HOST executes.  The
+                                 * item still forwards VERBATIM: the guest
+                                 * must see the call (n_tool_calls > 0), and
+                                 * its -32602 sentinel is what the outbound
+                                 * leg replaces. */
+                                host_dispatch(nm, cid, turn, rr);
                                 tb_put(&out, o->ev.p, o->ev.len); /* verbatim */
                             }
                         }
@@ -5211,6 +5647,10 @@ static char *outbound_pass(const unsigned char *body, size_t body_len,
         const char *cid = yyjson_is_obj(it)
             ? yyjson_get_str(yyjson_obj_get(it, "call_id")) : NULL;
         struct deny_key *k = cid ? dmap_find(cid) : NULL;
+        /* S1: the SECOND map, consulted only where the deny map has nothing —
+         * deny-map precedence BY CONSTRUCTION (a denied call was never
+         * executed, so no call_id is in both). */
+        struct exec_key *e = (cid && !k) ? emap_find(cid) : NULL;
 
         if (ty && strcmp(ty, "function_call") == 0 && k) {
 #if !defined(FH_MUTANT_NO_REWRITE) && !defined(FH_MUTANT_NO_SUBSTITUTE)
@@ -5244,6 +5684,34 @@ static char *outbound_pass(const unsigned char *body, size_t body_len,
                      turn, cid);
 #else
                 tb_put_val(&arr, it);
+#endif
+            } else if (e) {
+                /* S1: THE HOST-EXECUTED CALL'S RESULT.  Unconditional on
+                 * membership, exactly as the denial substitution is: the bytes
+                 * the guest put here are ITS OWN words ("(tool call failed)",
+                 * because its verb table has no such name), never evidence
+                 * about what the host ran.  The stored result is the call's
+                 * result — the model learns it exactly as it learns a denial. */
+#if !defined(FH_MUTANT_NO_REWRITE) && !defined(FH_MUTANT_NO_SUBSTITUTE)
+                tb_put_obj_strset(&arr, it, "output", e->output);
+                e->subst_pending = 0;
+                /* the row's own reading follows the wire: the OUTCOME the
+                 * record carries for a host-executed call is the result the
+                 * model was actually handed (the join may have just written
+                 * the guest's sentinel there) */
+                struct row *rr = row_call_find(cid);
+                if (rr) {
+                    free(rr->outcome);
+                    rr->outcome = xstrdup(e->output);
+                    rr->pending = 0;
+                    log_flush();
+                }
+                note("turn %ld: outbound SUBSTITUTED call_id=%s output -> the "
+                     "HOST-EXECUTED result (the guest answered -32602 for a "
+                     "name that is no guest verb)",
+                     turn, cid);
+#else
+                tb_put_val(&arr, it); /* the control pins the un-substituted leg */
 #endif
             } else {
                 /* telemetry: an output matching NO call the host ever
@@ -5342,6 +5810,33 @@ static void subst_unresolved_check(long turn) {
             /* report once per missed window; the next decode's re-denial opens
              * a fresh window with a fresh denied_turn */
             k->subst_pending = 0;
+        }
+    }
+    /* S1: the SAME instrument over the exec map.  An executed host call whose
+     * substitution window closed WITHOUT firing is the silent degradation this
+     * slice's direction names: the host really ran the call (the outside
+     * effect happened) and the model was handed the guest's sentinel instead —
+     * an agent that never learns its result retries or gives up, while every
+     * policy line in the record looks protective.  Reported with its OWN
+     * meaning, on the same row type. */
+    for (size_t i = 0; i < g_nemap; i++) {
+        struct exec_key *e = &g_emap[i];
+        if (e->subst_pending && e->exec_turn < turn) {
+            /* the row's `true_name` is what this telemetry row renders (the
+             * deny direction passes the restored name there): for a host call
+             * it is the host tool's NAME, never the result — a result in a
+             * name field would read as a call the model never made */
+            const struct row *rr = row_call_find(e->call_id);
+            row_anom_append(ROW_ANOM_UNRESOLVED_SUBST, e->call_id,
+                            (rr && rr->true_name) ? rr->true_name
+                                                  : "(host-executed call)",
+                            turn);
+            note("turn %ld: unresolved-substitution: call_id=%s (EXECUTED ON "
+                 "THE HOST on turn %ld) never received its outbound "
+                 "substitution — the model was handed the guest's sentinel in "
+                 "place of the result (SILENT DEGRADATION)",
+                 turn, e->call_id, e->exec_turn);
+            e->subst_pending = 0;
         }
     }
 }
@@ -6107,6 +6602,13 @@ static void usage(void) {
     note("                  catalog (one name per line) / its sha256, for the");
     note("                  gate's INDEPENDENT cross-check against the real");
     note("                  VERBS[] table, and exit");
+    note("  --print-host-tools / --print-host-tools-sha  print the COMPILED-IN");
+    note("                  HOST-TOOL registry (one name per line) / its sha256,");
+    note("                  and exit.  These are the tools the HOST executes on");
+    note("                  the allowed path of a judged call; they are a");
+    note("                  SECOND closed list beside the guest's, pinned the");
+    note("                  same way, and no host-tool name may collide with a");
+    note("                  guest verb (a startup refusal)");
 }
 
 int main(int argc, char **argv) {
@@ -6164,6 +6666,23 @@ int main(int argc, char **argv) {
             char got[65];
             sha256_hex(fh_verb_catalog, strlen(fh_verb_catalog), got);
             printf("%s\n", got);
+            return 0;
+        } else if (!strcmp(argv[i], "--print-host-tools")) {
+            /* S1: THE SECOND CLOSED LIST, printed BESIDE the guest mirror —
+             * this is how a reader tells "what the guest can do" from "what
+             * the host executes" at rest (nothing derives it from a call's
+             * shape).  One name per line, then exit: a query about the
+             * binary, not a run. */
+            for (size_t k = 0; k < fh_host_tool_count(); k++)
+                printf("%s\n", fh_host_tools[k].name);
+            return 0;
+        } else if (!strcmp(argv[i], "--print-host-tools-sha")) {
+            struct tbuf t = {0};
+            char got[65];
+            fh_host_tool_catalog(&t);
+            sha256_hex(t.len ? t.p : "", t.len, got);
+            printf("%s\n", got);
+            free(t.p);
             return 0;
         } else {
             note("FATAL: unknown/incomplete argument '%s'", argv[i]);

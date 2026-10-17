@@ -1179,9 +1179,34 @@ regulator** — §6b's audit stance is what makes these records evidentially usa
       pinned-kernel guest.  The i386 artifact's JIT remains host-measured only: that artifact cannot
       exec in this guest at all, and the v86 lane is where its in-guest numbers must come from.)
 
-## 6. Egress (§7.1a) — designed, not built
+## 6. Egress (§7.1a) — the SHAPE WAS REVISED BY THE USER, and the mechanism is now built
 
-- [ ] **A closed, host-owned catalog of network PRIMITIVES** (`http.get`/`http.post` + allowed hosts,
+**⚠️ SUPERSEDED DESIGN (user, 2026-10-16), read this before the items below:** *"ok, i think it should
+work the same as the tool call + policies but the calls run on the host, not HTTP specific."* So egress is
+**NOT a type layer**: no Dhall union catalog and no typecheck bind seat (round-1's `policy/egress/` +
+`tools/fx-egress-bind.c` are **dead**). A host-executed tool call is an **ordinary `function_call` through
+the SAME gate and the SAME policies**; **only the EXECUTOR differs** (forced: the guest has no socket —
+the boot logs say `socket failed: Function not implemented`). The result reaches the model through the
+**existing outbound substitution**, so **zero guest code**, and it is an **ordinary call row** — no new row
+type and no new reporter class. **NOT HTTP-specific**: HTTP is one instance of a host tool.
+*(Why it is not "just" a policy: the DECISION genuinely is only policy; the EXECUTOR must be host-side;
+and the vocabulary is the one real choice — round 1 chose a type, the user chose judged arguments. That
+brings back an argument-normalisation surface, which is answered by a fail-closed totality rule — an
+argument matching no operator class row is REFUSED BY NAME — rather than by a type.)*
+- [x] **S1 — THE REGISTRY + `host_time` END-TO-END** (**UNCOMMITTED**). A compiled-in, sha-pinned
+      **host-tool table BESIDE (not merged with)** the guest `VERBS[]` mirror, with the **existing**
+      `fh_catalog_check` collision loop extended (a colliding name is a FATAL refusal before the slave
+      path is published); `host_time` takes **no arguments**; the dispatch sits on the **allowed** path
+      only, so **denial does not fork per executor**; an `exec` map beside the deny map substitutes the
+      real result on the next request; **one new field `exec`** on the call row, no new type. Gate arms
+      with real asymmetry, incl. a **pinned pre-S1 control built from `835ac49`** that crosses with the
+      sentinel **UNSUBSTITUTED**. *Orchestrator-verified:* 156 OK / 0 FAIL; an **unarmed** seat does NOT
+      execute (fail-closed), and an **armed-and-allowed** `host_time` really runs on the host — the row
+      carries `verdict=allowed, author=denylist, exec=host` and the outcome is the actual wall clock.
+      **S1 deliberately does NOT cover argument judgement** (`host_time` has none) — that is S2/S3's.
+
+- [ ] **THE OLD DESIGN ITEMS BELOW ARE NOW LARGELY SUPERSEDED** (kept for the reasoning they carry):
+      **A closed, host-owned catalog of network PRIMITIVES** (`http.get`/`http.post` + allowed hosts,
       methods, size caps) that Dhall declarations may only **instantiate, never invent** — modelled on
       fxstore's `Action` union. Without it a "Dhall tool schema" is a signature with no implementation,
       or a generic escape hatch.
