@@ -1,0 +1,5 @@
+# A HOST TOOL (host_cat) touching the PROTECTED alias's path: rule D3 must
+# deny.  hosttool is the S2 bridge; kind is deliberately ABSENT (host tools
+# carry no kind(write) fact), so D1 cannot fire and only D3 can deny.
+hosttool	host_cat
+touches	host_cat	/fx/disk/agent-config.dhall

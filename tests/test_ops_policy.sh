@@ -113,7 +113,8 @@ for f in "$EVAL" "$LEX" "$POLICY" "$TSV" "$ART" "$PINS" \
          "$FIX/claims-sentence-denied.le" "$FIX/deny-protected-ok.tsv" \
          "$FIX/deny-data-ok.tsv" "$FIX/deny-data-noboot.tsv" \
          "$FIX/deny-data-bootfailed.tsv" "$FIX/deny-data-sub-ok.tsv" \
-         "$FIX/read-protected-ok.tsv" "$CLAIMS_LEX" "$CLAIMS_PLEX"; do
+         "$FIX/read-protected-ok.tsv" "$FIX/deny-hostcat-protected.tsv" \
+         "$FIX/deny-hostcat-data.tsv" "$CLAIMS_LEX" "$CLAIMS_PLEX"; do
     [ -f "$f" ] || fail "missing $f"
 done
 
@@ -136,7 +137,7 @@ p.add_argument("--facts", required=True)
 a = p.parse_args()
 
 REL = {"denied": 2, "touches": 2, "kind": 2, "class": 2,
-       "protected": 1, "writable": 1, "boot_verdict": 1}
+       "protected": 1, "writable": 1, "hosttool": 1, "boot_verdict": 1}
 d = tempfile.mkdtemp(prefix="fx-ops-gate-")
 db = dlb.Db.open(d)
 for n, ar in REL.items():
@@ -264,7 +265,7 @@ python3 "$EVAL" --compile-policy --policy-le "$POLICY" --policy-lexicon "$LEX" >
     || fail "the second ops policy compile failed: $(cat "$W/policy.err")"
 cmp -s "$W/policy.1" "$W/policy.2" || fail "two ops policy compiles are NOT byte-identical (policy-pin determinism)"
 grep -c '^denied(' "$W/policy.1" > "$W/headcount"
-[ "$(cat "$W/headcount")" = 2 ] || fail "the ops policy artifact does not conclude exactly two denied rules ($(cat "$W/headcount"))"
+[ "$(cat "$W/headcount")" = 3 ] || fail "the ops policy artifact does not conclude exactly three denied rules ($(cat "$W/headcount"))"
 cmp -s "$W/policy.1" "$ART" || fail "policy/ops/ops-policy.dl is NOT the artifact a fresh compile produces -- regenerate it with 'make ops-policy-artifact' and update policy/ops/PINS in the same commit"
 for pair in 'ops-policy.dl' 'ops-lexicon.ini' 'ops-aliases.tsv'; do
     case $pair in
@@ -348,6 +349,12 @@ grep -q '^< boot_verdict	ok$' "$W/b4e-pair.diff" && grep -q '^> boot_verdict	fai
     || fail "b4e: the differing line is not the boot verdict's VALUE ($(cat "$W/b4e-pair.diff"))"
 # b4d: the kind scope holds: a READ on the protected path is not denied.
 deny_arm b4d-kind-scope "$FIX/read-protected-ok.tsv" 0
+# b4f: S2 D3's deny-direction — a HOST TOOL touching a PROTECTED path is
+# denied via the hosttool bridge (no kind(write) fact, so only D3 can fire).
+deny_arm b4f-d3-hosttool-protected "$FIX/deny-hostcat-protected.tsv" 1 '(host_cat, /fx/disk/agent-config.dhall)'
+# b4g: S2 D3's negative control — a host tool touching an UNprotected path is
+# NOT denied (the class is not protected; the DENY-ALL detector for D3).
+deny_arm b4g-d3-hosttool-negative "$FIX/deny-hostcat-data.tsv" 0
 
 echo "test_ops_policy: -- B5 the vocabulary seam: the loud refusal and the silent allow-all --"
 # b5a: LOUD.  An underscored runtime verb can never be a proper noun: lexicon
@@ -416,14 +423,24 @@ grep -qF 'denied(fx_write, /fx/disk/agent-data/sub/deep/file)' "$W/b5e.txt" && f
 echo "test_ops_policy: OK b5e-exact-never-prefix (a bare protected dir row denies the NODE only -- the grandchild is silently uncovered, exactly the S1 review's measurement; S2 must refuse a served path no row covers)"
 
 echo "test_ops_policy: -- B6 each deny rule proved able to fail, per direction --"
-# b6a: drop rule D1 entirely -- the protected-write denial disappears
-# (the ALLOW-ALL direction, blind on exactly the b4a fixture).
-sed -e '/protected(C1)/d' "$ART" > "$W/mutant-d1.dl"
+# b6a: drop rule D1 (the kind(write)+protected line) -- the protected-write
+# denial disappears (the ALLOW-ALL direction, blind on exactly the b4a
+# fixture).  D2 and D3 survive.
+sed -e '/kind(W1, write), class(P1, C1)/d' "$ART" > "$W/mutant-d1.dl"
 cmp -s "$ART" "$W/mutant-d1.dl" && fail "the D1 sed matched NOTHING (the mutant would be the original)"
-[ "$(grep -c '^denied(' "$W/mutant-d1.dl")" = 1 ] || fail "the D1 mutant must leave exactly ONE deny rule (D2)"
+[ "$(grep -c '^denied(' "$W/mutant-d1.dl")" = 2 ] || fail "the D1 mutant must leave exactly TWO deny rules (D2 and D3)"
 python3 "$W/driver.py" --policy "$W/mutant-d1.dl" --aliases "$TSV" --facts "$FIX/deny-protected-ok.tsv" >"$W/b6a.txt" 2>&1
 grep -q '^rows=0$' "$W/b6a.txt" || fail "b6a: the D1-mutant still denied the protected write -- D1 is not what denies it"
 echo "test_ops_policy: OK b6a-d1-mutant (D1 dropped -> the protected-write denial vanishes: the arm can fail in the allow-all direction)"
+# b6c: drop rule D3 (the hosttool bridge) -- a HOST TOOL touching a protected
+# path is no longer denied (D1 cannot see it: host tools carry no kind(write)
+# fact).  The D3-specific direction of the SAME allow-all class.
+sed -e '/hosttool(W1)/d' "$ART" > "$W/mutant-d3.dl"
+cmp -s "$ART" "$W/mutant-d3.dl" && fail "the D3 sed matched NOTHING (the mutant would be the original)"
+[ "$(grep -c '^denied(' "$W/mutant-d3.dl")" = 2 ] || fail "the D3 mutant must leave exactly TWO deny rules (D1 and D2)"
+python3 "$W/driver.py" --policy "$W/mutant-d3.dl" --aliases "$TSV" --facts "$FIX/deny-hostcat-protected.tsv" >"$W/b6c.txt" 2>&1
+grep -q '^rows=0$' "$W/b6c.txt" || fail "b6c: the D3-mutant still denied the host tool's protected path -- D3 is not what denies it"
+echo "test_ops_policy: OK b6c-d3-mutant (D3 dropped -> the host-tool protected-path denial vanishes: the host-tool direction can fail in the allow-all direction)"
 # b6b: drop D2's boot condition -- D2 becomes an UNCONDITIONAL writable
 # denial: the DENY-ALL direction, blind on exactly the b4b fixture.
 sed -e 's@, !boot_verdict(ok)@@' "$ART" > "$W/mutant-d2.dl"

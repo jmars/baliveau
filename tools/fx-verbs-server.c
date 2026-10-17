@@ -1358,13 +1358,19 @@ static void ops_policy_startup(void) {
     /* THE CLOSED RELATION SET — exactly the ops lexicon's templates plus the
      * one head (ops-lexicon.ini [predicates]).  A pinned artifact whose atoms
      * fall outside it fails dl_load_rules by name (the engine refuses an
-     * undeclared predicate — MEASURED), so relation-level drift is loud. */
+     * undeclared predicate — MEASURED), so relation-level drift is loud.
+     * S2: `hosttool` is DECLARED so the SAME artifact (now carrying D3) loads
+     * here, but this seat NEVER injects a hosttool fact (host tools are a
+     * host-side vocabulary) — so D3 is INERT IN-GUEST, exactly as D2 is inert
+     * at the host seat.  The in-guest seat keeps D2; it adds no host-tool
+     * denial of its own. */
     if (dl_declare_relation(OPS.db, "denied", 2) != 0 ||
         dl_declare_relation(OPS.db, "touches", 2) != 0 ||
         dl_declare_relation(OPS.db, "kind", 2) != 0 ||
         dl_declare_relation(OPS.db, "class", 2) != 0 ||
         dl_declare_relation(OPS.db, "protected", 1) != 0 ||
         dl_declare_relation(OPS.db, "writable", 1) != 0 ||
+        dl_declare_relation(OPS.db, "hosttool", 1) != 0 ||
         dl_declare_relation(OPS.db, "boot_verdict", 1) != 0)
         ops_die("cannot declare the closed relation set in %s", OPS.scratch);
     if (dl_load_rules(OPS.db, OPS.dl_text) != 0)

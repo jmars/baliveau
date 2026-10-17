@@ -1220,6 +1220,27 @@ argument matching no operator class row is REFUSED BY NAME — rather than by a 
       **(C)** the fail-closed unarmed property was **ungated** (deleting the guard would have passed all
       156 arms); now witnessed. *Orchestrator-verified:* 160 OK / 0 FAIL, and by my own two-run probe a
       durable **denied** row does not execute even when a later run's policy would allow it.
+- [x] **S2 — THE JUDGED ARGUMENTS AND THE TOTALITY CHECK** (**UNCOMMITTED**; `engineer`). The first host
+      tool that takes an ARGUMENT, and the slice where the plan's **TOP RISK** becomes concrete.
+      `host_cat(path)` is a bounded host-file read that **refuses rather than truncates**. `ops_judge`'s
+      gate widens from write-verbs-only to **write-verbs OR a host tool**, with the `hosttool(W)` facts
+      injected **at startup from the ONE registry table** (no second list). **D3** added to
+      `policy/ops/ops-policy.le` — `hosttool(W) ∧ touches(W,P) ∧ class(P,C) ∧ protected(C) → denied`,
+      deny-more-only, **re-pinned with `.dl` + `PINS` + lexicon in the same commit**. **THE TOTALITY
+      CHECK — the point of the slice:** a path matching **no alias row is REFUSED BY NAME**
+      (`unclassed-arg`) with nothing executed, so the operator need not enumerate what is forbidden.
+      **THE NORMALISER IS A SINGLE CANONICALIZER** called by both the classifying and the executing side,
+      so a spelling cannot be classed as one thing and executed as another. *Orchestrator-verified:* 166 OK
+      / 0 FAIL; the NO_CLASS blind makes **both** the protected and the unclassed paths **execute**; and
+      the no-canon mutant's `../`-spelling **reaches the executor and reads the protected file** while the
+      real build denies on the canonical path. An over-cap file is refused, never read partially.
+      **⚠️ ONE GUEST CHANGE, AND IT IS THE FIRST IN THE WHOLE CHAIN:** `tools/fx-verbs-server.c` gained
+      **one line** — `dl_declare_relation(OPS.db, "hosttool", 1)` — because the datalog engine refuses an
+      undeclared predicate (MEASURED, stated in the file) and the artifact is **shared**, so both seats
+      must load the same pinned file. D3 is **INERT IN-GUEST**: the in-guest seat declares the relation
+      and **never injects a `hosttool` fact** (verified — only the declaration appears there), so it keeps
+      D2 and adds no host-tool denial of its own. The alternative was splitting the artifact per seat,
+      which would double the pinned files and invite drift.
 
 - [ ] **THE OLD DESIGN ITEMS BELOW ARE NOW LARGELY SUPERSEDED** (kept for the reasoning they carry):
       **A closed, host-owned catalog of network PRIMITIVES** (`http.get`/`http.post` + allowed hosts,

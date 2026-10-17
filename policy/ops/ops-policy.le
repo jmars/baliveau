@@ -18,11 +18,11 @@
 # the seam finding (MEASURED: le proper nouns are letters-only,
 # le/lexicon.py:157-159, and fold to lowercased symbols) means a spelled
 # runtime symbol would match NOTHING = a silent allow-all.  The binding rides
-# in as SEAT-INJECTED facts (touches / kind / class / writable /
+# in as SEAT-INJECTED facts (touches / kind / class / writable / hosttool /
 # boot_verdict / protected); which concrete paths the classes cover is the
 # PINNED alias table's business (policy/ops/ops-aliases.tsv).
 #
-# TWO rules — the two shapes a bare allow/deny LIST cannot express:
+# THREE rules — the shapes a bare allow/deny LIST cannot express:
 #
 #   D1  a CONDITIONED denial: writing is denied where the path's class is
 #       protected — which classes are protected is operator data (the
@@ -37,11 +37,23 @@
 #       fails CLOSED, which is what deny-more-only demands.  A list cannot
 #       express this rule at all: it is a function of runtime state.
 #
+#   D3  (S2) the HOST-TOOL denial: a HOST TOOL whose classed argument (its
+#       `path`) is of a PROTECTED class is denied — the same conditioned shape
+#       as D1, but over the `hosttool(W)` fact the seat injects from the ONE
+#       host-tool registry (not `kind(W, write)`).  This is what widens the
+#       host seat's gate from write-verbs-only to write-verbs OR host tools
+#       WITHOUT changing what any guest verb is denied for.  It is
+#       DENY-MORE-ONLY exactly like D1: it can only ADD a denial (a host tool
+#       touching a protected path), never grant one.
+#
 # Compiled dl (deterministic; the gate re-compiles and demands byte-equality):
 #   denied(W1, P1) :- touches(W1, P1), kind(W1, write), class(P1, C1),
 #                     protected(C1).
 #   denied(W1, P1) :- touches(W1, P1), kind(W1, write), writable(P1),
 #                     !boot_verdict(ok).
+#   denied(W1, P1) :- hosttool(W1), touches(W1, P1), class(P1, C1),
+#                     protected(C1).
 
 A verb W1 is denied for a path P1 if the verb touches the path and the verb has Write and the path is of a pathclass C1 and the pathclass is protected.
 A verb W1 is denied for a path P1 if the verb touches the path and the verb has Write and the path is in the writable set and it is not the case that Ok is the boot verdict.
+A verb W1 is denied for a path P1 if the verb is a host tool and the verb touches the path and the path is of a pathclass C1 and the pathclass is protected.

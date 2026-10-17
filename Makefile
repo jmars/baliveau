@@ -330,6 +330,11 @@ BIN_HOSTGATE_NOSCOPECARRY := build/fx-hostgate-noscopecarry
 BIN_HOSTGATE_HOSTCOLLIDE := build/fx-hostgate-hostcollide
 BIN_HOSTGATE_NOHOSTCOLL := build/fx-hostgate-nohostcoll
 BIN_HOSTGATE_NOEXEC := build/fx-hostgate-noexec
+# S2 (THE JUDGED ARGUMENTS + THE TOTALITY CHECK): the class-resolution blind
+# (FH_MUTANT_OPS_NO_CLASS) — the plan's risk #1 made concrete (a host path
+# that matched no class row, or a protected path whose class was never
+# injected, EXECUTES where the real build refuses).
+BIN_HOSTGATE_OPSNOCLASS := build/fx-hostgate-opsnoclass
 
 test-hostgate: $(BIN_HOSTGATE) $(BIN_HOSTGATE_MUTANT) $(BIN_HOSTGATE_UNBOUND) \
                $(BIN_HOSTGATE_NOREWRITE) $(BIN_HOSTGATE_BLINDADD) \
@@ -344,7 +349,7 @@ test-hostgate: $(BIN_HOSTGATE) $(BIN_HOSTGATE_MUTANT) $(BIN_HOSTGATE_UNBOUND) \
                $(BIN_HOSTGATE_NOLOGLOAD) $(BIN_HOSTGATE_LOADUNBOUND) \
                $(BIN_HOSTGATE_NODEDUP) $(BIN_HOSTGATE_NOSCOPECARRY) \
                $(BIN_HOSTGATE_HOSTCOLLIDE) $(BIN_HOSTGATE_NOHOSTCOLL) \
-               $(BIN_HOSTGATE_NOEXEC) $(BIN)
+               $(BIN_HOSTGATE_NOEXEC) $(BIN_HOSTGATE_OPSNOCLASS) $(BIN)
 	bash tests/test_hostgate.sh
 
 # P6 THE OPS AUTHOR: the engine whose reasoning the seat evaluates is the
@@ -511,6 +516,17 @@ $(BIN_HOSTGATE_OPSNOCANON): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YY
 	@mkdir -p build
 	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_MUTANT_OPS_NO_CANON -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(HOSTGATE_LIBS)
 
+# (4) S2 THE TOTALITY-CHECK BLIND — FH_MUTANT_OPS_NO_CLASS compiles out the
+#     per-call class resolution AND the unclassed-arg refusal.  A host tool's
+#     path is then never classed and never refused: a PROTECTED path (which D3
+#     would deny if classed) and an UNCLASSED path (which the totality check
+#     would refuse by name) BOTH EXECUTE.  The failure DIRECTION is the plan's
+#     risk #1 made concrete: a host call silently permitted because its
+#     argument matched nothing (or dodged the class table).
+$(BIN_HOSTGATE_OPSNOCLASS): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(DATALOG_DIR)/zig-out/lib/libdatalog.so | $(DATALOG_SHIM)
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_MUTANT_OPS_NO_CLASS -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(HOSTGATE_LIBS)
+
 # ── P7 (THE CLAIM AUTHOR AT THE HOST SEAT) ──────────────────────────────────
 #
 # THE PRE-FIX CONTROL — FH_MUTANT_NO_CLAIM_SEAT compiles the whole claim seat
@@ -586,7 +602,7 @@ $(BIN_HOSTGATE_NOSCOPECARRY): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(
 #     slave path is published: a host tool that shadows a guest verb is executed
 #     by the host AND dispatched by the guest under one name.
 HOSTTOOL_COLLIDING_NAME := -DFH_HOSTTOOL_NAME='"fx_read"'
-HOSTTOOL_COLLIDING_PIN := -DFH_HOSTTOOL_SHA256='"a9205537dcec3564d60e5d4dadf07bd52c75a27b4b5d78a4f4b8291727acc495"'
+HOSTTOOL_COLLIDING_PIN := -DFH_HOSTTOOL_SHA256='"88638ce0cf6d71e4b4bd0890724e935597dd8f656c295501dc53a859df32c34a"'
 
 $(BIN_HOSTGATE_HOSTCOLLIDE): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(DATALOG_DIR)/zig-out/lib/libdatalog.so | $(DATALOG_SHIM)
 	@mkdir -p build

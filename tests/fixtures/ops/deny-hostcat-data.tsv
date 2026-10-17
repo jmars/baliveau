@@ -1,0 +1,6 @@
+# A HOST TOOL (host_cat) touching the UNprotected alias's path: D3 must NOT
+# deny (the class is not protected).  The negative control for D3 — and the
+# DENY-ALL detector for the host-tool direction: a policy that denied every
+# host-tool path fires here and must fail the gate.
+hosttool	host_cat
+touches	host_cat	/fx/disk/agent-data
