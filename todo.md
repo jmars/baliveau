@@ -1308,7 +1308,7 @@ judges it; **claim + verdict + outcome are one record** and the **disagreement**
       exact-match globs while validation checked only absoluteness, so a rule that *looked* protective
       never fired for any child — now a stated AND enforced two-form grammar. **⚠️ THE C SEAT'S
       PLACEMENT IS SUPERSEDED — see below.**
-- [ ] **⚠️ THE ARCHITECTURE CORRECTION (user, 2026-10-14) — the enforcement moves OFF the VM.**
+- [x] **⚠️ THE ARCHITECTURE CORRECTION (user, 2026-10-14) — the enforcement moves OFF the VM.** *(APPLIED: it is what P1–P10 built.)*
       **The model generation is host-side; the tool calls are ALREADY IN THE PROXIED MODEL STREAM; the
       HOST records them and runs the policy; and A DENIAL IS THE CALL'S ORDINARY MCP TOOL RESULT**
       (`role=tool`, the same call_id, the content the denial and why) — so the model needs NO special
@@ -1318,18 +1318,20 @@ judges it; **claim + verdict + outcome are one record** and the **disagreement**
       CALL, in the same model turn — which also makes "BEFORE" structural) and the C seat's in-VM
       denial (an in-VM lever; the agent is root). **AND THE `le`→Osier→Lua PORT IS DISSOLVED**: the
       evaluation is host-side, where `le` already runs.
-- [ ] **THE OWED PIECE: THE HOST PROXY.** It does NOT exist — the chardev today is a **canned SSE
-      file** (`usr/fx-agent/chardev.sse`, the offline arm, staged by `tools/stage-guest.sh`); the host
-      end that owns the model endpoint, the headers, the credential and one log is designed (§7.1a) but
-      not built. It is the natural home for the model engine, the per-call policy, the record and the
-      denial message.
+- [x] **THE OWED PIECE: THE HOST PROXY — IT NOW EXISTS** (`tools/fx-hostgate.c`, built across P1–P10;
+      the design record above said it was owed and NOT built, which was true when written and is now
+      SUPERSEDED). The canned SSE file (`usr/fx-agent/chardev.sse`, the offline arm, staged by
+      `tools/stage-guest.sh`) is no longer the only provider: the proxy serves it as the CONTROL arm and
+      itself speaks both a canned fixture and a live HTTP endpoint. It owns the model endpoint, the
+      headers, the credential, the two-author policy, the deny map and the ONE LOG — the natural home the
+      record predicted.
 - [x] **THE DESIGN DECISION — SETTLED (user, 2026-10-14), and it is NEITHER of the two candidates
       first put.** Both are **REJECTED**: (a) *the loop stays in the guest and the host MARKS the
       verdict* is **UNSOUND** — user, verbatim: *"in that design there is nothing stopping the harness
       from simply executing tool calls, the host has no say whatsoever"* (the host could annotate and
       afterwards detect; it could not PREVENT — its executor would be the governed component); and (b)
       *the host owns the loop* is an **over-read** — the host does not take over the loop.
-- [ ] **WHAT IT IS: THE HOST REWRITES THE DECODE STREAM AT THE BOUNDARY.** User: *"the host ALREADY
+- [x] **WHAT IT IS: THE HOST REWRITES THE DECODE STREAM AT THE BOUNDARY — BUILT (P1–P10).** User: *"the host ALREADY
       owns the decode stream, since the model engine is on the host (or via an endpoint from the
       host)"* — *"the host can simply detect the model's outputted tool calls in the decode before they
       even go into the harness in the guest and run the policy against them. Accepted ones go through
@@ -1363,8 +1365,6 @@ judges it; **claim + verdict + outcome are one record** and the **disagreement**
       and gated. *Reproduced independently by the orchestrator:* pre-fix serves `name: fx_write` on the
       wire; fixed serves none. Stated residual: a stream-end flush of a held `added` still forwards it
       verbatim but **loudly** — safe, since name-only-at-`done` makes the guest dispatch nothing.
-- [ ] **P4** — the reserved-name contract (`fx_host_denied` passes `validate_identifier`, matches no verb,
-      and the proxy REFUSES TO START on a collision). **P5** — justification + tools injection.
 - [x] **P4 + P5 LANDED** (**COMMITTED**). **P4:** a built-in **13-verb catalog** mirroring the real
       `VERBS[]`, sha256-pinned, verified at startup with a mirror of the guest's `validate_identifier`
       charset; `fh_catalog_check()` runs **first in `main`, before the slave path is published**, and
