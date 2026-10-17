@@ -349,7 +349,11 @@
  *        this seat writes one, whatever the file says.  The MODE is
  *        deliberately NOT checked: this seat's own log is created with the
  *        operator's umask, so a group-write check would let a umask alone lock
- *        the seat out of its own record.
+ *        the seat out of its own record.  S1's `exec`/`outcome` fields inherit
+ *        this statement unchanged: the loader's exec refusals bound the SHAPE
+ *        (an exec row this seat cannot write), never the CONTENT — a
+ *        structurally valid carried outcome is trusted text, exactly as
+ *        denial_text is.
  *   (R2) ONE ROW PER call_id — see the semantics block at row_call_record /
  *        row_call_find.  The upstream can re-serve a call_id (every turn, in
  *        the canned offline arm); the record must not inflate ONE call into
@@ -502,6 +506,12 @@ static char *xstrdup(const char *s) {
  * comes first in this file because every seat below writes to it. */
 struct tbuf;
 static int policy_armed(void);
+/* the exec map is defined with the S1 section below, but the in-place verdict
+ * refresh (P8-fix, above it) must drop a call_id from it — and the refresh is
+ * compiled out with the dedup it exists for */
+#ifndef FH_MUTANT_NO_CALL_DEDUP
+static void emap_remove(const char *call_id);
+#endif
 /* declared here (redeclared with the calls seat below) because the log
  * writer's ALLOWED-row allow_scope must name the seat that acted */
 static int calls_seat_present(void);
@@ -1128,6 +1138,24 @@ static struct row *row_call_record(const char *call_id, const char *name,
     free(r->refusal_name);
     free(r->reason);
     free(r->denial_text);
+    /* S1: a refresh to DENIED must DROP THE EXECUTION READING.  The row being
+     * refreshed may have been host-executed by an EARLIER run (that run's
+     * policy allowed it); the record that now says `denied` must not also
+     * claim the host ran it — the loader refuses exactly that pair, and it is
+     * THIS seat that would then be writing a log it refuses to load (the
+     * P8-fix self-lockout class, via the new field).  The deny and exec maps
+     * must never both hold a key either: the outbound leg gives the deny map
+     * precedence, so a left-over exec entry would only be a second, silent
+     * reading of the same call.  A repeat never weakens a carried verdict, so
+     * nothing this run executed is lost here — the refresh happens on the
+     * DENY branch, before any dispatch. */
+    if (r->exec) {
+        free(r->exec);
+        r->exec = NULL;
+        free(r->outcome);
+        r->outcome = NULL;
+        emap_remove(call_id);
+    }
     r->verdict = verdict;
     r->author = xstrdup(author ? author : FH_AUTHOR_DENYLIST);
     r->refusal_name = xstrdup(refusal_name ? refusal_name : "");
@@ -1593,6 +1621,26 @@ static struct exec_key *emap_put(const char *call_id, const char *output,
     return e;
 }
 
+/* Drop a call_id from the exec map (swap-remove: the map is deliberately
+ * linear and membership-only).  Used when this run REFUSES a call a previous
+ * run executed: the deny map governs the outbound leg, and no key may sit in
+ * both maps.  Compiled in only where its one caller (the in-place verdict
+ * refresh) is. */
+#ifndef FH_MUTANT_NO_CALL_DEDUP
+static void emap_remove(const char *call_id) {
+    if (!call_id) return;
+    for (size_t i = 0; i < g_nemap; i++) {
+        if (strcmp(g_emap[i].call_id, call_id) == 0) {
+            free(g_emap[i].call_id);
+            free(g_emap[i].output);
+            g_emap[i] = g_emap[g_nemap - 1];
+            g_nemap--;
+            return;
+        }
+    }
+}
+#endif /* FH_MUTANT_NO_CALL_DEDUP */
+
 /* ── P8: THE LOG IS LOADED AT STARTUP — IT IS THE JOIN STATE ────────────────
  *
  * WHY THIS EXISTS AT ALL.  The one log has TWO roles: the audit record and
@@ -2037,9 +2085,18 @@ static void log_load(void) {
          * loaded row re-renders through the same writer, so not reading it
          * here would silently DROP the field from the record on the next
          * flush (the P6-fix R5 reword class: the record rewording itself).
-         * Two shapes are refused by name because they are text this seat
-         * cannot write: an unknown binding, and a DENIED row that claims it
-         * executed. */
+         * Three shapes are refused by name because they are text this seat
+         * cannot write: an unknown binding, an exec row that is not
+         * verdict=allowed, and exec with no outcome.
+         *
+         * THE TRUST BOUNDARY ON THIS FIELD, stated here as it is in the P8
+         * block above: the loader checks STRUCTURE, never CONTENT.  A
+         * structurally valid exec row's `outcome` is TRUSTED TEXT — exactly
+         * as a denial's `denial_text` is — so whoever can write this log can
+         * choose what the model is told a host call returned.  The refusal
+         * below is the completeness claim, not a signature: it makes the
+         * MINT coherent (this seat only ever writes exec on the allowed path
+         * of an armed policy), it does not make the text authentic. */
         {
             const char *ex = log_str_opt(root, "exec", lineno);
             if (ex) {
@@ -2047,13 +2104,22 @@ static void log_load(void) {
                     log_refuse("line %d carries the UNKNOWN exec binding "
                                "\"%s\" — this seat writes only \"%s\"",
                                lineno, ex, FH_EXEC_HOST);
-                if (verdict == VERDICT_DENIED)
-                    log_refuse("line %d is a DENIED row that also claims "
-                               "exec=%s.  A denied call is never executed (the "
-                               "deny decision forks nothing, and the executor "
-                               "is on the allowed path only), so these two "
-                               "readings cannot both be this seat's",
-                               lineno, ex);
+                /* S1-fix: the exec requirement is verdict=allowed, NOT merely
+                 * "not denied".  MEASURED before: a crafted row carrying
+                 * exec=\"host\" + an outcome and NO verdict field loaded
+                 * cleanly — a shape this seat cannot write (exec implies an
+                 * armed policy implies the allowed branch) — and it armed the
+                 * exec map, so the outbound leg substituted the file's text
+                 * as the call's result and the re-serve's exec guard
+                 * SUPPRESSED the real execution.  The record then said the
+                 * host ran a call this run never ran. */
+                if (verdict != VERDICT_ALLOWED)
+                    log_refuse("line %d claims exec=%s but its verdict is %s. "
+                               "This seat executes ONLY on the allowed path "
+                               "of an armed policy, so an exec row always "
+                               "carries verdict=allowed; a row claiming "
+                               "otherwise is not a row this seat writes",
+                               lineno, ex, ve ? ve : "(absent)");
                 if (!r->outcome)
                     log_refuse("line %d claims exec=%s with NO outcome — an "
                                "executed call's result IS what the substitution "
@@ -4502,6 +4568,21 @@ static void host_dispatch(const char *name, const char *call_id, long turn,
     if (!policy_armed()) return;
     const struct host_tool *ht = fh_host_tool_find(name);
     if (!ht) return;
+    /* S1: "a repeat never weakens a carried verdict" must bind the EXECUTOR,
+     * not only the row.  A resumed run whose policy ALLOWS a call an EARLIER
+     * run DENIED gets the carried denied row back unchanged from
+     * row_call_record — so executing here would put an outside effect behind
+     * a durable record that says DENIED, and the outbound leg would hand the
+     * model the earlier denial text for a call that just ran (the deny map
+     * governs the model-facing leg).  The record wins: no execution. */
+    if (r && r->verdict == VERDICT_DENIED) {
+        note("turn %ld: call_id=%s (name=%s) is RECORDED DENIED (turn %ld) — a "
+             "re-serve must not weaken a carried verdict behind the model's "
+             "back, so the host does NOT execute it; the carried denial "
+             "governs the outbound leg, consistent with the record",
+             turn, call_id, name, r->turn);
+        return;
+    }
     if (r && r->exec) {
         note("turn %ld: call_id=%s (name=%s) was ALREADY EXECUTED ON THE HOST "
              "(turn %ld) — a re-served item is the upstream repeating a call, "
@@ -6561,7 +6642,9 @@ static void usage(void) {
     note("                  log is LOADED — it is the join state as well as the");
     note("                  record — and a duplicate call_id row refuses: it is");
     note("                  TRUSTED INPUT (single writer by operator discipline;");
-    note("                  STRUCTURE is checked, never CONTENT)");
+    note("                  STRUCTURE is checked, never CONTENT — including on");
+    note("                  the S1 exec map, where a carried exec row's outcome");
+    note("                  is trusted text exactly as denial_text is)");
     note("  --turns N       exit after serving N request frames (default: never)");
     note("  --deny NAME     the pinned placeholder denylist (repeatable).  With");
     note("                  none given and no --require-justification NO policy");

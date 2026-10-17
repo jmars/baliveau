@@ -1193,7 +1193,7 @@ type and no new reporter class. **NOT HTTP-specific**: HTTP is one instance of a
 and the vocabulary is the one real choice — round 1 chose a type, the user chose judged arguments. That
 brings back an argument-normalisation surface, which is answered by a fail-closed totality rule — an
 argument matching no operator class row is REFUSED BY NAME — rather than by a type.)*
-- [x] **S1 — THE REGISTRY + `host_time` END-TO-END** (**UNCOMMITTED**). A compiled-in, sha-pinned
+- [x] **S1 — THE REGISTRY + `host_time` END-TO-END** (**COMMITTED**). A compiled-in, sha-pinned
       **host-tool table BESIDE (not merged with)** the guest `VERBS[]` mirror, with the **existing**
       `fh_catalog_check` collision loop extended (a colliding name is a FATAL refusal before the slave
       path is published); `host_time` takes **no arguments**; the dispatch sits on the **allowed** path
@@ -1204,6 +1204,22 @@ argument matching no operator class row is REFUSED BY NAME — rather than by a 
       execute (fail-closed), and an **armed-and-allowed** `host_time` really runs on the host — the row
       carries `verdict=allowed, author=denylist, exec=host` and the outcome is the actual wall clock.
       **S1 deliberately does NOT cover argument judgement** (`host_time` has none) — that is S2/S3's.
+      **S1-FIX (the review's three findings, all closed).** The reviewer's verdict was that the execution
+      site is **sound for the shipped policy set** and that **one effect per `call_id` is a real guarantee**
+      in every probed shape — but it found a correctness defect, a forged record, and one missing witness.
+      **(A) RESUME + A POLICY FLIP BROKE THE RECORD AND LIED TO THE MODEL.** *A1:* run 1 executes, run 2
+      resumes with the tool denied, and the in-place verdict refresh left `exec=host` on a now-**denied**
+      row — run 3 then **refused to load the seat's own log** (the P8 self-lockout class, new instance).
+      *A2 (worse):* run 1 denies, run 2 resumes with the policy allowing it, the carried row keeps saying
+      **denied** and the host **executed anyway** — and the outbound leg substituted the run-1 *denial*
+      text, so **the model was told "denied by host policy" for a call that had just executed**, while the
+      instrument stayed silent. Fixed: the refresh drops `exec`/`outcome` and removes the exec-map entry;
+      the dispatcher refuses on the carried verdict. **(B) A CRAFTED LOG COULD MINT AN EXEC ROW** — an
+      `exec:"host"` row with an outcome and **no verdict** loaded cleanly, substituted an attacker-chosen
+      result to the model, and could *suppress* a real execution; now refused by name at startup.
+      **(C)** the fail-closed unarmed property was **ungated** (deleting the guard would have passed all
+      156 arms); now witnessed. *Orchestrator-verified:* 160 OK / 0 FAIL, and by my own two-run probe a
+      durable **denied** row does not execute even when a later run's policy would allow it.
 
 - [ ] **THE OLD DESIGN ITEMS BELOW ARE NOW LARGELY SUPERSEDED** (kept for the reasoning they carry):
       **A closed, host-owned catalog of network PRIMITIVES** (`http.get`/`http.post` + allowed hosts,
