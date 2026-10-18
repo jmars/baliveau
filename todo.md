@@ -119,11 +119,21 @@ certifies coherence; neither says "improved".
       clause). **MEASURED while fixing, and kept:** the fixer's `--apply` rolled 7→9 and the NEXT run reverted back to 7 —
       the seat undid its own rollback (`current-not-judged`), now a withhold state gated by S8c/S8d. STILL OPEN under this
       heading: §1's second item below (an oracle must SEE capability changes), and the intent record (§1b).
-- [ ] **Every oracle must be able to SEE capability changes.** A code-only oracle is blind to an
-      agent quietly widening its own egress — and, per §7.1c, blind to *activity without progress*
-      (the oscillator is the measured instance). `osier-share` is a static property of the store and
-      does NOT see either: it is the per-task oracle, and the capability/activity seats are separate
-      and still owed.
+- [x] **Every oracle must be able to SEE capability changes — THE CAPABILITY HALF IS NOW CLOSED,
+      AND THE ACTIVITY HALF IS NOT.** A code-only oracle is blind to an agent quietly widening its own
+      egress, and blind to *activity without progress* (the oscillator is the measured instance).
+      `osier-share` is a static property of the store and sees neither: it is the per-task oracle.
+      **CAPABILITY — DONE**, and by the seats the item predicted: egress S4 gave `fx-select` a
+      `reach-delta` term and `fx-report`/`fx-audit` the `reach-*`/`egress-reach` records; palisade S4
+      gave `fx-select` a `reach-sandbox` term and the other two the `sandbox-*` records — so an
+      operator table edit, a baseline change, a tool sidecar or a widened reach is now SEEN and NAMED,
+      with the mandated blinds proving the instruments can fail (the widening-blind reads NONE while a
+      sidecar declared `inet`; the drifted-pin join reports MATCH while it drifted). `fx-osier-share`
+      STATES its blindness rather than being patched into seeing.
+      **⚠️ ACTIVITY WITHOUT PROGRESS — STILL OWED, and it has a NAME BUT NO DESIGN.** The oscillator
+      (an in-boot activation loop) is the measured instance, but no seat measures it, and the
+      `§7.1c` this entry cites **does not exist in the plan** — a dangling reference, so the
+      requirement has no design behind it. This is the last item §1 owes.
 
 ## 1b. The second goal — observability sufficient for a third-party EU AI Act report
 
