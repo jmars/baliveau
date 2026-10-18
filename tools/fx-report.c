@@ -1285,6 +1285,9 @@ static const struct { const char *cls, *record, *absence; } TAXONOMY[] = {
     { "sandbox",
       "MEASURED/DERIVED — the SANDBOX the executor applied, and it is a second WEAKENED audit (bound/sandbox-audit-is-the-weakened-one).  Since S3 (palisade) EVERY host spawn is wrapped: the executor owns a BASELINE (stdio rpath exec prot_exec + loader:rx + libc:r), a tool may declare MORE via a sidecar beside its binary, and the operator's ops-sandbox.tsv row may only TIGHTEN.  DECLARED NOW = the proxy's OWN composition (--proxy BIN --print-sandbox: name<TAB>promises<TAB>static-landlock per tool); RECORDED THEN = the log's per-call `sandbox` field (the spec the spawn APPLIED, carried verbatim and also surfaced as a COLUMN of every call-exec row); PINNED = policy/ops/PINS over ops-sandbox.tsv ONLY.  Rows: sandbox-composed (the declaration, per tool), sandbox-recorded (the applied spec, per tool, with the call count), sandbox-pin (the one pinned half) and sandbox-delta (the difference, direction NAMED).  A widening is its own FINDING, sandbox-widened-since-record: the operator table can only TIGHTEN the applied spec and does not touch --print-sandbox, so an ADDITION comes from the executor baseline or a tool's SIDECAR — and neither is pinned, so no release can license it.  The mirror direction is NAMED and is NOT a finding (an operator tightening row produces exactly that shape)",
       "TWO DIRECTIONS, once per side, and no absence is ever read as 'unchanged': no --proxy = the DECLARED composition is NOT-KNOWN (never 'the sandbox did not change'); no --proxy-log, or a log that does not exist, = the RECORDED specs are NOT-KNOWN (never 'nothing ran widened'); no --policy-dir, no PINS, or a PINS that does not name ops-sandbox.tsv = the PIN direction is NOT-KNOWN (never 'the table is the released one'); a host row with NO `sandbox` field = that call's applied spec is NOT-KNOWN (never 'unsandboxed', never 'the baseline').  WEAKENED, stated: two specs compared as text, never type-enforced — and VISIBLE is not STRONG (promises are coarse, `inet` is any destination; the confinement is per-process, not per-call; there is no uid drop)" },
+    { "reboot",
+      "MEASURED — <store>/.operator rows whose action is `reboot` (fx-init bb0642f's ctrl arm; ONE row per REQUEST, INCLUDING the refused ones, written before the reply is flushed): <epoch> reboot <reason> <outcome> <from-version> - <nonce>.  The outcome is the WRITER's admission token — one of SIX, and they are THREE different meanings: ok (ADMITTED), exec-error (ADMITTED but the re-entry could not be executed — the machine is UNCHANGED), and four REFUSALS (not-decided, boot-failed, shell-open, same-version-loop).  Rows: reboot-row (one per journal row, with its class), reboot-version (one per from-version, with the verbatim token counts).  A reboot moves NO generation, so the row carries to-version `-` and the STORE cannot show it: this class and the .bootlog's own lines are the whole record",
+      "TWO DIRECTIONS, and neither is ever read as the other: (i) .operator PRESENT with NO reboot row = ZERO reboots RECORDED — a MEASUREMENT of the journal (and an fx-init without the verb cannot write a row at all, so it is not evidence the machine never rebooted); (ii) .operator ABSENT = NOT-KNOWN — this store predates the journal and CANNOT answer how many reboots there were (see absence/.operator, and the same state is restated as reboot-absence).  The boots-per-content number has its own absence: NO .bootlog (or an empty one) = NOT-KNOWN, never 0 boots" },
 };
 #define NTAX (sizeof TAXONOMY / sizeof TAXONOMY[0])
 
@@ -1383,6 +1386,14 @@ static const struct { const char *id, *text; } BOUNDS[] = {
       "the record is IN-GUEST WRITABLE: root inside the guest can forge or truncate <store>/.bootlog and edit the store's snapshots exactly as it can any other file, so this class inherits fx-select's bound `bootlog-is-in-guest-writable` BY CITATION (not restated).  Catching a forgery is fx-audit's job — it compares the record against its OWN previous observation — which is a different question, by design.  In the other direction, activity that reached neither the store nor .bootlog is invisible HERE: /run/fx/log.db is tmpfs (bound/rt-log-tmpfs), a nonce-less boot records nothing in .operator, and the three bypass paths bound/operator-bypass-paths names (a host-side `fxstore rollback`, `rollback --hard`, a hand-edited CURRENT) leave no attribution" },
     { "progress-version-cap",
       "MAX_VERSIONS (512) is hit exactly on this class's own subject — an oscillator ratchets versions forever — and the cap DIES LOUDLY (exit 2), which is correct and must NOT be softened into a partial measure.  The consequence is stated rather than hidden: in the very case this seat was built for, the measure becomes UNAVAILABLE and says so instead of reporting a truncated view.  Raising or streaming the cap is a separate decision with its own cost to measure (the precedent is bound/predecessor-content-not-compared, which records ~22 ms per `fxstore` call as the reason a whole-chain read was rejected there)" },
+    { "reboot-visible-is-not-strong",
+      "a reboot being VISIBLE in the journal does not make it a STRONG reboot, and this report claims only the visibility.  It is a USERSPACE RE-ENTRY: PID1 execve's /proc/self/exe and its own boot path runs again in a FRESH ADDRESS SPACE (that is what kills the forgotten-reset class), with NO firmware, NO device re-init and NO kernel restart — /dev, the virtio ports and every kernel-side resource are the ones the previous incarnation already had, so a device that WEDGED STAYS WEDGED and a reboot that would have fixed it will not.  A hard reboot is the HOST's act: under the pinned gates qemu carries -no-reboot, so reboot(2) makes the guest EXIT and the restart belongs to the host; kexec is not built into the guest kernel (MEASURED # CONFIG_KEXEC is not set) and would be a CAPABILITY WIDENING, not a convenience.  The agent is root and can forge or truncate every one of these rows (§6b: audit, not proof — the VM is the boundary)" },
+    { "reboot-is-not-a-policy",
+      "this class is a MEASUREMENT: it does not gate, deny, refuse, reorder or stop anything, and the report's decision and exit code move ONLY through the one finding below.  The ADMISSION lives in fx-init (operator_journal.zig's admit: the verdict latch, the open shell, REBOOT_SAME_VERSION_MAX) and runs in the guest; this seat reads what it RECORDED and cannot enforce, re-run or contradict it — a reboot row the admission would have refused is REPORTED, never undone.  The one FINDING fires when the record EXCEEDS the writer's own bound (consecutive admitted reboots at one from-version > REBOOT_SAME_VERSION_MAX), and its meaning is a writer WITHOUT that admission or a row written AROUND it — a question about the record, never a stop.  Its consequence is deliberately OPEN, the house form the egress and palisade slices set: a loud row, and nothing is changed by it" },
+    { "reboot-row-records-the-admission",
+      "the `reboot` row records the ADMISSION, never the EXECUTION (fx-init's own header: the row is written, fsync'd and the reply flushed BEFORE the exec, and there is no second row on an exec failure).  An ADMITTED reboot that never executed is therefore reconstructable only as the ABSENCE of a later .bootlog line carrying that row's nonce and a later epoch — a soft reboot re-enters under the SAME kernel boot's nonce (the command line does not change), so the row and the boot it produced are joined by NONCE PLUS ORDER, never by a unique token.  This class prints the `ok` rows and does NOT claim a boot happened: the boot count stays the .bootlog's, and the two numbers are read together" },
+    { "reboot-cannot-see-a-changing-content-loop",
+      "the structural stop bounds the SAME-VERSION loop only.  An ALWAYS-NEW-content loop (a new version each cycle, so every from-version differs) passes both of the admission's clauses by construction, and a reboot loop that publishes NOTHING moves no version and no run — so the ACTIVITY seat reads it perfectly FLAT.  The two numbers that describe that shape are PRINTED and deliberately NOT a finding: `boots-per-content-max` (joined to the content identity) and `consecutive-same-version-max`.  High activity with a high boots-per-content is the OSCILLATOR; high activity with a low one is a healthy loop.  Bounding that loop is the ORACLE's job (docs/baliveau-self-plan.md:629-640), not a reporter's, and a check here would fire on every honest debugging session — the same boundary the progress class drew for identities-never-ok" },
 };
 #define NBOUND (sizeof BOUNDS / sizeof BOUNDS[0])
 
@@ -2999,6 +3010,8 @@ typedef struct {
     unsigned ok_noncur;      /* ... `ok`, excluding the CURRENT version */
     unsigned notjudged;      /* no non-shutdown .bootlog line at all */
     unsigned other;          /* a status word outside the writer's set */
+    unsigned boots;          /* `in-progress` .bootlog lines on its versions:
+                              * boots that STARTED at this content */
     unsigned first_v, last_v;
     int live;                /* its last version IS the CURRENT one */
     int known;               /* 0 for the "-" identity */
@@ -3061,6 +3074,12 @@ static void build_identities(unsigned cur_v) {
         I->last_v = V->v;
         I->live = (V->v == cur_v);
         if (i == 0 || strcmp(g_vers[i - 1].genhash, V->genhash) != 0) I->runs++;
+        /* the REBOOT class's denominator: how many boots STARTED at this
+         * content (one `in-progress` line each, init.zig's bootlog_append).
+         * Counted HERE because this is the only place a version is joined to
+         * its identity — the same join fx-init's guard_stats_for uses. */
+        for (unsigned b = 0; b < g_nbl; b++)
+            if (g_bl[b].v == V->v && !strcmp(g_bl[b].status, "in-progress")) I->boots++;
         const char *st = verdict_of(V->v);
         if (!st) I->notjudged++;
         else if (!strcmp(st, "ok")) { I->ok++; if (V->v != cur_v) I->ok_noncur++; }
@@ -3156,6 +3175,235 @@ static unsigned longest_failed_streak(void) {
     return best;
 }
 
+/* ── THE REBOOT CLASS — THE IN-GUEST REBOOT, MEASURED FROM ITS OWN ROWS ──
+ *    (todo.md §4's last slice; plan handoff-reboot-plan, its S4).  A
+ *    MEASUREMENT exactly as ACTIVITY is: it gates, denies, refuses and
+ *    stops NOTHING.
+ *
+ * THE RECORD IS fx-init's `.operator` `reboot` row (its ctrl arm, fx-init
+ * bb0642f), already parsed by read_operator (:827) — no new reader and no
+ * new file: <epoch> reboot <reason> <outcome> <from-version> - <nonce>.  The
+ * outcome vocabulary is the WRITER's header (fx-init
+ * zig/src/operator_journal.zig:165-215) and it is SIX tokens carrying THREE
+ * different meanings, which is why this class exists instead of a count of
+ * "refusals":
+ *
+ *   ok                ADMITTED — the machine re-enters the boot path
+ *   exec-error        ADMITTED but NOT EXECUTED — the machine is UNCHANGED;
+ *                     neither admitted nor refused, and folding it into
+ *                     either is a lie in one direction or the other
+ *   not-decided       REFUSED, a TIMING (no verdict had landed yet)
+ *   boot-failed       REFUSED, a STATE (the verdict landed and it was bad)
+ *   shell-open        REFUSED, a human at the console
+ *   same-version-loop REFUSED, the writer's own loop bound
+ *
+ * `not-decided` and `boot-failed` are DELIBERATELY different tokens and are
+ * never collapsed here: "did not know yet" and "knew, and the answer was
+ * bad" are two states, and a durable record that merges them cannot be read
+ * (the S1 review added the sixth token for exactly this).  A token outside
+ * the writer's set is surfaced VERBATIM and counted as `unknown`, never
+ * silently folded into a bucket: a newer writer's word must not read as
+ * coherent here.
+ *
+ * THE IDENTITY A REBOOT STREAK IS KEYED ON IS THE ROW'S OWN from-version,
+ * AND ITS RESET IS THE GENERATION MOVE — the writer's own rule
+ * (operator_journal.zig's consecutiveRebootsAt, :599-625): walking the
+ * journal, an ADMITTED row at the same from-version extends the streak, a
+ * row from a DIFFERENT version or a non-reboot row that MOVED the generation
+ * ends it, and a REFUSED row neither extends nor ends it.  Keying it on
+ * anything else — the row count, or the version number as the identity
+ * instead of the row — changes the reading, which is what the gate's mutants
+ * prove. */
+typedef enum {
+    RBC_ADMITTED, RBC_UNEXECUTED, RBC_REFUSED_TIMING, RBC_REFUSED_STATE,
+    RBC_REFUSED_SHELL, RBC_REFUSED_LOOP, RBC_UNKNOWN
+} rbclass_t;
+
+static rbclass_t rb_classify(const char *t) {
+    if (!strcmp(t, "ok")) return RBC_ADMITTED;
+    if (!strcmp(t, "exec-error")) return RBC_UNEXECUTED;
+    if (!strcmp(t, "not-decided")) return RBC_REFUSED_TIMING;
+    if (!strcmp(t, "boot-failed")) return RBC_REFUSED_STATE;
+    if (!strcmp(t, "shell-open")) return RBC_REFUSED_SHELL;
+    if (!strcmp(t, "same-version-loop")) return RBC_REFUSED_LOOP;
+    return RBC_UNKNOWN;
+}
+
+static const char *rb_class_name(rbclass_t c) {
+    switch (c) {
+    case RBC_ADMITTED: return "admitted";
+    case RBC_UNEXECUTED: return "admitted-not-executed";
+    case RBC_REFUSED_TIMING: return "refused-timing";
+    case RBC_REFUSED_STATE: return "refused-state";
+    case RBC_REFUSED_SHELL: return "refused-shell";
+    case RBC_REFUSED_LOOP: return "refused-loop";
+    default: return "unknown-token";
+    }
+}
+
+/* REUSED, NOT CHOSEN: the loop bound IS fx-init's REBOOT_SAME_VERSION_MAX
+ * (fx-init zig/src/operator_journal.zig:379, value 2 — "at most TWO
+ * consecutive admitted reboots whose .operator row carries the SAME
+ * from-version; the THIRD is refused, loudly, with its own row").  The
+ * admission ACTS on it (consecutiveRebootsAt >= MAX -> same-version-loop,
+ * :528) and this seat only REPORTS it, so the two compute the same quantity
+ * under the same bound from the same rows, INDEPENDENTLY — a divergence
+ * between them is a finding about the seats, not a matter of taste.  THE
+ * FINDING'S CONVENTION, stated because it decides the number: the writer
+ * refuses the (MAX+1)th, so MAX admitted reboots at one from-version is
+ * legitimate and the finding fires only ABOVE it. */
+#define REBOOT_SAME_VERSION_MAX 2
+
+#define MAX_REBOOT_VERS (MAX_VERSIONS + 1) /* +1 for the "-" (unnamed) group */
+#define MAX_REBOOT_TOKENS 8                /* the six + slack; more is a LOUD die */
+
+#define RBC_N (RBC_UNKNOWN + 1) /* one counter per class, UNKNOWN included */
+
+typedef struct {
+    unsigned count;
+    unsigned n[RBC_N];       /* by rbclass_t, RBC_UNKNOWN included */
+    struct { char tok[64]; unsigned n; } toks[MAX_REBOOT_TOKENS];
+    unsigned ntok;
+} rbver_t;
+
+typedef struct {
+    char from_s[16];
+    rbver_t v;
+} rbverrow_t;
+
+static rbverrow_t g_rbv[MAX_REBOOT_VERS];
+static unsigned g_nrbv;
+static unsigned g_nreb;             /* `reboot` rows in the journal */
+static unsigned g_rb_max_streak;     /* max consecutive ADMITTED at one from-version */
+static char g_rb_max_from[16];
+static unsigned g_rb_top_count;      /* the most-rebooted from-version's count */
+static char g_rb_top_from[16];
+static unsigned g_rb_boots_max;      /* boots-per-content-max */
+static const char *g_rb_boots_gh;    /* ... and the identity that carries it */
+static int g_rb_boots_known;         /* 0 when no .bootlog line exists at all */
+
+static void build_reboot(void) {
+    char streak_from[16] = "-";
+    unsigned streak = 0;
+    for (unsigned i = 0; i < g_nop; i++) {
+        oprow_t *O = &g_op[i];
+        if (strcmp(O->action, "reboot")) {
+            /* the writer's own streak-reset rule (movedGeneration): a
+             * NON-reboot row moves the generation when its to-version is a
+             * version and differs from its from-version.  A refused
+             * activation has to="-" and moves nothing. */
+            if (strcmp(O->to_s, "-") && strcmp(O->to_s, O->from_s)) {
+                streak = 0;
+                snprintf(streak_from, sizeof streak_from, "%s", "-");
+            }
+            continue;
+        }
+        g_nreb++;
+        rbclass_t c = rb_classify(O->outcome);
+        rbver_t *G = NULL;
+        for (unsigned k = 0; k < g_nrbv; k++)
+            if (!strcmp(g_rbv[k].from_s, O->from_s)) { G = &g_rbv[k].v; break; }
+        if (!G) {
+            if (g_nrbv >= MAX_REBOOT_VERS)
+                die("more than %u distinct reboot from-versions — raise MAX_REBOOT_VERS "
+                    "(a partial measure is a lie)", (unsigned)MAX_REBOOT_VERS);
+            G = &g_rbv[g_nrbv].v;
+            snprintf(g_rbv[g_nrbv].from_s, sizeof g_rbv[0].from_s, "%s", O->from_s);
+            g_nrbv++;
+        }
+        G->count++;
+        G->n[c]++;
+        unsigned t = 0;
+        for (; t < G->ntok; t++)
+            if (!strcmp(G->toks[t].tok, O->outcome)) { G->toks[t].n++; break; }
+        if (t == G->ntok) {
+            if (G->ntok >= MAX_REBOOT_TOKENS)
+                die("more than %u distinct reboot outcome tokens at from-version %s — "
+                    "raise MAX_REBOOT_TOKENS (a partial measure is a lie)",
+                    (unsigned)MAX_REBOOT_TOKENS, O->from_s);
+            snprintf(G->toks[t].tok, sizeof G->toks[t].tok, "%s", O->outcome);
+            G->toks[t].n = 1;
+            G->ntok++;
+        }
+        if (G->count > g_rb_top_count) {
+            g_rb_top_count = G->count;
+            snprintf(g_rb_top_from, sizeof g_rb_top_from, "%s", O->from_s);
+        }
+        if (c == RBC_ADMITTED) {
+            if (!strcmp(streak_from, O->from_s)) streak++;
+            else { streak = 1; snprintf(streak_from, sizeof streak_from, "%s", O->from_s); }
+            if (streak > g_rb_max_streak) {
+                g_rb_max_streak = streak;
+                snprintf(g_rb_max_from, sizeof g_rb_max_from, "%s", O->from_s);
+            }
+        }
+    }
+    /* BOOTS PER CONTENT: a reboot loop PUBLISHES NOTHING, so it moves no
+     * version and no run — the ACTIVITY seat reads it perfectly FLAT.  This
+     * is the number that sees it, joined through the identity map above.  No
+     * .bootlog at all is NOT-KNOWN, never zero. */
+    g_rb_boots_known = (g_bl_present && !g_bl_empty);
+    if (g_rb_boots_known) {
+        for (unsigned k = 0; k < g_nidents; k++) {
+            ident_t *I = &g_idents[k];
+            if (!I->known) continue; /* NOT-KNOWN is never a count of anything */
+            if (I->boots > g_rb_boots_max) {
+                g_rb_boots_max = I->boots;
+                g_rb_boots_gh = I->genhash;
+            }
+        }
+    }
+}
+
+static void emit_reboot(void) {
+    for (unsigned i = 0; i < g_nop; i++) {
+        oprow_t *O = &g_op[i];
+        if (strcmp(O->action, "reboot")) continue;
+        printf("reboot-row\tline\t%u\tepoch\t%u\tfrom-version\t%s\toutcome\t%s\tclass\t%s"
+               "\treason\t%s\tnonce\t%s\tMEASURED\n",
+               O->lineno, O->epoch, O->from_s, O->outcome,
+               rb_class_name(rb_classify(O->outcome)), O->arg, O->nonce);
+    }
+    for (unsigned k = 0; k < g_nrbv; k++) {
+        rbver_t *G = &g_rbv[k].v;
+        printf("reboot-version\t%s\treboots\t%u\tadmitted\t%u\trefused\t%u\tunexecuted\t%u"
+               "\tunknown\t%u\ttokens\t", g_rbv[k].from_s, G->count, G->n[RBC_ADMITTED],
+               G->n[RBC_REFUSED_TIMING] + G->n[RBC_REFUSED_STATE] + G->n[RBC_REFUSED_SHELL]
+                   + G->n[RBC_REFUSED_LOOP],
+               G->n[RBC_UNEXECUTED], G->n[RBC_UNKNOWN]);
+        for (unsigned t = 0; t < G->ntok; t++)
+            printf("%s%s:%u", t ? "," : "", G->toks[t].tok, G->toks[t].n);
+        printf("\tMEASURED\n");
+    }
+    /* THE TWO ABSENCES THIS CLASS CAN HAVE, each its OWN state and each
+     * stated so it cannot be read as "none". */
+    if (!g_op_present)
+        printf("reboot-absence\t.operator\tnot-known-no-operator-journal-never-no-reboots\tABSENT\t"
+               "a store whose .operator is not there CANNOT answer how many reboots there were "
+               "(it predates the journal, or never booted under it) — ZERO IS NOT THE ANSWER, "
+               "and absence/.operator above is the same state\n");
+    if (!g_rb_boots_known)
+        printf("reboot-absence\t.bootlog\tboots-per-content-not-known-%s\tABSENT\t"
+               "with no boot line there is no count of boots per content: 0 WOULD BE A CLAIM "
+               "THAT NOTHING BOOTED, and the record cannot say that\n",
+               g_bl_present ? "bootlog-present-but-empty" : "no-bootlog");
+    if (g_rb_max_streak > REBOOT_SAME_VERSION_MAX)
+        printf("reboot-finding\tconsecutive-same-version\tfrom-version\t%s\tstreak\t%u"
+               "\tbound\tREBOOT_SAME_VERSION_MAX=%u\tat\tfx-init zig/src/operator_journal.zig:379"
+               "\tMEASURED\t"
+               "the record holds %u CONSECUTIVE ADMITTED reboot(s) at v%s with no generation "
+               "move between them, while fx-init's REBOOT_SAME_VERSION_MAX=%u "
+               "(zig/src/operator_journal.zig:379, consecutiveRebootsAt :599-625) refuses the "
+               "(MAX+1)th request at one from-version by NAME (same-version-loop) — so either "
+               "an fx-init WITHOUT the admission wrote these rows, or something wrote them "
+               "AROUND it.  A reboot moves NO generation, so the ACTIVITY seat reads this same "
+               "stretch of history FLAT.  This seat reports it and stops nothing "
+               "(bound/reboot-is-not-a-policy)\n",
+               g_rb_max_from, g_rb_max_streak, (unsigned)REBOOT_SAME_VERSION_MAX,
+               g_rb_max_streak, g_rb_max_from, (unsigned)REBOOT_SAME_VERSION_MAX);
+    if (g_rb_max_streak > REBOOT_SAME_VERSION_MAX) g_findings++;
+}
+
 int main(int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--store") && i + 1 < argc) g_store = argv[++i];
@@ -3235,6 +3483,9 @@ int main(int argc, char **argv) {
     /* the content-identity table the progress class and its summary read
      * (built once: ACTIVITY by CONTENT, never by the version number) */
     build_identities(cur_v);
+    /* the REBOOT class's numbers: its rows are the journal's `reboot` rows,
+     * and its boots-per-content join needs the identity table above. */
+    build_reboot();
     printf("report\tfx-report/1\tstore\t%s\tversions\t%u\n", g_store, g_nvers);
     printf("current\t%u\tMEASURED\tnewest\t%u\n", cur_v, newest);
 
@@ -3427,6 +3678,13 @@ int main(int argc, char **argv) {
         printf("event\tactivation-refusal\tMEASURED\tfile\t.operator\tline\t%u\tepoch\t%u\taction\t%s\targ\t%s\toutcome\t%s\tfrom-version\t%s\tto-version\t%s\tnonce\t%s\n",
                O->lineno, O->epoch, O->action, O->arg, O->outcome, O->from_s, O->to_s, O->nonce);
     }
+
+    /* THE REBOOT CLASS (S4): the `reboot` rows of the SAME durable journal,
+     * classified by the writer's six-token vocabulary — see the class's own
+     * comment above build_reboot.  A reboot refusal is NOT an activation
+     * refusal (it matches no token of outcome_is_refusal above), so it is
+     * recorded here and nowhere else. */
+    emit_reboot();
 
     /* operator intervention — the DERIVED class, with its bound inline.
      * RESTORE-kind versions only: the nearest earlier generation with a
@@ -3636,6 +3894,90 @@ int main(int argc, char **argv) {
           "judged failed/in-progress).  The recurrence finding does NOT cover that shape "
           "(bound/progress-cannot-see-a-changing-content-loop).",
           identities_never_ok(), longest_failed_streak());
+    }
+
+    /* ── REBOOT: THE IN-GUEST REBOOT, READ FROM ITS OWN ROWS ──────────────
+     *    The plan's S4 and todo.md §4's last slice.  Every line is prefixed
+     *    REBOOT, so the gate's PIN-REPORT filter drops the block by one
+     *    regex — the discipline the activity seat established, and the
+     *    reason a reading never masquerades as a record. ───────────────── */
+    {
+        unsigned n_adm = 0, n_une = 0, n_unk = 0;
+        unsigned n_timing = 0, n_state = 0, n_shell = 0, n_loop = 0;
+        for (unsigned k = 0; k < g_nrbv; k++) {
+            rbver_t *G = &g_rbv[k].v;
+            n_adm += G->n[RBC_ADMITTED];     n_une += G->n[RBC_UNEXECUTED];
+            n_timing += G->n[RBC_REFUSED_TIMING]; n_state += G->n[RBC_REFUSED_STATE];
+            n_shell += G->n[RBC_REFUSED_SHELL];   n_loop += G->n[RBC_REFUSED_LOOP];
+            n_unk += G->n[RBC_UNKNOWN];
+        }
+        unsigned n_ref = n_timing + n_state + n_shell + n_loop;
+        if (!g_op_present) {
+            h("REBOOT: NOT-KNOWN — no .operator journal exists for this store, so this class "
+              "cannot say how many reboots there were.  ZERO IS NOT THE ANSWER: a store that "
+              "predates the journal (or never booted under it) has no record of a reboot, and "
+              "'no reboots' is a claim about the machine that nothing here supports "
+              "(bound/reboot-is-not-a-policy).");
+        } else {
+            h("REBOOT (from the .operator `reboot` rows, fx-init bb0642f) — %u row(s): %u "
+              "ADMITTED (ok — the machine re-entered the boot path), %u REFUSED, %u "
+              "ADMITTED-BUT-NOT-EXECUTED (exec-error — the machine is UNCHANGED: neither an "
+              "admission nor a refusal, and folding it into either is a lie), %u token(s) "
+              "outside the writer's six-token vocabulary (surfaced VERBATIM above, never "
+              "silently classified).", g_nreb, n_adm, n_ref, n_une, n_unk);
+            h("REBOOT refusals BY TOKEN, each its OWN state and NEVER collapsed: not-decided "
+              "%u (a TIMING — no verdict had landed, the grace window was open), boot-failed %u "
+              "(a STATE — the verdict LANDED and it was failed), shell-open %u (a human at the "
+              "console), same-version-loop %u (the writer's own loop bound).  The two "
+              "look-alikes are deliberately different tokens: \"did not know yet\" and \"knew, "
+              "and the answer was bad\" are different states, and a record that merges them "
+              "cannot be read (fx-init operator_journal.zig:165-215).%s",
+              n_timing, n_state, n_shell, n_loop,
+              g_nreb ? "" : "  NO reboot row is recorded in the journal — a MEASUREMENT of the "
+                            "journal, never 'the machine never rebooted': an fx-init without "
+                            "the verb cannot write a row at all.");
+            h("REBOOT at versions — %u distinct from-version(s); the most-rebooted is %s with "
+              "%u row(s).  A from-version of \"-\" is the journal's UNKNOWN and is its own "
+              "group, never v0.", g_nrbv, g_nrbv ? g_rb_top_from : "-", g_rb_top_count);
+            h("REBOOT loop bound: consecutive-same-version-max %u (at v%s) against "
+              "REBOOT_SAME_VERSION_MAX=%u (fx-init zig/src/operator_journal.zig:379, "
+              "consecutiveRebootsAt :599-625, reused not chosen): the writer REFUSES the "
+              "(MAX+1)th admitted reboot at one from-version, so at most %u is legitimate and "
+              "MORE is the state the admission makes unreachable — a finding.%s",
+              g_rb_max_streak, g_rb_max_streak ? g_rb_max_from : "-",
+              (unsigned)REBOOT_SAME_VERSION_MAX, (unsigned)REBOOT_SAME_VERSION_MAX,
+              g_rb_max_streak > REBOOT_SAME_VERSION_MAX ? "  THIS RECORD EXCEEDS IT." : "");
+            if (!g_rb_boots_known)
+                h("REBOOT boots-per-content: NOT-KNOWN — %s, so the number of boots that "
+                  "STARTED at a content is not countable here (0 would be a claim that nothing "
+                  "booted; bound/reboot-is-not-a-policy).",
+                  g_bl_present ? "the .bootlog is present but empty" : "no .bootlog exists");
+            else {
+                char bnote[160];
+                if (g_rb_boots_gh)
+                    snprintf(bnote, sizeof bnote, " (the content %s)", g_rb_boots_gh);
+                else
+                    snprintf(bnote, sizeof bnote, "%s", "");
+                h("REBOOT boots-per-content-max %u%s.  READ IT WITH ACTIVITY, WHICH IS THE "
+                  "WHOLE POINT: a reboot loop PUBLISHES NOTHING — it moves no version and no "
+                  "run — so the ACTIVITY seat reads it perfectly FLAT (1 version / 1 run / 0 "
+                  "repeats).  High activity with a high boots-per-content is the OSCILLATOR; "
+                  "high activity with a low one is a healthy loop.  The always-new-content loop "
+                  "is PRINTED as these numbers and deliberately NOT a finding (an honest "
+                  "debugging session looks identical; bounding it is the ORACLE's job).",
+                  g_rb_boots_max, bnote);
+            }
+            h("REBOOT blind spots, where the number is read: the row records the ADMISSION, "
+              "never the EXECUTION (an admitted reboot that never executed reads as the "
+              "ABSENCE of a later .bootlog line under that nonce) — and `exec-error` is "
+              "therefore DEFINED BUT UNPRODUCED by the current writer (fx-init bb0642f writes "
+              "the one row before the exec), so its count of %u is the vocabulary's, not a "
+              "measurement of failed re-entries; a reboot being VISIBLE is "
+              "not the reboot being STRONG — it is a USERSPACE RE-ENTRY under the same kernel "
+              "boot, with no firmware, no device re-init and no kernel restart, so a device "
+              "that wedged stays wedged (bound/reboot-visible-is-not-strong); and this seat "
+              "GATES, REFUSES AND STOPS NOTHING (bound/reboot-is-not-a-policy).", n_une);
+        }
     }
     h("automatic roll-forwards: %u row(s) in .recovery%s.", g_nrec,
       g_rec_present ? "" : " (no .recovery — none ever recorded)");

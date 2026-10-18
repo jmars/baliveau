@@ -332,6 +332,14 @@ grep -aq "no-verdict-field-no-policy-ran-on-this-call" "$REPORT" \
 grep -aq "host-name" "$REPORT" || fail "STALE BINARY: $REPORT does not contain this source's call-disagreement row"
 grep -aq "activity-without-progress-cannot-see-intent" "$REPORT" \
     || fail "STALE BINARY: $REPORT does not contain this source's progress-class bound (the content-identity seat)"
+grep -aq "consecutive-same-version-max" "$REPORT" \
+    || fail "STALE BINARY: $REPORT does not contain this source's reboot streak number (the reboot block was not built from this source)"
+grep -aq "boots-per-content-max" "$REPORT" \
+    || fail "STALE BINARY: $REPORT does not contain this source's boots-per-content number"
+grep -aq "REBOOT_SAME_VERSION_MAX" "$REPORT" \
+    || fail "STALE BINARY: $REPORT does not contain this source's reboot loop bound (reused from fx-init by name + location)"
+grep -aq "reboot-visible-is-not-strong" "$REPORT" \
+    || fail "STALE BINARY: $REPORT does not contain this source's reboot bound (visible is not strong)"
 
 TAB="$(printf '\t')"
 
@@ -441,6 +449,16 @@ pin_blob() { # pin_blob REPO BLOB FILE LABEL
 # same text it always pointed at, flagged here rather than re-aimed by
 # guesswork.
 pin_blob "$INIT" 201cf9ed6a5303e52e69dc9d40d5f7cf24d558c5 zig/src/init.zig "fx-init"
+# THE REBOOT CLASS's OWN pin (S4): the class cites fx-init's
+# operator_journal.zig BY LINE — the six-token vocabulary and its meanings
+# (:165-215, the writer's header, which IS the definition), the reboot ctrl
+# arm's admission call (:528, consecutiveRebootsAt >= REBOOT_SAME_VERSION_MAX)
+# and the streak predicate the report MIRRORS (:599-625, REBOOT_ACTION :369,
+# REBOOT_SAME_VERSION_MAX :379).  Same discipline as the init.zig pin: the
+# cited lines move and the gate says so, loudly, instead of letting the
+# report cite a file that no longer says what the table claims.  35c07b42 is
+# fx-init 0f9616d's blob (the file is untouched since S1 c0aa45b).
+pin_blob "$INIT" 35c07b42a6faedb5b66023cfdbb5ba03d594dbf5 zig/src/operator_journal.zig "fx-init (the reboot vocabulary)"
 # fxstore re-measured at e97758c (the install-origin unit): the FACTS SURFACE
 # this seat reads is unchanged — RELATION_SCHEMAS still defines every name in
 # fx-report.c's FACT_RELS, and the gc carve-out's claim (store.zig) is a
@@ -877,7 +895,7 @@ grep -q "NO growth policy exists" "$WORK/out-s1" \
 # drops that row on BOTH sides (its text was amended in S2), so the row's
 # complete loss or an id change would otherwise pass the pin silently.
 NBOUNDROWS=$(grep -c "^bound${TAB}" "$WORK/out-s1")
-[ "$NBOUNDROWS" = "27" ] || fail "POLICY: expected the seat's 27 bound rows on every run, got $NBOUNDROWS (a row was silently dropped; 27 = the 8 pre-S2 rows + S2's 4 claim bounds + P9's 2 call bounds + S4's 2 reach bounds + S4-palisade's 2 sandbox bounds + progress's 8 + the reboot's 1)"
+[ "$NBOUNDROWS" = "31" ] || fail "POLICY: expected the seat's 31 bound rows on every run, got $NBOUNDROWS (a row was silently dropped; 31 = the 8 pre-S2 rows + S2's 4 claim bounds + P9's 2 call bounds + S4's 2 reach bounds + S4-palisade's 2 sandbox bounds + progress's 8 + the nonce's 1 + the REBOOT block's 4)"
 # THE REBOOT (S2 of the reboot chain): the nonce redefinition must be STATED
 # where a reader meets it — the SAME standing as the retention decision,
 # asserted on the OUTPUT rather than trusted to a comment.  The two amended
@@ -914,7 +932,9 @@ grep -q "^bound${TAB}sandbox-visible-is-not-strong${TAB}.*no uid drop" "$WORK/ou
 for _b in activity-without-progress-cannot-see-intent progress-identity-is-content-not-behaviour \
           progress-verdict-join-mirrors-the-select-seat progress-is-not-a-policy \
           progress-cannot-see-a-changing-content-loop progress-blind-to-the-self-report \
-          progress-record-scope progress-version-cap; do
+          progress-record-scope progress-version-cap \
+          reboot-visible-is-not-strong reboot-is-not-a-policy \
+          reboot-row-records-the-admission reboot-cannot-see-a-changing-content-loop; do
     grep -q "^bound${TAB}$_b${TAB}" "$WORK/out-s1" \
         || fail "POLICY: the progress bound '$_b' is not printed on every run (a measurement that hides its own blind spots is incomplete work)"
 done
@@ -930,6 +950,26 @@ grep -q "^taxonomy${TAB}progress${TAB}MEASURED.*progress-content" "$WORK/out-s1"
     || fail "POLICY: the progress taxonomy row is not printed (the class has no grammar)"
 grep -q "^taxonomy${TAB}progress${TAB}.*this class does not read it" "$WORK/out-s1" \
     || fail "POLICY: the progress taxonomy row must state that it does not read .recovery — that IS the difference from content-recurrence"
+# the REBOOT class (S4): its grammar, its BOTH-DIRECTIONS absence meaning, and
+# the two bounds that stop a VISIBLE reboot reading as a STRONG or an ACTING one.
+grep -q "^taxonomy${TAB}reboot${TAB}MEASURED.*rows whose action is .reboot" "$WORK/out-s1" \
+    || fail "POLICY: the reboot taxonomy row is not printed (the class has no grammar)"
+grep -q "^taxonomy${TAB}reboot${TAB}.*ONE row per REQUEST, INCLUDING the refused ones" "$WORK/out-s1" \
+    || fail "POLICY: the reboot taxonomy row must say the row is per REQUEST, refused ones included (a refusal is still an intervention)"
+grep -q "^taxonomy${TAB}reboot${TAB}.*exec-error (ADMITTED but the re-entry could not be executed" "$WORK/out-s1" \
+    || fail "POLICY: the reboot taxonomy row must keep exec-error apart from both admissions and refusals"
+grep -q "^taxonomy${TAB}reboot${TAB}.*.operator ABSENT = NOT-KNOWN" "$WORK/out-s1" \
+    || fail "POLICY: the reboot taxonomy row must state the NOT-KNOWN direction for an absent journal"
+grep -q "^bound${TAB}reboot-visible-is-not-strong${TAB}.*NO firmware, NO device re-init and NO kernel restart" "$WORK/out-s1" \
+    || fail "POLICY: the reboot bound that says a VISIBLE reboot is not a STRONG one must print on every run"
+grep -q "^bound${TAB}reboot-visible-is-not-strong${TAB}.*kexec is not built into the guest kernel" "$WORK/out-s1" \
+    || fail "POLICY: the reboot bound must say the hard reboot is the HOST's act and kexec is not available"
+grep -q "^bound${TAB}reboot-is-not-a-policy${TAB}.*does not gate, deny, refuse, reorder or stop anything" "$WORK/out-s1" \
+    || fail "POLICY: the bound that says the reboot class is a MEASUREMENT and not a policy must print"
+grep -q "^bound${TAB}reboot-row-records-the-admission${TAB}.*the ADMISSION, never the EXECUTION" "$WORK/out-s1" \
+    || fail "POLICY: the bound that says the row records the ADMISSION and not the EXECUTION must print"
+grep -q "^bound${TAB}reboot-cannot-see-a-changing-content-loop${TAB}.*ALWAYS-NEW-content loop" "$WORK/out-s1" \
+    || fail "POLICY: the bound naming the loop the reboot bound CANNOT stop must print"
 
 # ══ OPERATOR: the derived class on the unattributed store ═══════════════
 report "$WORK/s2" "$WORK/out-s2"
@@ -1063,6 +1103,218 @@ grep -q "^# operator interventions: 11 MEASURED from the .operator journal (11 r
 grep -q "^# activation refusals: 3 MEASURED in the .operator journal" "$WORK/out-s2rb" \
     || fail "REBOOT-JOURNAL: the ACTIVATION-refusal count changed because a REBOOT was refused — the two classes must not conflate"
 echo "test_fx_report: REBOOT-JOURNAL: a reboot row is an operator intervention (admitted and refused alike) and a REFUSED REBOOT is NOT an activation refusal — the vocabulary does not collide with outcome_is_refusal"
+
+# ══ REBOOT (S4): THE IN-GUEST REBOOT, MEASURED FROM ITS OWN ROWS ═════════
+# The class reads the `.operator` `reboot` row (fx-init bb0642f) — no new
+# file and no new reader — and its job is to keep THREE states apart that a
+# single "refusals" count would merge: ADMITTED (ok), ADMITTED-BUT-NOT-
+# EXECUTED (exec-error) and REFUSED, where the two look-alike refusals are
+# themselves different states (not-decided is a TIMING, boot-failed is a
+# STATE — fx-init S1's own correction).
+#
+# FIXTURE HONESTY: this probe store is BUILT from the gate's own s2j (the
+# journal the JOURNAL arm wrote) — no shared store is pointed at, no proxy is
+# spawned (nothing here needs a time bound), and the .bootlog is REWRITTEN
+# wholesale so boots-per-content is a number this gate CHOSE rather than one
+# a fixture happened to carry.
+#
+# ASYMMETRY, three mutants sed-built from THIS source, each on its own
+# direction: MUT-ROWIDENT (the identity is each ROW, so reboots repeating at
+# ONE version never form a streak — the finding goes BLIND), MUT-FROMVERSION
+# (the row COUNT instead of the from-version, so a legitimate record of
+# reboots at DIFFERENT versions reads as a loop — a FALSE FINDING), and
+# MUT-COLLAPSE (a STATE recorded under the TIMING token — the exact merge
+# fx-init added the sixth token to prevent).
+cp -a "$WORK/s2j" "$WORK/rbA" || fail "REBOOT(S4) SETUP: cp"
+cat > "$WORK/rbA/.bootlog" <<EOF
+$VA in-progress 700 rb01
+$VA ok 701 rb01
+$VA in-progress 702 rb01
+$VA ok 703 rb01
+$VCUR in-progress 704 rb01
+$VCUR ok 705 rb01
+$VB in-progress 706 rb02
+$VB ok 707 rb02
+EOF
+# the reboot rows, in the writer's six-token vocabulary plus ONE token no
+# writer produces (a NEWER writer's word must be surfaced verbatim, never
+# silently classified), a generation move BETWEEN two reboots at one
+# version (which ENDS the streak), and one row whose from-version is the
+# journal's own "-" (unknown — its own group, never v0; it also BREAKS a
+# streak, because the writer's walk stops at any row from another version,
+# and a reader that ignored that would invent a loop across it).
+cat >> "$WORK/rbA/.operator" <<EOF
+400 reboot operator-request ok 10 - rbnonce01
+401 reboot oracle-recovery not-decided 10 - rbnonce01
+402 reboot oracle-recovery boot-failed 10 - rbnonce01
+403 reboot operator-request shell-open 12 - rbnonce02
+404 reboot operator-request same-version-loop 12 - rbnonce02
+405 reboot oracle-recovery exec-error 12 - rbnonce02
+406 reboot operator-request landed-late 12 - rbnonce02
+407 reboot operator-request ok - - rbnonce02
+408 reboot operator-request ok 14 - rbnonce02
+410 activate /fx/src/cfgB.dhall ok 12 13 rbnonce02
+411 reboot operator-request ok 13 - rbnonce02
+412 reboot oracle-recovery ok 13 - rbnonce02
+EOF
+report "$WORK/rbA" "$WORK/out-rbA"
+[ $? -eq 0 ] || fail "REBOOT(S4): a legitimate record (two admitted reboots at one version = exactly REBOOT_SAME_VERSION_MAX) must NOT be a finding — expected exit 0, got $? ($(grep -m1 '^reboot-finding' "$WORK/out-rbA"))"
+grep -q "^reboot-row${TAB}line${TAB}[0-9]*${TAB}epoch${TAB}400${TAB}from-version${TAB}10${TAB}outcome${TAB}ok${TAB}class${TAB}admitted${TAB}reason${TAB}operator-request${TAB}nonce${TAB}rbnonce01${TAB}MEASURED" "$WORK/out-rbA" \
+    || fail "REBOOT(S4): the ADMITTED row is not reported as admitted with its verbatim reason and nonce"
+grep -q "^reboot-row${TAB}line${TAB}[0-9]*${TAB}epoch${TAB}401${TAB}from-version${TAB}10${TAB}outcome${TAB}not-decided${TAB}class${TAB}refused-timing" "$WORK/out-rbA" \
+    || fail "REBOOT(S4): not-decided is not its own class (a TIMING)"
+grep -q "^reboot-row${TAB}line${TAB}[0-9]*${TAB}epoch${TAB}402${TAB}from-version${TAB}10${TAB}outcome${TAB}boot-failed${TAB}class${TAB}refused-state" "$WORK/out-rbA" \
+    || fail "REBOOT(S4): boot-failed is not its own class (a STATE) — the two look-alike refusals must NOT collapse"
+grep -q "^reboot-row${TAB}line${TAB}[0-9]*${TAB}epoch${TAB}403${TAB}from-version${TAB}12${TAB}outcome${TAB}shell-open${TAB}class${TAB}refused-shell" "$WORK/out-rbA" \
+    || fail "REBOOT(S4): shell-open is not its own class"
+grep -q "^reboot-row${TAB}line${TAB}[0-9]*${TAB}epoch${TAB}404${TAB}from-version${TAB}12${TAB}outcome${TAB}same-version-loop${TAB}class${TAB}refused-loop" "$WORK/out-rbA" \
+    || fail "REBOOT(S4): same-version-loop is not its own class"
+grep -q "^reboot-row${TAB}line${TAB}[0-9]*${TAB}epoch${TAB}405${TAB}from-version${TAB}12${TAB}outcome${TAB}exec-error${TAB}class${TAB}admitted-not-executed" "$WORK/out-rbA" \
+    || fail "REBOOT(S4): exec-error is neither an admission nor a refusal — it must have its OWN class (the machine is unchanged)"
+grep -q "^reboot-row${TAB}line${TAB}[0-9]*${TAB}epoch${TAB}406${TAB}from-version${TAB}12${TAB}outcome${TAB}landed-late${TAB}class${TAB}unknown-token" "$WORK/out-rbA" \
+    || fail "REBOOT(S4): a token outside the writer's six is not surfaced VERBATIM as unknown — a newer writer's word must not read as coherent here"
+# per-from-version: the count, the split and the VERBATIM tokens
+grep -q "^reboot-version${TAB}10${TAB}reboots${TAB}3${TAB}admitted${TAB}1${TAB}refused${TAB}2${TAB}unexecuted${TAB}0${TAB}unknown${TAB}0${TAB}tokens${TAB}ok:1,not-decided:1,boot-failed:1${TAB}MEASURED" "$WORK/out-rbA" \
+    || fail "REBOOT(S4): v10's row is not 3 reboots = 1 admitted + 2 refused with its verbatim tokens: $(grep -m1 "^reboot-version${TAB}10" "$WORK/out-rbA")"
+grep -q "^reboot-version${TAB}12${TAB}reboots${TAB}4${TAB}admitted${TAB}0${TAB}refused${TAB}2${TAB}unexecuted${TAB}1${TAB}unknown${TAB}1${TAB}tokens${TAB}shell-open:1,same-version-loop:1,exec-error:1,landed-late:1${TAB}MEASURED" "$WORK/out-rbA" \
+    || fail "REBOOT(S4): v12's row is not 4 rows = 2 refused + 1 unexecuted + 1 unknown: $(grep -m1 "^reboot-version${TAB}12" "$WORK/out-rbA")"
+grep -q "^reboot-version${TAB}13${TAB}reboots${TAB}2${TAB}admitted${TAB}2${TAB}refused${TAB}0" "$WORK/out-rbA" \
+    || fail "REBOOT(S4): v13's two admitted reboots are not counted at their version"
+grep -q "^reboot-version${TAB}-${TAB}reboots${TAB}1${TAB}admitted${TAB}1" "$WORK/out-rbA" \
+    || fail "REBOOT(S4): a row whose from-version is the journal's '-' is not its own group (it must never be read as v0)"
+# the human summary: every state BY NAME, the loop bound with its LOCATION,
+# and the number that sees a loop the activity seat cannot
+grep -q "^# REBOOT (from the .operator \`reboot\` rows, fx-init bb0642f) — 11 row(s): 5 ADMITTED" "$WORK/out-rbA" \
+    || fail "REBOOT(S4): the summary does not carry the 11 rows / 5 admitted: $(grep -m1 '^# REBOOT (' "$WORK/out-rbA")"
+grep -q "^# REBOOT (from the .operator .* — 11 row(s): 5 ADMITTED (ok — the machine re-entered the boot path), 4 REFUSED, 1 ADMITTED-BUT-NOT-EXECUTED (exec-error — the machine is UNCHANGED: neither an admission nor a refusal, and folding it into either is a lie), 1 token(s) outside the writer's six-token vocabulary" "$WORK/out-rbA" \
+    || fail "REBOOT(S4): the summary does not keep the three states apart (admitted / refused / admitted-not-executed)"
+grep -q "^# REBOOT refusals BY TOKEN, each its OWN state and NEVER collapsed: not-decided 1 (a TIMING — no verdict had landed, the grace window was open), boot-failed 1 (a STATE — the verdict LANDED and it was failed), shell-open 1 (a human at the console), same-version-loop 1 (the writer's own loop bound)" "$WORK/out-rbA" \
+    || fail "REBOOT(S4): the summary does not print the refusals BY TOKEN with their differing meanings: $(grep -m1 '^# REBOOT refusals' "$WORK/out-rbA")"
+grep -q "^# REBOOT at versions — 5 distinct from-version(s); the most-rebooted is 12 with 4 row(s)" "$WORK/out-rbA" \
+    || fail "REBOOT(S4): the summary does not say WHICH versions the reboots happened at"
+grep -q "^reboot-version${TAB}14${TAB}reboots${TAB}1${TAB}admitted${TAB}1" "$WORK/out-rbA" \
+    || fail "REBOOT(S4): the admitted reboot at v14 is not reported at its own version (each from-version is its own group)"
+grep -q "^# REBOOT loop bound: consecutive-same-version-max 2 (at v13) against REBOOT_SAME_VERSION_MAX=2 (fx-init zig/src/operator_journal.zig:379" "$WORK/out-rbA" \
+    || fail "REBOOT(S4): the streak number is not printed with the writer's bound AND its location"
+grep -q "^# REBOOT loop bound: .*the writer REFUSES the (MAX+1)th admitted reboot at one from-version, so at most 2 is legitimate" "$WORK/out-rbA" \
+    || fail "REBOOT(S4): the line does not state the convention the finding's threshold rests on (the (MAX+1)th is the refused one)"
+grep -q "^reboot-finding" "$WORK/out-rbA" \
+    && fail "REBOOT(S4): a finding fired at EXACTLY REBOOT_SAME_VERSION_MAX — the legitimate maximum, the false-positive direction"
+grep -q "^# REBOOT boots-per-content-max 3 (the content $GHA)" "$WORK/out-rbA" \
+    || fail "REBOOT(S4): boots-per-content-max is not the number the fixture fixes (3 in-progress lines on $GHA): $(grep -m1 'boots-per-content-max' "$WORK/out-rbA")"
+grep -q "^# REBOOT boots-per-content-max .*a reboot loop PUBLISHES NOTHING" "$WORK/out-rbA" \
+    || fail "REBOOT(S4): the block does not say the activity seat reads a reboot loop FLAT — the two numbers are the point"
+grep -q "^# REBOOT boots-per-content-max .*deliberately NOT a finding" "$WORK/out-rbA" \
+    || fail "REBOOT(S4): the always-new-content loop must be PRINTED as numbers and named as NOT a finding"
+grep -q "^# REBOOT blind spots.*exec-error\` is therefore DEFINED BUT UNPRODUCED by the current writer" "$WORK/out-rbA" \
+    || fail "REBOOT(S4): the block must not expect exec-error from the current writer (fx-init S3: the row is written BEFORE the exec)"
+grep -q "^# REBOOT blind spots.*a reboot being VISIBLE is not the reboot being STRONG" "$WORK/out-rbA" \
+    || fail "REBOOT(S4): the block must say a VISIBLE reboot is not a STRONG one (no firmware/device/kernel re-init)"
+grep -q "^# REBOOT blind spots.*GATES, REFUSES AND STOPS NOTHING" "$WORK/out-rbA" \
+    || fail "REBOOT(S4): the block must say it is a MEASUREMENT and stops nothing"
+echo "test_fx_report: REBOOT(S4) the six tokens are THREE states (admitted / admitted-not-executed / refused) and the two look-alike refusals stay apart (not-decided = TIMING, boot-failed = STATE); the reboots are reported at their versions with their verbatim tokens; the streak sits at the writer's own bound with no finding"
+
+# ── F2: THE LOOP THE RECORD CAN SHOW — the (MAX+1)th admitted reboot at one
+# from-version, which fx-init's admission makes unreachable (it refuses that
+# request by name).  Its presence means an fx-init WITHOUT the admission or a
+# row written AROUND it, so it is the ONE finding this class raises — and the
+# READING must survive beside it.
+cp -a "$WORK/rbA" "$WORK/rbB" || fail "REBOOT(S4) F2 SETUP: cp"
+printf '413 reboot oracle-recovery ok 13 - rbnonce03\n' >> "$WORK/rbB/.operator"
+report "$WORK/rbB" "$WORK/out-rbB"
+[ $? -eq 1 ] || fail "REBOOT(S4) F2: three consecutive admitted reboots at v13 EXCEED the writer's bound — expected exit 1, got $?"
+grep -q "^reboot-finding${TAB}consecutive-same-version${TAB}from-version${TAB}13${TAB}streak${TAB}3${TAB}bound${TAB}REBOOT_SAME_VERSION_MAX=2${TAB}at${TAB}fx-init zig/src/operator_journal.zig:379" "$WORK/out-rbB" \
+    || fail "REBOOT(S4) F2: no finding naming the from-version, the streak, the bound and its LOCATION: $(grep -m1 '^reboot-finding' "$WORK/out-rbB")"
+grep -q "^reboot-finding.*consecutiveRebootsAt :599-625" "$WORK/out-rbB" \
+    || fail "REBOOT(S4) F2: the finding does not name the writer's own predicate it is measured against"
+grep -q "^reboot-finding.*stops nothing (bound/reboot-is-not-a-policy)" "$WORK/out-rbB" \
+    || fail "REBOOT(S4) F2: the finding does not carry its bound inline (a row that reads as a stop would be a policy this seat does not have)"
+grep -q "^reboot-finding.*the ACTIVITY seat reads this same stretch of history FLAT" "$WORK/out-rbB" \
+    || fail "REBOOT(S4) F2: the finding does not say why the activity seat cannot see this shape"
+grep -q "^# REBOOT loop bound: consecutive-same-version-max 3 (at v13).*THIS RECORD EXCEEDS IT" "$WORK/out-rbB" \
+    || fail "REBOOT(S4) F2: the summary does not mark the exceeded bound"
+grep -q "^reboot-version${TAB}13${TAB}reboots${TAB}3${TAB}admitted${TAB}3" "$WORK/out-rbB" \
+    || fail "REBOOT(S4) F2: the finding SUPPRESSED the reading (v13's row is gone) — a finding must sit BESIDE the numbers"
+echo "test_fx_report: REBOOT(S4) F2 the (MAX+1)th admitted reboot at one from-version is a FINDING naming REBOOT_SAME_VERSION_MAX (fx-init zig/src/operator_journal.zig:379) and its bound, with the reading intact"
+
+# ── MUT-ROWIDENT (the MANDATED BLIND): the streak's identity is each ROW
+# instead of the from-version the reboot was issued against, so reboots
+# repeating at ONE version read as ISOLATED events and the finding goes
+# blind.  This is the named silent failure: the instrument reports a healthy
+# machine because it cannot see the thing.
+mutbuild rowident 's/if (!strcmp(streak_from, O->from_s)) streak++;/if (0) streak++;/'
+grep -q 'if (0) streak++;' "$WORK/mut-rowident.c" \
+    || fail "MUT-ROWIDENT: the sed did not land (check the source text)"
+FXSTORE_BIN="$FXSTORE" "$REPO/build/fx-report-rowident" --store "$WORK/rbB" > "$WORK/out-mutrowident" 2>/dev/null
+grep -q "^reboot-finding" "$WORK/out-mutrowident" \
+    && fail "MUT-ROWIDENT: the per-row-identity build STILL raises the finding — the arm is not load-bearing"
+grep -q "^reboot-row${TAB}" "$WORK/out-mutrowident" \
+    || fail "MUT-ROWIDENT: the mutant is not a working reporter at all (no rows) — a broken control proves nothing"
+grep -q "^# REBOOT loop bound: consecutive-same-version-max 1 (at v" "$WORK/out-mutrowident" \
+    || fail "MUT-ROWIDENT: the blindness is not the one named (every reboot should read as its own streak of 1): $(grep -m1 '^# REBOOT loop bound' "$WORK/out-mutrowident")"
+FXSTORE_BIN="$FXSTORE" "$REPO/build/fx-report-rowident" --store "$WORK/rbA" > "$WORK/out-mutrowidentA" 2>/dev/null
+grep -q "^# REBOOT loop bound: consecutive-same-version-max 2 " "$WORK/out-mutrowidentA" \
+    && fail "MUT-ROWIDENT: the mutant keeps the real streak on the legitimate fixture — the identity map did not change"
+echo "test_fx_report: REBOOT(S4)-MUTANT the per-row-identity build reads the (MAX+1)th reboot as isolated events and LOSES the finding — the named silent failure, caught"
+
+# ── MUT-FROMVERSION (the plan's own, the OTHER direction): the same-version
+# test keyed on the ROW COUNT instead of the from-version, so a LEGITIMATE
+# record — reboots at different versions, a generation move between them —
+# reads as a loop.  A FALSE FINDING, which is the direction this tree must
+# also prove it can produce: an always-quiet instrument is as useless as a
+# blind one.
+mutbuild fromversion 's/if (!strcmp(streak_from, O->from_s)) streak++;/if (1) streak++;/'
+grep -q 'if (1) streak++;' "$WORK/mut-fromversion.c" \
+    || fail "MUT-FROMVERSION: the sed did not land (check the source text)"
+FXSTORE_BIN="$FXSTORE" "$REPO/build/fx-report-fromversion" --store "$WORK/rbA" > "$WORK/out-mutfromversion" 2>/dev/null
+grep -q "^reboot-finding${TAB}consecutive-same-version${TAB}from-version" "$WORK/out-mutfromversion" \
+    || fail "MUT-FROMVERSION: the row-count build did NOT invent a loop on a legitimate record — the arm is not load-bearing"
+grep -q "^reboot-finding.*streak${TAB}3${TAB}" "$WORK/out-mutfromversion" \
+    || fail "MUT-FROMVERSION: the false finding is not the counted shape (the three contiguous admitted reboots at DIFFERENT from-versions, read as one streak): $(grep -m1 '^reboot-finding' "$WORK/out-mutfromversion")"
+echo "test_fx_report: REBOOT(S4)-MUTANT the row-count build reads a LEGITIMATE record (reboots at different versions, a generation move between) as a loop — the FALSE-FINDING direction, caught"
+
+# ── MUT-COLLAPSE (the review's own correction, inverted): a STATE recorded
+# under the TIMING token — the exact merge fx-init added the sixth token to
+# prevent.  The totals still look right, which is what makes it dangerous.
+mutbuild collapse 's/if (!strcmp(t, "boot-failed")) return RBC_REFUSED_STATE;/if (!strcmp(t, "boot-failed")) return RBC_REFUSED_TIMING;/'
+grep -q 'if (!strcmp(t, "boot-failed")) return RBC_REFUSED_TIMING;' "$WORK/mut-collapse.c" \
+    || fail "MUT-COLLAPSE: the sed did not land (check the source text)"
+FXSTORE_BIN="$FXSTORE" "$REPO/build/fx-report-collapse" --store "$WORK/rbA" > "$WORK/out-mutcollapse" 2>/dev/null
+grep -q "^reboot-row.*outcome${TAB}boot-failed${TAB}class${TAB}refused-state" "$WORK/out-mutcollapse" \
+    && fail "MUT-COLLAPSE: the collapsing build STILL separates the state from the timing — the arm is not load-bearing"
+grep -q "^# REBOOT refusals BY TOKEN.*not-decided 2 .*boot-failed 0 " "$WORK/out-mutcollapse" \
+    || fail "MUT-COLLAPSE: the collapse is not visible in the SUMMARY either (boot-failed should read 0 and not-decided 2): $(grep -m1 '^# REBOOT refusals' "$WORK/out-mutcollapse")"
+grep -q "^reboot-row${TAB}line${TAB}[0-9]*${TAB}epoch${TAB}400${TAB}from-version${TAB}10${TAB}outcome${TAB}ok${TAB}class${TAB}admitted" "$WORK/out-mutcollapse" \
+    || fail "MUT-COLLAPSE: the mutant lost the admitted rows too — this control is meant to collapse the REFUSALS only"
+echo "test_fx_report: REBOOT(S4)-MUTANT the collapsing build records a failed STATE under the TIMING token (boot-failed 0, not-decided 2) — the merge the sixth token exists to prevent, caught"
+
+# ── ABSENCES, BOTH DIRECTIONS ───────────────────────────────────────────
+# (i) NO .operator: this class CANNOT say.  NOT "no reboots".
+report "$WORK/s3" "$WORK/out-rb-absent"
+[ $? -eq 0 ] || fail "REBOOT(S4) ABSENT: a store with no journal must report cleanly, got $?"
+grep -q "^reboot-absence${TAB}.operator${TAB}not-known-no-operator-journal-never-no-reboots${TAB}ABSENT" "$WORK/out-rb-absent" \
+    || fail "REBOOT(S4) ABSENT: no .operator must be its OWN state for this class too"
+grep -q "^# REBOOT: NOT-KNOWN — no .operator journal exists for this store" "$WORK/out-rb-absent" \
+    || fail "REBOOT(S4) ABSENT: the summary must say NOT-KNOWN, never zero reboots"
+grep -q "^# REBOOT .*0 row(s)" "$WORK/out-rb-absent" \
+    && fail "REBOOT(S4) ABSENT: an absent journal was turned into a ZERO count"
+grep -q "^reboot-row${TAB}" "$WORK/out-rb-absent" \
+    && fail "REBOOT(S4) ABSENT: reboot rows fabricated with no journal"
+grep -q "^reboot-absence${TAB}.bootlog${TAB}boots-per-content-not-known-no-bootlog${TAB}ABSENT" "$WORK/out-rb-absent" \
+    || fail "REBOOT(S4) ABSENT: with no .bootlog the boots-per-content number must be NOT-KNOWN, never 0"
+# (ii) .operator PRESENT with no reboot row: a MEASUREMENT of the journal —
+# zero reboots RECORDED — and never a claim that the machine never rebooted.
+report "$WORK/s2j" "$WORK/out-rb-none"
+[ $? -eq 0 ] || fail "REBOOT(S4) NONE: a journal with no reboot row must report cleanly, got $?"
+grep -q "^reboot-absence${TAB}.operator" "$WORK/out-rb-none" \
+    && fail "REBOOT(S4) NONE: a NOT-KNOWN absence for a journal that IS there — fabricated"
+grep -q "^reboot-row${TAB}" "$WORK/out-rb-none" \
+    && fail "REBOOT(S4) NONE: a reboot row fabricated from a journal that holds none"
+grep -q "^# REBOOT (from the .operator .* — 0 row(s)" "$WORK/out-rb-none" \
+    || fail "REBOOT(S4) NONE: a journal with no reboot row is a MEASUREMENT of the journal (0 rows), not a silence"
+grep -q "^# REBOOT refusals BY TOKEN.*NO reboot row is recorded in the journal — a MEASUREMENT of the journal, never 'the machine never rebooted'" "$WORK/out-rb-none" \
+    || fail "REBOOT(S4) NONE: the block does not say that zero rows RECORDED is a measurement, never 'the machine never rebooted'"
+echo "test_fx_report: REBOOT(S4) ABSENT both directions: no .operator = NOT-KNOWN (never 'no reboots'), a journal with no reboot row = a MEASUREMENT (never 'the machine never rebooted'), and no .bootlog = boots-per-content NOT-KNOWN (never 0)"
 
 # ══ ABSENT: none-occurred vs not-durably-recorded ════════════════════════
 report "$WORK/s3" "$WORK/out-s3"
@@ -1534,7 +1786,10 @@ OPHDR
             /^bound\tactivity-without-progress-/ { next }
             /^progress-content\t/ { next }
             /^progress-finding\t/ { next }
-            /^# (ACTIVITY|PROGRESS)/ { next }
+            /^# (ACTIVITY|PROGRESS|REBOOT)/ { next }
+            /^reboot-/ { next }
+            /^bound\treboot-/ { next }
+            /^taxonomy\treboot\t/ { next }
             { print }
         ' "$1" > "$2"
     }
