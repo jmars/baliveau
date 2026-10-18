@@ -457,7 +457,12 @@ test-hostgate: $(BIN_HOSTGATE) $(BIN_HOSTGATE_MUTANT) $(BIN_HOSTGATE_UNBOUND) \
                $(BIN_HTTP_GET) $(BIN_ECHO_CONTRACT) $(BIN_HOSTGATE_ECHOCONTRACT) \
                $(BIN_SPAWN_HANG) $(BIN_SPAWN_FLOOD) $(BIN_SPAWN_NONZERO) \
                $(BIN_HOSTGATE_SPAWNHANG) $(BIN_HOSTGATE_SPAWNFLOOD) \
-               $(BIN_HOSTGATE_SPAWNNONZERO) $(BIN_HOSTGATE_SPAWNMISSING)
+               $(BIN_HOSTGATE_SPAWNNONZERO) $(BIN_HOSTGATE_SPAWNMISSING) \
+               $(BIN_HOST_TIME_ESCAPE) $(BIN_HOST_TIME_SOCKET) \
+               $(BIN_HOST_TIME_ENV) $(BIN_HOST_TIME_SIGSYS) \
+               $(BIN_HOSTGATE_ESCAPE) $(BIN_HOSTGATE_SOCKET) $(BIN_HOSTGATE_ENV) \
+               $(BIN_HOSTGATE_NOSTAGE3) $(BIN_HOSTGATE_NOSTAGE3_SIGSYS) \
+               $(PALISADE_STAGE3)
 	bash tests/test_hostgate.sh
 
 # P6 THE OPS AUTHOR: the engine whose reasoning the seat evaluates is the
@@ -661,7 +666,7 @@ $(BIN_HOSTGATE_OPSLITKEY): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJ
 #     real build starts (the arm's fixture is not the cause); this one must
 #     REFUSE TO START naming the tool, because without the contract its
 #     argument would be neither classed nor totality-checked.
-HOSTTOOL_EXTRA_PIN := -DFH_HOSTTOOL_SHA256='"aa456278e4f1b4c7a929ba1e819752124f1cb9df340e063e4abacc96e5c0cd1a"'
+HOSTTOOL_EXTRA_PIN := -DFH_HOSTTOOL_SHA256='"b0b73ffb5421b10ffb77d0a856f9ca4ee71c1fadf70958f265bfc333c699d9e3"'
 
 $(BIN_HOSTGATE_EXTRAUNCL): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(DATALOG_DIR)/zig-out/lib/libdatalog.so | $(DATALOG_SHIM)
 	@mkdir -p build
@@ -740,6 +745,65 @@ $(BIN_HOSTGATE_SPAWNMISSING): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(
 	@mkdir -p build
 	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_HOST_CAT_PROGRAM='"fx-spawn-missing"' -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(HOSTGATE_LIBS)
 
+# ── S1 (PALISADE: host_time sandboxed) — the escape probes ─────────────────
+# The four MUTANT host_time programs (gate fixtures, never product binaries):
+#   escape  open()s /etc/hostname (the Landlock escape probe: EACCES post-fix);
+#   socket  socket(AF_INET)   (the seccomp escape probe: EPERM post-fix);
+#   env     prints the vendored pledge's RATTAN_* env (must read NULL);
+#   sigsys  raises SIGSYS     (proves the spawn's DISTINCT SIGSYS refusal).
+# Each is spawned in place of the real fx-host-time via the proxy's
+# -DFH_HOST_TIME_PROGRAM override (the same same-source discipline as the
+# FH_HOST_CAT_PROGRAM spawn-bounds probes above).
+BIN_HOST_TIME_ESCAPE := build/fx-host-time-escape
+BIN_HOST_TIME_SOCKET := build/fx-host-time-socket
+BIN_HOST_TIME_ENV    := build/fx-host-time-env
+BIN_HOST_TIME_SIGSYS := build/fx-host-time-sigsys
+BIN_HOSTGATE_ESCAPE  := build/fx-hostgate-escape
+BIN_HOSTGATE_SOCKET  := build/fx-hostgate-socket
+BIN_HOSTGATE_ENV     := build/fx-hostgate-env
+BIN_HOSTGATE_NOSTAGE3 := build/fx-hostgate-nostage3
+BIN_HOSTGATE_NOSTAGE3_SIGSYS := build/fx-hostgate-nostage3-sigsys
+
+$(BIN_HOST_TIME_ESCAPE): tests/fixtures/host_time_escape.c
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ tests/fixtures/host_time_escape.c
+$(BIN_HOST_TIME_SOCKET): tests/fixtures/host_time_socket.c
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ tests/fixtures/host_time_socket.c
+$(BIN_HOST_TIME_ENV): tests/fixtures/host_time_env.c
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ tests/fixtures/host_time_env.c
+$(BIN_HOST_TIME_SIGSYS): tests/fixtures/host_time_sigsys.c
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ tests/fixtures/host_time_sigsys.c
+
+# The REAL S1 proxy with the mutant program named in place of fx-host-time —
+# the escape probe runs through the REAL sandbox (stage3 wrap + floor).
+$(BIN_HOSTGATE_ESCAPE): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(DATALOG_DIR)/zig-out/lib/libdatalog.so | $(DATALOG_SHIM)
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_HOST_TIME_PROGRAM='"fx-host-time-escape"' -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(HOSTGATE_LIBS)
+$(BIN_HOSTGATE_SOCKET): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(DATALOG_DIR)/zig-out/lib/libdatalog.so | $(DATALOG_SHIM)
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_HOST_TIME_PROGRAM='"fx-host-time-socket"' -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(HOSTGATE_LIBS)
+$(BIN_HOSTGATE_ENV): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(DATALOG_DIR)/zig-out/lib/libdatalog.so | $(DATALOG_SHIM)
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_HOST_TIME_PROGRAM='"fx-host-time-env"' -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(HOSTGATE_LIBS)
+
+# THE MANDATED BLIND — FH_MUTANT_NO_STAGE3 compiles the stage3 wrap OUT of the
+# spawn while the spec is STILL COMPUTED and RECORDED on the row: the escape
+# mutant then reads /etc/hostname through a call the log calls sandboxed.  That
+# is the SPEC-LOADED-BUT-NOT-APPLIED direction the whole slice exists to catch.
+$(BIN_HOSTGATE_NOSTAGE3): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(DATALOG_DIR)/zig-out/lib/libdatalog.so | $(DATALOG_SHIM)
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_MUTANT_NO_STAGE3 -DFH_HOST_TIME_PROGRAM='"fx-host-time-escape"' -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(HOSTGATE_LIBS)
+# The SIGSYS-rendering proof: a program that dies SIGSYS run through the SAME
+# no-stage3 spawn (unsandboxed, so raise() is not itself blocked) — the spawn's
+# reap must render the DISTINCT named refusal, not the generic "killed by a
+# signal" text.
+$(BIN_HOSTGATE_NOSTAGE3_SIGSYS): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(DATALOG_DIR)/zig-out/lib/libdatalog.so | $(DATALOG_SHIM)
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_MUTANT_NO_STAGE3 -DFH_HOST_TIME_PROGRAM='"fx-host-time-sigsys"' -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(HOSTGATE_LIBS)
+
 # ── P7 (THE CLAIM AUTHOR AT THE HOST SEAT) ──────────────────────────────────
 #
 # THE PRE-FIX CONTROL — FH_MUTANT_NO_CLAIM_SEAT compiles the whole claim seat
@@ -815,7 +879,7 @@ $(BIN_HOSTGATE_NOSCOPECARRY): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(
 #     slave path is published: a host tool that shadows a guest verb is executed
 #     by the host AND dispatched by the guest under one name.
 HOSTTOOL_COLLIDING_NAME := -DFH_HOSTTOOL_NAME='"fx_read"'
-HOSTTOOL_COLLIDING_PIN := -DFH_HOSTTOOL_SHA256='"77d7697877d6623e20e868ffeb161bcf50bf420fc56b5cb81839aaca422b11a7"'
+HOSTTOOL_COLLIDING_PIN := -DFH_HOSTTOOL_SHA256='"b285ea29aa1465050c756061f7b314dc43da0bdb45a7d91c25ba894aad7f1da8"'
 
 $(BIN_HOSTGATE_HOSTCOLLIDE): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(DATALOG_DIR)/zig-out/lib/libdatalog.so | $(DATALOG_SHIM)
 	@mkdir -p build

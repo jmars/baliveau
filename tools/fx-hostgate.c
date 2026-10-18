@@ -672,6 +672,13 @@ struct row {
      * reading of its scope (the P6-fix R5 lesson) — a name that later becomes
      * (or ceases to be) a host tool must not rewrite history. */
     char *exec;
+    /* S1: the sandbox spec ACTUALLY USED on a host-executed row (promises +
+     * landlock, post-composition), rendered by the SAME helper the spawn built
+     * the stage3 argv from — a FIELD, not a derivation, so the recorded spec is
+     * the one that RAN, and a later re-pin does not rewrite history.  NULL
+     * everywhere a host row carries no sandbox (a not-yet-migrated tool, or a
+     * guest row). */
+    char *sandbox;
     long turns_served;      /* ROW_EXIT */
     size_t *unresolved_idx; /* ROW_EXIT: indices of still-pending rows */
     size_t n_unresolved;
@@ -908,6 +915,17 @@ static void log_flush(void) {
                 char *jexec = json_str(r->exec);
                 fprintf(f, ",\"exec\":%s", jexec);
                 free(jexec);
+            }
+            /* S1: `sandbox` renders only beside `exec` (a host row whose spawn
+             * recorded the spec it applied) — additive, so a guest row stays
+             * BYTE-IDENTICAL and a not-yet-migrated host row (host_cat /
+             * http_get before S2/S3) carries no such field at all.  It rides
+             * exec so a row can never carry a sandbox reading without the
+             * execution it describes (the loader refuses the reverse). */
+            if (r->exec && r->sandbox) {
+                char *jsb = json_str(r->sandbox);
+                fprintf(f, ",\"sandbox\":%s", jsb);
+                free(jsb);
             }
             /* P3/P5/P6/P7: the verdict fields render ONLY when a policy actually
              * ran (the brief's honesty rule).  `author` names what ran — the
@@ -1173,6 +1191,8 @@ static struct row *row_call_record(const char *call_id, const char *name,
         r->exec = NULL;
         free(r->outcome);
         r->outcome = NULL;
+        free(r->sandbox);
+        r->sandbox = NULL;
         emap_remove(call_id);
     }
     r->verdict = verdict;
@@ -2147,6 +2167,20 @@ static void log_load(void) {
                                "model",
                                lineno, ex);
                 r->exec = xstrdup(ex);
+                /* S1: `sandbox` is an OPTIONAL field on an exec row (a host row
+                 * whose spawn recorded the spec it applied).  Carried VERBATIM
+                 * so a later flush does not silently DROP it (the exec field's
+                 * R5 discipline); the loader checks STRUCTURE (it only rides an
+                 * exec row), never content — the spec is host-authored trusted
+                 * text exactly like the exec row's outcome. */
+                const char *sb = log_str_opt(root, "sandbox", lineno);
+                if (sb)
+                    r->sandbox = xstrdup(sb);
+            } else if (log_str_opt(root, "sandbox", lineno)) {
+                log_refuse("line %d carries a `sandbox` field with NO exec=%s "
+                           "row — the sandbox spec only exists on a host-executed "
+                           "row, and a guest/absent-exec row with one is not a "
+                           "row this seat writes", lineno, FH_EXEC_HOST);
             }
         }
         if (verdict == VERDICT_DENIED) {
@@ -2503,7 +2537,7 @@ static int fh_catalog_nth(size_t idx, char *buf, size_t cap) {
  * or the pin check refuses — the refusal names both shas). */
 #ifndef FH_HOSTTOOL_SHA256
 #define FH_HOSTTOOL_SHA256 \
-    "7e34902eed13322afca835373b00a5774d617f01edf7b22d287ed5c425e93f3c"
+    "dc0090caffe9513d6c1e04ec6bb056ad40cecb62140925533d65f839c8e71b54"
 #endif
 
 /* THE DECLARED PROGRAMS.  A host tool's executor is NOT a compiled-in
@@ -2523,10 +2557,17 @@ static int fh_catalog_nth(size_t idx, char *buf, size_t cap) {
  * hostile or buggy program can do anything the host user can; the gate keeps
  * that lever PINNED, BOUNDED and VISIBLE, not narrow.
  *
- * THE SANDBOX SEAT (deliberately NOT built — the user: "later, we can use
- * palisade to add some sandboxing on the host tool calls"): the spawn in
- * host_exec is the ONE place a future sandbox attaches.  No speculative
- * abstraction, no half-built hook — just this comment marking the seat.
+ * THE SANDBOX (S1, palisade — built): the spawn in host_exec now WRAPS the
+ * floored tool in the pinned stage3 (execve stage3 [PROMISES LANDLOCK --]
+ * program), keeping the scrubbed env, the deadline and the output cap.  A
+ * tool's floor is the LEAST it needs, MEASURED from ldd; host_time is the ONE
+ * tool S1 floors (host_cat's judged-path unveil is S2, http_get's inet+dns is
+ * S3 — they carry NULL floors and spawn unsandboxed until then).  There is NO
+ * unsandboxed FALLBACK for a floored tool: a missing stage3 is a startup
+ * refusal (--verify) and a per-call refusal BY NAME.  The HONEST LIMITS are
+ * stated at the spawn and on each floor: promises are coarse (`inet` is any
+ * destination), the sandbox is PER-PROCESS not per-call, and stage3 drops no
+ * uid.
  *
  * PROGRAM RESOLUTION: each `program` is a NAME (e.g. "fx-http-get").  The
  * child is spawned with a PATH-only env (the mcp_client discipline — the
@@ -2561,6 +2602,18 @@ struct host_tool {
                                  * argument (the startup contract: reads_arg => arg_key) */
     unsigned long deadline_ms;  /* the per-call spawn deadline */
     size_t       out_cap;       /* the per-call stdout cap */
+    /* S1 (palisade): the COMPILED-IN FLOOR — the LEAST the tool needs, MEASURED
+     * from ldd on this host, never guessed.  The tools are dynamically linked
+     * glibc, so every floor needs `rpath`+`prot_exec` for ld.so/libc and the
+     * landlock floor must unveil the LOADER itself (the kernel execs it, so it
+     * needs :rx, not :r).  promises_floor is the pledge token string (passed to
+     * stage3 as ONE argv word); landlock_floor is the STATIC landlock fragment
+     * (loader + libc), to which the spawn prepends the resolved program path
+     * (so the binary itself is always unveiled).  NULL = this tool is NOT
+     * sandboxed yet — its floor arrives with its slice (host_cat's judged-path
+     * unveil is S2, http_get's inet+dns is S3). */
+    const char *promises_floor;
+    const char *landlock_floor;
 };
 
 /* The program NAMES are build-time overridable for the gate's mutation arms
@@ -2576,6 +2629,26 @@ struct host_tool {
 #ifndef FH_HTTP_GET_PROGRAM
 #define FH_HTTP_GET_PROGRAM "fx-http-get"
 #endif
+
+/* S1: the host_time FLOOR, MEASURED from ldd on this host (NOT guessed).
+ *
+ *   build/fx-host-time is a dynamically linked glibc ELF (interpreter
+ *   /lib64/ld-linux-x86-64.so.2, libc.so.6 only).  Measured by running the
+ *   real stage3 against the real binary with candidate floors:
+ *     - the LOADER needs `:rx`, not `:r`: the kernel execs the interpreter, so
+ *       Landlock must grant EXECUTE on it (with `:r` alone the exec failed
+ *       EACCES);
+ *     - `/etc/ld.so.cache:r` is NOT required: with only /lib64 unveiled, ld.so
+ *       falls back to its default search path and the binary loads (measured);
+ *     - promises "stdio rpath exec prot_exec" is the LEAST that works: `exec`
+ *       is required (stage3's own execvp runs under the merged filter), and
+ *       `prot_exec` is required for a dynamic binary to map its segments.
+ *   The gate re-measures the ldd paths and refuses on drift (a glibc update
+ *   adding a needed path fails LOUD, never silently). */
+#define FH_HOST_TIME_PROMISES_FLOOR "stdio rpath exec prot_exec"
+#define FH_HOST_TIME_LANDLOCK_FLOOR \
+    "/lib64/ld-linux-x86-64.so.2:rx;/lib64/libc.so.6:r"
+
 
 /* THE CLOSED TABLE.  A call is executed only if its name is found HERE, so the
  * set of things the host can run is a source-level constant — the same
@@ -2593,18 +2666,19 @@ struct host_tool {
  * crosses unjudged.  Never a product build. */
 #define FH_HOST_TOOL_EXTRA \
     { "host_fetch", FH_HOST_CAT_PROGRAM, NULL, NULL, 1, \
-      FH_HOSTTOOL_DEADLINE_MS, FH_HOSTTOOL_OUT_CAP },
+      FH_HOSTTOOL_DEADLINE_MS, FH_HOSTTOOL_OUT_CAP, NULL, NULL },
 #else
 #define FH_HOST_TOOL_EXTRA
 #endif
 
 static const struct host_tool fh_host_tools[] = {
     { FH_HOSTTOOL_NAME, FH_HOST_TIME_PROGRAM, NULL, NULL, 0,
-      FH_HOSTTOOL_DEADLINE_MS, FH_HOSTTOOL_OUT_CAP },
+      FH_HOSTTOOL_DEADLINE_MS, FH_HOSTTOOL_OUT_CAP,
+      FH_HOST_TIME_PROMISES_FLOOR, FH_HOST_TIME_LANDLOCK_FLOOR },
     { "host_cat", FH_HOST_CAT_PROGRAM, NULL, "path", 1,
-      FH_HOSTTOOL_DEADLINE_MS, FH_HOSTTOOL_OUT_CAP },
+      FH_HOSTTOOL_DEADLINE_MS, FH_HOSTTOOL_OUT_CAP, NULL, NULL },
     { "http_get", FH_HTTP_GET_PROGRAM, NULL, "url", 1,
-      FH_HOSTTOOL_DEADLINE_MS, FH_HOSTTOOL_OUT_CAP },
+      FH_HOSTTOOL_DEADLINE_MS, FH_HOSTTOOL_OUT_CAP, NULL, NULL },
     FH_HOST_TOOL_EXTRA
 };
 
@@ -2626,10 +2700,20 @@ static int fh_host_tool_is(const char *name) {
 }
 #endif /* !FH_MUTANT_NO_OPS_SEAT */
 
-/* The registry's PINNED BYTES, rendered from the ONE table. */
+/* The registry's PINNED BYTES, rendered from the ONE table.  S1 extends the
+ * render to name + promises_floor + landlock_floor, so a FLOOR edit is a
+ * re-pin (visible to the audit boot line and the reach-tool rows) — the pin
+ * covers what the sandbox actually allows, not just the name list.  A NULL
+ * floor renders as an empty field (that tool is not sandboxed yet). */
 static void fh_host_tool_catalog(struct tbuf *t) {
     for (size_t i = 0; i < fh_host_tool_count(); i++) {
         tb_puts(t, fh_host_tools[i].name);
+        tb_puts(t, "\t");
+        tb_puts(t, fh_host_tools[i].promises_floor
+                        ? fh_host_tools[i].promises_floor : "");
+        tb_puts(t, "\t");
+        tb_puts(t, fh_host_tools[i].landlock_floor
+                        ? fh_host_tools[i].landlock_floor : "");
         tb_puts(t, "\n");
     }
 }
@@ -2664,6 +2748,168 @@ static char *host_exe_dir(void) {
     return xstrdup(exe);
 }
 
+/* S1: THE EFFECTIVE LANDLOCK SPEC — ONE SPELLING.  Renders the resolved
+ * program path (unveiled :rx so stage3 can exec it) prepended to the tool's
+ * STATIC floor.  host_exec builds the stage3 argv FROM this exact string, and
+ * the row's `sandbox` field records the SAME string (plus the promises), so
+ * the recorded spec can never drift from what the argv carried. */
+static void host_effective_landlock(const struct host_tool *ht,
+                                    const char *program_path, struct tbuf *t) {
+    tb_puts(t, program_path);
+    tb_puts(t, ":rx");
+    if (ht->landlock_floor && *ht->landlock_floor) {
+        tb_puts(t, ";");
+        tb_puts(t, ht->landlock_floor);
+    }
+}
+
+/* S1: THE STARTUP SELF-CHECK OF THE FLOORS — the same refusal posture as the
+ * registry pin check, extended to the floor's own invariants.  A floor without
+ * `exec` fails EVERY call (stage3's own execvp runs under the merged filter and
+ * returns EPERM — measured) — a total failure masquerading as "the tool is
+ * broken" — and a floor without `stdio` breaks the program contract, so both
+ * are refused here rather than discovered per call.  Only floored tools are
+ * checked (a NULL floor is a not-yet-migrated tool, not an empty sandbox). */
+static int floor_has_token(const char *promises, const char *tok) {
+    if (!promises) return 0;
+    size_t tl = strlen(tok);
+    const char *p = promises;
+    for (;;) {
+        while (*p == ' ' || *p == '\t') p++;
+        if (!*p) return 0;
+        const char *e = p;
+        while (*e && *e != ' ' && *e != '\t') e++;
+        if ((size_t)(e - p) == tl && strncmp(p, tok, tl) == 0) return 1;
+        p = e;
+    }
+}
+
+static void fh_floor_check(void) {
+    for (size_t i = 0; i < fh_host_tool_count(); i++) {
+        const struct host_tool *ht = &fh_host_tools[i];
+        if (!ht->promises_floor && !ht->landlock_floor) continue; /* not yet */
+        if (!ht->promises_floor || !*ht->promises_floor) {
+            note("FATAL: the host tool \"%s\" declares a landlock floor but an "
+                 "EMPTY promise floor — the sandbox would be on but the promise "
+                 "set empty; REFUSING TO START", ht->name);
+            exit(1);
+        }
+        if (!ht->landlock_floor || !*ht->landlock_floor) {
+            note("FATAL: the host tool \"%s\" declares a promise floor but an "
+                 "EMPTY landlock floor — the loader would be un-unveiled and "
+                 "EVERY call would die EACCES; REFUSING TO START", ht->name);
+            exit(1);
+        }
+        if (!floor_has_token(ht->promises_floor, "stdio")) {
+            note("FATAL: the host tool \"%s\" floor lacks `stdio` — the program "
+                 "contract (stdin/stdout) would break on every call; REFUSING TO "
+                 "START", ht->name);
+            exit(1);
+        }
+        if (!floor_has_token(ht->promises_floor, "exec")) {
+            note("FATAL: the host tool \"%s\" floor lacks `exec` — stage3's own "
+                 "execvp runs under the merged filter and returns EPERM, so "
+                 "EVERY call would be refused (a total failure); REFUSING TO "
+                 "START", ht->name);
+            exit(1);
+        }
+    }
+}
+
+/* S1: THE STARTUP --verify REFUSAL.  The proxy runs the pinned stage3's OWN
+ * verification (--verify) once at boot, before the slave path is published: a
+ * stage3 that is MISSING, not executable, or present-but-INERT (a swapped or
+ * regressed binary whose Landlock/seccomp no longer enforces) refuses the boot
+ * loudly, naming the reason.  A sandbox that is present but broken must not be
+ * silently used — "the proxy started" is the last moment a reader could be
+ * told.  Runs only when at least one tool is floored (otherwise there is no
+ * sandbox to verify). */
+static void fh_sandbox_verify(void) {
+    int any_floor = 0;
+    for (size_t i = 0; i < fh_host_tool_count(); i++)
+        if (fh_host_tools[i].promises_floor) { any_floor = 1; break; }
+    if (!any_floor) return;
+
+    char *exe_dir = host_exe_dir();
+    if (!exe_dir) {
+        note("FATAL: cannot resolve this proxy's own directory (/proc/self/exe), "
+             "so the sandbox binary stage3 cannot be located; REFUSING TO START");
+        exit(1);
+    }
+    size_t sl = strlen(exe_dir) + 1 + strlen("stage3") + 1;
+    char *stage3 = malloc(sl);
+    if (!stage3) { free(exe_dir); exit(1); }
+    snprintf(stage3, sl, "%s/stage3", exe_dir);
+
+    if (access(stage3, X_OK) != 0) {
+        note("FATAL: the sandbox binary %s is missing or not executable "
+             "(%s) — build it with `make palisade`; a host tool that declares a "
+             "floor must never run without the sandbox it promises; REFUSING TO "
+             "START", stage3, strerror(errno));
+        free(exe_dir); free(stage3);
+        exit(1);
+    }
+
+    int outpipe[2];
+    if (pipe(outpipe) != 0) {
+        note("FATAL: cannot create the verify pipe; REFUSING TO START");
+        free(exe_dir); free(stage3);
+        exit(1);
+    }
+    pid_t pid = fork();
+    if (pid < 0) {
+        note("FATAL: fork failed for the sandbox verify; REFUSING TO START");
+        close(outpipe[0]); close(outpipe[1]);
+        free(exe_dir); free(stage3);
+        exit(1);
+    }
+    if (pid == 0) {
+        dup2(outpipe[1], 1);
+        dup2(outpipe[1], 2);
+        close(outpipe[0]); close(outpipe[1]);
+        char *argv[] = { stage3, (char *)"--verify", NULL };
+        char *envp[] = { (char *)"PATH=/usr/bin:/bin", NULL };
+        execve(stage3, argv, envp);
+        _exit(127);
+    }
+    close(outpipe[1]);
+    struct tbuf out = {0};
+    char tmp[512];
+    for (;;) {
+        ssize_t rn = read(outpipe[0], tmp, sizeof tmp);
+        if (rn < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        if (rn == 0) break;
+        if (out.len + (size_t)rn > 4096) { tb_put(&out, tmp, 4096 - out.len); break; }
+        tb_put(&out, tmp, (size_t)rn);
+    }
+    close(outpipe[0]);
+    int status = 0;
+    if (waitpid(pid, &status, 0) != pid) status = -1;
+    int ok = WIFEXITED(status) && WEXITSTATUS(status) == 0 &&
+             out.p && strstr(out.p, "VERIFY OK") != NULL;
+    if (!ok) {
+        note("FATAL: the sandbox binary %s FAILED its startup verification — "
+             "exit status %s; its output was: %s.  A sandbox that is present but "
+             "cannot enforce (missing Landlock, broken stage3, unwritable "
+             "verify dir) is REFUSED, never silently used; REFUSING TO START",
+             stage3,
+             status == -1 ? "unreaped" :
+             WIFEXITED(status) ? "non-zero" :
+             WIFSIGNALED(status) ? "a signal" : "unknown",
+             out.p && *out.p ? out.p : "(none)");
+        free(out.p); free(exe_dir); free(stage3);
+        exit(1);
+    }
+    note("sandbox: %s --verify -> VERIFY OK (the pinned stage3 enforces "
+         "NoNewPrivs, seccomp and Landlock before any host call runs)", stage3);
+    free(out.p);
+    free(exe_dir);
+    free(stage3);
+}
+
 /* THE SPAWN — the ONE executor, and the ONE place a future sandbox attaches
  * (palisade, later; see the S1 header).  fork + execvpe with a SCRUBBED
  * PATH-only env (the mcp_client.c discipline: the daemon's full environ never
@@ -2671,7 +2917,9 @@ static char *host_exe_dir(void) {
  * STDIN AS JSON (never interpolated into the command line), an explicit
  * DEADLINE, and an explicit OUTPUT CAP.  Returns a malloc'd result string
  * (the program's stdout, or a NAMED refusal). */
-static char *host_exec(const struct host_tool *ht, const char *args_json) {
+static char *host_exec(const struct host_tool *ht, const char *args_json,
+                       char **sandbox_out) {
+    if (sandbox_out) *sandbox_out = NULL;
     char *exe_dir = host_exe_dir();
     if (!exe_dir)
         return xstrdup("(hostgate: REFUSED — this proxy's own executable "
@@ -2679,37 +2927,107 @@ static char *host_exec(const struct host_tool *ht, const char *args_json) {
                        "declared program cannot be found; a missing program is "
                        "refused by name, never a silent empty success)");
 
-    int inpipe[2], outpipe[2];
-    if (pipe(inpipe) != 0) { free(exe_dir); return xstrdup("(hostgate: REFUSED — cannot create the spawn pipe)"); }
-    if (pipe(outpipe) != 0) {
-        close(inpipe[0]); close(inpipe[1]); free(exe_dir);
+    /* the resolved program path, computed ONCE in the parent so the argv the
+     * child execs and the spec the parent records share the SAME bytes. */
+    size_t flen = strlen(exe_dir) + 1 + strlen(ht->program) + 1;
+    char *full = malloc(flen);
+    if (!full) {
+        free(exe_dir);
+        return xstrdup("(hostgate: REFUSED — out of memory resolving the "
+                       "declared program)");
+    }
+    snprintf(full, flen, "%s/%s", exe_dir, ht->program);
+
+    /* S1: the sandbox spec (promises + the effective landlock), computed ONCE
+     * here and used BOTH for the stage3 argv below AND for the row's `sandbox`
+     * field — one spelling, so the recorded spec cannot drift from what ran. */
+    char *landlock_spec = NULL;
+    char *stage3_path = NULL;
+    char *sandbox = NULL;
+    int has_floor = ht->promises_floor != NULL;
+    if (has_floor) {
+        struct tbuf lk = {0};
+        host_effective_landlock(ht, full, &lk);
+        landlock_spec = lk.p;
+        size_t sl = strlen(exe_dir) + 1 + strlen("stage3") + 1;
+        stage3_path = malloc(sl);
+        if (!stage3_path) {
+            free(landlock_spec); free(full); free(exe_dir);
+            return xstrdup("(hostgate: REFUSED — out of memory resolving the "
+                           "sandbox binary)");
+        }
+        snprintf(stage3_path, sl, "%s/stage3", exe_dir);
+        size_t speclen = strlen(ht->promises_floor) + 1 +
+                         strlen(landlock_spec) + 1;
+        sandbox = malloc(speclen);
+        if (!sandbox) {
+            free(landlock_spec); free(stage3_path); free(full); free(exe_dir);
+            return xstrdup("(hostgate: REFUSED — out of memory rendering the "
+                           "sandbox spec)");
+        }
+        snprintf(sandbox, speclen, "%s %s", ht->promises_floor, landlock_spec);
+    }
+    int wrap = has_floor;
+#ifdef FH_MUTANT_NO_STAGE3
+    /* the blind (FH_MUTANT_NO_STAGE3): the spec is still COMPUTED and RECORDED
+     * above (the row's `sandbox` field claims the call was sandboxed), but NOT
+     * APPLIED — the spawn execs the program directly.  That is the
+     * SPEC-LOADED-BUT-NOT-APPLIED direction the gate exists to catch. */
+    wrap = 0;
+#endif
+    /* ownership of `sandbox` moves to the caller now (it records the row even
+     * on a refusal, because the spec is what WOULD have / DID apply). */
+    if (sandbox_out) *sandbox_out = sandbox;
+    else free(sandbox);
+
+    int inpipe[2], outpipe[2], errpipe[2];
+    int have_err = 0;
+    if (pipe(inpipe) != 0) {
+        free(exe_dir); free(full); free(landlock_spec); free(stage3_path);
         return xstrdup("(hostgate: REFUSED — cannot create the spawn pipe)");
     }
+    if (pipe(outpipe) != 0) {
+        close(inpipe[0]); close(inpipe[1]);
+        free(exe_dir); free(full); free(landlock_spec); free(stage3_path);
+        return xstrdup("(hostgate: REFUSED — cannot create the spawn pipe)");
+    }
+    /* S1: the sandboxed path captures stage3's stderr (bounded) so a stage3
+     * SETUP failure (its die()) names its own reason in the refusal, never a
+     * silent "exited non-zero".  The direct path keeps stderr -> /dev/null
+     * exactly as today (its refusals are the program's own contract). */
+    if (wrap && pipe(errpipe) != 0) {
+        close(inpipe[0]); close(inpipe[1]); close(outpipe[0]); close(outpipe[1]);
+        free(exe_dir); free(full); free(landlock_spec); free(stage3_path);
+        return xstrdup("(hostgate: REFUSED — cannot create the stderr pipe)");
+    }
+    have_err = wrap;
     pid_t pid = fork();
     if (pid < 0) {
         close(inpipe[0]); close(inpipe[1]); close(outpipe[0]); close(outpipe[1]);
-        free(exe_dir);
+        if (have_err) { close(errpipe[0]); close(errpipe[1]); }
+        free(exe_dir); free(full); free(landlock_spec); free(stage3_path);
         return xstrdup("(hostgate: REFUSED — fork failed)");
     }
     if (pid == 0) {
-        /* CHILD: stdin <- our pipe, stdout -> our pipe, stderr -> /dev/null,
-         * and a PATH-only env (the scrubbed env: exe_dir PATH, nothing else).
-         * The proxy's other fds are left as mcp_client leaves them; fd hygiene
-         * is the future sandbox's seat, not this slice's. */
+        /* CHILD: stdin <- our pipe, stdout -> our pipe, and a PATH-only env
+         * (the scrubbed env: exe_dir PATH, nothing else — never the daemon's
+         * environ, so no secret crosses, and the ONLY promises are argv-passed:
+         * RATTAN_EXTRA_PROMISES / RATTAN_ALLOW_PTRACE are ABSENT from the child
+         * by construction). */
         dup2(inpipe[0], 0);
         dup2(outpipe[1], 1);
-        int devnull = open("/dev/null", O_WRONLY);
-        if (devnull >= 0) dup2(devnull, 2);
+        if (have_err) {
+            dup2(errpipe[1], 2);
+            close(errpipe[0]); close(errpipe[1]);
+        } else {
+            int devnull = open("/dev/null", O_WRONLY);
+            if (devnull >= 0) dup2(devnull, 2);
+            if (devnull >= 0) close(devnull);
+        }
         close(inpipe[0]); close(inpipe[1]); close(outpipe[0]); close(outpipe[1]);
-        if (devnull >= 0) close(devnull);
-        /* A PATH-only env (the scrubbed env: the proxy's own dir PATH, nothing
-         * else — never the daemon's environ, so no secret crosses).  NOTE:
-         * execvpe is NOT used here, because this host's glibc 2.44 resolves
-         * execvpe's PATH search against the AMBIENT environ's PATH, not the
-         * scrubbed envp PATH (MEASURED — a bare name would resolve against the
-         * parent's PATH, which is exactly the scrub this env exists to give).
-         * The program is therefore resolved to a FULL PATH below and exec'd
-         * with execve — explicit, and independent of the ambient PATH. */
+        /* execvpe is NOT used here (glibc 2.44 resolves its PATH search against
+         * the AMBIENT environ, not the scrubbed envp — MEASURED); everything is
+         * resolved to a FULL PATH and exec'd with execve. */
         size_t plen = strlen("PATH=") + strlen(exe_dir) + 1;
         char *path_env = malloc(plen);
         char *envp[2];
@@ -2722,20 +3040,40 @@ static char *host_exec(const struct host_tool *ht, const char *args_json) {
         envp[1] = NULL;
         size_t n_args = 0;
         while (ht->args && ht->args[n_args]) n_args++;
-        char **argv = malloc(sizeof(char *) * (n_args + 2));
-        if (!argv) _exit(127);
-        size_t flen = strlen(exe_dir) + 1 + strlen(ht->program) + 1;
-        char *full = malloc(flen);
-        if (!full) _exit(127);
-        snprintf(full, flen, "%s/%s", exe_dir, ht->program);
-        argv[0] = full;
-        for (size_t i = 0; i < n_args; i++) argv[i + 1] = (char *)ht->args[i];
-        argv[n_args + 1] = NULL;
-        execve(full, argv, envp);
-        _exit(127); /* exec failed: the parent renders "not executable" */
+        if (wrap) {
+            /* stage3 PROMISES LANDLOCK -- program [args...] — PROMISES and
+             * LANDLOCK are the SAME strings the row's `sandbox` field carries. */
+            char **sargv = malloc(sizeof(char *) * (5 + n_args + 1));
+            if (!sargv) _exit(127);
+            sargv[0] = stage3_path;
+            sargv[1] = (char *)ht->promises_floor;
+            sargv[2] = landlock_spec;
+            sargv[3] = (char *)"--";
+            sargv[4] = full;
+            for (size_t i = 0; i < n_args; i++) sargv[5 + i] = (char *)ht->args[i];
+            sargv[5 + n_args] = NULL;
+            execve(stage3_path, sargv, envp);
+            _exit(125); /* stage3 missing/not-executable: a DISTINCT exit code
+                         * so the parent refuses BY NAME (the sandbox binary), not
+                         * as a generic "program" failure */
+        } else {
+            char **argv = malloc(sizeof(char *) * (n_args + 2));
+            if (!argv) _exit(127);
+            argv[0] = full;
+            for (size_t i = 0; i < n_args; i++) argv[i + 1] = (char *)ht->args[i];
+            argv[n_args + 1] = NULL;
+            execve(full, argv, envp);
+            _exit(127); /* exec failed: the parent renders "not executable" */
+        }
     }
     close(inpipe[0]);
     close(outpipe[1]);
+    if (have_err) close(errpipe[1]);
+    /* the child has its own COW copy of these; the parent can drop them now. */
+    free(exe_dir);
+    free(full);
+    free(landlock_spec);
+    free(stage3_path);
 
     /* the call's arguments ON STDIN AS JSON, then close it (the child sees
      * EOF) — NEVER on the command line. */
@@ -2797,41 +3135,84 @@ static char *host_exec(const struct host_tool *ht, const char *args_json) {
         struct timespec ts = { 0, 20000000 };
         nanosleep(&ts, NULL);
     }
-    free(exe_dir);
 
+    /* drain the sandboxed path's captured stderr (bounded) for the refusal
+     * text: a stage3 setup failure names its own reason. */
+    char stderr_tail[257];
+    stderr_tail[0] = '\0';
+    if (have_err) {
+        size_t used = 0;
+        for (;;) {
+            char tmp[256];
+            ssize_t rn = read(errpipe[0], tmp, sizeof tmp);
+            if (rn <= 0) break;
+            size_t take = (size_t)rn;
+            if (used + take > 256) take = 256 - used;
+            memcpy(stderr_tail + used, tmp, take);
+            used += take;
+            if (used >= 256) break;
+        }
+        stderr_tail[used] = '\0';
+        close(errpipe[0]);
+    }
+
+    char *result = NULL;
     if (timed_out) {
-        free(out.p);
-        char *s = xmalloc(224);
-        snprintf(s, 224, "(hostgate: REFUSED — the host tool \"%s\" exceeded "
+        result = xmalloc(224);
+        snprintf(result, 224, "(hostgate: REFUSED — the host tool \"%s\" exceeded "
                  "its %lu ms deadline and was killed; the deadline is the "
                  "spawn's bound, never a silent hang)", ht->name, ht->deadline_ms);
-        return s;
-    }
-    if (over_cap) {
-        free(out.p);
-        char *s = xmalloc(224);
-        snprintf(s, 224, "(hostgate: REFUSED — the host tool \"%s\" wrote more "
+    } else if (over_cap) {
+        result = xmalloc(224);
+        snprintf(result, 224, "(hostgate: REFUSED — the host tool \"%s\" wrote more "
                  "than %zu bytes to stdout; the output cap refused it, never "
                  "silently truncated)", ht->name, ht->out_cap);
-        return s;
+    } else if (WIFSIGNALED(status) && WTERMSIG(status) == SIGSYS) {
+        /* S1: A PROMISE ESCAPE RENDERED AS A DISTINCT REFUSAL — the kernel
+         * killed the program with SIGSYS, which is a DIFFERENT outcome from a
+         * non-zero exit and from a timeout, and must read as such in the row.
+         * (MEASURED: the vendored pledge's default penalty returns EPERM, not a
+         * SIGSYS kill — see the gate's escape arms — so this branch is the
+         * defensive rendering for a kill-based sandbox; it is proven wired via
+         * the gate's self-SIGSYS probe through the no-stage3 build.) */
+        result = xmalloc(320);
+        snprintf(result, 320,
+                 "(hostgate: REFUSED — the host tool \"%s\" attempted an "
+                 "operation outside its sandbox promises and the kernel killed "
+                 "it (SIGSYS); the attempt is recorded, nothing outside the "
+                 "spec ran%s%s)",
+                 ht->name,
+                 stderr_tail[0] ? " — the sandbox said: " : "",
+                 stderr_tail[0] ? stderr_tail : "");
+    } else if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+        result = out.p ? out.p : xstrdup("");
+        out.p = NULL;
+    } else if (WIFEXITED(status) && WEXITSTATUS(status) == 125) {
+        /* the sandbox binary itself could not be exec'd (removed mid-boot):
+         * refused BY NAME, never a fallback to an unsandboxed exec. */
+        result = xmalloc(300);
+        snprintf(result, 300,
+                 "(hostgate: REFUSED — the sandbox binary \"stage3\" could not "
+                 "be executed for the host tool \"%s\"; a floored tool NEVER "
+                 "falls back to an unsandboxed exec, so the call is refused by "
+                 "name)", ht->name);
+    } else {
+        /* a non-zero exit (including a failed exec: a missing / not-executable
+         * program) is a REFUSAL, never a silent empty success */
+        result = xmalloc(300);
+        snprintf(result, 300,
+                 "(hostgate: REFUSED — the host tool's program \"%s\" %s; a "
+                 "non-zero exit, or a missing/not-executable program, is a REFUSAL "
+                 "by name, never a silent empty success%s%s)",
+                 ht->program,
+                 status == -1 ? "could not be reaped" :
+                 WIFSIGNALED(status) ? "was killed by a signal" :
+                 "exited non-zero",
+                 stderr_tail[0] ? " — the sandbox said: " : "",
+                 stderr_tail[0] ? stderr_tail : "");
     }
-    if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
-        if (!out.p) out.p = xstrdup("");
-        return out.p;
-    }
-    /* a non-zero exit (including a failed exec: a missing / not-executable
-     * program) is a REFUSAL, never a silent empty success */
     free(out.p);
-    char *s = xmalloc(256);
-    snprintf(s, 256,
-             "(hostgate: REFUSED — the host tool's program \"%s\" %s; a "
-             "non-zero exit, or a missing/not-executable program, is a REFUSAL "
-             "by name, never a silent empty success)",
-             ht->program,
-             status == -1 ? "could not be reaped" :
-             WIFSIGNALED(status) ? "was killed by a signal" :
-             "exited non-zero");
-    return s;
+    return result;
 }
 
 /* THE REGISTRY'S CONTRACT CHECK — the SAME refusal posture (and the SAME
@@ -2857,6 +3238,11 @@ static void fh_host_tool_check(void) {
         exit(1);
     }
     free(t.p);
+    /* S1: the FLOOR self-check (stdio+exec required, no empty floor) and the
+     * startup --verify refusal (the pinned stage3 must actually enforce, or the
+     * proxy refuses the boot).  Both run BEFORE the slave path is published. */
+    fh_floor_check();
+    fh_sandbox_verify();
     /* S2-FIX 4: THE CLASSED-ARGUMENT CONTRACT — a tool that READS an argument
      * must DECLARE the key that argument is judged by.  The judge extracts by
      * arg_key and the totality check only sees what was extracted, so an
@@ -5273,14 +5659,22 @@ static void host_dispatch(const char *name, const char *call_id, long turn,
              turn, call_id, name, r->turn);
         return;
     }
-    char *res = host_exec(ht, args);
+    char *sandbox = NULL;
+    char *res = host_exec(ht, args, &sandbox);
     emap_put(call_id, res, turn);
     if (r) {
         free(r->outcome);
         r->outcome = xstrdup(res);
         free(r->exec);
         r->exec = xstrdup(FH_EXEC_HOST);
+        /* S1: the sandbox spec ACTUALLY USED, carried beside exec — the same
+         * one-spelling string the spawn built its argv from (NULL for a host
+         * tool that is not sandboxed yet). */
+        free(r->sandbox);
+        r->sandbox = sandbox;
+        sandbox = NULL;
     }
+    free(sandbox);
     log_flush();
     note("turn %ld: host-execute call_id=%s name=%s -> EXECUTED ON THE HOST; "
          "the result is armed for the outbound substitution (the guest still "
@@ -7375,6 +7769,10 @@ static void usage(void) {
     note("                  SECOND closed list beside the guest's, pinned the");
     note("                  same way, and no host-tool name may collide with a");
     note("                  guest verb (a startup refusal)");
+    note("  --print-sandbox      print each host tool's COMPILED-IN sandbox floor");
+    note("                  (name<TAB>promises<TAB>landlock, one line per tool),");
+    note("                  and exit — the floor is the LEAST the tool needs,");
+    note("                  MEASURED from ldd, and is what the spawn applies");
 }
 
 int main(int argc, char **argv) {
@@ -7449,6 +7847,19 @@ int main(int argc, char **argv) {
             sha256_hex(t.len ? t.p : "", t.len, got);
             printf("%s\n", got);
             free(t.p);
+            return 0;
+        } else if (!strcmp(argv[i], "--print-sandbox")) {
+            /* S1: the COMPILED-IN FLOORS, printed per tool so a floor is
+             * inspectable rather than implicit.  One line per tool,
+             * name<TAB>promises_floor<TAB>landlock_floor; a NULL floor (a
+             * not-yet-migrated tool) renders empty fields.  The same bytes the
+             * catalog pin covers (and S4's reach-sandbox rows consume). */
+            for (size_t k = 0; k < fh_host_tool_count(); k++)
+                printf("%s\t%s\t%s\n", fh_host_tools[k].name,
+                       fh_host_tools[k].promises_floor
+                           ? fh_host_tools[k].promises_floor : "",
+                       fh_host_tools[k].landlock_floor
+                           ? fh_host_tools[k].landlock_floor : "");
             return 0;
         } else {
             note("FATAL: unknown/incomplete argument '%s'", argv[i]);
