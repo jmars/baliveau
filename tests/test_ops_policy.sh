@@ -102,13 +102,14 @@ LEX="$OPS/ops-lexicon.ini"
 POLICY="$OPS/ops-policy.le"
 TSV="$OPS/ops-aliases.tsv"
 HOSTS="$OPS/ops-hosts.tsv"
+SAND="$OPS/ops-sandbox.tsv"
 ART="$OPS/ops-policy.dl"
 PINS="$OPS/PINS"
 FIX="$REPO/tests/fixtures/ops"
 CLAIMS_LEX="$REPO/policy/claims-lexicon.ini"
 CLAIMS_PLEX="$REPO/policy/policy-lexicon.ini"
 
-for f in "$EVAL" "$LEX" "$POLICY" "$TSV" "$HOSTS" "$ART" "$PINS" \
+for f in "$EVAL" "$LEX" "$POLICY" "$TSV" "$HOSTS" "$SAND" "$ART" "$PINS" \
          "$FIX/policy-vacuous.le" "$FIX/policy-foreign-head.le" \
          "$FIX/naive-spelling.le" "$FIX/ops-sentence-justified.le" \
          "$FIX/claims-sentence-denied.le" "$FIX/deny-protected-ok.tsv" \
@@ -267,6 +268,20 @@ arm b0i-host-foreign-sort 1 'host-foreign-sort' --check-hosts --hosts "$W/foreig
 sed -e "s@^example.com@*example.com@" "$HOSTS" > "$W/ambighost.tsv"
 cmp -s "$HOSTS" "$W/ambighost.tsv" && fail "the hosts ambiguous sed matched NOTHING"
 arm b0j-host-ambiguous-pattern 1 'host-ambiguous-pattern' --check-hosts --hosts "$W/ambighost.tsv" --policy-lexicon "$LEX"
+# b0k (S2): the SANDBOX table's GRAMMAR — the promise-token vocabulary, the
+# landlock perm grammar, and the tool-name charset.  GRAMMAR ONLY: the
+# AUTHORITATIVE check is the SEAT's floor-subset composition, and this check
+# never re-spells the registry (a token beyond a tool's FLOOR is refused at
+# the seat, not here).
+arm b0k-sandbox-ok 0 'sandbox table OK' --check-sandbox --sandbox "$SAND"
+printf 'host cat\tstdio rpath exec prot_exec\t/fx/disk/agent-data:r\n' > "$W/sandbox-badname.tsv"
+arm b0l-sandbox-tool-charset 1 'sandbox-tool-charset' --check-sandbox --sandbox "$W/sandbox-badname.tsv"
+printf 'host_cat\tstdio rpath exec wpathx\t/fx/disk/agent-data:r\n' > "$W/sandbox-badtok.tsv"
+arm b0m-sandbox-promise-token 1 'sandbox-promise-token' --check-sandbox --sandbox "$W/sandbox-badtok.tsv"
+printf 'host_cat\tstdio rpath exec prot_exec\t/fx/disk/agent-data:rwz\n' > "$W/sandbox-badperm.tsv"
+arm b0n-sandbox-landlock-perm 1 'sandbox-landlock-perm' --check-sandbox --sandbox "$W/sandbox-badperm.tsv"
+printf 'host_cat\tstdio rpath exec prot_exec\tfx/disk/agent-data:r\n' > "$W/sandbox-badpath.tsv"
+arm b0o-sandbox-landlock-path 1 'sandbox-landlock-path' --check-sandbox --sandbox "$W/sandbox-badpath.tsv"
 
 echo "test_ops_policy: -- B1 the pin: determinism, artifact, shas --"
 python3 "$EVAL" --compile-policy --policy-le "$POLICY" --policy-lexicon "$LEX" >"$W/policy.1" 2>"$W/policy.err" \
@@ -277,12 +292,13 @@ cmp -s "$W/policy.1" "$W/policy.2" || fail "two ops policy compiles are NOT byte
 grep -c '^denied(' "$W/policy.1" > "$W/headcount"
 [ "$(cat "$W/headcount")" = 3 ] || fail "the ops policy artifact does not conclude exactly three denied rules ($(cat "$W/headcount"))"
 cmp -s "$W/policy.1" "$ART" || fail "policy/ops/ops-policy.dl is NOT the artifact a fresh compile produces -- regenerate it with 'make ops-policy-artifact' and update policy/ops/PINS in the same commit"
-for pair in 'ops-policy.dl' 'ops-lexicon.ini' 'ops-aliases.tsv' 'ops-hosts.tsv'; do
+for pair in 'ops-policy.dl' 'ops-lexicon.ini' 'ops-aliases.tsv' 'ops-hosts.tsv' 'ops-sandbox.tsv'; do
     case $pair in
         ops-policy.dl) sha_file=$(sha256sum "$W/policy.1" | cut -d' ' -f1) ;;
         ops-lexicon.ini) sha_file=$(sha256sum "$LEX" | cut -d' ' -f1) ;;
         ops-aliases.tsv) sha_file=$(sha256sum "$TSV" | cut -d' ' -f1) ;;
         ops-hosts.tsv) sha_file=$(sha256sum "$HOSTS" | cut -d' ' -f1) ;;
+        ops-sandbox.tsv) sha_file=$(sha256sum "$SAND" | cut -d' ' -f1) ;;
     esac
     sha_pin=$(grep "^$pair" "$PINS" | cut -f2)
     [ "$sha_file" = "$sha_pin" ] || fail "$pair: the pinned sha is $sha_pin, the file hashes to $sha_file -- the pin and the artifact have drifted"

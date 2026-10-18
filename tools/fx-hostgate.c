@@ -2537,7 +2537,7 @@ static int fh_catalog_nth(size_t idx, char *buf, size_t cap) {
  * or the pin check refuses — the refusal names both shas). */
 #ifndef FH_HOSTTOOL_SHA256
 #define FH_HOSTTOOL_SHA256 \
-    "dc0090caffe9513d6c1e04ec6bb056ad40cecb62140925533d65f839c8e71b54"
+    "f3d2c4b3cb276d509d6ab8d32d937efbab23208bc265f11d7088f82caac55508"
 #endif
 
 /* THE DECLARED PROGRAMS.  A host tool's executor is NOT a compiled-in
@@ -2649,6 +2649,16 @@ struct host_tool {
 #define FH_HOST_TIME_LANDLOCK_FLOOR \
     "/lib64/ld-linux-x86-64.so.2:rx;/lib64/libc.so.6:r"
 
+/* S2: host_cat's floor is the SAME measured static floor as host_time — both
+ * are dynamically linked glibc readers (interpreter + libc only), so the
+ * promises are identical and the static landlock unveils the loader (:rx) and
+ * libc (:r).  The difference is host_cat's PER-CALL judged path, which the
+ * spawn unveils exactly as `<judged path>:r` (S2's per-call unveil), narrowed
+ * by the operator's ops-sandbox.tsv allowlist.  Reusing the SAME macros keeps
+ * ONE spelling of the shared floor. */
+#define FH_HOST_CAT_PROMISES_FLOOR FH_HOST_TIME_PROMISES_FLOOR
+#define FH_HOST_CAT_LANDLOCK_FLOOR  FH_HOST_TIME_LANDLOCK_FLOOR
+
 
 /* THE CLOSED TABLE.  A call is executed only if its name is found HERE, so the
  * set of things the host can run is a source-level constant — the same
@@ -2676,7 +2686,8 @@ static const struct host_tool fh_host_tools[] = {
       FH_HOSTTOOL_DEADLINE_MS, FH_HOSTTOOL_OUT_CAP,
       FH_HOST_TIME_PROMISES_FLOOR, FH_HOST_TIME_LANDLOCK_FLOOR },
     { "host_cat", FH_HOST_CAT_PROGRAM, NULL, "path", 1,
-      FH_HOSTTOOL_DEADLINE_MS, FH_HOSTTOOL_OUT_CAP, NULL, NULL },
+      FH_HOSTTOOL_DEADLINE_MS, FH_HOSTTOOL_OUT_CAP,
+      FH_HOST_CAT_PROMISES_FLOOR, FH_HOST_CAT_LANDLOCK_FLOOR },
     { "http_get", FH_HTTP_GET_PROGRAM, NULL, "url", 1,
       FH_HOSTTOOL_DEADLINE_MS, FH_HOSTTOOL_OUT_CAP, NULL, NULL },
     FH_HOST_TOOL_EXTRA
@@ -2748,18 +2759,50 @@ static char *host_exe_dir(void) {
     return xstrdup(exe);
 }
 
-/* S1: THE EFFECTIVE LANDLOCK SPEC — ONE SPELLING.  Renders the resolved
+/* S2 forward: the composed (floor ∩ row) sandbox lookups — defined after the
+ * OPS struct (they read OPS.srow), used here by the spawn.  Under
+ * FH_MUTANT_NO_SANDBOX_TABLE the table is loaded but NOT applied, so both
+ * return the floor. */
+static const char *fh_sandbox_promises(const struct host_tool *ht);
+static int fh_sandbox_allow(const struct host_tool *ht, const char *path);
+
+/* THE JUDGED-PATH BOUND — MUST equal tools/fx-host-cat.c's FH_HOST_PATH_MAX
+ * (the executor's own bound, the S2-FIX 6 property: a model-chosen path over
+ * this length is refused by the executor with a length-only message, so no
+ * result exceeds the record's 512-byte cap).  The spawn unveils the judged
+ * path only up to this bound: a longer path is refused by the executor BEFORE
+ * it opens anything, so not unveiling it loses nothing — and keeps the
+ * landlock spec under stage3's own 512-byte buffer (a 700-byte path would
+ * otherwise overflow it and refuse every call with the sandbox's own error,
+ * not the executor's named one). */
+#define FH_HOST_PATH_MAX 200u
+
+/* S1/S2: THE EFFECTIVE LANDLOCK SPEC — ONE SPELLING.  Renders the resolved
  * program path (unveiled :rx so stage3 can exec it) prepended to the tool's
- * STATIC floor.  host_exec builds the stage3 argv FROM this exact string, and
- * the row's `sandbox` field records the SAME string (plus the promises), so
- * the recorded spec can never drift from what the argv carried. */
+ * STATIC floor, plus — for a floored PATH tool — the per-call judged path
+ * unveiled `:r` (S2's per-call unveil), but ONLY when the composed sandbox
+ * (floor ∩ row) allows it: no ops-sandbox.tsv row (silence = the floor), or
+ * the row's landlock allowlist names the judged path.  host_exec builds the
+ * stage3 argv FROM this exact string, and the row's `sandbox` field records
+ * the SAME string (plus the promises), so the recorded spec can never drift
+ * from what the argv carried.  `judged_path` is ops_judge's CANONICALIZED
+ * path — the judge is the ONE canonicalizer, and no second spelling is ever
+ * computed at the spawn. */
 static void host_effective_landlock(const struct host_tool *ht,
-                                    const char *program_path, struct tbuf *t) {
+                                    const char *program_path,
+                                    const char *judged_path, struct tbuf *t) {
     tb_puts(t, program_path);
     tb_puts(t, ":rx");
     if (ht->landlock_floor && *ht->landlock_floor) {
         tb_puts(t, ";");
         tb_puts(t, ht->landlock_floor);
+    }
+    if (judged_path && *judged_path &&
+        strlen(judged_path) <= FH_HOST_PATH_MAX &&
+        fh_sandbox_allow(ht, judged_path)) {
+        tb_puts(t, ";");
+        tb_puts(t, judged_path);
+        tb_puts(t, ":r");
     }
 }
 
@@ -2918,7 +2961,7 @@ static void fh_sandbox_verify(void) {
  * DEADLINE, and an explicit OUTPUT CAP.  Returns a malloc'd result string
  * (the program's stdout, or a NAMED refusal). */
 static char *host_exec(const struct host_tool *ht, const char *args_json,
-                       char **sandbox_out) {
+                       const char *judged_path, char **sandbox_out) {
     if (sandbox_out) *sandbox_out = NULL;
     char *exe_dir = host_exe_dir();
     if (!exe_dir)
@@ -2947,7 +2990,7 @@ static char *host_exec(const struct host_tool *ht, const char *args_json,
     int has_floor = ht->promises_floor != NULL;
     if (has_floor) {
         struct tbuf lk = {0};
-        host_effective_landlock(ht, full, &lk);
+        host_effective_landlock(ht, full, judged_path, &lk);
         landlock_spec = lk.p;
         size_t sl = strlen(exe_dir) + 1 + strlen("stage3") + 1;
         stage3_path = malloc(sl);
@@ -2957,7 +3000,8 @@ static char *host_exec(const struct host_tool *ht, const char *args_json,
                            "sandbox binary)");
         }
         snprintf(stage3_path, sl, "%s/stage3", exe_dir);
-        size_t speclen = strlen(ht->promises_floor) + 1 +
+        const char *promises = fh_sandbox_promises(ht);
+        size_t speclen = strlen(promises) + 1 +
                          strlen(landlock_spec) + 1;
         sandbox = malloc(speclen);
         if (!sandbox) {
@@ -2965,7 +3009,7 @@ static char *host_exec(const struct host_tool *ht, const char *args_json,
             return xstrdup("(hostgate: REFUSED — out of memory rendering the "
                            "sandbox spec)");
         }
-        snprintf(sandbox, speclen, "%s %s", ht->promises_floor, landlock_spec);
+        snprintf(sandbox, speclen, "%s %s", promises, landlock_spec);
     }
     int wrap = has_floor;
 #ifdef FH_MUTANT_NO_STAGE3
@@ -3046,7 +3090,7 @@ static char *host_exec(const struct host_tool *ht, const char *args_json,
             char **sargv = malloc(sizeof(char *) * (5 + n_args + 1));
             if (!sargv) _exit(127);
             sargv[0] = stage3_path;
-            sargv[1] = (char *)ht->promises_floor;
+            sargv[1] = (char *)fh_sandbox_promises(ht);
             sargv[2] = landlock_spec;
             sargv[3] = (char *)"--";
             sargv[4] = full;
@@ -3496,6 +3540,7 @@ static void fh_catalog_check(void) {
 #define FH_OPS_DL       "ops-policy.dl"
 #define FH_OPS_TSV      "ops-aliases.tsv"
 #define FH_OPS_HOSTS    "ops-hosts.tsv" /* S3: the authority class table */
+#define FH_OPS_SANDBOX  "ops-sandbox.tsv" /* S2: the per-tool sandbox table */
 #define FH_OPS_PINS     "PINS"
 #define FH_OPS_MAX_FILE (1024u * 1024u) /* the artifact cap, FXV_OPS_MAX_FILE's */
 
@@ -3539,6 +3584,19 @@ typedef struct {
     char *pattern;    /* EXACT 'host' or the SUFFIX form '*.suffix' */
 } FhHostsRow;
 
+/* S2: one COMPOSED sandbox row (the seat's floor ∩ row).  The operator's
+ * ops-sandbox.tsv row is validated against the ONE registry at startup and
+ * stored here as the per-tool narrowing; a tool with no row has no entry
+ * (silence = the floor).  `promises` is the row's own promise string, already
+ * proven a SUBSET of the floor's; `paths` is the landlock ALLOWLIST the
+ * per-call judged path must appear in (empty = read nothing). */
+typedef struct {
+    char  *tool;      /* the registry name the row names */
+    char  *promises;  /* the composed (narrowed) promise string */
+    char **paths;     /* the landlock allowlist paths (owned) */
+    size_t n_paths;
+} FhSandboxRow;
+
 static struct {
     int   loaded;   /* a policy dir was given AND every startup check passed */
     int   present;  /* ...AND at least one rule is LIVE at this seat */
@@ -3557,6 +3615,8 @@ static struct {
     size_t n_row;
     FhHostsRow *hrow;   /* S3: the authority class rows (ops-hosts.tsv) */
     size_t n_hrow;
+    FhSandboxRow *srow; /* S2: the composed per-tool sandbox rows */
+    size_t n_srow;
 } OPS;
 
 /* "Did an author that CAN REFUSE actually run at this seat?" — the honesty
@@ -3568,6 +3628,47 @@ static int ops_seat_present(void) {
     return 0;
 #else
     return OPS.present;
+#endif
+}
+
+/* ── S2: the composed (floor ∩ row) sandbox lookups ───────────────────────
+ * The composition is computed ONCE at startup by ops_load_sandbox (the
+ * operator's ops-sandbox.tsv, validated against the ONE registry) and read
+ * here at spawn.  A tool with no row has no entry: silence = the floor.  The
+ * lookups are compiled UNCONDITIONALLY (outside the NO_OPS_SEAT guard) so the
+ * spawn works in every build; under FH_MUTANT_NO_SANDBOX_TABLE the table is
+ * LOADED but NOT APPLIED, so both return the floor. */
+#ifndef FH_MUTANT_NO_SANDBOX_TABLE
+static const FhSandboxRow *fh_sandbox_find(const char *name) {
+    if (!name) return NULL;
+    for (size_t i = 0; i < OPS.n_srow; i++)
+        if (strcmp(OPS.srow[i].tool, name) == 0) return &OPS.srow[i];
+    return NULL;
+}
+#endif
+
+static const char *fh_sandbox_promises(const struct host_tool *ht) {
+#ifdef FH_MUTANT_NO_SANDBOX_TABLE
+    return ht->promises_floor;
+#else
+    const FhSandboxRow *sr = fh_sandbox_find(ht->name);
+    return (sr && sr->promises) ? sr->promises : ht->promises_floor;
+#endif
+}
+
+/* May the spawn unveil `path` (the per-call judged path) :r?  The floor
+ * (silence, or the blind) allows it; a composed row narrows it to the row's
+ * landlock allowlist. */
+static int fh_sandbox_allow(const struct host_tool *ht, const char *path) {
+#ifdef FH_MUTANT_NO_SANDBOX_TABLE
+    (void)ht; (void)path;
+    return 1;
+#else
+    const FhSandboxRow *sr = fh_sandbox_find(ht->name);
+    if (!sr) return 1;
+    for (size_t i = 0; i < sr->n_paths; i++)
+        if (strcmp(sr->paths[i], path) == 0) return 1;
+    return 0;
 #endif
 }
 
@@ -3704,13 +3805,13 @@ static char *ops_read_file(const char *path, size_t *len_out) {
  * holding". */
 static void ops_verify_pins(const char *dir, const char *pins_path,
                             char **dl_out, char **tsv_out, char **hosts_out,
-                            char *dl_sha_out) {
+                            char **sandbox_out, char *dl_sha_out) {
     size_t plen = 0;
     char *pins = ops_read_file(pins_path, &plen);
     if (!pins)
         ops_gate_die("%s cannot be read: %s — a present policy dir must carry "
                      "a verifiable pin set", pins_path, strerror(errno));
-    int saw_dl = 0, saw_tsv = 0, saw_hosts = 0;
+    int saw_dl = 0, saw_tsv = 0, saw_hosts = 0, saw_sandbox = 0;
     char *save = NULL;
     for (char *line = strtok_r(pins, "\n", &save); line;
          line = strtok_r(NULL, "\n", &save)) {
@@ -3727,9 +3828,11 @@ static void ops_verify_pins(const char *dir, const char *pins_path,
         int is_dl = strcmp(name, FH_OPS_DL) == 0;
         int is_tsv = strcmp(name, FH_OPS_TSV) == 0;
         int is_hosts = strcmp(name, FH_OPS_HOSTS) == 0;
+        int is_sandbox = strcmp(name, FH_OPS_SANDBOX) == 0;
         if (is_dl) saw_dl = 1;
         if (is_tsv) saw_tsv = 1;
         if (is_hosts) saw_hosts = 1;
+        if (is_sandbox) saw_sandbox = 1;
         char path[PATH_MAX];
         int n = snprintf(path, sizeof path, "%s/%s", dir, name);
         if (n <= 0 || n >= (int)sizeof path)
@@ -3760,15 +3863,18 @@ static void ops_verify_pins(const char *dir, const char *pins_path,
         } else if (is_hosts) {
             free(*hosts_out);
             *hosts_out = bytes;
+        } else if (is_sandbox) {
+            free(*sandbox_out);
+            *sandbox_out = bytes;
         } else {
             free(bytes);
         }
     }
     free(pins);
-    if (!saw_dl || !saw_tsv || !saw_hosts)
-        ops_gate_die("%s does not pin %s, %s and %s — the loaded artifacts "
+    if (!saw_dl || !saw_tsv || !saw_hosts || !saw_sandbox)
+        ops_gate_die("%s does not pin %s, %s, %s and %s — the loaded artifacts "
                      "would go unverified", pins_path, FH_OPS_DL, FH_OPS_TSV,
-                     FH_OPS_HOSTS);
+                     FH_OPS_HOSTS, FH_OPS_SANDBOX);
 }
 
 /* THE PATTERN GRAMMAR — the TWO FORMS ops-aliases.tsv states and
@@ -4016,6 +4122,173 @@ static void ops_load_hosts(const char *path, char *tsv_owned) {
                      "empty and every url would be unclassified", path);
 }
 
+/* ── S2: the sandbox table (the seat's AUTHORITATIVE floor ∩ row) ──────────
+ * ops_load_sandbox is the ONE place the operator's ops-sandbox.tsv is judged:
+ * it validates grammar (tool charset, landlock perm set, absolute path) and —
+ * the composition the whole slice is about — that the row only ever NARROWS
+ * the tool's compiled-in floor.  A row asking for MORE is a STARTUP REFUSAL
+ * naming the row, never a silent widening.  policy/ops/eval_ops.py's
+ * --check-sandbox checks the SAME grammar but NEVER re-spells the registry;
+ * the registry (the floors) is the single source, and this seat is the
+ * authority on the subset. */
+static void sandbox_check_promises(const char *path, const char *row_promises,
+                                   const struct host_tool *ht) {
+    const char *p = row_promises;
+    for (;;) {
+        while (*p == ' ' || *p == '\t') p++;
+        if (!*p) break;
+        const char *e = p;
+        while (*e && *e != ' ' && *e != '\t') e++;
+        size_t tl = (size_t)(e - p);
+        if (tl >= 64)
+            ops_gate_die("%s: a sandbox promise token for \"%s\" is over 63 "
+                         "bytes — REFUSING TO START", path, ht->name);
+        char tok[64];
+        memcpy(tok, p, tl); tok[tl] = '\0';
+        if (!floor_has_token(ht->promises_floor, tok))
+            ops_gate_die("%s: the sandbox row for \"%s\" asks for the promise "
+                         "'%s', which is BEYOND its floor '%s' — the table is "
+                         "DENY-MORE-ONLY, a row may only NARROW; REFUSING TO "
+                         "START", path, ht->name, tok, ht->promises_floor);
+        p = e;
+    }
+    if (!floor_has_token(row_promises, "stdio"))
+        ops_gate_die("%s: the sandbox row for \"%s\" drops `stdio` — the "
+                     "program contract (stdin/stdout) would break on every "
+                     "call; REFUSING TO START", path, ht->name);
+    if (!floor_has_token(row_promises, "exec"))
+        ops_gate_die("%s: the sandbox row for \"%s\" drops `exec` — stage3's "
+                     "own execvp runs under the merged filter and would refuse "
+                     "EVERY call (a total failure); REFUSING TO START",
+                     path, ht->name);
+}
+
+/* Validate the row's landlock allowlist and return its PATHS (owned).  Each
+ * entry is "path:perm" (perm defaults to "r"); the path must be absolute, the
+ * perm a non-empty string over {r,w,x,c}, and — because the floor's per-call
+ * unveil is `:r` and the composition must never widen it — the perm must be
+ * read-only ('r' only). */
+static char **sandbox_landlock_paths(const char *path, char *spec,
+                                     size_t *n_out) {
+    size_t cap = 4, n = 0;
+    char **paths = xmalloc(cap * sizeof *paths);
+    char *save = NULL;
+    for (char *entry = strtok_r(spec, ";", &save); entry;
+         entry = strtok_r(NULL, ";", &save)) {
+        while (*entry == ' ' || *entry == '\t') entry++;
+        if (!*entry) continue;
+        char *colon = strrchr(entry, ':');
+        char *pp, *perm;
+        if (colon) { *colon = '\0'; pp = entry; perm = colon + 1; }
+        else { pp = entry; perm = (char *)"r"; }
+        if (pp[0] != '/' || strlen(pp) < 2)
+            ops_gate_die("%s: the landlock path '%s' is not an absolute path "
+                         "— REFUSING TO START", path, pp);
+        if (!*perm)
+            ops_gate_die("%s: the landlock entry for '%s' has an empty perm — "
+                         "REFUSING TO START", path, pp);
+        for (const char *q = perm; *q; q++)
+            if (!strchr("rwxc", *q))
+                ops_gate_die("%s: the landlock perm '%s' on '%s' is not over "
+                             "{r,w,x,c} — REFUSING TO START", path, perm, pp);
+        for (const char *q = perm; *q; q++)
+            if (*q != 'r')
+                ops_gate_die("%s: the landlock perm '%s' on '%s' is wider than "
+                             "the floor's per-call read-only unveil (r) — the "
+                             "table is DENY-MORE-ONLY, a row may only NARROW; "
+                             "REFUSING TO START", path, perm, pp);
+        if (n == cap) {
+            cap *= 2;
+            paths = realloc(paths, cap * sizeof *paths);
+            if (!paths) die_errno("realloc sandbox paths");
+        }
+        paths[n++] = xstrdup(pp);
+    }
+    *n_out = n;
+    return paths;
+}
+
+static void ops_load_sandbox(const char *path, char *tsv_owned) {
+    char *tsv = tsv_owned;
+    size_t cap = 8, n_rows = 0;
+    FhSandboxRow *rows = xmalloc(cap * sizeof *rows);
+    char *save = NULL;
+    for (char *line = strtok_r(tsv, "\n", &save); line;
+         line = strtok_r(NULL, "\n", &save)) {
+        while (*line == ' ' || *line == '\t') line++;
+        size_t ll = strlen(line);
+        if (ll > 0 && line[ll - 1] == '\r') line[ll - 1] = '\0';
+        if (!*line || *line == '#') continue;
+        /* Split on TAB preserving EMPTY fields (a trailing tab is an EMPTY
+         * landlock allowlist — "read nothing" — and must not be silently
+         * dropped the way strtok drops a trailing delimiter; the python
+         * --check-sandbox uses split(), which keeps it). */
+        char *f[3] = { NULL, NULL, NULL };
+        char *p = line;
+        for (int k = 0; k < 3; k++) {
+            f[k] = p;
+            char *tab = strchr(p, '\t');
+            if (tab) { *tab = '\0'; p = tab + 1; }
+            else { p = NULL; }
+        }
+        if (p != NULL || !f[0] || !f[1] || !f[2])
+            ops_gate_die("%s: a sandbox row is tool<TAB>promises<TAB>landlock "
+                         "(exactly 3 TAB-separated fields)", path);
+        if (!fh_identifier_ok(f[0]))
+            ops_gate_die("%s: the sandbox tool name \"%s\" does not match the "
+                         "guest's identifier charset — REFUSING TO START",
+                         path, f[0]);
+        const struct host_tool *ht = fh_host_tool_find(f[0]);
+        if (!ht)
+            ops_gate_die("%s: the sandbox row names the tool \"%s\", which is "
+                         "NOT in the pinned host-tool registry — a sandbox for "
+                         "a tool the proxy does not run; REFUSING TO START",
+                         path, f[0]);
+        if (!ht->promises_floor)
+            ops_gate_die("%s: the sandbox row names \"%s\", which has NO "
+                         "compiled-in floor yet — a tool must be floored before "
+                         "its sandbox can be narrowed; REFUSING TO START",
+                         path, f[0]);
+        sandbox_check_promises(path, f[1], ht);
+        size_t n_paths = 0;
+        char **paths = sandbox_landlock_paths(path, f[2], &n_paths);
+        if (n_rows == cap) {
+            cap *= 2;
+            rows = realloc(rows, cap * sizeof *rows);
+            if (!rows) die_errno("realloc sandbox rows");
+        }
+        FhSandboxRow *r = &rows[n_rows];
+        memset(r, 0, sizeof *r);
+        r->tool = xstrdup(f[0]);
+        r->promises = xstrdup(f[1]);
+        r->paths = paths;
+        r->n_paths = n_paths;
+        n_rows++;
+    }
+    free(tsv);
+#ifdef FH_MUTANT_NO_SANDBOX_TABLE
+    /* THE MANDATED BLIND (FH_MUTANT_NO_SANDBOX_TABLE): the table is LOADED,
+     * PINNED and VALIDATED (so a malformed table still refuses and the pin
+     * still covers it), but NOT APPLIED — every floored tool runs at its
+     * compiled-in FLOOR and a row's narrowing is discarded.  The gate must
+     * catch this on the WIRE: host_cat reads a path the (tightened) row
+     * dropped, while the row's `sandbox` field shows the FLOOR. */
+    note("ops-policy: MUTANT (FH_MUTANT_NO_SANDBOX_TABLE) — the sandbox table "
+         "%s is LOADED, PINNED and VALIDATED (%zu row(s)), but NOT APPLIED: "
+         "every floored tool runs at its COMPILED-IN FLOOR and a row's "
+         "narrowing is discarded (the row's `sandbox` field shows the floor)",
+         path, n_rows);
+    for (size_t i = 0; i < n_rows; i++) {
+        for (size_t k = 0; k < rows[i].n_paths; k++) free(rows[i].paths[k]);
+        free(rows[i].paths); free(rows[i].promises); free(rows[i].tool);
+    }
+    free(rows);
+#else
+    OPS.srow = rows;
+    OPS.n_srow = n_rows;
+#endif
+}
+
 /* How many write verbs the pinned set names (the startup line counts rather
  * than asserting a literal). */
 static size_t ops_write_verb_count(void) {
@@ -4110,19 +4383,25 @@ static void ops_seat_load(const char *dir) {
     struct stat st;
     if (stat(dir, &st) != 0 || !S_ISDIR(st.st_mode))
         ops_gate_die("%s is not a readable directory — a --ops-policy-dir must "
-                     "name the directory holding %s, %s, %s and %s",
-                     dir, FH_OPS_PINS, FH_OPS_DL, FH_OPS_TSV, FH_OPS_HOSTS);
+                     "name the directory holding %s, %s, %s, %s and %s",
+                     dir, FH_OPS_PINS, FH_OPS_DL, FH_OPS_TSV, FH_OPS_HOSTS,
+                     FH_OPS_SANDBOX);
     snprintf(OPS.dir, sizeof OPS.dir, "%s", dir);
 
-    char pins_path[PATH_MAX], tsv_path[PATH_MAX], hosts_path[PATH_MAX];
+    char pins_path[PATH_MAX], tsv_path[PATH_MAX], hosts_path[PATH_MAX],
+         sandbox_path[PATH_MAX];
     snprintf(pins_path, sizeof pins_path, "%s/%s", dir, FH_OPS_PINS);
     snprintf(tsv_path, sizeof tsv_path, "%s/%s", dir, FH_OPS_TSV);
     snprintf(hosts_path, sizeof hosts_path, "%s/%s", dir, FH_OPS_HOSTS);
+    snprintf(sandbox_path, sizeof sandbox_path, "%s/%s", dir, FH_OPS_SANDBOX);
     char *tsv_bytes = NULL;
     char *hosts_bytes = NULL;
-    ops_verify_pins(dir, pins_path, &OPS.dl_text, &tsv_bytes, &hosts_bytes, OPS.sha);
+    char *sandbox_bytes = NULL;
+    ops_verify_pins(dir, pins_path, &OPS.dl_text, &tsv_bytes, &hosts_bytes,
+                    &sandbox_bytes, OPS.sha);
     ops_load_aliases(tsv_path, tsv_bytes);
     ops_load_hosts(hosts_path, hosts_bytes);
+    ops_load_sandbox(sandbox_path, sandbox_bytes);
 
     /* the scratch db: process-lifetime state, removed at exit.  A HOST temp
      * dir (never the store, never the guest's /run — this seat is host-side). */
@@ -4284,11 +4563,12 @@ static void ops_seat_startup(const char *dir) {
     note("ops-policy: seat %s — %zu rule(s) loaded from the pinned artifact "
          "(sha256 %.16s..), %zu LIVE at this seat (%s), %zu INERT here (%s); "
          "%zu alias row(s), %zu host row(s), %zu write verb(s) bound, %zu host "
-         "tool(s) bound",
+         "tool(s) bound, %zu sandbox row(s) composed (floor ∩ row, a row may "
+         "only NARROW)",
          OPS.present ? "ARMED" : "LOADED-BUT-INERT",
          OPS.n_rule, OPS.sha, OPS.n_live, OPS.live[0] ? OPS.live : "(none)",
          OPS.n_inert, OPS.inert[0] ? OPS.inert : "(none)", OPS.n_row,
-         OPS.n_hrow, ops_write_verb_count(), fh_host_tool_count());
+         OPS.n_hrow, ops_write_verb_count(), fh_host_tool_count(), OPS.n_srow);
     if (OPS.present) {
         note("ops-policy: LIVE AT THIS SEAT (%s) — a rule whose body needs only "
              "the facts this seat can DERIVE.  Facts injected: "
@@ -4373,7 +4653,9 @@ static int ops_dim_hits(int is_url, const char *pattern, const char *canon) {
 }
 #endif /* !FH_MUTANT_OPS_NO_CLASS */
 
-static int ops_judge(const char *name, const char *args, char *why, size_t whycap) {
+static int ops_judge(const char *name, const char *args, char *why, size_t whycap,
+                     char **judged_path_out) {
+    if (judged_path_out) *judged_path_out = NULL;
     if (!OPS.present) return OPS_OK;
     /* S2: THE WIDENED GATE — the seat now judges write verbs OR host tools.
      * A host tool is recognised from the ONE registry table (fh_host_tool_is,
@@ -4599,6 +4881,13 @@ static int ops_judge(const char *name, const char *args, char *why, size_t whyca
             return OPS_UNCLASSED;
         }
 #endif /* !FH_MUTANT_OPS_NO_CLASS */
+        /* S2: hand the CANONICALIZED judged path to the spawn — the judge is
+         * the ONE canonicalizer, so the landlock spec unveils EXACTLY the
+         * spelling the class was resolved on (never a second spelling computed
+         * at the spawn).  Only a PATH-classed host tool, only on the ALLOWED
+         * path (a denial or refusal never spawns). */
+        if (judged_path_out && is_host && !is_url)
+            *judged_path_out = xstrdup(apath);
         free(apath);
         if (delbad) {
             snprintf(why, whycap, "cannot retract the per-call facts (they "
@@ -5384,7 +5673,9 @@ static int justification_verdict(const char *args, char *why, size_t whycap) {
 #ifndef FH_MUTANT_SINGLE_ITEM /* only the per-item serve_stream judges */
 static int call_judge(const char *name, const char *args,
                       const char **author_out, const char **refusal_out,
-                      char *reason, size_t reason_cap) {
+                      char *reason, size_t reason_cap,
+                      char **judged_path_out) {
+    if (judged_path_out) *judged_path_out = NULL;
     if (policy_denied(name)) {
         snprintf(reason, reason_cap,
                  "\"%s\" is on the pinned host denylist (placeholder P3 "
@@ -5401,7 +5692,7 @@ static int call_judge(const char *name, const char *args,
      * never crosses, and this reason is what the model reads. */
     {
         char why[700];
-        int oj = ops_judge(name, args, why, sizeof why);
+        int oj = ops_judge(name, args, why, sizeof why, judged_path_out);
         if (oj == OPS_UNCLASSED) {
             /* S2: the totality check's refusal-by-name.  The SAME path as a
              * denial (the true name never crosses, nothing executes, the
@@ -5619,7 +5910,8 @@ static void tools_inject_json(struct tbuf *t) {
  * canonicalizer (the proxy's fh_canon_abs and the program's copy), so the
  * spelling the judge classed is the spelling the program opens. */
 static void host_dispatch(const char *name, const char *call_id, long turn,
-                          struct row *r, const char *args) {
+                          struct row *r, const char *args,
+                          const char *judged_path) {
 #ifdef FH_MUTANT_NO_EXEC
     /* S1 MUTATION BLIND (build/fx-hostgate-noexec): the registry LOOKUP is
      * compiled out, so every call forwards to the guest — including the ones
@@ -5633,6 +5925,7 @@ static void host_dispatch(const char *name, const char *call_id, long turn,
          turn, call_id, name);
     (void)r;
     (void)args;
+    (void)judged_path;
 #else
     if (!policy_armed()) return;
     const struct host_tool *ht = fh_host_tool_find(name);
@@ -5660,7 +5953,7 @@ static void host_dispatch(const char *name, const char *call_id, long turn,
         return;
     }
     char *sandbox = NULL;
-    char *res = host_exec(ht, args, &sandbox);
+    char *res = host_exec(ht, args, judged_path, &sandbox);
     emap_put(call_id, res, turn);
     if (r) {
         free(r->outcome);
@@ -6437,9 +6730,10 @@ static unsigned char *serve_stream(const unsigned char *buf, size_t len,
                         } else {
                             const char *author = NULL, *refusal = NULL;
                             char reason[1024];
+                            char *judged = NULL;
                             int deny = nm && policy_armed() &&
                                        call_judge(nm, jargs, &author, &refusal,
-                                                  reason, sizeof reason);
+                                                  reason, sizeof reason, &judged);
                             if (deny) {
                                 char *denial = xmalloc(strlen(reason) + 64);
                                 snprintf(denial, strlen(reason) + 64,
@@ -6465,6 +6759,7 @@ static unsigned char *serve_stream(const unsigned char *buf, size_t len,
                                                     o->ev.len, turn);
 #endif
                                 free(denial);
+                                free(judged);
                             } else {
                                 struct row *rr =
                                     row_call_record(cid, nm, jargs, turn,
@@ -6481,8 +6776,11 @@ static unsigned char *serve_stream(const unsigned char *buf, size_t len,
                                  * item still forwards VERBATIM: the guest
                                  * must see the call (n_tool_calls > 0), and
                                  * its -32602 sentinel is what the outbound
-                                 * leg replaces. */
-                                host_dispatch(nm, cid, turn, rr, jargs);
+                                 * leg replaces.  `judged` is the judge's
+                                 * CANONICALIZED path (NULL for a guest verb
+                                 * or an unclassed/unparseable host argument). */
+                                host_dispatch(nm, cid, turn, rr, jargs, judged);
+                                free(judged);
                                 tb_put(&out, o->ev.p, o->ev.len); /* verbatim */
                             }
                         }
@@ -6502,9 +6800,10 @@ static unsigned char *serve_stream(const unsigned char *buf, size_t len,
 #ifndef FH_MUTANT_NO_REWRITE
                         const char *author = NULL, *refusal = NULL;
                         char reason[1024];
+                        char *judged_done = NULL;
                         if (fc_nm && policy_armed() &&
                             call_judge(fc_nm, fc_args, &author, &refusal,
-                                       reason, sizeof reason)) {
+                                       reason, sizeof reason, &judged_done)) {
                             char *json = event_json_set_item_name(data, data_len,
                                                                   FH_RESERVED_NAME);
                             if (!json) {
@@ -6562,6 +6861,7 @@ static unsigned char *serve_stream(const unsigned char *buf, size_t len,
                                  "buffer carries a DENIED name — rewritten, "
                                  "and the refusal is recorded (never judged: "
                                  "nothing was dispatched)", turn);
+                            free(judged_done); /* NULL on every refusal path */
                         } else
 #endif
                         {

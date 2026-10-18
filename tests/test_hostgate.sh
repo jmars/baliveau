@@ -208,6 +208,14 @@ GATEOPSNOCLASS="$ROOT/build/fx-hostgate-opsnoclass"
 GATENOPLAINFILE="$ROOT/build/fx-hostgate-noplainfile"
 GATEOPSLITKEY="$ROOT/build/fx-hostgate-opslitkey"
 GATEEXTRAUNCL="$ROOT/build/fx-hostgate-extrauncl"
+# S2 PALISADE (the policy table + host_cat's per-call judged path): the
+# mandated blind (FH_MUTANT_NO_SANDBOX_TABLE — the table loaded but NOT
+# applied) and the sibling-escape probe (the REAL proxy naming the MUTANT
+# host_cat that reads the judged path's SIBLING).
+S2NOSANDBOX="$ROOT/build/fx-hostgate-nosandboxtable"
+S2CATSIBLING="$ROOT/build/fx-hostgate-catsibling"
+S2HOSTCATSIBLING="$ROOT/build/fx-host-cat-sibling"
+PRES2_REV=6dc963f      # the pre-S2-palisade HEAD: host_cat registry, UNSANDBOXED
 # S3 (THE DECLARED PROGRAMS): the host-tool binaries the spawn execs, and the
 # program-contract probe (an echo program + the mutant proxy that names it).
 HOSTTIME="$ROOT/build/fx-host-time"
@@ -259,7 +267,8 @@ for b in "$GATENONAME" "$GATENONAMEBAD" "$GATECOLLIDE" "$GATEBADNAME" "$GATEBADP
          "$ECHOCONTRACT" "$GATEECHO" \
          "$SPAWNHANG" "$SPAWNFLOOD" "$SPAWNNONZERO" \
          "$GATESPAWNHANG" "$GATESPAWNFLOOD" "$GATESPAWNNONZERO" \
-         "$GATESPAWNMISSING"; do
+         "$GATESPAWNMISSING" \
+         "$S2NOSANDBOX" "$S2CATSIBLING" "$S2HOSTCATSIBLING"; do
     [ -x "$b" ] || fail "phase 0: $b missing — run make first"
 done
 [ -f "$FIX/responses_simple.sse" ] || fail "phase 0: fixture $FIX/responses_simple.sse missing"
@@ -2718,15 +2727,17 @@ DHALL
 # tests the seat's check, not the pin's refusal.
 ops_repin() {
     local d="$1"
-    local tsv hosts sha_dl sha_lex
+    local tsv hosts sha_dl sha_lex sha_sandbox
     tsv=$(sha256sum "$d/ops-aliases.tsv" | cut -d' ' -f1)
     hosts=$(sha256sum "$d/ops-hosts.tsv" | cut -d' ' -f1)
     sha_dl=$(sha256sum "$d/ops-policy.dl" | cut -d' ' -f1)
     sha_lex=$(sha256sum "$d/ops-lexicon.ini" | cut -d' ' -f1)
+    sha_sandbox=$(sha256sum "$d/ops-sandbox.tsv" | cut -d' ' -f1)
     grep -v '^ops-aliases.tsv' "$d/PINS" | grep -v '^ops-policy.dl' \
-        | grep -v '^ops-lexicon.ini' | grep -v '^ops-hosts.tsv' > "$d/PINS.new"
-    printf 'ops-lexicon.ini\t%s\nops-policy.dl\t%s\nops-aliases.tsv\t%s\nops-hosts.tsv\t%s\n' \
-        "$sha_lex" "$sha_dl" "$tsv" "$hosts" >> "$d/PINS.new"
+        | grep -v '^ops-lexicon.ini' | grep -v '^ops-hosts.tsv' \
+        | grep -v '^ops-sandbox.tsv' > "$d/PINS.new"
+    printf 'ops-lexicon.ini\t%s\nops-policy.dl\t%s\nops-aliases.tsv\t%s\nops-hosts.tsv\t%s\nops-sandbox.tsv\t%s\n' \
+        "$sha_lex" "$sha_dl" "$tsv" "$hosts" "$sha_sandbox" >> "$d/PINS.new"
     mv "$d/PINS.new" "$d/PINS"
 }
 
@@ -2914,7 +2925,8 @@ if [ ! -x "$ROOT/build/fx-verbs-server" ]; then
 else
 mkdir -p "$TMP/p6-inguest/root/usr/fx-agent/policy" "$TMP/p6-inguest/run/fx"
 cp "$OPS_DIR"/ops-policy.dl "$OPS_DIR"/ops-aliases.tsv "$OPS_DIR"/ops-lexicon.ini \
-   "$OPS_DIR"/ops-hosts.tsv "$OPS_DIR"/PINS "$TMP/p6-inguest/root/usr/fx-agent/policy/"
+   "$OPS_DIR"/ops-hosts.tsv "$OPS_DIR"/ops-sandbox.tsv "$OPS_DIR"/PINS \
+   "$TMP/p6-inguest/root/usr/fx-agent/policy/"
 python3 - "$ROOT" "$TMP/p6-inguest" <<'PY'
 import json, os, subprocess, sys
 root, tmp = sys.argv[1], sys.argv[2]
@@ -5199,8 +5211,8 @@ S1TOOL="host_time"
 S1CALL="call_00_DgJfXOD0j0bvOV7jB0tl0124"
 # restated HERE, independently of the source (the phase-26 discipline: two
 # edits have to agree before a re-pin can pass unnoticed)
-S1_PIN="dc0090caffe9513d6c1e04ec6bb056ad40cecb62140925533d65f839c8e71b54"
-S1_COLL_PIN="b285ea29aa1465050c756061f7b314dc43da0bdb45a7d91c25ba894aad7f1da8"
+S1_PIN="f3d2c4b3cb276d509d6ab8d32d937efbab23208bc265f11d7088f82caac55508"
+S1_COLL_PIN="8771d9390e7f5b93fe80aea9e2eccdd9432e71586fa9d666664b04c5880209d7"
 
 # make_refuse_stub <script> <marker> — the guest lane's MCP server for S1: it
 # touches the marker for EVERY tools/call (the witness that the call CROSSED to
@@ -5790,6 +5802,18 @@ s2_policydir() {
     ops_repin "$d"
 }
 
+# s2_policydir_sandbox <dir> <aliases> <sandbox> — a COPY of the pinned policy
+# dir with BOTH the alias table AND the sandbox table REPLACED and re-pinned (a
+# valid pinned release; the arm then tests the SEAT's composition, not the
+# pin's refusal).  Never the shared dir.
+s2_policydir_sandbox() {
+    local d="$1" tsv="$2" sandbox="$3"
+    cp -r "$OPS_DIR" "$d"
+    cp "$tsv" "$d/ops-aliases.tsv"
+    cp "$sandbox" "$d/ops-sandbox.tsv"
+    ops_repin "$d"
+}
+
 # s2_run <gate> <tag> <pdir> <path> [extra...] — one whole guest loop through a
 # bounded proxy over a host_cat fixture (path = the classed argument), with a
 # FRESH FX_AGENT_DATA dir and a fresh stub per probe.  Exports S2_RC,
@@ -6048,8 +6072,11 @@ n=$(pyq "$S2_LOG" "len([r for r in rows if r.get('call_id')=='$S2CALL' and r.get
 echo "   OK loaded-but-inert: the same refusal with the seat LOADED and no rule live — the hole was not the absent flag alone"
 # (c) THE ASYMMETRY — the PRE-FIX CONTROL (FH_MUTANT_NO_OPS_SEAT compiles the
 # whole seat out, which is the state the blocker left every call in) EXECUTES
-# the same call and the protected content CROSSES.  So (a)'s refusal is the
-# gate's doing, not the fixture's.
+# the same call — i.e. does NOT refuse with unarmed-ops.  S2: host_cat is now
+# FLOORED, so the control's call reaches the executor (exec=host) but the
+# sandbox refuses the READ (the judged path is computed by the ops seat, which
+# is compiled out here — no judge, no judged path, EACCES).  The asymmetry the
+# arm asserts is the ABSENCE of the unarmed-ops refusal, not the content.
 s2_run "$GATENOOPS" unarmed-noops NONE "$UB/work/prot/file.txt"
 [ "$S2_GUEST_RC" -eq 0 ] || { sed -n '1,10p' "$S2_ERR" >&2; fail "phase 91: the control's guest run rc=$S2_GUEST_RC"; }
 [ "$S2_RC" -eq 0 ] || fail "phase 91: the control exited rc=$S2_RC"
@@ -6057,9 +6084,11 @@ grep -q "host-execute call_id=" "$S2_ERR" \
     || fail "phase 91: the PRE-FIX control did NOT execute the classed call — the arm is vacuous"
 n=$(pyq "$S2_LOG" "len([r for r in rows if r.get('call_id')=='$S2CALL' and r.get('exec')=='host'])")
 [ "$n" -ge 1 ] || fail "phase 91: the control's log carries no exec=host row"
+n=$(pyq "$S2_LOG" "len([r for r in rows if r.get('call_id')=='$S2CALL' and r.get('verdict')=='denied' and r.get('refusal_name')=='unarmed-ops'])")
+[ "$n" -eq 0 ] || fail "phase 91: the control still refused with unarmed-ops — the seat is not the thing that refused in the real build"
 n=$(s2_out_n "$S2_DUMP" "'PROTECTED-SECRET-CONTENT' in o")
-[ "$n" -ge 1 ] || { cat "$S2_DUMP" >&2; fail "phase 91: the control did not hand the PROTECTED content to the model — the blocker's measured shape is not reproduced"; }
-echo "   OK asymmetry: with the seat compiled out the SAME call EXECUTES and the protected content reaches the model — the refusal is the seat's"
+[ "$n" -eq 0 ] || fail "phase 91: the PROTECTED content crossed the sandbox — the floor's judged-path unveil ran without a judge"
+echo "   OK asymmetry: with the seat compiled out the call reaches the executor (exec=host, NO unarmed-ops refusal) — the refusal is the seat's, and the sandbox (not the seat) then refuses the read"
 
 echo "== phase 92: S2-FIX 2 — the class governs the SPELLING, the OPEN follows the kernel (symlink REFUSED)"
 # A data-classed SYMLINK to a PROTECTED file: the judge classes the spelling
@@ -6688,6 +6717,51 @@ build_pres1pal() {
     echo "$d/fx-hostgate"
 }
 
+# build_pres2 <dir> — the PINNED pre-S2-palisade proxy (PRES2_REV = 6dc963f,
+# the S1 HEAD: host_cat in the registry but UNSANDBOXED, floor NULL), built
+# the house way (git show + cc) with the SIBLING mutant named in place of
+# fx-host-cat.  Echoes the proxy path, or empty (skip reason in PRES2_SKIP).
+build_pres2() {
+    local d="$1"
+    PRES2_SKIP=""
+    mkdir -p "$d"
+    if ! git -C "$ROOT" cat-file -e "$PRES2_REV^{commit}" 2>/dev/null; then
+        PRES2_SKIP="pinned revision $PRES2_REV unavailable (shallow clone or rewritten history)"
+        return
+    fi
+    if ! git -C "$ROOT" show "$PRES2_REV:tools/fx-hostgate.c" > "$d/fx-hostgate.c" 2>/dev/null; then
+        PRES2_SKIP="cannot extract tools/fx-hostgate.c at $PRES2_REV"
+        return
+    fi
+    if cmp -s "$d/fx-hostgate.c" "$ROOT/tools/fx-hostgate.c"; then
+        PRES2_SKIP="the pinned pre-S2 source is IDENTICAL to the working tree — the asymmetry would compare the code to itself"
+        return
+    fi
+    local PREDL="${DATALOG_DIR:-}"
+    [ -z "$PREDL" ] && [ -e "$ROOT/../datalog-dafsa/zig-out/lib/libdatalog.so" ] && PREDL="$ROOT/../datalog-dafsa"
+    [ -z "$PREDL" ] && [ -e "$HOME/fixpoint-linux/datalog-dafsa/zig-out/lib/libdatalog.so" ] && PREDL="$HOME/fixpoint-linux/datalog-dafsa"
+    [ -n "$PREDL" ] || { PRES2_SKIP="no datalog sibling is resolvable, so the pinned proxy cannot be linked"; return; }
+    if ! cc -std=c11 -O2 -Wall -Wextra \
+        -I"$ROOT/src" -I"$ROOT/src/agent" -I"$ROOT/src/vendor/dhall-c" \
+        -I"$ROOT/src/vendor/yyjson" -I"$ROOT/build/include" \
+        -I"$ROOT/src/vendor/tomlc99" -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
+        -DFH_HOST_CAT_PROGRAM='"fx-host-cat-sibling"' \
+        -o "$d/fx-hostgate" "$d/fx-hostgate.c" \
+        "$ROOT/src/vendor/dhall-c/sha256.c" "$ROOT/src/vendor/yyjson/yyjson.c" \
+        -L"$PREDL/zig-out/lib" -Wl,-rpath,"$PREDL/zig-out/lib" -ldatalog \
+        2> "$d/cc.err"; then
+        PRES2_SKIP="the pinned pre-S2 source does not compile ($(tail -1 "$d/cc.err"))"
+        return
+    fi
+    cp "$ROOT/build/fx-host-cat-sibling" "$d/fx-host-cat-sibling" 2>/dev/null \
+        || { PRES2_SKIP="cannot copy the sibling mutant beside the pinned proxy"; return; }
+    # the pre-S2 proxy still floors host_time (S1), so it runs the startup
+    # --verify and needs stage3 beside it.
+    cp "$ROOT/build/stage3" "$d/stage3" 2>/dev/null \
+        || { PRES2_SKIP="cannot copy stage3 beside the pinned proxy"; return; }
+    echo "$d/fx-hostgate"
+}
+
 echo "== phase 101: S1 palisade — --print-sandbox prints the MEASURED floor, re-measured against ldd"
 S1SB=$("$GATE" --print-sandbox 2>/dev/null)
 echo "$S1SB" | grep -qF "host_time	stdio rpath exec prot_exec	/lib64/ld-linux-x86-64.so.2:rx;/lib64/libc.so.6:r" \
@@ -6835,6 +6909,159 @@ s1_run "$S1ENV" env "$FIX/responses_host_time.sse" --deny fx_write
 n=$(s1_out_n "$S1_DUMP" "'S1-ENV-RATTAN_ALLOW_PTRACE=NULL' in o and 'S1-ENV-RATTAN_EXTRA_PROMISES=NULL' in o")
 [ "$n" -ge 1 ] || { cat "$S1_DUMP" >&2; fail "phase 108: the child read a non-NULL RATTAN_* variable — the scrubbed env is NOT the whole spec (the program could widen its own promises)"; }
 echo "   OK env: RATTAN_ALLOW_PTRACE and RATTAN_EXTRA_PROMISES both read NULL in the child — the ONLY promises are argv-passed"
+
+# ── S2 PALISADE: THE POLICY TABLE + host_cat's PER-CALL JUDGED PATH ────────
+#
+# DIRECTION (stated up front): THE TABLE LOADED BUT NOT APPLIED IS THE RISK
+# THIS SLICE EXISTS TO EXCLUDE — the S2 sibling of S1's "spec loaded but not
+# applied".  A sandbox table whose narrowing is ignored LOOKS protective (the
+# pin verifies, the row loads, the startup line counts it) while host_cat reads
+# a path the row dropped.  So the arms assert the WIRE (what host_cat actually
+# OPENED), never the table alone, and FH_MUTANT_NO_SANDBOX_TABLE must be caught
+# THERE.  Arm (a) — a D3-DENIED path still never spawns — is phase 85, UNCHANGED
+# and now running UNDER the floor (host_cat is floored in this slice).
+#
+# THE COMPOSITION, floor ∩ row, DENY-MORE-ONLY in BOTH dimensions:
+#   promises — a row token beyond the floor is a STARTUP REFUSAL naming the row
+#              (the LOOSENING direction, arm 111);
+#   landlock — a row dropping a path makes the judged-allowed call's open fail
+#              EACCES (the TIGHTENING direction, arm 110), and the per-call
+#              judged path is unveiled `:r` ONLY when the row allows it (109).
+
+# s2_sandbox_row <file> — a host_cat sandbox row allowlisting <file> :r.
+s2_sandbox_row() {
+    printf 'host_cat\tstdio rpath exec prot_exec\t%s:r\n' "$1"
+}
+
+echo "== phase 109: S2 (b) an ALLOWED path reads via the PER-CALL unveil, and the row records the judged path"
+# The judged (canonical) path is unveiled :r by the spawn — exactly the path
+# ops_judge classed, never a second spelling — and the row's `sandbox` field
+# carries that SAME spec (the one-spelling helper).
+SB="$TMP/s2-sandbox-allowed"
+mkdir -p "$SB/work"
+printf 'ALLOWED-CONTENT-123' > "$SB/work/data.txt"
+cat > "$SB/aliases.tsv" <<TSV
+Catfile	Datadir	no	$SB/work/data.txt
+TSV
+s2_sandbox_row "$SB/work/data.txt" > "$SB/sandbox.tsv"
+s2_policydir_sandbox "$SB/pdir" "$SB/aliases.tsv" "$SB/sandbox.tsv"
+s2_run "$GATE" allowed-sb "$SB/pdir" "$SB/work/data.txt"
+[ "$S2_GUEST_RC" -eq 0 ] || { sed -n '1,10p' "$S2_ERR" >&2; fail "phase 109: the guest run rc=$S2_GUEST_RC"; }
+[ "$S2_RC" -eq 0 ] || fail "phase 109: the proxy exited rc=$S2_RC"
+grep -q "host-execute call_id=" "$S2_ERR" \
+    || fail "phase 109: the allowed path was NOT executed — the per-call unveil is not what admits it"
+n=$(s2_out_n "$S2_DUMP" "'ALLOWED-CONTENT-123' in o")
+[ "$n" -ge 1 ] || { cat "$S2_DUMP" >&2; fail "phase 109: the file content did not reach the model — the judged path was not unveiled :r"; }
+n=$(pyq "$S2_LOG" "len([r for r in rows if r.get('call_id')=='$S2CALL' and r.get('exec')=='host' and isinstance(r.get('sandbox'),str) and '$SB/work/data.txt:r' in r['sandbox'] and 'fx-host-cat:rx;' in r['sandbox']])")
+[ "$n" -eq 1 ] || { grep -F "$S2CALL" "$S2_LOG" >&2; fail "phase 109: the row does not carry the per-call judged path :r in the sandbox field"; }
+echo "   OK per-call unveil: the judged path is unveiled :r and host_cat reads it — the row records exactly the path the spawn unveiled"
+
+echo "== phase 110: S2 (c) TIGHTENING WORKS — a row that DROPS a landlock path makes the judged-allowed call fail EACCES"
+# The SAME fixture, but the sandbox row's landlock allowlist is EMPTY (the path
+# is DROPPED).  D3 still judges the call allowed (the alias table classes it),
+# the totality check passes, and the spawn RUNS — but the judged path is NOT
+# unveiled, so host_cat's open fails EACCES and the refusal is recorded.  That
+# is deny-more-only for paths, functioning.
+SC="$TMP/s2-sandbox-tight"
+mkdir -p "$SC/work"
+printf 'FORBIDDEN-CONTENT-456' > "$SC/work/data.txt"
+cat > "$SC/aliases.tsv" <<TSV
+Catfile	Datadir	no	$SC/work/data.txt
+TSV
+printf 'host_cat\tstdio rpath exec prot_exec\t\n' > "$SC/sandbox.tsv"
+s2_policydir_sandbox "$SC/pdir" "$SC/aliases.tsv" "$SC/sandbox.tsv"
+s2_run "$GATE" tight "$SC/pdir" "$SC/work/data.txt"
+[ "$S2_GUEST_RC" -eq 0 ] || { sed -n '1,10p' "$S2_ERR" >&2; fail "phase 110: the guest run rc=$S2_GUEST_RC"; }
+[ "$S2_RC" -eq 0 ] || fail "phase 110: the proxy exited rc=$S2_RC"
+grep -q "host-execute call_id=" "$S2_ERR" \
+    || fail "phase 110: the tightened path was NOT executed — the arm must reach the executor to test the landlock narrowing"
+n=$(pyq "$S2_LOG" "len([r for r in rows if r.get('call_id')=='$S2CALL' and r.get('exec')=='host' and 'Permission denied' in (r.get('outcome') or '')])")
+[ "$n" -eq 1 ] || { grep -F "$S2CALL" "$S2_LOG" >&2; fail "phase 110: the refusal is not recorded as an EACCES open — the row did not narrow the unveil"; }
+n=$(pyq "$S2_LOG" "len([r for r in rows if r.get('call_id')=='$S2CALL' and isinstance(r.get('sandbox'),str) and '$SC/work/data.txt' in r['sandbox']])")
+[ "$n" -eq 0 ] || fail "phase 110: the sandbox field still carries the DROPPED path — the composition did not narrow the spec"
+n=$(s2_out_n "$S2_DUMP" "'FORBIDDEN-CONTENT-456' in o")
+[ "$n" -eq 0 ] || fail "phase 110: the forbidden content crossed — the dropped path was still unveiled"
+echo "   OK tightening: a dropped landlock path is judged allowed (the call runs) but the open fails EACCES and the refusal is recorded — deny-more-only for paths"
+
+echo "== phase 111: S2 (d) LOOSENING IS REFUSED — a row adding a promise beyond the floor is a startup refusal naming the row"
+# wpath is NOT in host_cat's floor ('stdio rpath exec prot_exec').  The
+# composition must refuse at STARTUP, naming the row and the token, before the
+# slave path is published — never a silent widening.
+SD="$TMP/s2-sandbox-loose"
+mkdir -p "$SD"
+printf 'host_cat\tstdio rpath exec prot_exec wpath\t/fx/disk/agent-data:r\n' > "$SD/sandbox.tsv"
+s2_policydir_sandbox "$SD/pdir" "$OPS_DIR/ops-aliases.tsv" "$SD/sandbox.tsv"
+timeout 20 "$GATE" --upstream "$TMP/upstream2.sse" \
+    --slave-file "$SD/slave" --log "$SD/log.jsonl" \
+    --ops-policy-dir "$SD/pdir" --deny fx_write --turns 1 2> "$SD/err"
+SDRC=$?
+[ "$SDRC" -ne 0 ] || { sed -n '1,6p' "$SD/err" >&2; fail "phase 111: a row adding wpath (beyond host_cat's floor) did NOT refuse at startup (rc=$SDRC)"; }
+grep -qF "wpath" "$SD/err" \
+    || { sed -n '1,6p' "$SD/err" >&2; fail "phase 111: the startup refusal does not name the offending token wpath"; }
+grep -qF "host_cat" "$SD/err" \
+    || fail "phase 111: the startup refusal does not name the row's tool host_cat"
+grep -qF "BEYOND its floor" "$SD/err" \
+    || fail "phase 111: the startup refusal does not state the deny-more-only rule"
+[ -s "$SD/slave" ] && fail "phase 111: the refusing build published its slave path — the refusal was not BEFORE the lane was published"
+echo "   OK loosening refused: wpath (beyond the floor) is a STARTUP REFUSAL naming host_cat — a row may only NARROW, never widen"
+
+echo "== phase 112: S2 (e) THE MANDATED BLIND — FH_MUTANT_NO_SANDBOX_TABLE (the table loaded but NOT applied)"
+# The SAME tightened row as phase 110, through the blind: the table is LOADED,
+# PINNED and VALIDATED, but the composition is discarded — host_cat runs at its
+# FLOOR, READS the forbidden path, and the row's `sandbox` field shows the
+# FLOOR (the judged path unveiled).  The gate catches the table-loaded-but-not-
+# applied direction on the WIRE.
+SE="$TMP/s2-sandbox-blind"
+mkdir -p "$SE/work"
+printf 'FORBIDDEN-CONTENT-456' > "$SE/work/data.txt"
+cat > "$SE/aliases.tsv" <<TSV
+Catfile	Datadir	no	$SE/work/data.txt
+TSV
+printf 'host_cat\tstdio rpath exec prot_exec\t\n' > "$SE/sandbox.tsv"
+s2_policydir_sandbox "$SE/pdir" "$SE/aliases.tsv" "$SE/sandbox.tsv"
+s2_run "$S2NOSANDBOX" blind "$SE/pdir" "$SE/work/data.txt"
+[ "$S2_GUEST_RC" -eq 0 ] || { sed -n '1,10p' "$S2_ERR" >&2; fail "phase 112: the blind's guest run rc=$S2_GUEST_RC"; }
+[ "$S2_RC" -eq 0 ] || fail "phase 112: the blind exited rc=$S2_RC"
+n=$(s2_out_n "$S2_DUMP" "'FORBIDDEN-CONTENT-456' in o")
+[ "$n" -ge 1 ] || { cat "$S2_DUMP" >&2; fail "phase 112: the blind did NOT read the forbidden path — the arm would pass a wrong record"; }
+n=$(pyq "$S2_LOG" "len([r for r in rows if r.get('call_id')=='$S2CALL' and r.get('exec')=='host' and isinstance(r.get('sandbox'),str) and '$SE/work/data.txt:r' in r['sandbox']])")
+[ "$n" -eq 1 ] || { grep -F "$S2CALL" "$S2_LOG" >&2; fail "phase 112: the blind's row does NOT show the FLOOR (the judged path unveiled) — the composition was not discarded"; }
+echo "   OK blind caught: the tightened row is IGNORED, host_cat READS the forbidden path, and the row's sandbox field shows the FLOOR — the table was loaded but NOT applied"
+
+echo "== phase 113: S2 (f) THE SIBLING-PATH ESCAPE PROBE — a host_cat mutant reads a DIFFERENT file"
+# The MUTANT host_cat (fx-host-cat-sibling) reads the judged path's SIBLING
+# ("<path>.sibling").  The sandbox unveils EXACTLY the judged path and nothing
+# else, so the sibling's open must fail EACCES post-fix — and must READ the
+# sibling through the pinned PRE-S2 proxy (host_cat UNSANDBOXED, floor NULL),
+# which is the asymmetry that makes the EACCES the sandbox's doing.
+SF="$TMP/s2-sandbox-sibling"
+mkdir -p "$SF/work"
+printf 'JUDGED-CONTENT' > "$SF/work/file.txt"
+printf 'SIBLING-SECRET' > "$SF/work/file.txt.sibling"
+cat > "$SF/aliases.tsv" <<TSV
+Catfile	Datadir	no	$SF/work/file.txt
+TSV
+s2_sandbox_row "$SF/work/file.txt" > "$SF/sandbox.tsv"
+s2_policydir_sandbox "$SF/pdir" "$SF/aliases.tsv" "$SF/sandbox.tsv"
+s2_run "$S2CATSIBLING" sibling-post "$SF/pdir" "$SF/work/file.txt"
+[ "$S2_GUEST_RC" -eq 0 ] || { sed -n '1,10p' "$S2_ERR" >&2; fail "phase 113: the post-fix guest run rc=$S2_GUEST_RC"; }
+[ "$S2_RC" -eq 0 ] || fail "phase 113: the post-fix proxy exited rc=$S2_RC"
+n=$(s2_out_n "$S2_DUMP" "'SIBLING-READ:' in o")
+[ "$n" -eq 0 ] || fail "phase 113: the sibling mutant READ the sibling through the S2 proxy — the sandbox did not confine the open to the judged path"
+n=$(s2_out_n "$S2_DUMP" "'SIBLING-DENIED: Permission denied' in o")
+[ "$n" -ge 1 ] || { cat "$S2_DUMP" >&2; fail "phase 113: the sibling open did not fail EACCES — the judged-path unveil leaked to the sibling"; }
+echo "   OK sibling (post-fix): the mutant's sibling open fails EACCES — the sandbox unveils EXACTLY the judged path, not its neighbours"
+PRES2_GATE=$(build_pres2 "$TMP/pres2-sibling")
+if [ -z "$PRES2_GATE" ]; then
+    echo "   SKIP phase 113 (pre-fix control): $PRES2_SKIP — the asymmetry half did not run"
+else
+    s2_run "$PRES2_GATE" sibling-pre "$SF/pdir" "$SF/work/file.txt"
+    [ "$S2_GUEST_RC" -eq 0 ] || { sed -n '1,10p' "$S2_ERR" >&2; fail "phase 113 (control): the pre-S2 guest run rc=$S2_GUEST_RC"; }
+    [ "$S2_RC" -eq 0 ] || fail "phase 113 (control): the pre-S2 proxy exited rc=$S2_RC"
+    n=$(s2_out_n "$S2_DUMP" "'SIBLING-READ:' in o and 'SIBLING-SECRET' in o")
+    [ "$n" -ge 1 ] || { cat "$S2_DUMP" >&2; fail "phase 113 (control): the SAME mutant did NOT read the sibling through the pinned pre-S2 proxy — the EACCES above is not the sandbox's doing"; }
+    echo "   OK asymmetry: the SAME sibling mutant READS the sibling through the pinned pre-S2 proxy ($PRES2_REV) — the EACCES is the per-call unveil's"
+fi
 
 # ── THE PASS ECHO, with the LIVE observation folded in (P10-fix 5) ────────
 echo "PASS hostgate: the transparent proxy is stream-transparent (arm == control) and a mangling proxy is caught; the per-turn open/close mechanics hold through one proxy process; the one log JOINS every answered call by call_id and REPORTS every call it could not join; a join compiled out flips the pass by content; every model-controlled free-text field arrives MARKED while the join key renders verbatim; the DECODE GATE holds the channel invariant for a denied call (the true name never crosses) in the presence of interleaves, duplicate/never-opened dones, open-at-completed items and over-cap streams, with a pinned pre-fix control for each; the RESERVED NAME is a CHECKED property (it passes the guest's charset, collides with no verb of a catalog pinned by sha256 and cross-checked against the verbs server's own table, and the proxy REFUSES TO START on a collision — while the same source with the check compiled out starts and DISPATCHES the colliding name: the silent allow); and the JUSTIFICATION is required in the injected tools schema, judged on the argument accumulator the guest actually dispatches (a done-args-only judge is pinned and caught), denied BY NAME through the existing substitution on the outbound leg, and REPORTED BY A DENIAL-RATE INSTRUMENT whose own compiled-out mutant leaves the dead-agent shape invisible; and THE OPERATOR IS A REAL AUTHOR AT THIS SEAT (P6: the pinned ops policy, its PINS check, its alias table with the TWO-FORM grammar re-run here, and its per-call fact injection with the path canonicalized before matching) with the D1/D2 split NAMED in the startup line — D1 evaluated here, D2 and the compiled-in FLOOR enforced IN-GUEST ONLY because this seat can see neither — the D2 bound ASSERTED in both directions, the ALLOWED row carrying its own seat-scoped allow_scope qualifier (so a durable record cannot read as a permission the seat never grants) with the LOADED-BUT-INERT branch pinned by its own D2-only arm, and the seat's three failure directions each pinned against a control of the SAME source (fail-open when the seat is compiled out, over-deny when it binds the floor it cannot see, silent allow when it matches the raw path); and THE CLAIM AUTHOR AT THIS SEAT (P7) pins the file that COMPUTES every verdict (a swapped always-derives eval_calls.py is REFUSED at startup, while the same source with the evaluator exempt from the pin arms and lets the forbidden call CROSS and EXECUTE), BOUNDS the per-call evaluator (a hung one becomes a RECORDED refusal with its row written, while the same source with no deadline HANGS and writes NOTHING — the dead-agent instrument's blind spot), and refuses a folded verb-SYMBOL mapped by TWO runtime verbs at both check sites (--check-verbs and the seat's loader), so no shared symbol can let one contention justify two runtime verbs; and the ONE LOG SURVIVES A KILL/RESTART (the load is a gate: a corrupt log refuses LOUDLY and is left untouched) with its second role as the JOIN STATE rebuilt from it — a pre-restart denial is restored and substituted on the frame the model sees — while the SAME source with the load compiled out WIPES the record and leaves the denial un-restored, the replay is IDEMPOTENT (same bytes twice, and load->flush reproduces the carried lines exactly), and a REAL RESUMED GUEST RUN gets the true name and the reason back on the outbound leg; and the FIVE SHOULD-FIXES THE P8 REVIEW FOUND ARE CLOSED, each against its own PRE-FIX CONTROL of the SAME source: a crafted-but-valid DENIED row can no longer drive the outbound leg unbounded (the loader applies the writer's bound at LOAD, so a 1 MB denial_text is restored as 512 MARKED bytes, while the control emits the reviewer's 1,048,576 and a call_id longer than the wire could carry is refused); the seat writes ONE ROW PER call_id (a re-serve is a repeat, not a second call — no phantom UNRESOLVED at any exit, phase 59's own log holding 1 row for its one guest-side call — the control inflating it and reporting the phantom), with the LOADER matching the writer by REFUSING a duplicate row; the LOAD is LINEAR rather than quadratic (100,000 rows in well under a 20 s bound where the pre-fix binary measured 89.7 s) and the over-cap refusal names a way out the gate RUNS — the DENIED-row compaction, whose rebuilt map still holds every denial; --log is REFUSED AT THE DOOR unless it is a regular file this seat owns (a FIFO that hung the pre-fix shape silently under a bounded control, a device node a flush would have renamed over, a symlink that would have split the record, a directory, all loud before anything is served or written); and a CARRIED row keeps the reading it was written with (its own allow_scope, byte-for-byte, where the control REWORDS it to claim a seat that judged nothing), while the turn field is validated as a whole non-negative number and the CRLF normalization is announced instead of silent; and the LIVE LANE'S LIVENESS SIGNALLING is closed (P10-fix), so the availability half of 'never a silent green' is enforced too: a REACHABLE-BUT-BROKEN response — no header block at all, an LF-only or non-HTTP status line, a Content-Length the socket does not honour, a chunked body with no well-formed zero chunk, or a body past the DOCUMENTED 32 MiB cap — is a LOUD NAMED failure (rc=1) where the pre-fix shape ended rc=0 with the bytes (or the whole header block) served to a guest that reads EOF as a FINISH, while a clean close-delimited 200 still passes; the HTTP HEADER BLOCK is never served as the body (the raw stream the guest reads begins with the BODY's own bytes, captured from the device); a credential embedded in the endpoint URL is never printed (userinfo refused by name and shown as <redacted>@, a query shown as ?<redacted>, and a CR/LF in the URL or the key refused before it could be sent); and the live arm's own observation rides in this echo, so an arm whose model made no call cannot read as an arm that proved something. $LIVE_STATUS; a HOST-TOOL call is an ORDINARY function_call (the SAME judge, the SAME denial path) and only the ALLOWED path dispatches it to the compiled-in host registry, whose result reaches the model through the EXISTING outbound substitution keyed on call_id (the pinned pre-S1 proxy crosses the SENTINEL instead); a host tool that collides with a guest verb is REFUSED at startup; and the executor compiled out is caught on the wire as SILENT DEGRADATION (S1 does NOT yet exercise argument judgement — host_time takes no arguments); the exec map is rebuilt across a restart and one call_id is executed at most ONCE; and an executed host call whose substitution never fires is REPORTED as an unresolved-substitution row; and a POLICY FLIP ACROSS A RESUME cannot break the record or lie to the model (S1-fix): a row refreshed to DENIED drops its execution reading and the exec-map key, so the seat still LOADS what its own two runs wrote, a carried DENIED verdict BINDS THE EXECUTOR rather than only the row, a crafted verdict-less exec row is REFUSED at startup, and ONE UNARMED arm witnesses the fail-closed gate instead of assuming it; and S2 THE JUDGED ARGUMENTS + THE TOTALITY CHECK: host_cat(path) is a BOUNDED host-file read (over-cap is REFUSED, never truncated), its path is judged by the operator's alias table through the hosttool(W) bridge (D3 denies a PROTECTED class while every guest-verb arm stays byte-identical), an UNCLASSED path is REFUSED BY NAME (unclassed-arg) with nothing executed, and the two mutation blinds flip exactly their arms — FH_MUTANT_OPS_NO_CLASS (the plan's risk #1 made concrete: the protected AND unclassed paths EXECUTE) and FH_MUTANT_OPS_NO_CANON now gating HOST paths (a ../-spelling reaches the executor and reads the protected file in the mutant, is denied on the canonical path in the real build) — proving the ONE normaliser (fh_canon_abs) is shared by the classifying and executing sides; S2-FIX: the totality check NO LONGER vanishes with the seat — a classed host call under a denylist-only OR loaded-but-inert seat is REFUSED BY NAME (unarmed-ops, where the seat-compiled-out control EXECUTES it and hands the model a protected file), the executor opens O_NOFOLLOW|O_NONBLOCK and refuses anything non-regular BY NAME (a data-classed symlink reads the protected target in the no-plainfile control; a FIFO no longer hangs the lane), NUL content is refused instead of silently cut, the judge extracts the registry's arg_key (the hardcoded-key control denies host_time where the real build allows it, and a table entry that reads with no classed key REFUSES TO START), and the model-chosen path is bounded so no result exceeds the record's cap"

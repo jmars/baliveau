@@ -462,6 +462,8 @@ test-hostgate: $(BIN_HOSTGATE) $(BIN_HOSTGATE_MUTANT) $(BIN_HOSTGATE_UNBOUND) \
                $(BIN_HOST_TIME_ENV) $(BIN_HOST_TIME_SIGSYS) \
                $(BIN_HOSTGATE_ESCAPE) $(BIN_HOSTGATE_SOCKET) $(BIN_HOSTGATE_ENV) \
                $(BIN_HOSTGATE_NOSTAGE3) $(BIN_HOSTGATE_NOSTAGE3_SIGSYS) \
+               $(BIN_HOSTGATE_NOSANDBOX) $(BIN_HOST_CAT_SIBLING) \
+               $(BIN_HOSTGATE_CATSIBLING) \
                $(PALISADE_STAGE3)
 	bash tests/test_hostgate.sh
 
@@ -666,7 +668,7 @@ $(BIN_HOSTGATE_OPSLITKEY): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJ
 #     real build starts (the arm's fixture is not the cause); this one must
 #     REFUSE TO START naming the tool, because without the contract its
 #     argument would be neither classed nor totality-checked.
-HOSTTOOL_EXTRA_PIN := -DFH_HOSTTOOL_SHA256='"b0b73ffb5421b10ffb77d0a856f9ca4ee71c1fadf70958f265bfc333c699d9e3"'
+HOSTTOOL_EXTRA_PIN := -DFH_HOSTTOOL_SHA256='"aceb671863f77ba5eef3a03b2ef24c3d7ad796ccc1872b747ea5807330df6dd7"'
 
 $(BIN_HOSTGATE_EXTRAUNCL): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(DATALOG_DIR)/zig-out/lib/libdatalog.so | $(DATALOG_SHIM)
 	@mkdir -p build
@@ -804,6 +806,34 @@ $(BIN_HOSTGATE_NOSTAGE3_SIGSYS): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c
 	@mkdir -p build
 	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_MUTANT_NO_STAGE3 -DFH_HOST_TIME_PROGRAM='"fx-host-time-sigsys"' -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(HOSTGATE_LIBS)
 
+# ── S2 PALISADE (the policy table + host_cat's per-call judged path) ────────
+#
+# THE MANDATED BLIND — FH_MUTANT_NO_SANDBOX_TABLE compiles the table's
+# COMPOSITION out while the table is STILL LOADED, PINNED and VALIDATED: a
+# (tightened) row is therefore ignored, host_cat runs at its compiled-in FLOOR
+# and reads a path the row dropped, and the row's `sandbox` field shows the
+# FLOOR.  That is the table-LOADED-BUT-NOT-APPLIED direction the gate exists to
+# catch — the S2 sibling of S1's FH_MUTANT_NO_STAGE3.
+BIN_HOSTGATE_NOSANDBOX := build/fx-hostgate-nosandboxtable
+# THE SIBLING-PATH ESCAPE PROBE: the REAL S2 proxy with the MUTANT host_cat
+# (build/fx-host-cat-sibling) named in place of fx-host-cat — the mutant reads
+# the judged path's SIBLING, which the sandbox does NOT unveil, so the open
+# fails EACCES post-fix and reads the sibling pre-fix.
+BIN_HOST_CAT_SIBLING := build/fx-host-cat-sibling
+BIN_HOSTGATE_CATSIBLING := build/fx-hostgate-catsibling
+
+$(BIN_HOST_CAT_SIBLING): tests/fixtures/host_cat_sibling.c $(YYJSON_SRC)
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ tests/fixtures/host_cat_sibling.c $(YYJSON_SRC)
+
+$(BIN_HOSTGATE_NOSANDBOX): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(DATALOG_DIR)/zig-out/lib/libdatalog.so | $(DATALOG_SHIM)
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_MUTANT_NO_SANDBOX_TABLE -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(HOSTGATE_LIBS)
+
+$(BIN_HOSTGATE_CATSIBLING): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(DATALOG_DIR)/zig-out/lib/libdatalog.so | $(DATALOG_SHIM)
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_HOST_CAT_PROGRAM='"fx-host-cat-sibling"' -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(HOSTGATE_LIBS)
+
 # ── P7 (THE CLAIM AUTHOR AT THE HOST SEAT) ──────────────────────────────────
 #
 # THE PRE-FIX CONTROL — FH_MUTANT_NO_CLAIM_SEAT compiles the whole claim seat
@@ -879,7 +909,7 @@ $(BIN_HOSTGATE_NOSCOPECARRY): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(
 #     slave path is published: a host tool that shadows a guest verb is executed
 #     by the host AND dispatched by the guest under one name.
 HOSTTOOL_COLLIDING_NAME := -DFH_HOSTTOOL_NAME='"fx_read"'
-HOSTTOOL_COLLIDING_PIN := -DFH_HOSTTOOL_SHA256='"b285ea29aa1465050c756061f7b314dc43da0bdb45a7d91c25ba894aad7f1da8"'
+HOSTTOOL_COLLIDING_PIN := -DFH_HOSTTOOL_SHA256='"8771d9390e7f5b93fe80aea9e2eccdd9432e71586fa9d666664b04c5880209d7"'
 
 $(BIN_HOSTGATE_HOSTCOLLIDE): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(DATALOG_DIR)/zig-out/lib/libdatalog.so | $(DATALOG_SHIM)
 	@mkdir -p build

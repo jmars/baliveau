@@ -55,6 +55,18 @@ MODES (exit 0 = ok; 1 = refused by name; 2 = tool error):
                      `sentence-foreign-predicate`.  This is the gate's
                      two-author boundary instrument (ops lexicon vs
                      `justified`; the claim lexicons vs `denied`).
+  --check-sandbox    validate --sandbox (the pinned operator sandbox table,
+                     policy/ops/ops-sandbox.tsv) — GRAMMAR ONLY: the
+                     promise-token vocabulary (the 23-token cosmocc pledge
+                     set), the landlock perm grammar (a non-empty string over
+                     {r,w,x,c}), and the tool-name charset (the guest's
+                     identifier shape).  IT IS NOT THE AUTHORITY: the
+                     AUTHORITATIVE check is the SEAT's own floor-subset
+                     composition (tools/fx-hostgate.c: ops_load_sandbox, run
+                     at startup) — a token beyond a tool's FLOOR is refused
+                     there, naming the row, and THIS CHECK NEVER RE-SPELLS
+                     THE REGISTRY.  There is exactly ONE spelling of the
+                     rules; the registry (the floors) is the single source.
 """
 
 from __future__ import annotations
@@ -83,6 +95,26 @@ SEAT_TEMPLATES = frozenset(
 GAP_CLOSED_LEXICON = "ontology extension (the declared predicate set is closed)"
 
 _ATOM_HEAD = re.compile(r"([a-z][A-Za-z0-9_]*)\s*\(")
+
+# ── the sandbox table's GRAMMAR (the ONE spelling lives here) ──────────────
+# The 23-token cosmocc pledge vocabulary (the vendored stage3's KNOWN_TOKENS,
+# vendor/palisade/src/palisade/stage3.c).  --check-sandbox validates a token
+# AGAINST THIS LIST (a token outside it is a typo, refused loudly), but it is
+# NOT the authority on whether a token exceeds a tool's FLOOR — the seat's
+# floor-subset composition owns that, and this check never re-spells the
+# registry (the floors), so the two can never drift into two vocabularies.
+PLEDGE_TOKENS = frozenset(
+    ("stdio", "rpath", "wpath", "cpath", "dpath", "flock", "fattr", "inet",
+     "unix", "dns", "tty", "recvfd", "proc", "exec", "id", "unveil",
+     "sendfd", "settime", "prot_exec", "vminfo", "tmppath", "chown", "anet")
+)
+
+# The landlock perm grammar: a non-empty string over {r,w,x,c} (the OpenBSD
+# unveil perm letters stage3 forwards to cosmocc's unveil()).
+_LANDLOCK_PERM = re.compile(r"^[rwxc]+$")
+
+# The tool-name charset: the guest's identifier shape (src/runner.c:49-70).
+_TOOL_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
 def _tool_error(detail: str, code: int = 2) -> "NoReturn":  # noqa: F821
@@ -379,6 +411,73 @@ def _check_hosts(args) -> None:
               f"\tcoverage={coverage}")
 
 
+# ── S2: the sandbox table (GRAMMAR ONLY) ───────────────────────────────────
+def _check_sandbox(args) -> None:
+    """Validate the pinned operator SANDBOX table's GRAMMAR: the promise-token
+    vocabulary (the 23-token cosmocc pledge set), the landlock perm grammar
+    (a non-empty string over {r,w,x,c}), and the tool-name charset (the
+    guest's identifier shape).  NOT the authority: a token beyond a tool's
+    FLOOR is refused by the SEAT's floor-subset composition at startup, never
+    here — this check must not re-spell the registry, or the two would drift."""
+    rows = []
+    for lineno, line in enumerate(
+            _read(args.sandbox, "sandbox table").splitlines(), 1):
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        fields = line.split("\t")
+        if len(fields) != 3:
+            _tool_error(
+                f"{args.sandbox}:{lineno}: a sandbox row is "
+                "tool<TAB>promises<TAB>landlock "
+                f"({len(fields)} field(s): {line!r})"
+            )
+        tool, promises, landlock = (f.strip() for f in fields)
+        if not tool or not promises:
+            _tool_error(
+                f"{args.sandbox}:{lineno}: the tool and promises fields must "
+                f"be non-empty (an EMPTY landlock column is valid: read "
+                f"nothing) ({line!r})"
+            )
+        if not _TOOL_NAME.match(tool) or tool.startswith("-"):
+            _refuse(
+                "sandbox-tool-charset",
+                f"{args.sandbox}:{lineno}: the tool name '{tool}' does not "
+                "match the guest identifier charset ^[A-Za-z0-9._-]+$ (and "
+                "must not start with '-')",
+            )
+        for tok in promises.split():
+            if tok not in PLEDGE_TOKENS:
+                _refuse(
+                    "sandbox-promise-token",
+                    f"{args.sandbox}:{lineno}: the promise token '{tok}' is "
+                    "not in the 23-token cosmocc pledge vocabulary",
+                )
+        for entry in landlock.split(";"):
+            entry = entry.strip()
+            if not entry:
+                continue
+            if ":" in entry:
+                path, perm = entry.rsplit(":", 1)
+            else:
+                path, perm = entry, "r"
+            if not path.startswith("/") or len(path) < 2:
+                _refuse(
+                    "sandbox-landlock-path",
+                    f"{args.sandbox}:{lineno}: the landlock path '{path}' is "
+                    "not an absolute path",
+                )
+            if not _LANDLOCK_PERM.match(perm):
+                _refuse(
+                    "sandbox-landlock-perm",
+                    f"{args.sandbox}:{lineno}: the landlock perm '{perm}' is "
+                    "not a non-empty string over {{r,w,x,c}}",
+                )
+        rows.append((tool, promises, landlock))
+    print(f"# fx-ops: sandbox table OK -- {args.sandbox} ({len(rows)} row(s))")
+    for tool, promises, landlock in rows:
+        print(f"sandbox\t{tool}\t{promises}\t{landlock}")
+
+
 # ── the two-author boundary instrument ────────────────────────────────────
 def _compile_sentence(args) -> None:
     lexicon = _load_lexicon(args.policy_lexicon)
@@ -414,16 +513,23 @@ def main(argv=None) -> int:
     parser.add_argument("--check-hosts", action="store_true",
                         help="validate the pinned authority table and exit")
     parser.add_argument("--hosts")
+    parser.add_argument("--check-sandbox", action="store_true",
+                        help="validate the pinned sandbox table's GRAMMAR and "
+                             "exit (the seat's floor-subset composition is the "
+                             "authority)")
+    parser.add_argument("--sandbox")
     parser.add_argument("--compile-sentence", action="store_true",
                         help="compile one LE sentence against the lexicon")
     parser.add_argument("--sentence")
     args = parser.parse_args(argv)
 
     modes = [bool(args.compile_policy), bool(args.check_aliases),
-             bool(args.check_hosts), bool(args.compile_sentence)]
+             bool(args.check_hosts), bool(args.check_sandbox),
+             bool(args.compile_sentence)]
     if sum(modes) != 1:
         _tool_error("exactly one of --compile-policy, --check-aliases, "
-                    "--check-hosts, --compile-sentence is required")
+                    "--check-hosts, --check-sandbox, --compile-sentence is "
+                    "required")
     if args.compile_policy:
         needed = [("--policy-lexicon", args.policy_lexicon),
                   ("--policy-le", args.policy_le)]
@@ -433,6 +539,8 @@ def main(argv=None) -> int:
     elif args.check_hosts:
         needed = [("--policy-lexicon", args.policy_lexicon),
                   ("--hosts", args.hosts)]
+    elif args.check_sandbox:
+        needed = [("--sandbox", args.sandbox)]
     else:
         needed = [("--policy-lexicon", args.policy_lexicon),
                   ("--sentence", args.sentence)]
@@ -447,6 +555,9 @@ def main(argv=None) -> int:
         return 0
     if args.check_hosts:
         _check_hosts(args)
+        return 0
+    if args.check_sandbox:
+        _check_sandbox(args)
         return 0
     _compile_sentence(args)
     return 0
