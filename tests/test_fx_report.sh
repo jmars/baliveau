@@ -877,7 +877,21 @@ grep -q "NO growth policy exists" "$WORK/out-s1" \
 # drops that row on BOTH sides (its text was amended in S2), so the row's
 # complete loss or an id change would otherwise pass the pin silently.
 NBOUNDROWS=$(grep -c "^bound${TAB}" "$WORK/out-s1")
-[ "$NBOUNDROWS" = "26" ] || fail "POLICY: expected the seat's 26 bound rows on every run, got $NBOUNDROWS (a row was silently dropped; 26 = the 8 pre-S2 rows + S2's 4 claim bounds + P9's 2 call bounds + S4's 2 reach bounds + S4-palisade's 2 sandbox bounds + progress's 8)"
+[ "$NBOUNDROWS" = "27" ] || fail "POLICY: expected the seat's 27 bound rows on every run, got $NBOUNDROWS (a row was silently dropped; 27 = the 8 pre-S2 rows + S2's 4 claim bounds + P9's 2 call bounds + S4's 2 reach bounds + S4-palisade's 2 sandbox bounds + progress's 8 + the reboot's 1)"
+# THE REBOOT (S2 of the reboot chain): the nonce redefinition must be STATED
+# where a reader meets it — the SAME standing as the retention decision,
+# asserted on the OUTPUT rather than trusted to a comment.  The two amended
+# TAXONOMY rows are dropped by the PIN-REPORT filter on both sides (their
+# text was amended in this slice, the same-store-only precedent), so their
+# content is asserted HERE — a silent loss of either would otherwise pass.
+grep -q "^bound${TAB}nonce-binds-a-kernel-boot${TAB}.*THE NONCE BINDS A KERNEL BOOT, NOT A PID1 LIFETIME" "$WORK/out-s1" \
+    || fail "POLICY: the reboot bound (the nonce binds a KERNEL boot; a soft reboot is a new PID1 lifetime under it) must print on every run"
+grep -q "^bound${TAB}nonce-binds-a-kernel-boot${TAB}.*CANNOT SEE THE DIFFERENCE" "$WORK/out-s1" \
+    || fail "POLICY: the reboot bound must say what this seat CANNOT do (it reports the pair and the row, it does not adjudicate the reboot)"
+grep -q "^taxonomy${TAB}boot-verdict${TAB}.*THE NONCE IS THE KERNEL BOOT'S" "$WORK/out-s1" \
+    || fail "POLICY: the boot-verdict taxonomy row must carry the redefined nonce invariant"
+grep -q "^taxonomy${TAB}operator-intervention${TAB}.*\`reboot\` IS ONE OF THE ACTIONS" "$WORK/out-s1" \
+    || fail "POLICY: the operator-intervention taxonomy row must NAME reboot among the actions"
 grep -q "^bound${TAB}reach-audit-is-the-weakened-one${TAB}.*JUDGED ARGUMENTS rather than typed" "$WORK/out-s1" \
     || fail "POLICY: the S4 bound that says the reach audit is the WEAKENED one must print on every run (a report that reads stronger than it is, is the failure this project keeps finding)"
 grep -q "^bound${TAB}reach-attribution-mirrors-the-seat${TAB}" "$WORK/out-s1" \
@@ -1018,6 +1032,37 @@ grep -q "^event${TAB}operator-intervention${TAB}DERIVED${TAB}shape${TAB}restore$
     || fail "JOURNAL: the DERIVED fallback was DROPPED for a store that has the journal — a row explains a move, it cannot prove the journal saw the path"
 grep -q "^taxonomy${TAB}activation-refusal${TAB}MEASURED.*outcome is a refusal" "$WORK/out-s2j" \
     || fail "JOURNAL: the taxonomy row still describes the pre-ca9cb06 record (the frozen table did not move)"
+
+# ══ REBOOT-JOURNAL: the SOFT REBOOT row, on the SECOND WRITER's own file ══
+# fx-init's reboot verb records an admission row in the SAME journal and the
+# SAME grammar (action `reboot`, arg = the reason token, to = '-', outcome =
+# the six-token admission vocabulary).  TWO things must hold HERE, in the
+# report, and neither is about fx-init's behaviour:
+#  (i) the row IS an operator intervention (it is an intervention on the
+#      generation plane that moves no generation);
+#  (ii) a REFUSED reboot is NOT an activation refusal.  The vocabulary was
+#      chosen so no reboot token matches outcome_is_refusal (failed:<rc> /
+#      refused / refused-config), because every row matching that predicate
+#      is emitted as an activation-refusal event and a misfiled reboot would
+#      be the silent-defect shape this tree keeps finding.
+cp -a "$WORK/s2j" "$WORK/s2rb" || fail cp
+cat >> "$WORK/s2rb/.operator" <<EOF
+400 reboot operator-request ok $VCUR - gateboot03
+401 reboot operator-request boot-failed $VCUR - gateboot03
+EOF
+report "$WORK/s2rb" "$WORK/out-s2rb"
+[ $? -eq 0 ] || fail "REBOOT-JOURNAL: a store whose journal carries reboot rows must report cleanly (exit 0), got $?"
+grep -q "^event${TAB}operator-intervention${TAB}MEASURED${TAB}file${TAB}.operator${TAB}line${TAB}[0-9]*${TAB}epoch${TAB}400${TAB}action${TAB}reboot${TAB}arg${TAB}operator-request${TAB}outcome${TAB}ok${TAB}from-version${TAB}$VCUR${TAB}to-version${TAB}-${TAB}nonce${TAB}gateboot03" "$WORK/out-s2rb" \
+    || fail "REBOOT-JOURNAL: the ADMITTED reboot row is not reported as a MEASURED operator intervention with its verbatim fields (to-version '-' — a reboot moves no generation)"
+grep -q "^event${TAB}operator-intervention${TAB}MEASURED.*epoch${TAB}401.*action${TAB}reboot${TAB}arg${TAB}operator-request${TAB}outcome${TAB}boot-failed" "$WORK/out-s2rb" \
+    || fail "REBOOT-JOURNAL: the REFUSED reboot row is not reported as an operator intervention (a refusal is still an intervention)"
+grep -q "^event${TAB}activation-refusal${TAB}MEASURED.*action${TAB}reboot" "$WORK/out-s2rb" \
+    && fail "REBOOT-JOURNAL: a reboot refusal was misfiled as an ACTIVATION refusal — the vocabulary collided with outcome_is_refusal (R5's shape)"
+grep -q "^# operator interventions: 11 MEASURED from the .operator journal (11 row(s); 3 of them a refusal" "$WORK/out-s2rb" \
+    || fail "REBOOT-JOURNAL: the intervention count did not grow by exactly the two reboot rows, or the refusal count moved: $(grep '^# operator interventions' "$WORK/out-s2rb")"
+grep -q "^# activation refusals: 3 MEASURED in the .operator journal" "$WORK/out-s2rb" \
+    || fail "REBOOT-JOURNAL: the ACTIVATION-refusal count changed because a REBOOT was refused — the two classes must not conflate"
+echo "test_fx_report: REBOOT-JOURNAL: a reboot row is an operator intervention (admitted and refused alike) and a REFUSED REBOOT is NOT an activation refusal — the vocabulary does not collide with outcome_is_refusal"
 
 # ══ ABSENT: none-occurred vs not-durably-recorded ════════════════════════
 report "$WORK/s3" "$WORK/out-s3"
@@ -1480,6 +1525,9 @@ OPHDR
             /^taxonomy\tsandbox\t/ { next }
             /^bound\tsandbox-/ { next }
             /^bound\tsame-store-only\t/ { next }
+            /^taxonomy\tboot-verdict\t/ { next }
+            /^taxonomy\toperator-intervention\t/ { next }
+            /^bound\tnonce-binds-a-kernel-boot\t/ { next }
             /^taxonomy\tcontent-recurrence\t/ { next }
             /^taxonomy\tprogress\t/ { next }
             /^bound\tprogress-/ { next }

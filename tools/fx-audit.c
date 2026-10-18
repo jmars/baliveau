@@ -122,10 +122,14 @@
  *                              writer paths: a boot that verdicts booted
  *                              the version — in-progress first; a boot that
  *                              ACTIVATED the version in-guest — the re-arm
- *                              verdicts it with no new in-progress).  No
- *                              boot the host started is behind such a line
- *                              (the appended "<failed v> ok" that would
- *                              stop fx-init rolling forward).  A TORN
+ *                              verdicts it with no new in-progress) NOR —
+ *                              anchor (c) — an ADMITTED .operator reboot row
+ *                              carrying the SAME nonce whose from-version is
+ *                              that version, licensing a SOFT REBOOT LIFETIME
+ *                              (see THE NONCE INVARIANT below).  No boot the
+ *                              host started is behind such a line (the
+ *                              appended "<failed v> ok" that would stop
+ *                              fx-init rolling forward).  A TORN
  *                              (unterminated) verdict is judged by the same
  *                              attribution, never rejected on sight: with an
  *                              added in-progress answering for it, the torn
@@ -281,19 +285,27 @@
  *                  iteration returns)
  * Hence, for the lines ADDED since the previous observation:
  *   1. each added ok/failed for version v must be accounted by ONE of the
- *      two writer paths, both anchored OUTSIDE the line itself:
+ *      writer paths, each anchored OUTSIDE the line itself:
  *      (a) an added in-progress for v wearing the SAME nonce, earlier in
  *      the window, not yet consumed by an earlier verdict for v (one nonce
- *      per PID1 lifetime — every line of a boot carries the one latched at
- *      its start), or
+ *      per KERNEL BOOT — every line of a PID1 lifetime carries the one
+ *      latched at its start; see THE NONCE INVARIANT, which is what a soft
+ *      reboot forces), or
  *      (b) v is a version the STORE first published in this window: in the
  *      timeline now, absent from the previous observation's version list —
  *      the re-arm verdict is for exactly such a version, and the record is
  *      fxstore's own publish history (snapshots + facts + timeline,
  *      transactionally written), not .bootlog, the file the forger
- *      appends to.  A verdict with neither anchor is a FORGED VERDICT (the
+ *      appends to; or
+ *      (c) an ADMITTED .operator `reboot` row (action `reboot`, outcome
+ *      `ok`) carrying the SAME nonce and a from-version equal to v, NOT YET
+ *      CONSUMED by another lifetime in this run — ANCHOR (c), the one a SOFT
+ *      REBOOT adds.  It is keyed on the PAIR (nonce, from-version) and it
+ *      licenses ONE REBOOT LIFETIME: the in-progress that opens it and the
+ *      verdict that closes it, and nothing else.  See THE NONCE INVARIANT.
+ *      A verdict with no anchor at all is a FORGED VERDICT (the
  *      motivating exploit, named as that).  A TORN verdict (the file's
- *      LAST line, unterminated) rides the SAME two anchors, because
+ *      LAST line, unterminated) rides the SAME anchors, because
  *      fx-init reads .bootlog with fgets, which RETURNS a final
  *      unterminated line — so a torn verdict still steers bootlog_last
  *      in-guest and cannot be exempted from the rule.  But a torn tail is
@@ -319,8 +331,13 @@
  *   3. added in-progress lines must number at most the host's boot DELTA
  *      PLUS the versions the store FIRST PUBLISHED in this window (every
  *      activate re-arm appends one, for a distinct first-published
- *      version); shutdown lines and recovery rows at most the DELTA — more
- *      boots on paper than the host started are FABRICATED BOOTS.
+ *      version) PLUS the SOFT-REBOOT LIFETIMES anchor (c) opened (a soft
+ *      reboot starts no host boot, so its one in-progress is anchored by its
+ *      own .operator row and by nothing in the boot count); shutdown lines
+ *      at most the DELTA PLUS those lifetimes, recovery rows at most the
+ *      DELTA (an admitted reboot's own boot verdict was ok, and ok is not a
+ *      roll-forward trigger, so a reboot lifetime cannot append a row) —
+ *      more boots on paper than the host started are FABRICATED BOOTS.
  *      PER NONCE, the FIRST added in-progress is that boot's OWN
  *      (init.zig:4886, written before every verdict site), and every
  *      SUBSEQUENT one must be an activate re-arm (init.zig:3724) naming a
@@ -352,6 +369,73 @@
  *      boot's nonce — and a nonce that carries a verdict but no in-progress
  *      is that same forge (every verdict site runs in a boot that appended
  *      its own first).
+ * ── THE NONCE INVARIANT, REDEFINED (fx-init's SOFT REBOOT) ──────────────
+ * WHAT THIS SEAT USED TO ASSUME, and it was true of every fx-init before the
+ * reboot verb: ONE NONCE PER PID1 LIFETIME — every line of a boot carries the
+ * one latched at its start, so a nonce identifies a lifetime and a lifetime
+ * carries at most one boot's own in-progress.  fx-init's soft reboot is
+ * PID1 execve'ing /proc/self/exe to re-enter its own boot path: a NEW PID1
+ * LIFETIME under the SAME KERNEL BOOT, and apply_kernel_nonce re-latches the
+ * SAME fx.bootnonce= on every re-entry (the kernel command line did not
+ * change — no kernel booted).  So the invariant is now:
+ *
+ *      ONE NONCE PER KERNEL BOOT.  A SOFT REBOOT IS A NEW PID1 LIFETIME
+ *      UNDER THE SAME NONCE, DELIMITED BY AN ADMITTED .operator reboot ROW.
+ *
+ * The row is ANCHOR (c) and it is what makes the new lifetime accountable:
+ * it names the boot nonce it happened under, the generation the machine was
+ * running when it asked (from-version) and the admission (outcome `ok`).
+ * ONE row licenses ONE lifetime — the new in-progress and the verdict that
+ * closes it — and the row must match the line's nonce AND version, so a
+ * reboot row is never a blanket permission for its nonce.
+ *
+ * THE FALSE POSITIVE THIS FIXES, MEASURED, because it is the whole reason
+ * the reader lands BEFORE the writer: under the old invariant EVERY
+ * legitimate soft reboot is a forgery.  No host boot starts, so `--boots`
+ * does not move and the reboot's lines wear a nonce no window holds
+ * (bootlog-unbound-nonce in the strict regime); the in-progress surplus is
+ * unaccounted (bootlog-fabricated-boots); and if the window also holds the
+ * pre-reboot pair, the same nonce now carries two in-progress lines for the
+ * same version, which the re-arm rule rejects as an already-booted version
+ * (bootlog-fabricated-boots again).  A machine that did exactly what its verb
+ * was built to do is called a liar, and the trigger would roll it back.
+ *
+ * THE TRADE, written down rather than hidden: anchor (c) gives a forger a way
+ * to buy a plausible in-progress + verdict pair for an EXISTING version by
+ * ALSO writing a reboot row.  The bounds on it, each checked in code: the
+ * version must EXIST in the store's timeline (ver_index >= 0 — no pair can
+ * name a generation the store never published); the row must wear a nonce the
+ * HOST issued for some boot (a minted nonce anchors nothing); the row is
+ * spent by one lifetime, so a SECOND verdict for the same version under the
+ * same nonce needs a SECOND row (the per-version budget is not widened — ip
+ * and verdict rise together); and a row is only ever an ENABLER of
+ * attribution, never a suppression of any other predicate.  What is NOT
+ * closed, stated: a row written in an EARLIER window can license a lifetime
+ * judged in a later one (the journal is read whole, like .bootlog's history),
+ * so the row must exist on disk NOW but not necessarily be new — the same
+ * "auditing, not proofing" boundary §6b draws, and the same residual shape as
+ * the live-boot substitution (the guest is root and can write every one of
+ * these records).  AND the journal is NOT part of this seat's observation
+ * hash: .bootlog, .recovery and the host proxy's log are byte-scored and
+ * re-hashed against the previous observation, while .operator is read for
+ * this one purpose only — so a row may be ADDED, REWRITTEN or REMOVED between
+ * two audits and this seat will not see the change, it will only judge the
+ * pairs against whatever the journal says NOW.  That is the honest cost of
+ * anchoring on a record the seat does not watch, and it is why the anchor can
+ * only ever ENABLE an attribution: dropping a row makes a pair fire, never
+ * pass, and rewriting one buys exactly the forged pair the forger could
+ * already have appended to .bootlog.
+ *
+ * A reboot lifetime that BOOTS the version an activate just published is a
+ * first-published version, and the anchor accepts it: that is the writer's
+ * own recommended loop (activate -> poll the posted verdict -> reboot into
+ * it), so requiring "not first-published" would break a healthy machine.
+ *
+ * WHY A LIFETIME AND NOT A BARE VERDICT: the plan's form of anchor (c) also
+ * accounted a verdict with NO in-progress of its own.  No writer path
+ * produces one (the boot path's in-progress is the first line of every
+ * lifetime, init.zig:4886, before every verdict site), so this reader anchors
+ * the LIFETIME instead — strictly harder to forge and strictly faithful.
  * ── THE THREAT-MODEL DELTA OF THE RE-ARM IN-PROGRESS ────────────────────
  * The pre-re-arm reader's per-nonce in-progress budget was ONE, and that
  * single budget WAS the pair-forgery closure: a forged
@@ -720,6 +804,33 @@ static char (*g_obs_artifacts)[256] = NULL; static size_t g_nobs_artifacts = 0;
 
 /* current artifact set (existing <64hex>-<name>-src dirs) */
 static char (*g_artifacts)[256] = NULL; static size_t g_nartifacts = 0;
+
+/* ── ANCHOR (c): the ADMITTED .operator reboot row ───────────────────────
+ * A SOFT REBOOT re-enters PID1 under the SAME kernel boot's nonce (fx-init
+ * re-latches the same fx.bootnonce= on every re-entry, apply_kernel_nonce),
+ * so the lines the new lifetime appends wear a nonce the host boot count can
+ * never account for: no host boot started, and the nonce belongs to a boot
+ * outside the window.  The journal's `reboot` row is the record of that act
+ * and is the THIRD anchor behind an added verdict (header rule 1(c)).
+ *
+ * Held as plain data, so the check that uses it owns every decision: one row
+ * licenses ONE reboot LIFETIME (one in-progress and the verdict that closes
+ * it), which is what the writer produces. */
+typedef struct {
+    unsigned long lineno;   /* the .operator line, so a finding can name it */
+    unsigned long epoch;    /* the row's epoch, printed with the attribution */
+    long slot;              /* the host ledger slot of the row's nonce */
+    unsigned long v_from;   /* the row's from-version (the generation rebooted) */
+    int consumed;           /* one row, one lifetime */
+} rbanchor_t;
+static rbanchor_t *g_rb = NULL; static size_t g_nrb = 0;
+static size_t g_rb_refused = 0;      /* rows whose outcome is NOT an admission */
+static unsigned long g_rb_refused_line = 0;
+static char g_rb_refused_outcome[64] = "";
+static size_t g_rb_unread = 0;       /* data rows this seat cannot read */
+static unsigned long g_rb_unread_line = 0;
+static size_t g_rb_unanchored = 0;   /* admitted, but its nonce is not a host-issued one */
+static int g_op_present = 0;         /* <store>/.operator exists */
 
 /* facts of the resolved current version (kept for the checks) */
 typedef struct { char *cols[4]; int n; } row_t;
@@ -2429,6 +2540,114 @@ static long nonce_slot(const char *tok) {
     return -1;
 }
 
+/* ── <store>/.operator: read for ANCHOR (c) and for NOTHING else ─────────
+ * ONE reason, stated so nobody widens this reader by accident: a soft reboot
+ * is a new PID1 lifetime under the SAME kernel boot's nonce, so the lines it
+ * appends wear a nonce the window does not hold.  The journal's `reboot` row
+ * (fx-init's REBOOT_ACTION, operator_journal.zig) is the record of that act.
+ *
+ * WHAT COUNTS AS AN ANCHOR: action exactly `reboot` and outcome exactly `ok`
+ * — the ADMISSION.  `not-decided`, `boot-failed`, `shell-open`,
+ * `same-version-loop` and `exec-error` refuse or fail and open NO lifetime
+ * (the row records the ADMISSION, never the execution: an admitted reboot
+ * that was never executed is visible as the ABSENCE of a later .bootlog line
+ * under that nonce, which is the honest reconstruction).  Refused rows are
+ * COUNTED and NAMED — never silently dropped.
+ *
+ * A row this seat cannot read (a torn append, a foreign grammar) is NOT an
+ * anchor and cannot be: the fail-open direction every reader of these records
+ * takes, because a misread must never LICENSE a line.  It is named with its
+ * line number, so a pair that goes unanchored has a visible cause.  (A
+ * journal this seat cannot read is also why the anchor is only ever an
+ * ENABLER: losing a row costs an attribution line, never a false pass on
+ * .bootlog's own arithmetic.)
+ *
+ * The nonce is BOUND to the host's ledger (the row must wear a nonce the host
+ * issued for SOME boot — that is what identifies the kernel boot the lifetime
+ * re-entered); an admitted row whose nonce the ledger does not hold (the
+ * mixed/manual regime: a hand-boot with no fx.bootnonce=) can anchor nothing
+ * and is named, never guessed at. */
+static void read_operator_journal(void) {
+    char path[4096];
+    snprintf(path, sizeof path, "%s/.operator", g_store_abs);
+    int absent = 0; size_t len = 0;
+    char *b = read_file(path, &len, &absent);
+    g_op_present = !absent;
+    if (absent) return; /* a store predating the journal: no row, no anchor */
+    char *p = b;
+    unsigned long lineno = 0;
+    while (p < b + len) {
+        char *nl = memchr(p, '\n', (size_t)(b + len - p));
+        size_t llen = nl ? (size_t)(nl - p) : (size_t)(b + len - p);
+        lineno++;
+        if (!nl) { g_rb_unread++; if (!g_rb_unread_line) g_rb_unread_line = lineno; break; }
+        char save = p[llen]; p[llen] = 0;
+        if (p[0] != '#' && p[0]) {
+            unsigned ep;
+            char action[32], arg[4096], outcome[64], froms[16], tos[16], nonce[80], junk[8];
+            int nf = sscanf(p, "%u %31s %4095s %63s %15s %15s %79s %7s",
+                            &ep, action, arg, outcome, froms, tos, nonce, junk);
+            unsigned long vf = 0;
+            int vf_ok = 0;
+            if (nf == 7) {
+                /* the writer's generation field: a decimal version or "-"
+                 * (operator_line's "{d}"/"-"); anything else is not a row */
+                if (froms[0] == '-') vf_ok = 0;
+                else {
+                    vf_ok = 1;
+                    for (const char *q = froms; *q; q++) if (*q < '0' || *q > '9') { vf_ok = 0; break; }
+                    if (vf_ok) vf = strtoul(froms, NULL, 10);
+                }
+            }
+            if (nf != 7 || !vf_ok) {
+                g_rb_unread++;
+                if (!g_rb_unread_line) g_rb_unread_line = lineno;
+            } else if (!strcmp(action, "reboot")) {
+                if (strcmp(outcome, "ok") != 0) {
+                    g_rb_refused++;
+                    if (!g_rb_refused_line) {
+                        g_rb_refused_line = lineno;
+                        snprintf(g_rb_refused_outcome, sizeof g_rb_refused_outcome, "%s", outcome);
+                    }
+                } else {
+                    long sl = nonce_slot(nonce);
+                    if (sl < 0) { g_rb_unanchored++; }
+                    else {
+                        g_rb = realloc(g_rb, (g_nrb + 1) * sizeof *g_rb);
+                        if (!g_rb) die("out of memory");
+                        g_rb[g_nrb].lineno = lineno;
+                        g_rb[g_nrb].epoch = ep;
+                        g_rb[g_nrb].slot = sl;
+                        g_rb[g_nrb].v_from = vf;
+                        g_rb[g_nrb].consumed = 0;
+                        g_nrb++;
+                    }
+                }
+            }
+        }
+        p[llen] = save;
+        p = nl + 1;
+    }
+    free(b);
+}
+
+/* Hand out ONE admitted reboot row for a (nonce, from-version) pair: the row
+ * must carry the SAME nonce (the kernel boot the lifetime re-entered) and the
+ * SAME from-version (the generation the machine was running when it asked) —
+ * a row for a different generation licenses nothing, which is what keeps a
+ * reboot row from becoming a blanket permission for the nonce.  Rows are
+ * handed out once each, in file order: N admitted reboots buy N lifetimes,
+ * never more. */
+static long reboot_anchor_take(long slot, unsigned long v) {
+    if (!g_rb) return -1;   /* REBOOT-ANCHOR (c) */
+    for (size_t i = 0; i < g_nrb; i++)
+        if (!g_rb[i].consumed && g_rb[i].slot == slot && g_rb[i].v_from == v) {
+            g_rb[i].consumed = 1;
+            return (long)i;
+        }
+    return -1;
+}
+
 /* the host-boot accounting — the APPENDED-line blind spot, closed.
  * observation_compare catches REWRITES; this check binds the GROWTH of the
  * append-only records to the boots the HOST reports starting (--boots
@@ -2477,11 +2696,25 @@ static void check_boot_accounting(void) {
     size_t *nvd = xmalloc((g_nnled ? g_nnled : 1) * sizeof *nvd);
     size_t *nsd = xmalloc((g_nnled ? g_nnled : 1) * sizeof *nsd);
     size_t *nrw = xmalloc((g_nnled ? g_nnled : 1) * sizeof *nrw);
-    for (size_t i = 0; i < g_nnled; i++) nip[i] = nvd[i] = nsd[i] = nrw[i] = 0;
+    /* per-slot REBOOT LIFETIMES opened by anchor (c): the budget the per-nonce
+     * shutdown/row rules and the totals ARE widened by, and by nothing else */
+    size_t *nrl = xmalloc((g_nnled ? g_nnled : 1) * sizeof *nrl);
+    for (size_t i = 0; i < g_nnled; i++) nip[i] = nvd[i] = nsd[i] = nrw[i] = nrl[i] = 0;
+    size_t n_rl_total = 0;     /* reboot lifetimes anchored in this window */
     size_t n_unbound_bl = 0;   /* added lines with no window nonce */
     char unbound_bl_first[256]; unbound_bl_first[0] = 0;
     size_t n_unbound_rec = 0;  /* added rows with no window nonce */
     char unbound_rec_first[256]; unbound_rec_first[0] = 0;
+    /* the OPEN reboot lifetimes: a verdict/shutdown binds to the lifetime its
+     * anchor opened (same nonce slot, same version), and it is bound ONCE —
+     * one admitted row, one in-progress, one verdict.  That is the whole
+     * budget anchor (c) grants, and it is what keeps a reboot row from
+     * licensing a SECOND verdict for a generation the window already
+     * verdicted (the flip the per-version budget exists to catch). */
+    typedef struct { long slot; unsigned long v; int vd_seen; int sd_seen; } rl_t;
+    rl_t *rl = malloc((g_nbl ? g_nbl : 1) * sizeof *rl);
+    size_t n_rl = 0;
+    if (!rl) die("out of memory");
 
     /* ── the .bootlog lines ADDED since the previous observation ── */
     size_t base = 0;                 /* byte offset where the added lines start */
@@ -2537,18 +2770,19 @@ static void check_boot_accounting(void) {
         unsigned long *first_ip_v = malloc((g_nnled ? g_nnled : 1) * sizeof *first_ip_v);
         char *have_first_ip = malloc(g_nnled ? g_nnled : 1);
         char *is_rearm_ip = malloc((g_nbl ? g_nbl : 1) * sizeof *is_rearm_ip);
+        char *is_reboot_ip = malloc((g_nbl ? g_nbl : 1) * sizeof *is_reboot_ip);
         char *has_rej = malloc(g_nnled ? g_nnled : 1);
         unsigned long *rej_ip_v = malloc((g_nnled ? g_nnled : 1) * sizeof *rej_ip_v);
         char (*rej_ip_why)[288] = malloc((g_nnled ? g_nnled : 1) * sizeof *rej_ip_why);
         unsigned long *seen_ip = malloc((g_nbl ? g_nbl : 1) * sizeof *seen_ip);
-        if (!first_ip_v || !have_first_ip || !is_rearm_ip || !has_rej || !rej_ip_v || !rej_ip_why || !seen_ip)
+        if (!first_ip_v || !have_first_ip || !is_rearm_ip || !is_reboot_ip || !has_rej || !rej_ip_v || !rej_ip_why || !seen_ip)
             die("out of memory");
         for (size_t i = 0; i < g_nnled; i++) {
             have_first_ip[i] = has_rej[i] = 0;
             first_ip_v[i] = rej_ip_v[i] = 0;
             rej_ip_why[i][0] = 0;
         }
-        if (g_nbl) memset(is_rearm_ip, 0, g_nbl);
+        if (g_nbl) { memset(is_rearm_ip, 0, g_nbl); memset(is_reboot_ip, 0, g_nbl); }
         size_t n_seen_ip = 0;
         for (size_t i = 0; i < g_nbl; i++) {
             if (g_bl[i].off < base) continue; /* not added this window */
@@ -2560,10 +2794,95 @@ static void check_boot_accounting(void) {
                 !strcmp(st, "ok") || !strcmp(st, "failed")) {
                 long ws = nonce_slot(g_bl[i].nonce);
                 int in_win = (ws >= 0 && g_nled[ws].boot > g_obs_boots && g_nled[ws].boot <= g_boots);
-                if (in_win) {
+                /* ── ANCHOR (c): the SOFT REBOOT ─────────────────────────
+                 * A soft reboot is a NEW PID1 LIFETIME under the SAME
+                 * kernel boot's nonce (fx-init re-latches the same
+                 * fx.bootnonce= on re-entry), so the lines it appends can
+                 * wear a nonce THIS WINDOW DOES NOT HOLD — no host boot
+                 * started, and the nonce belongs to a boot at or before the
+                 * previous observation.  `in_win` therefore cannot be the
+                 * only way in.
+                 *
+                 * An added in-progress OPENS a lifetime when an ADMITTED
+                 * .operator reboot row carries the SAME nonce and the SAME
+                 * from-version (the generation the machine was running when
+                 * it asked).  ONE row buys ONE lifetime — one in-progress
+                 * and the verdict that closes it — which is exactly what the
+                 * writer produces, so a reboot row can never become a
+                 * blanket permission for its nonce.
+                 *
+                 * The boot's OWN line is never an anchor (a free pass no
+                 * row should be needed for); only a LATER line of a window
+                 * nonce, or ANY line under a past boot's nonce, needs one.
+                 * And the RE-ARM rule has FIRST REFUSAL on a later line: see
+                 * the comment on the predicate below, which is the measured
+                 * ordering (the greedy order false-positived on the writer's
+                 * own recommended loop, tests/test_fx_audit.sh REBOOTACT). */
+                int bound = in_win;
+                long anchor = -1;
+                /* ANCHOR (c) IS TRIED WHERE THE RE-ARM RULE WOULD REFUSE, and
+                 * never before it — THE ORDER IS LOAD-BEARING: an activate
+                 * re-arm in-progress and a reboot lifetime's in-progress can
+                 * name the SAME first-published version under the same nonce
+                 * (activate -> poll the verdict -> reboot into it, the
+                 * writer's own recommended loop, writes both in ONE window).
+                 * A greedy anchor would spend the row on the RE-ARM line and
+                 * then refuse the real lifetime — a false positive on the
+                 * healthiest sequence this verb has.  So the re-arm
+                 * predicates are evaluated FIRST (the same four the chain
+                 * below applies) and the anchor is only offered to a line the
+                 * re-arm rule is about to reject. */
+                int rearm_wins = 0;
+                if (in_win && have_first_ip[ws] && !strcmp(st, "in-progress")) {
+                    int dup = 0;
+                    for (size_t q = 0; q < n_seen_ip; q++)
+                        if (seen_ip[q] == g_bl[i].v) { dup = 1; break; }
+                    rearm_wins = !dup && !vstat_for(g_bl[i].v)->own
+                              && ver_published_this_window(g_bl[i].v)
+                              && (g_bl[i].v > first_ip_v[ws]);
+                }
+                if (ws >= 0 && !strcmp(st, "in-progress") && !rearm_wins &&
+                    !(in_win && !have_first_ip[ws])) {
+                    anchor = reboot_anchor_take(ws, g_bl[i].v);
+                    if (anchor >= 0) {
+                        bound = 1;
+                        is_reboot_ip[i] = 1;
+                        nrl[ws]++;
+                        n_rl_total++;
+                        rl[n_rl].slot = ws; rl[n_rl].v = g_bl[i].v;
+                        rl[n_rl].vd_seen = 0; rl[n_rl].sd_seen = 0; n_rl++;
+                        info("boot accounting: an ADDED '%lu in-progress' under the nonce the host issued for boot %lu (%s) rides ANCHOR (c) — the ADMITTED .operator reboot row at line %lu (epoch %lu, from-version %lu, same nonce): a soft reboot is a NEW PID1 LIFETIME under the SAME kernel boot's nonce, which the host boot count can never account for (a soft reboot starts no boot); one admitted row licenses one lifetime (this in-progress and the verdict that closes it); accounted, not a finding",
+                             g_bl[i].v, g_nled[ws].boot, g_nled[ws].nonce,
+                             g_rb[anchor].lineno, g_rb[anchor].epoch, g_rb[anchor].v_from);
+                    }
+                } else if (!in_win && ws >= 0 && (!strcmp(st, "shutdown") || !strcmp(st, "ok") || !strcmp(st, "failed"))) {
+                    /* the CLOSING half of an already-anchored lifetime: a
+                     * verdict binds to the lifetime its own in-progress
+                     * opened (same nonce, same version) and binds ONCE — so
+                     * a second verdict needs a second admitted row, never
+                     * the same one.  A shutdown names whatever version is
+                     * current when PID1 exits (an activate can have moved
+                     * CURRENT inside the lifetime), so it binds on the
+                     * lifetime's NONCE alone; the per-nonce shutdown budget
+                     * (at most one) is what still bounds it. */
+                    int is_sd = !strcmp(st, "shutdown");
+                    for (size_t q = 0; q < n_rl; q++) {
+                        if (rl[q].slot != ws) continue;
+                        if (is_sd) {
+                            if (rl[q].sd_seen) continue;
+                            rl[q].sd_seen = 1; bound = 1; break;
+                        }
+                        if (rl[q].v != g_bl[i].v || rl[q].vd_seen) continue;
+                        rl[q].vd_seen = 1; bound = 1; break;
+                    }
+                }
+                if (bound) {
                     if (!strcmp(st, "in-progress")) {
                         nip[ws]++;
-                        if (!have_first_ip[ws]) {
+                        if (anchor >= 0) {
+                            /* registered above: the line that OPENED the
+                             * lifetime is accounted, not classified again */
+                        } else if (!have_first_ip[ws]) {
                             have_first_ip[ws] = 1;
                             first_ip_v[ws] = g_bl[i].v;
                             /* that boot's OWN version.  A version is FRESH
@@ -2647,6 +2966,9 @@ static void check_boot_accounting(void) {
             const long aj = bl_consume_ip(i, g_bl[i].v, g_bl[i].nonce, base, consumed);
             if (aj >= 0 && is_rearm_ip[aj])
                 info("boot accounting: the ADDED '%lu %s %lu' verdict for v%lu CONSUMES the RE-ARM in-progress this boot wrote for it (init.zig:3724) — the activated generation's own window, closed by the re-armed grace window (init.zig:3797-3800) under the same nonce; accounted, not a finding",
+                     g_bl[i].v, st, g_bl[i].epoch, g_bl[i].v);
+            if (aj >= 0 && is_reboot_ip[aj])
+                info("boot accounting: the ADDED '%lu %s %lu' verdict for v%lu CONSUMES the in-progress ANCHOR (c) opened for the SOFT-REBOOT lifetime — the generation the machine rebooted into, re-judged by the new PID1 lifetime under the same kernel boot's nonce (anchor (a) riding the row that licensed it); accounted, not a finding",
                      g_bl[i].v, st, g_bl[i].epoch, g_bl[i].v);
             if (aj < 0) {
                 if (ver_published_this_window(g_bl[i].v)) {
@@ -2757,14 +3079,14 @@ static void check_boot_accounting(void) {
          * widens the bound, which is the safe direction — this must never
          * fire on a healthy machine. */
         size_t n_fp = nfp_this_window();
-        if (n_ip > delta + n_fp)
+        if (n_ip > delta + n_fp + n_rl_total)
             add_finding("bootlog-fabricated-boots",
-                        "%zu in-progress line(s) added but the host started only %lu boot(s) since the previous observation (host boots %lu -> %lu) — and at most %zu of those can be an activate RE-ARM (a version the store FIRST PUBLISHED in this window, init.zig:3724): fx-init writes at most ONE in-progress per boot the host starts (init.zig:4886) plus one per activate re-arm; the surplus was appended by something that is not fx-init booting",
-                        n_ip, delta, g_obs_boots, g_boots, n_fp);
-        if (n_sd > delta)
+                        "%zu in-progress line(s) added but the host started only %lu boot(s) since the previous observation (host boots %lu -> %lu) — and at most %zu of those can be an activate RE-ARM (a version the store FIRST PUBLISHED in this window, init.zig:3724): fx-init writes at most ONE in-progress per boot the host starts (init.zig:4886) plus one per activate re-arm; the surplus was appended by something that is not fx-init booting.  Plus %zu SOFT-REBOOT LIFETIME(S) anchored by an ADMITTED .operator reboot row (anchor (c)): a soft reboot starts no host boot, so its lines ride a nonce the window does not hold, and every one of them needs its own row",
+                        n_ip, delta, g_obs_boots, g_boots, n_fp, n_rl_total);
+        if (n_sd > delta + n_rl_total)
             add_finding("bootlog-fabricated-boots",
-                        "%zu shutdown line(s) added but the host started only %lu boot(s) since the previous observation (host boots %lu -> %lu) — at most one shutdown per boot (init.zig:4396)",
-                        n_sd, delta, g_obs_boots, g_boots);
+                        "%zu shutdown line(s) added but the host started only %lu boot(s) since the previous observation (host boots %lu -> %lu) — at most one shutdown per boot (init.zig:4396), plus one for each of the %zu SOFT-REBOOT LIFETIME(S) an admitted .operator reboot row anchored (anchor (c))",
+                        n_sd, delta, g_obs_boots, g_boots, n_rl_total);
         /* the PER-VERSION verdict budget (the header's rule 2): the writer
          * verdicts a version once per boot that wrote an in-progress for it
          * (the g_boot_decided latch) and at most once more EVER — the boot
@@ -2804,7 +3126,7 @@ static void check_boot_accounting(void) {
         }
         if (n_ip + n_sd + n_verdict == 0 && !g_obs_bl_absent)
             info("boot accounting: no .bootlog lines added this window");
-        free(first_ip_v); free(have_first_ip); free(is_rearm_ip);
+        free(first_ip_v); free(have_first_ip); free(is_rearm_ip); free(is_reboot_ip);
         free(has_rej); free(rej_ip_v); free(rej_ip_why); free(seen_ip);
     }
 
@@ -2919,10 +3241,25 @@ static void check_boot_accounting(void) {
             info("boot accounting: the nonce ledger covers %lu of the %lu boot(s) this window — the pair-forgery closure holds only for the covered boots (a forged pair in an uncovered boot's slack still passes the arithmetic; the run's bound states this)", nwin, delta);
         free(wslot); free(nip); free(nvd); free(nsd); free(nrw);
     }
+    free(nrl); free(rl);
+
+    /* ── the journal's own accounting, NAMED ────────────────────────────────
+     * The anchor is (c) only for an ADMITTED reboot row; everything else the
+     * journal shows about reboots is REPORTED, never silently dropped: a
+     * REFUSED reboot opens no lifetime (and is the S1 vocabulary's own
+     * report — `not-decided` is a timing, `boot-failed` a state,
+     * `shell-open`/`same-version-loop`/`exec-error` their own outcomes), and a
+     * row this seat cannot read cannot be an anchor, which is the direction
+     * that costs an attribution line instead of licensing a forged one. */
+    if (g_op_present && (g_nrb || g_rb_refused || g_rb_unread || g_rb_unanchored || n_rl_total))
+        info("boot accounting: .operator holds %zu ADMITTED reboot row(s) this seat may ANCHOR (c) on (%zu of them opened a LIFETIME in this window), %zu REFUSED reboot row(s) (first at line %lu, outcome '%s' — a refusal re-enters nothing and anchors nothing, REPORTED not a finding), %zu admitted row(s) whose nonce the host ledger does not hold (the mixed/manual regime: they can anchor nothing), and %zu data row(s) this seat cannot read as a row (first at line %lu, REPORTED not a finding — a misread must never LICENSE a line, so an unreadable row only ever loses an attribution)",
+             g_nrb, n_rl_total, g_rb_refused, g_rb_refused_line,
+             g_rb_refused_outcome[0] ? g_rb_refused_outcome : "-",
+             g_rb_unanchored, g_rb_unread, g_rb_unread_line);
 
     if (!skip_bl)
-        info("boot accounting: host boots %lu -> %lu (delta %lu); this window added in-progress %zu, verdicts %zu, shutdown %zu — every verdict rides an in-progress the host's count can account for (the in-progress total is bounded by delta %lu + %zu version(s) FIRST PUBLISHED in this window: one activate re-arm per first-published version, each naming a version newer than the one its boot booted and not already booted itself)",
-             g_obs_boots, g_boots, delta, n_ip, n_verdict, n_sd, delta, nfp_this_window());
+        info("boot accounting: host boots %lu -> %lu (delta %lu); this window added in-progress %zu, verdicts %zu, shutdown %zu — every verdict rides an in-progress the host's count can account for (the in-progress total is bounded by delta %lu + %zu version(s) FIRST PUBLISHED in this window: one activate re-arm per first-published version, each naming a version newer than the one its boot booted and not already booted itself, + %zu SOFT-REBOOT LIFETIME(S) an admitted .operator reboot row anchored)",
+             g_obs_boots, g_boots, delta, n_ip, n_verdict, n_sd, delta, nfp_this_window(), n_rl_total);
 }
 
 /* the previous-observation comparison — THE load-bearing check */
@@ -3372,6 +3709,11 @@ int main(int argc, char **argv) {
     /* the host's nonce ledger is loaded AFTER obs_read (its window is
      * defined by the observation's boot count) and BEFORE the checks */
     load_nonces();
+    /* ANCHOR (c): the .operator journal, read AFTER the ledger (a reboot row
+     * is only an anchor when it wears a nonce the host issued) — the soft
+     * reboot is a new PID1 lifetime under the SAME kernel boot's nonce, so
+     * the boot count cannot account for its lines */
+    read_operator_journal();
 
     /* ── the checks.  ONE run_check CALL PER LINE: the gate deletes exactly
      * one of these lines to build a mutated detector and prove the matching
@@ -3404,7 +3746,7 @@ int main(int argc, char **argv) {
 
     if (g_bl_torn) info(".bootlog has a torn tail (%zu unterminated line(s)) — a crash mid-write, not a verdict", g_bl_torn);
     printf("checks: %zu pass, %zu failed; findings: %zu\n", pass, fail, g_nfindings);
-    printf("bound: this seat sees REWRITES and TRUNCATIONS of records it previously observed, cross-record INCOHERENCE, and — anchored on --boots and the per-boot nonce ledger (--nonces) — APPENDED .bootlog/.recovery growth the host cannot account for. IN THE NONCE REGIME (the host issues fx.bootnonce= per boot and every window boot is covered) the forged line-PAIR in a silent boot's slack is CLOSED: every ADDED line must wear a nonce the host issued for a boot in this window, the per-nonce IN-PROGRESS budget is the boot's OWN line plus one activate RE-ARM per version the store FIRST PUBLISHED in this window (each naming a version newer than the one its boot booted — init.zig:3724), the re-arm ip budget being ONE per first-published VERSION per WINDOW (a publish allocates a version number exactly once) AND naming a version NOT ALREADY BOOTED in the window (a re-arm names the version the activate JUST published, max+1, which has never been booted — this is what refuses the roll-forward REPUBLISH forge), shutdown / .recovery rows hold at one per boot, and the VERDICT accounting is per VERSION — one verdict per in-progress line the window added for that version, plus ONE more ONLY for a first-published version carrying NO re-arm ip of its own (the OLD-writer re-arm shape, init.zig:3797-3800). THE RE-ARM LINE'S OWN DELTA: that legitimate line RE-OPENS the forged-PAIR shape for a version that is first-published in the window AND newer than the boot's own, on ANY real window boot's nonce (the closure there is per VERSION, not per nonce — ONE re-arm in-progress per first-published version per window, so a forged pair cannot ride a second window nonce to buy a second verdict, whether the version was activated or republished — the republish shape is refused by the not-already-booted clause — and the legitimate line grants no verdict slot the +1 did not already grant). RESIDUAL, named: a forged pair for a version first published WITHOUT an activation and NOT YET BOOTED in the window (the operator `rollback` during a live boot, before the next boot boots it) still reads as a legitimate re-arm and lands the version's FIRST verdict — indistinguishable from a real activation without the .operator journal this seat does not read; the automatic roll-forward has no such window (the republish and the boot are one PID1 start), and the moment the version IS booted the not-already-booted clause refuses the same forge. What a forger still cannot mint is an in-progress for a version the store did not publish in this window, or one NOT newer than that nonce's own first line (the per-nonce rule fires on both) — and an unclaimed nonce is REPORTED as a silent boot. What this seat CANNOT see, stated as its bound: a verdict SUBSTITUTED inside a LIVE boot — the agent is root in the guest and can read its own /proc/cmdline nonce, so it can append the verdict itself in the writer's exact shape wearing the live nonce and suppress fx-init's own (a panic before grace expiry); that leaves ONE verdict for one (nonce, version) with every anchor satisfied, and the line's authorship inside the boot that owns the nonce is NOT distinguishable from the host — auditing, not proofing (the defence against substitution is the rollback machinery plus the observation hashes, not this reader); window boots the ledger does not cover (a mixed/manual regime — nonce-less lines are named and counted, but a forged pair in an UNCOVERED boot's slack still passes the arithmetic); boots started off the counting host, or a miscounted / moved --obs-file reuse (the count and the ledger are only as true as the host's own bookkeeping); a coherent tamper on a store first seen at enrollment (the enrollment gap — first run trusts, loudly). That is the honest bound of auditing, not proofing (§6b), printed on every run so the tool never implies more than it knows.\n");
+    printf("bound: this seat sees REWRITES and TRUNCATIONS of records it previously observed, cross-record INCOHERENCE, and — anchored on --boots and the per-boot nonce ledger (--nonces) — APPENDED .bootlog/.recovery growth the host cannot account for. IN THE NONCE REGIME (the host issues fx.bootnonce= per boot and every window boot is covered) the forged line-PAIR in a silent boot's slack is CLOSED: every ADDED line must wear a nonce the host issued for a boot in this window, the per-nonce IN-PROGRESS budget is the boot's OWN line plus one activate RE-ARM per version the store FIRST PUBLISHED in this window (each naming a version newer than the one its boot booted — init.zig:3724), the re-arm ip budget being ONE per first-published VERSION per WINDOW (a publish allocates a version number exactly once) AND naming a version NOT ALREADY BOOTED in the window (a re-arm names the version the activate JUST published, max+1, which has never been booted — this is what refuses the roll-forward REPUBLISH forge), shutdown / .recovery rows hold at one per boot, and the VERDICT accounting is per VERSION — one verdict per in-progress line the window added for that version, plus ONE more ONLY for a first-published version carrying NO re-arm ip of its own (the OLD-writer re-arm shape, init.zig:3797-3800). THE RE-ARM LINE'S OWN DELTA: that legitimate line RE-OPENS the forged-PAIR shape for a version that is first-published in the window AND newer than the boot's own, on ANY real window boot's nonce (the closure there is per VERSION, not per nonce — ONE re-arm in-progress per first-published version per window, so a forged pair cannot ride a second window nonce to buy a second verdict, whether the version was activated or republished — the republish shape is refused by the not-already-booted clause — and the legitimate line grants no verdict slot the +1 did not already grant). RESIDUAL, named: a forged pair for a version first published WITHOUT an activation and NOT YET BOOTED in the window (the operator `rollback` during a live boot, before the next boot boots it) still reads as a legitimate re-arm and lands the version's FIRST verdict — indistinguishable from a real activation without the .operator journal this seat does not read; the automatic roll-forward has no such window (the republish and the boot are one PID1 start), and the moment the version IS booted the not-already-booted clause refuses the same forge. What a forger still cannot mint is an in-progress for a version the store did not publish in this window, or one NOT newer than that nonce's own first line (the per-nonce rule fires on both) — and an unclaimed nonce is REPORTED as a silent boot. What this seat CANNOT see, stated as its bound: a verdict SUBSTITUTED inside a LIVE boot — the agent is root in the guest and can read its own /proc/cmdline nonce, so it can append the verdict itself in the writer's exact shape wearing the live nonce and suppress fx-init's own (a panic before grace expiry); that leaves ONE verdict for one (nonce, version) with every anchor satisfied, and the line's authorship inside the boot that owns the nonce is NOT distinguishable from the host — auditing, not proofing (the defence against substitution is the rollback machinery plus the observation hashes, not this reader); window boots the ledger does not cover (a mixed/manual regime — nonce-less lines are named and counted, but a forged pair in an UNCOVERED boot's slack still passes the arithmetic); boots started off the counting host, or a miscounted / moved --obs-file reuse (the count and the ledger are only as true as the host's own bookkeeping); a coherent tamper on a store first seen at enrollment (the enrollment gap — first run trusts, loudly). ANCHOR (c), the SOFT REBOOT, is the newest widening and it is named here: a legitimate soft reboot is a NEW PID1 LIFETIME under the SAME kernel boot's nonce, delimited by an ADMITTED .operator `reboot` row (no host boot starts, so the boot count can never account for its lines), and an anchor-(c) pair must still name an EXISTING published version under a nonce the HOST issued, with ONE row per lifetime. What that COSTS: a forger who writes a reboot row buys a plausible in-progress + verdict pair for an existing version — one row per pair, on a machine whose agent is root either way; and the journal is NOT watched the way .bootlog/.recovery are (it is not in this seat's observation hash), so a row may be added, rewritten or removed between audits without this seat seeing the change — it judges the pairs against whatever the journal says NOW, and dropping a row can only make a pair FIRE, never pass. That is the trade, stated rather than left to be discovered. That is the honest bound of auditing, not proofing (§6b), printed on every run so the tool never implies more than it knows.\n");
     printf("bound (S4): the host proxy's ONE LOG is a KNOWN record only from the bytes it has NOW onward — this seat records them and re-hashes the prefix, so a TAMPER AFTER an observation is caught and a tamper BEFORE the first one is not (the same enrollment bound as every other record here); a log the caller does not name is NOT-KNOWN, never 'no call was made'.  The DECLARED REACH is measured WHEN THE OBSERVATION IS TAKEN (the proxy's registry as it prints now, the operator's tables as they hash now) and attributed to the LAST boot in .bootlog — it is NOT a reconstruction of what any EARLIER boot's generation could reach, and this seat does not claim one.  'Released' means the two class tables hash to their PINS (an operator act with a record); a widening under an UNVERIFIABLE release (no PINS) takes the loud side by construction, which can be a FALSE POSITIVE on a host with no pinned table set — named here rather than discovered.\n");
     printf("bound (S4b): the COMPOSED SANDBOX is recorded per boot (the proxy's own --print-sandbox: the executor baseline + each tool's sidecar, plus one sha over the block) and a change is NAMED against THIS audit's previous observation.  What that can and cannot see, said rather than left to be discovered: the operator's ops-sandbox.tsv is the ONLY pinned half, it is DENY-MORE-ONLY and it narrows only what the spawn APPLIES — so it cannot WIDEN --print-sandbox, and therefore a widening of the composition can only come from the executor BASELINE or a SIDECAR, NEITHER of which any pin covers.  There is no released-widening path in v1: every widening takes the loud side (sandbox-widened-unreleased), and a deliberately, legitimately widened sidecar is a false positive this seat cannot distinguish — the pin's reach is the bound.  A NARROWING needs no release and is named.  And VISIBLE IS NOT STRONG: the promises are coarse (`inet` is any destination), the confinement is per-process and not per-call, there is no uid drop, and this record says what was DECLARED and APPLIED, never which syscalls a call made.\n");
     printf("evidence: the store's own records only — attempts.jsonl (the harness self-report) is never opened.\n");

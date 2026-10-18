@@ -199,6 +199,34 @@
 #                        arm asserts the printed bound names the
 #                        substitution, so the tool never claims a closure
 #                        it does not have.
+#   REBOOT    ANCHOR (c) — THE SOFT REBOOT, and the slice lands BEFORE its
+#               writer by design: fx-init's soft reboot is a NEW PID1
+#               LIFETIME under the SAME kernel boot's nonce, so under the
+#               old invariant ("one nonce per PID1 lifetime") EVERY
+#               legitimate reboot is a forgery and the trigger would roll a
+#               healthy machine back.  THE NONCE INVARIANT is redefined (one
+#               nonce per KERNEL BOOT; a soft reboot is a new PID1 lifetime
+#               under the same nonce, delimited by an ADMITTED .operator
+#               `reboot` row — anchor (c)), and ONE admitted row buys ONE
+#               lifetime.  Arms:
+#               REBOOT      an admitted soft reboot (no host boot, --boots
+#                           unchanged) is COHERENT, with anchor (c), the ROW
+#                           it rode and the verdict's consumption all NAMED;
+#               REBOOT-BEFORE  the pinned PRE-ANCHOR reader (ecfe099) calls
+#                           the SAME store INCOHERENT (bootlog-unbound-nonce
+#                           + bootlog-fabricated-boots): the FALSE POSITIVE
+#                           is REPRODUCED, not hypothesised;
+#               MUT-ANCHOR  anchor (c) deleted -> the false positive
+#                           RETURNS on the same fixture (the seam is
+#                           load-bearing);
+#               REBOOTFORGE / REBOOTKEY / REBOOTREF / REBOOTONE  the FORGER
+#                           direction, asserted in the SAME gate so the fix
+#                           is proved not to have opened the hole: the same
+#                           pair with NO row, with a row for a DIFFERENT
+#                           from-version, with a REFUSED row, and a SECOND
+#                           lifetime riding ONE row are all accused;
+#               REBOOTX2    two admitted reboots at one version (fx-init's
+#                           REBOOT_SAME_VERSION_MAX = 2) stay COHERENT.
 #   NONCE-W   the WRITER pin (fx-init 500fc68, git cat-file -e + cmp proving
 #               pin != working tree): the pinned writer's bootlog_append is
 #               the 3-field "%u %s %u" and knows no fx.bootnonce — the
@@ -405,6 +433,8 @@ grep -aq 'no nonce the host issued for a boot in this window' "$AUDIT" \
     || fail "STALE BINARY: $AUDIT does not contain this source's nonce-binding message — the artifact answering for the seat was not built from tools/fx-audit.c (the per-boot-nonce change)"
 grep -aq 'the in-guest activate RE-ARM shape' "$AUDIT" \
     || fail "STALE BINARY: $AUDIT does not contain this source's re-arm attribution message — the artifact answering for the seat was not built from tools/fx-audit.c (the per-version verdict accounting change)"
+grep -aq 'rides ANCHOR (c)' "$AUDIT" \
+    || fail "STALE BINARY: $AUDIT does not contain this source's anchor-(c) message — the artifact answering for the seat was not built from tools/fx-audit.c (the SOFT-REBOOT nonce redefinition)"
 
 # ── the per-boot nonce fixtures ───────────────────────────────────────────
 # nth ORDINAL — the deterministic nonce the gate (as the host) issued for
@@ -1648,6 +1678,215 @@ grep -q "was ALREADY BOOTED in this window" "$WORK/out.rearmiprepub" \
     || fail "REARMIPREPUB: the finding does not state the not-already-booted predicate: $(grep '^INCOHERENT bootlog-fabricated' "$WORK/out.rearmiprepub")"
 echo "test_fx_audit: REARMIPREPUB: a forged pair for a version the store first published WITHOUT an activation (the roll-forward republish) and then BOOTED fires the not-already-booted re-arm predicate — the republish shape"
 
+# ══ ANCHOR (c): THE SOFT REBOOT — the reader learns the shape FIRST ═════
+# fx-init's soft reboot is PID1 re-entering its OWN boot path (execve
+# /proc/self/exe), so it is a NEW PID1 LIFETIME under the SAME KERNEL BOOT's
+# nonce: apply_kernel_nonce re-latches the same fx.bootnonce= on every
+# re-entry because no kernel booted.  The host therefore starts NO boot
+# (--boots cannot move) and the new lifetime appends its own in-progress and
+# verdict wearing the nonce of a boot the PREVIOUS observation already saw.
+#
+# That breaks the invariant this seat was built on — "ONE nonce per PID1
+# lifetime, every line of a boot carries the one latched at its start" — in
+# BOTH directions at once, and the old reader calls every legitimate reboot a
+# forgery: the lines are unbound (no window nonce), the extra in-progress is
+# a surplus no host boot explains, and when the window also holds the
+# pre-reboot pair the same nonce carries two in-progress lines for the same
+# version, which the re-arm rule rejects as an already-booted version.  THE
+# REASON THIS SLICE LANDS BEFORE THE WRITER IS THE REASON THIS ARM EXISTS: the
+# moment fx-init writes a reboot row, a reader that has not learned the shape
+# ACCUSES a healthy machine, and fx-audit's trigger would roll it back.
+#
+# The row's shape is fx-init's (operator_journal.zig: REBOOT_ACTION, the
+# RebootOutcome token set, to='-' because a reboot moves no generation):
+#   <epoch> reboot <reason-token> <outcome> <from-version|-> <to-version|-> <nonce>
+# and the vocabulary's SIX outcome tokens are ok (the ADMISSION), not-decided,
+# boot-failed, shell-open, same-version-loop, exec-error.  Nothing in the
+# vocabulary may collide with fx-report's activation-refusal predicate
+# (failed:<rc> / refused / refused-config): a reboot refusal is NOT an
+# activation refusal, and fx-report's own gate asserts that separation.
+#
+# FIXTURE HONESTY: .operator is fx-init's file and fx-init does not run
+# host-side, so the gate writes it in the writer's exact 7-field grammar under
+# a '#'-prefixed header (both readers skip '#' lines — the header in the real
+# file IS the definition and is much longer than this fixture's).  The reboot
+# pairs are written as the writer's REAL line pair, in the order the boot path
+# writes them (recovery_append would come before the in-progress line; an
+# admitted reboot never reaches it — see below).
+OPHDR='# fx-init operator journal. One DATA line per operator intervention on
+# the generation plane, INCLUDING the ones that FAILED or were REFUSED, and
+# (since the reboot verb) one per SOFT REBOOT: action `reboot`, arg = the
+# requester reason token, outcome = the ADMISSION (ok) or the refusal, to =
+# "-" (a reboot moves no generation), nonce = the boot nonce of the kernel
+# boot the new lifetime re-entered. Written and fsync'"'"'d BEFORE the reply is
+# flushed.
+# line: <epoch> <action> <arg> <outcome> <from-version|-> <to-version|-> <boot-nonce|none>'
+# mk_rebootrow STORE EPOCH OUTCOME FROM NONCE — one reboot row, writer shape
+mk_rebootrow() { # mk_rebootrow STORE EPOCH OUTCOME FROM-version NONCE
+    printf '%s\n' "$OPHDR" > "$1/.operator"
+    echo "$2 reboot operator-request $3 $4 - $5" >> "$1/.operator"
+}
+
+# REBOOT — ONE legitimate soft reboot in the window: the admission row, then
+# the new lifetime's own pair for the SAME current version.  --boots does NOT
+# move (FBOOTS stays 4: the host started nothing), so the ONLY thing that can
+# account for these lines is the row.
+RBN=$(nth 4)                       # the kernel boot the machine is under
+fresh reboot
+# THE PRE-REBOOT BASELINE, captured BEFORE the coherent audit below: a
+# COHERENT run REWRITES its observation file, so a copy taken afterwards
+# already contains the reboot's lines and the fail-before mutants would see
+# no growth at all (and "pass" for the wrong reason — the vacuous-control
+# class this file refuses).
+cp "$WORK/obsf-reboot.obs" "$WORK/obsf-reboot-pre.obs"
+mk_rebootrow "$WORK/store-reboot" 120 ok "$CUR" "$RBN"
+echo "$CUR in-progress 121 $RBN" >> "$WORK/store-reboot/.bootlog"
+echo "$CUR ok 122 $RBN"          >> "$WORK/store-reboot/.bootlog"
+FBOOTS=4 run_fixture reboot > "$WORK/out.reboot" 2>&1
+expect_coh "$WORK/out.reboot" $? "REBOOT (an admitted soft reboot: a new PID1 lifetime under the SAME nonce, no host boot)"
+grep -q "under the nonce the host issued for boot 4 ($RBN) rides ANCHOR (c)" "$WORK/out.reboot" \
+    || fail "REBOOT: the alignment is not NAMED as anchor (c): $(grep -i 'ANCHOR (c)' "$WORK/out.reboot")"
+RBLINE=$(( $(printf '%s\n' "$OPHDR" | wc -l) + 1 ))   # the row after the '#' header
+grep -q "the ADMITTED .operator reboot row at line $RBLINE " "$WORK/out.reboot" \
+    || fail "REBOOT: the attribution does not name the ROW it rode (journal line $RBLINE)"
+grep -q "verdict for v$CUR CONSUMES the in-progress ANCHOR (c)" "$WORK/out.reboot" \
+    || fail "REBOOT: the verdict is not NAMED as consuming the anchored in-progress"
+grep -q 'INCOHERENT' "$WORK/out.reboot" \
+    && fail "REBOOT: a legitimate soft reboot was called INCOHERENT (the false positive this slice exists to prevent): $(grep '^INCOHERENT' "$WORK/out.reboot")"
+grep -q 'no .bootlog lines added this window' "$WORK/out.reboot" \
+    && fail "REBOOT: the pair was not counted at all"
+# the journal accounting is NAMED: admitted rows, and nothing refused
+grep -q '1 ADMITTED reboot row(s) this seat may ANCHOR (c) on (1 of them opened a LIFETIME in this window)' "$WORK/out.reboot" \
+    || fail "REBOOT: the journal accounting is not printed: $(grep 'reboot row' "$WORK/out.reboot")"
+echo "test_fx_audit: REBOOT: an admitted soft reboot (a NEW PID1 lifetime under the SAME kernel boot's nonce, no host boot, --boots unchanged) stays COHERENT, with anchor (c) and the row it rode both NAMED"
+
+# (THE FAIL-BEFORE for this arm lives with the other pinned pre-change readers,
+#  at BEFORE-G below: it needs pin_build, which is defined there.)
+# MUT-ANCHOR — THE SEAM: with anchor (c) disabled the false positive comes
+# back on the SAME fixture.  Without this the "clean" result above could be
+# coming from any other predicate, and the arm would not be load-bearing.
+sed 's|if (!g_rb) return -1;   /\* REBOOT-ANCHOR (c) \*/|return -1; /* mutant-anchor-c */|' \
+    "$REPO/tools/fx-audit.c" > "$WORK/mut-anchor.c" \
+    || fail "cannot write the no-anchor-(c) mutant"
+cmp -s "$WORK/mut-anchor.c" "$REPO/tools/fx-audit.c" \
+    && fail "the anchor-(c) mutation changed nothing (the sed matched no line — marker drift?)"
+cc -std=c11 -O2 -Wall -Wextra -I"$REPO/src/vendor/dhall-c" \
+   -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
+   -o "$WORK/mut-anchor" "$WORK/mut-anchor.c" "$REPO/src/vendor/dhall-c/sha256.c" \
+    || fail "cannot build the no-anchor-(c) mutant"
+cp "$WORK/obsf-reboot-pre.obs" "$WORK/obsf-reboot-mut.obs"
+mkled "$WORK/nonces-reboot-mut.led" 4
+FXSTORE_BIN="$FXSTORE" "$WORK/mut-anchor" --store "$WORK/store-reboot" \
+    --rootfs "$WORK/rootfs-reboot" --obs-file "$WORK/obsf-reboot-mut.obs" \
+    --boots 4 --nonces "$WORK/nonces-reboot-mut.led" > "$WORK/out.m-anchor" 2>&1
+expect_incoh "$WORK/out.m-anchor" $? "MUT-ANCHOR (anchor (c) deleted: the legitimate reboot is accused again)" \
+    bootlog-unbound-nonce bootlog-fabricated-boots
+echo "test_fx_audit: MUT-ANCHOR: with anchor (c) disabled the SAME fixture is INCOHERENT — the anchor, not some other predicate, is what makes a legitimate soft reboot coherent"
+
+# THE FORGER DIRECTION, asserted in the SAME gate: the fix must not have
+# opened the hole it closed.  REBOOTFORGE is the reboot pair with NO row and
+# NO publish — exactly the shape the reader refuses — and it is STILL accused.
+fresh rebootforge
+echo "$CUR in-progress 121 $RBN" >> "$WORK/store-rebootforge/.bootlog"
+echo "$CUR ok 122 $RBN"          >> "$WORK/store-rebootforge/.bootlog"
+FBOOTS=4 run_fixture rebootforge > "$WORK/out.rebootforge" 2>&1
+expect_incoh "$WORK/out.rebootforge" $? "REBOOTFORGE (a pair under a past boot's nonce with NO .operator reboot row)" \
+    bootlog-unbound-nonce bootlog-fabricated-boots
+echo "test_fx_audit: REBOOTFORGE: the SAME pair with NO admitted reboot row (and no publish) is STILL accused — anchor (c) did not open the hole it closed"
+
+# REBOOTKEY — the anchor is KEYED, never a blanket permission for its nonce:
+# an admitted row carrying a DIFFERENT from-version licenses nothing for this
+# version, and the pair is accused exactly as if the row were absent.
+fresh rebootkey
+mk_rebootrow "$WORK/store-rebootkey" 120 ok "$V2" "$RBN"   # a row for v$V2
+echo "$CUR in-progress 121 $RBN" >> "$WORK/store-rebootkey/.bootlog"
+echo "$CUR ok 122 $RBN"          >> "$WORK/store-rebootkey/.bootlog"
+FBOOTS=4 run_fixture rebootkey > "$WORK/out.rebootkey" 2>&1
+expect_incoh "$WORK/out.rebootkey" $? "REBOOTKEY (an admitted reboot row naming a DIFFERENT from-version)" \
+    bootlog-unbound-nonce bootlog-fabricated-boots
+echo "test_fx_audit: REBOOTKEY: an admitted reboot row for a DIFFERENT generation licenses nothing — the anchor is keyed on (nonce, from-version), never on the nonce alone"
+
+# REBOOTREF — a REFUSED reboot anchors nothing: a row whose outcome is the
+# vocabulary's `boot-failed` refusal (the state, not the timing) is REPORTED
+# and the pair behind it is accused.  The refusal is also NOT an
+# activation-refusal (a different class; fx-report's gate owns that half).
+fresh rebootref
+mk_rebootrow "$WORK/store-rebootref" 120 boot-failed "$CUR" "$RBN"
+echo "$CUR in-progress 121 $RBN" >> "$WORK/store-rebootref/.bootlog"
+echo "$CUR ok 122 $RBN"          >> "$WORK/store-rebootref/.bootlog"
+FBOOTS=4 run_fixture rebootref > "$WORK/out.rebootref" 2>&1
+expect_incoh "$WORK/out.rebootref" $? "REBOOTREF (a REFUSED reboot row — no lifetime was opened)" \
+    bootlog-unbound-nonce
+grep -q "1 REFUSED reboot row(s) (first at line $RBLINE, outcome 'boot-failed'" "$WORK/out.rebootref" \
+    || fail "REBOOTREF: the refusal is not REPORTED by name: $(grep 'reboot row' "$WORK/out.rebootref")"
+echo "test_fx_audit: REBOOTREF: a REFUSED reboot row (boot-failed) opens no lifetime, is REPORTED by outcome token, and the pair behind it is accused"
+
+# REBOOTONE — ONE ROW, ONE LIFETIME: a second pair under the SAME row is a
+# forged lifetime (two reboots need two admissions), and it fires.
+fresh rebootone
+mk_rebootrow "$WORK/store-rebootone" 120 ok "$CUR" "$RBN"
+echo "$CUR in-progress 121 $RBN" >> "$WORK/store-rebootone/.bootlog"
+echo "$CUR ok 122 $RBN"          >> "$WORK/store-rebootone/.bootlog"
+echo "$CUR in-progress 123 $RBN" >> "$WORK/store-rebootone/.bootlog"
+echo "$CUR failed 124 $RBN"      >> "$WORK/store-rebootone/.bootlog"
+FBOOTS=4 run_fixture rebootone > "$WORK/out.rebootone" 2>&1
+expect_incoh "$WORK/out.rebootone" $? "REBOOTONE (a SECOND lifetime riding ONE admitted row)" \
+    bootlog-unbound-nonce
+grep -q '2 in-progress line(s) added but the host started only 0 boot(s)' "$WORK/out.rebootone" \
+    || fail "REBOOTONE: the surplus lifetime was not counted against the anchor budget: $(grep '^INCOHERENT bootlog-fabricated' "$WORK/out.rebootone" | cut -c1-140)"
+echo "test_fx_audit: REBOOTONE: ONE admitted row buys exactly ONE lifetime — a second pair under the same row is a forged lifetime and fires"
+
+# REBOOTX2 — the OTHER direction (a fixture that must NOT fire): fx-init's own
+# guard allows REBOOT_SAME_VERSION_MAX = 2 consecutive admitted reboots at the
+# same version, so TWO rows and TWO lifetimes in one window is a HEALTHY
+# machine — one row each, the anchor budget is exactly 2.
+fresh rebootx2
+printf '%s\n' "$OPHDR" > "$WORK/store-rebootx2/.operator"
+echo "120 reboot operator-request ok $CUR - $RBN" >> "$WORK/store-rebootx2/.operator"
+echo "124 reboot operator-request ok $CUR - $RBN" >> "$WORK/store-rebootx2/.operator"
+echo "$CUR in-progress 121 $RBN" >> "$WORK/store-rebootx2/.bootlog"
+echo "$CUR ok 122 $RBN"          >> "$WORK/store-rebootx2/.bootlog"
+echo "$CUR in-progress 125 $RBN" >> "$WORK/store-rebootx2/.bootlog"
+echo "$CUR ok 126 $RBN"          >> "$WORK/store-rebootx2/.bootlog"
+FBOOTS=4 run_fixture rebootx2 > "$WORK/out.rebootx2" 2>&1
+expect_coh "$WORK/out.rebootx2" $? "REBOOTX2 (TWO admitted reboots at the same version — the guard's own bound)"
+grep -q '2 ADMITTED reboot row(s) this seat may ANCHOR (c) on (2 of them opened a LIFETIME in this window)' "$WORK/out.rebootx2" \
+    || fail "REBOOTX2: the two lifetimes were not both anchored: $(grep 'reboot row' "$WORK/out.rebootx2")"
+echo "test_fx_audit: REBOOTX2: two admitted reboots at the same version (fx-init's REBOOT_SAME_VERSION_MAX = 2) stay COHERENT — one admitted row per lifetime, budget exactly 2"
+
+# REBOOTACT — THE SHAPE THE ANCHOR MUST NOT STEAL, and the healthiest one
+# this verb has: the writer's own recommended loop is activate -> poll the
+# posted verdict -> reboot into it, which writes a RE-ARM in-progress AND a
+# reboot lifetime's in-progress naming the SAME first-published version under
+# the SAME nonce, in ONE window.  A greedy anchor would spend the admitted row
+# on the RE-ARM line and then REFUSE the real lifetime — a false positive on
+# the sequence the plan recommends.  So anchor (c) is offered only where the
+# re-arm rule is about to reject, and BOTH attributions are asserted: the
+# activate's line is NAMED as a re-arm, the reboot's as a lifetime.
+fresh rebootact
+echo "$CUR in-progress 110 $(nth 5)" >> "$WORK/store-rebootact/.bootlog"
+echo "$CUR ok 111 $(nth 5)"          >> "$WORK/store-rebootact/.bootlog"
+RBA_V=$(LD_LIBRARY_PATH="$DL" "$ZB/fx-activate" --store "$WORK/store-rebootact" \
+        --package-set "$PS_A" --config "$WORK/cfg-store-a.dhall" 2>&1 \
+        | sed -n 's/.*as version \([0-9][0-9]*\).*/\1/p' | head -1)
+[ -n "$RBA_V" ] || fail "REBOOTACT: no version from the activate"
+[ "$RBA_V" -gt "$CUR" ] || fail "REBOOTACT: the activate did not ratchet ($RBA_V <= $CUR)"
+materialize_rootfs "$WORK/store-rebootact" "$WORK/rootfs-rebootact" "$RBA_V" "$PS_A"
+echo "$RBA_V in-progress 112 $(nth 5)" >> "$WORK/store-rebootact/.bootlog"
+echo "$RBA_V ok 113 $(nth 5)"          >> "$WORK/store-rebootact/.bootlog"
+mk_rebootrow "$WORK/store-rebootact" 130 ok "$RBA_V" "$(nth 5)"
+echo "$RBA_V in-progress 131 $(nth 5)" >> "$WORK/store-rebootact/.bootlog"
+echo "$RBA_V ok 132 $(nth 5)"          >> "$WORK/store-rebootact/.bootlog"
+FBOOTS=5 run_fixture rebootact > "$WORK/out.rebootact" 2>&1
+expect_coh "$WORK/out.rebootact" $? "REBOOTACT (activate -> reboot into the activated generation, BOTH in one lifetime)"
+grep -q "carries a RE-ARM in-progress for v$RBA_V" "$WORK/out.rebootact" \
+    || fail "REBOOTACT: the ACTIVATE's line is not named as a re-arm — the anchor stole it: $(grep -i 'RE-ARM\|ANCHOR (c)' "$WORK/out.rebootact")"
+grep -q "an ADDED '$RBA_V in-progress' under the nonce .* rides ANCHOR (c)" "$WORK/out.rebootact" \
+    || fail "REBOOTACT: the REBOOT's own line is not named as the anchored lifetime: $(grep -i 'ANCHOR (c)' "$WORK/out.rebootact")"
+grep -q 'INCOHERENT' "$WORK/out.rebootact" \
+    && fail "REBOOTACT: the writer's own recommended loop (activate -> reboot into it) was called incoherent: $(grep '^INCOHERENT' "$WORK/out.rebootact")"
+echo "test_fx_audit: REBOOTACT: activate -> reboot into the activated generation (a re-arm line AND a reboot lifetime naming the SAME version under the SAME nonce) stays COHERENT, each line NAMED as what it is"
+
 # ══ MIXED: one nonced boot + one operator hand-boot is information only ══
 # The regime a real deployment hits by accident: the host nonced boot 4 but
 # boot 5 was an operator hand-boot (no fx.bootnonce= — the writer stamps
@@ -1947,6 +2186,31 @@ grep -q "carries a RE-ARM in-progress for v$RIPR_W" "$WORK/out.rearmiprepub-r2" 
 grep -q "^INCOHERENT" "$WORK/out.rearmiprepub-r2" \
     && fail "BEFORE-F: the pinned round-2 reader fired — the pin is not the reader that has the hole: $(grep '^INCOHERENT' "$WORK/out.rearmiprepub-r2")"
 echo "test_fx_audit: BEFORE-F: the republish forge audits COHERENT on the pinned round-2 reader (its version-keyed cap never sees the republished version — no activation wrote a re-arm for it) and the working tree's reader FIRES the same store and bytes (REARMIPREPUB) — the republish shape, pinned"
+
+# ── BEFORE-G/AFTER (ecfe099, the PRE-ANCHOR-(c) reader): the fail-before of
+# THE SOFT REBOOT, on the SAME fixture REBOOT above calls COHERENT and the
+# SAME observation bytes.  The pinned reader predates anchor (c): it knows no
+# .operator reboot row, requires every ADDED line to wear a nonce issued for a
+# boot IN THIS WINDOW, and budgets in-progress lines against --boots alone —
+# three predicates a legitimate soft reboot breaks at once (no host boot
+# starts, and the lines wear the nonce of a boot the previous observation
+# already saw).  So it calls a machine that did exactly what its verb was
+# built to do a FORGER.  That false positive is the whole reason this slice
+# lands BEFORE the writer exists, and it is REPRODUCED here rather than
+# asserted.
+pin_build ecfe099 "$WORK/fx-audit-preanchor"
+cp "$WORK/obsf-reboot-pre.obs" "$WORK/obsf-reboot-before.obs"
+mkled "$WORK/nonces-reboot-before.led" 4
+FXSTORE_BIN="$FXSTORE" "$WORK/fx-audit-preanchor" --store "$WORK/store-reboot" \
+    --rootfs "$WORK/rootfs-reboot" --obs-file "$WORK/obsf-reboot-before.obs" \
+    --boots 4 --nonces "$WORK/nonces-reboot-before.led" > "$WORK/out.reboot-before" 2>&1
+expect_incoh "$WORK/out.reboot-before" $? "BEFORE-G (ecfe099: the legitimate soft reboot ACCUSED)" \
+    bootlog-unbound-nonce bootlog-fabricated-boots
+grep -q 'forged line-PAIR' "$WORK/out.reboot-before" \
+    || fail "BEFORE-G: the false positive does not even use the forgery vocabulary: $(grep '^INCOHERENT' "$WORK/out.reboot-before" | cut -c1-120)"
+grep -q "1 in-progress line(s) added but the host started only 0 boot(s)" "$WORK/out.reboot-before" \
+    || fail "BEFORE-G: the pinned reader did not fire the boot-count arithmetic on the reboot lifetime: $(grep '^INCOHERENT bootlog-fabricated' "$WORK/out.reboot-before" | cut -c1-140)"
+echo "test_fx_audit: BEFORE-G (REBOOT-BEFORE): the pinned PRE-ANCHOR reader (ecfe099) calls the SAME legitimate soft reboot INCOHERENT — bootlog-unbound-nonce + bootlog-fabricated-boots, i.e. an accusation of forgery for doing what the verb was built to do; the new reader is COHERENT on the same bytes (REBOOT above)"
 
 # ── FORMAT2: the new tool refuses the pinned tool's format-2 observation —
 # a pre-nonce baseline cannot anchor a nonce-judged window, and assuming it

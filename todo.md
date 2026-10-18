@@ -1056,7 +1056,53 @@ regulator** — §6b's audit stance is what makes these records evidentially usa
       property for a GC root set and the wrong one for an audit, so anything that needs the full
       history must read the store, never the accepted set.
       **The number must be a NAMED, PINNED constant** (in the seat that applies it, cited to this
-      entry), never a literal — the same discipline `RECOVERY_CONTENT_FAIL_MAX` gets. — re-scoped by the oscillator from a *retention* question
+      entry), never a literal — the same discipline `RECOVERY_CONTENT_FAIL_MAX` gets.
+- [ ] **THE IN-GUEST REBOOT (planned: `handoff-reboot-plan`).** "A reboot the machine can perform on its
+      own" — decided as **`execve("/proc/self/exe")` from PID1**, which re-enters `main()` in a FRESH
+      address space and so structurally eliminates the "forgot to reset a global" class (53 file-scope
+      `g_*` in `init.zig`, several latched once); it works under `-no-reboot` because it is not a kernel
+      reboot, and `do_shutdown()` (`init.zig:4351`) already performs the whole teardown.
+      **TWO TRAPS THE PLAN FOUND, both verified by me:** (1) **rebooting inside the GRACE WINDOW silently
+      condemns a healthy generation** — `decide_boot_version`'s roll-forward (`:1728-1731`) fires on an
+      `in-progress` tail, so a premature reboot rolls BACK and writes a `.recovery` row naming that
+      content a failure; two reach `RECOVERY_CONTENT_FAIL_MAX` and **permanently blacklist content that
+      never ran**; (2) **every legitimate soft reboot would have been accused of FORGERY**, because
+      `fx-audit` rests on "one nonce per PID1 lifetime" with exactly two anchors, neither of which a soft
+      reboot satisfies. That is why **the READER learns the shape BEFORE the mechanism exists.**
+- [x] **REBOOT S1 — the vocabulary, the reader and a PURE admission function** (**fx-init `c0aa45b`**).
+      One file (`zig/src/operator_journal.zig`), `init.zig` untouched, four blob pins untouched, **not
+      wired to the channel** (a verb that records a reboot it cannot yet perform is a lie in the other
+      direction). **SIX outcome tokens, and the two look-alike refusals are deliberately different
+      states:** `not-decided` is a **timing** (no verdict yet), `boot-failed` is a **state** (the verdict
+      landed and it was bad) — both derived from the **single guard**, so the predicate and the reasons
+      cannot drift. A decided-FAILED boot still refuses (the guardrail already rolls forward; the verb for
+      that is `rollback`). *The sixth token was added on review*: recording a failed state under a timing
+      token is exactly the "claim that misstates the evidence" shape. **Asymmetry measured:** the pinned
+      pre-fix control is HEAD's module with the new tests (no vocabulary/reader/admit); `MUT-DECIDED` fails
+      the undecided fixture while the admitted one passes; **`MUT-COLLAPSE`** (a failed state recorded
+      under the timing token) fails EXACTLY the two token assertions while all ten behaviour tests pass —
+      behaviour-blind, record-sensitive, which is the direction that matters when an always-admit function
+      looks identical on the happy path. 80/80 zig tests; `qemu_ctrl`/`qemu_console`/`qemu_operator_journal`
+      all PASS.
+- [x] **REBOOT S2 — `fx-audit` ANCHOR (c) + the nonce invariant redefined** (**baliveau**, UNCOMMITTED).
+      An **ADMITTED** (`outcome ok`) `reboot` row with the same nonce **and the same from-version**
+      licenses **one reboot lifetime** — one in-progress plus the verdict that closes it. Refused rows and
+      `exec-error` open nothing and are **reported by token**; unreadable rows are named and can never
+      anchor. *Orchestrator-verified:* **REBOOT** stays coherent (a new PID1 lifetime under the same
+      kernel boot's nonce, no host boot, `--boots` unchanged); **MUT-ANCHOR** makes the same fixture
+      incoherent, so the anchor — not some other predicate — is what legitimises a soft reboot;
+      **REBOOTFORGE** still accuses a pair with no admitted row (the fix did not open the hole it closed);
+      **REBOOTKEY** proves it is keyed on `(nonce, from-version)`, never the nonce alone; **REBOOTREF**
+      shows a refused row opening no lifetime. The hard part was ORDERING: a re-arm line and a reboot
+      lifetime naming the same first-published version must BOTH land, and the first greedy implementation
+      false-positived on exactly that shape.
+      **NAMED, not papered over:** the anchor is **not window-scoped** (`.operator` is not in the
+      observation hash), and the observation format was deliberately NOT bumped — that would refuse every
+      existing baseline without closing the forgery.
+- [ ] **REBOOT S3/S4 still owed:** S3 (fx-init, the wiring: `teardown()` factored out of `do_shutdown`
+      with `do_shutdown` PROVABLY unchanged, the guards, the ctrl arm, `do_soft_reboot`, and a
+      `tests/qemu_reboot.sh` whose blind is `MUT-NOEXEC` — admit, record, reply, SKIP the execve, so only
+      the SECOND-boot assertions fail) and S4 (the REBOOT block in `fx-report`). — re-scoped by the oscillator from a *retention* question
       to a *liveness* one: trials that are accepted-and-rolled-back are noise.
 - [x] **The image is a CACHE (user, 2026-10-17).** 
       **DECISION: a CACHE** — rebuildable and verifiable, with its bytes pinned. The correction on
