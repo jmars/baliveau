@@ -928,7 +928,15 @@ regulator** — §6b's audit stance is what makes these records evidentially usa
       ran to read it), stated here so nobody mistakes the timing argument for a
       mechanism.
 
-- [ ] **THE BUILD VOCABULARY — LARGELY BUILT (§6a; CORRECTED 2026-10-13, MEASURED from the source).**
+- [x] **THE BUILD VOCABULARY — ELEMENT 1's RESIDUAL ACCEPTED (user, 2026-10-17).** 
+      **DECISION: the residual STANDS, deliberately.** The remaining element 1 is a userspace reach
+      bound for the in-guest build path — and the reason it can only ever be userspace is decisive:
+      the pinned guest kernel has **no LSM, no namespaces and no seccomp**, so **no sandbox primitive
+      exists in-guest at all** (the same fact that rules palisade out there). What it would defend is
+      `attempts.jsonl`, which is a **SELF-REPORT and never evidence**, and a root agent can walk
+      around any userspace bound — which is §6b's whole conclusion (*audit, do not proof; the VM is
+      the boundary*). Spending here would be spending on the lever side of that line. The rest of the
+      vocabulary is BUILT and gated (`fx-init 4c5803d`; the four refusals enforced by name). (§6a; CORRECTED 2026-10-13, MEASURED from the source).**
       The four elements below were listed as NOT BUILT and in dependency order; elements **2, 3 and 4
       LANDED in `fx-init 4c5803d`**, together with the recipe admission itself, so the order below is no
       longer the live queue — **only element 1 remains**, and §6b deliberately downgraded it from
@@ -1026,12 +1034,36 @@ regulator** — §6b's audit stance is what makes these records evidentially usa
       banner that claimed "no runtime record" was itself FALSE once the self-record existed and is
       corrected. `.operator`'s header and the reporter's bound now name TWO writers — a property with an
       exception, which is the same move this design makes everywhere else.
-- [ ] **Per-client reply fifos (fifo option (b))** — deferred, and the choice is **reversible** because
+- [x] **Per-client reply fifos — DEFERRED (user, 2026-10-17).** 
+      **DECISION: stay with one request fifo + one reply fifo, single-client by CONVENTION, not
+      enforcement.** The choice is **reversible and purely additive** — the request line gains a reply
+      path when a second client ever exists — and no second client does. Deferring costs nothing;
+      building it now would be machinery for a user that does not exist. — deferred, and the choice is **reversible** because
       it is additive (the request line gains a reply path). Chosen now: one request fifo + one reply
       fifo, **single-client by convention, not enforcement** (a second client's replies interleave).
-- [ ] **Trial vs accepted GC roots** (§7.2) — re-scoped by the oscillator from a *retention* question
+- [x] **Trial vs accepted GC roots — DECIDED: the rule is the user's, N is OURS (2026-10-17).** 
+      **THE RULE (user, verbatim): a generation that was ACCEPTED AND LATER ROLLED BACK is a TRIAL;
+      one that has HELD CURRENT ACROSS N JUDGED BOOTS is ACCEPTED.** Rollback therefore DEMOTES
+      unconditionally, whatever the boot count says — a generation the substrate had to undo is
+      evidence AGAINST itself.
+      **N = 2, and it is chosen for SYMMETRY rather than taste:** this tree already condemns on **two
+      consecutive content failures** (`RECOVERY_CONTENT_FAIL_MAX = 2`, fx-init `init.zig:1050`), so two
+      successes as CURRENT to ACCEPT gives the same weight on the other side of the line. A "judged
+      boot" means a boot with a recorded verdict — `in-progress` is NOT a judgement and does not count.
+      **THE TENSION, stated rather than hidden:** an agent that supersedes a generation before its
+      second boot leaves it a TRIAL — which is CORRECT (it was an experiment) but has a consequence
+      worth naming: the accepted set is the KEPT history, not the COMPLETE history. That is the right
+      property for a GC root set and the wrong one for an audit, so anything that needs the full
+      history must read the store, never the accepted set.
+      **The number must be a NAMED, PINNED constant** (in the seat that applies it, cited to this
+      entry), never a literal — the same discipline `RECOVERY_CONTENT_FAIL_MAX` gets. — re-scoped by the oscillator from a *retention* question
       to a *liveness* one: trials that are accepted-and-rolled-back are noise.
-- [ ] **Is the image a cache or a blob?** (§7.5). Note the correction: `image.zig:40-57` measures
+- [x] **The image is a CACHE (user, 2026-10-17).** 
+      **DECISION: a CACHE** — rebuildable and verifiable, with its bytes pinned. The correction on
+      record is the reason this is even askable: `image.zig:40-57` measures fx-init's *image* pipeline,
+      and **fx-harness's own artifacts ARE byte-reproducible and path-independent** (static + stripped
+      is what makes an artifact content-addressable). A blob could only be TRUSTED; a cache can be
+      REBUILT and CHECKED, which is the difference the whole pin discipline exists to preserve. (§7.5). Note the correction: `image.zig:40-57` measures
       fx-init's *image* pipeline; **fx-harness's own artifacts ARE byte-reproducible**, and the two
       shipped ones are path-independent. Static + stripped is what makes an artifact content-addressable.
 
