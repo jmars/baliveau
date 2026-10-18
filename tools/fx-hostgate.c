@@ -916,12 +916,11 @@ static void log_flush(void) {
                 fprintf(f, ",\"exec\":%s", jexec);
                 free(jexec);
             }
-            /* S1: `sandbox` renders only beside `exec` (a host row whose spawn
+            /* S3: `sandbox` renders only beside `exec` (a host row whose spawn
              * recorded the spec it applied) — additive, so a guest row stays
-             * BYTE-IDENTICAL and a not-yet-migrated host row (host_cat /
-             * http_get before S2/S3) carries no such field at all.  It rides
-             * exec so a row can never carry a sandbox reading without the
-             * execution it describes (the loader refuses the reverse). */
+             * BYTE-IDENTICAL.  It rides exec so a row can never carry a
+             * sandbox reading without the execution it describes (the loader
+             * refuses the reverse). */
             if (r->exec && r->sandbox) {
                 char *jsb = json_str(r->sandbox);
                 fprintf(f, ",\"sandbox\":%s", jsb);
@@ -2537,7 +2536,7 @@ static int fh_catalog_nth(size_t idx, char *buf, size_t cap) {
  * or the pin check refuses — the refusal names both shas). */
 #ifndef FH_HOSTTOOL_SHA256
 #define FH_HOSTTOOL_SHA256 \
-    "f3d2c4b3cb276d509d6ab8d32d937efbab23208bc265f11d7088f82caac55508"
+    "848b7636c5add25017a07ece3842f724f619e65c7a320917235cfa913b63005c"
 #endif
 
 /* THE DECLARED PROGRAMS.  A host tool's executor is NOT a compiled-in
@@ -2546,34 +2545,38 @@ static int fh_catalog_nth(size_t idx, char *buf, size_t cap) {
  * (fork + execvpe with a SCRUBBED env — never system() — pipes, an explicit
  * DEADLINE and an explicit OUTPUT CAP), and the call's arguments go ON STDIN
  * AS JSON, NEVER interpolated into the command line.  host_time reads no
- * argument; host_cat's `path` and http_get's `url` are the classed
- * dimensions judged by the operator (D3), so each declares its arg_key.
+ * argument; host_cat's `path` is the classed dimension judged by the
+ * operator (D3), so it declares its arg_key.
  *
  * THE COST, STATED (the brief's instruction): "run a declared program" is a
  * MUCH LARGER lever than "the proxy does a GET", and on the host there is no
  * VM to bound it.  What restrains a host tool is: the registry being
  * operator-authored and PINNED, the SCRUBBED env, the per-call DEADLINE, the
- * OUTPUT CAP, and the ONE LOG — not the executor's own narrowness.  A
- * hostile or buggy program can do anything the host user can; the gate keeps
- * that lever PINNED, BOUNDED and VISIBLE, not narrow.
+ * OUTPUT CAP, the ONE LOG, and the SANDBOX — not the executor's own
+ * narrowness.
  *
- * THE SANDBOX (S1, palisade — built): the spawn in host_exec now WRAPS the
- * floored tool in the pinned stage3 (execve stage3 [PROMISES LANDLOCK --]
- * program), keeping the scrubbed env, the deadline and the output cap.  A
- * tool's floor is the LEAST it needs, MEASURED from ldd; host_time is the ONE
- * tool S1 floors (host_cat's judged-path unveil is S2, http_get's inet+dns is
- * S3 — they carry NULL floors and spawn unsandboxed until then).  There is NO
- * unsandboxed FALLBACK for a floored tool: a missing stage3 is a startup
- * refusal (--verify) and a per-call refusal BY NAME.  The HONEST LIMITS are
- * stated at the spawn and on each floor: promises are coarse (`inet` is any
- * destination), the sandbox is PER-PROCESS not per-call, and stage3 drops no
- * uid.
+ * THE SANDBOX (S3, REVISED): the spawn in host_exec UNCONDITIONALLY wraps
+ * every tool in the pinned stage3 (execve stage3 [PROMISES LANDLOCK --]
+ * program), keeping the scrubbed env, the deadline and the output cap.  The
+ * sandbox is a property of the EXECUTOR, not of the tool: the BASELINE
+ * (FH_BASELINE_PROMISES + FH_BASELINE_LANDLOCK — what a dynamic glibc program
+ * needs to run at all) is applied to every spawn, and a tool's EXTRA
+ * capabilities come from a SIDECAR file next to its program binary, read at
+ * startup.  A tool with no sidecar runs under the baseline only — which
+ * INVERTS THE FAILURE DIRECTION: forgetting to declare a capability means
+ * baseline-only and a loud first refusal, never a silent unsandboxed run.
+ * There is NO unsandboxed fallback: a missing stage3 is a startup refusal
+ * (--verify) and a per-call refusal BY NAME.  The HONEST LIMITS are stated
+ * here once: promises are coarse (`inet` is any destination), the sandbox is
+ * PER-PROCESS not per-call, stage3 drops no uid, and the baseline stops a
+ * tool from reaching the network or writing files — it does not stop a tool
+ * from doing anything within the capabilities it legitimately declared.
  *
- * PROGRAM RESOLUTION: each `program` is a NAME (e.g. "fx-http-get").  The
+ * PROGRAM RESOLUTION: each `program` is a NAME (e.g. "fx-host-cat").  The
  * child is spawned with a PATH-only env (the mcp_client discipline — the
  * daemon's full environ never crosses, so no secret leaks) whose PATH is the
  * proxy's own executable directory, so the pinned registry never hardcodes a
- * build path and the binaries travel next to the proxy.
+ * build path and the binaries (and their sidecars) travel next to the proxy.
  *
  * THE PROGRAM CONTRACT (stdin -> stdout), minimal and pinned by the gate:
  *   stdin   the call's arguments AS JSON, verbatim;
@@ -2602,18 +2605,13 @@ struct host_tool {
                                  * argument (the startup contract: reads_arg => arg_key) */
     unsigned long deadline_ms;  /* the per-call spawn deadline */
     size_t       out_cap;       /* the per-call stdout cap */
-    /* S1 (palisade): the COMPILED-IN FLOOR — the LEAST the tool needs, MEASURED
-     * from ldd on this host, never guessed.  The tools are dynamically linked
-     * glibc, so every floor needs `rpath`+`prot_exec` for ld.so/libc and the
-     * landlock floor must unveil the LOADER itself (the kernel execs it, so it
-     * needs :rx, not :r).  promises_floor is the pledge token string (passed to
-     * stage3 as ONE argv word); landlock_floor is the STATIC landlock fragment
-     * (loader + libc), to which the spawn prepends the resolved program path
-     * (so the binary itself is always unveiled).  NULL = this tool is NOT
-     * sandboxed yet — its floor arrives with its slice (host_cat's judged-path
-     * unveil is S2, http_get's inet+dns is S3). */
-    const char *promises_floor;
-    const char *landlock_floor;
+    /* S3 (REVISED): the registry carries NO per-tool sandbox knowledge — the
+     * sandbox is a property of the EXECUTOR, not of the tool.  Every spawn is
+     * wrapped in stage3 under the executor-owned BASELINE (below), plus the
+     * tool's own SIDECAR (a file next to its program binary, read at startup,
+     * declaring what it needs BEYOND the baseline).  A tool with no sidecar
+     * runs under the baseline only — there is no "unsandboxed" field to fall
+     * into. */
 };
 
 /* The program NAMES are build-time overridable for the gate's mutation arms
@@ -2626,46 +2624,33 @@ struct host_tool {
 #ifndef FH_HOST_CAT_PROGRAM
 #define FH_HOST_CAT_PROGRAM "fx-host-cat"
 #endif
-#ifndef FH_HTTP_GET_PROGRAM
-#define FH_HTTP_GET_PROGRAM "fx-http-get"
-#endif
 
-/* S1: the host_time FLOOR, MEASURED from ldd on this host (NOT guessed).
- *
- *   build/fx-host-time is a dynamically linked glibc ELF (interpreter
- *   /lib64/ld-linux-x86-64.so.2, libc.so.6 only).  Measured by running the
- *   real stage3 against the real binary with candidate floors:
- *     - the LOADER needs `:rx`, not `:r`: the kernel execs the interpreter, so
- *       Landlock must grant EXECUTE on it (with `:r` alone the exec failed
- *       EACCES);
- *     - `/etc/ld.so.cache:r` is NOT required: with only /lib64 unveiled, ld.so
- *       falls back to its default search path and the binary loads (measured);
- *     - promises "stdio rpath exec prot_exec" is the LEAST that works: `exec`
- *       is required (stage3's own execvp runs under the merged filter), and
- *       `prot_exec` is required for a dynamic binary to map its segments.
- *   The gate re-measures the ldd paths and refuses on drift (a glibc update
- *   adding a needed path fails LOUD, never silently). */
-#define FH_HOST_TIME_PROMISES_FLOOR "stdio rpath exec prot_exec"
-#define FH_HOST_TIME_LANDLOCK_FLOOR \
+/* S3 (REVISED): THE BASELINE BELONGS TO THE EXECUTOR, not to any tool.  It is
+ * what a dynamically linked glibc program needs to RUN AT ALL, identical for
+ * every tool — which is why writing it once here is right and writing it per
+ * tool was already a smell.  MEASURED from ldd on this host (NOT guessed):
+ *   - the LOADER needs `:rx`, not `:r`: the kernel execs the interpreter, so
+ *     Landlock must grant EXECUTE on it (with `:r` alone the exec failed
+ *     EACCES);
+ *   - `/etc/ld.so.cache:r` is NOT required: with only /lib64 unveiled, ld.so
+ *     falls back to its default search path and the binary loads (measured);
+ *   - promises "stdio rpath exec prot_exec" is the LEAST that works: `exec`
+ *     is required (stage3's own execvp runs under the merged filter), and
+ *     `prot_exec` is required for a dynamic binary to map its segments.
+ * The gate re-measures the ldd paths and refuses on drift (a glibc update
+ * adding a needed path fails LOUD, never silently).  The spawn prepends the
+ * resolved program path (:rx, so stage3 can exec it) and — for a PATH tool —
+ * the per-call judged path (:r, narrowed by ops-sandbox.tsv). */
+#define FH_BASELINE_PROMISES   "stdio rpath exec prot_exec"
+#define FH_BASELINE_LANDLOCK   \
     "/lib64/ld-linux-x86-64.so.2:rx;/lib64/libc.so.6:r"
-
-/* S2: host_cat's floor is the SAME measured static floor as host_time — both
- * are dynamically linked glibc readers (interpreter + libc only), so the
- * promises are identical and the static landlock unveils the loader (:rx) and
- * libc (:r).  The difference is host_cat's PER-CALL judged path, which the
- * spawn unveils exactly as `<judged path>:r` (S2's per-call unveil), narrowed
- * by the operator's ops-sandbox.tsv allowlist.  Reusing the SAME macros keeps
- * ONE spelling of the shared floor. */
-#define FH_HOST_CAT_PROMISES_FLOOR FH_HOST_TIME_PROMISES_FLOOR
-#define FH_HOST_CAT_LANDLOCK_FLOOR  FH_HOST_TIME_LANDLOCK_FLOOR
 
 
 /* THE CLOSED TABLE.  A call is executed only if its name is found HERE, so the
  * set of things the host can run is a source-level constant — the same
  * cannot-invent-a-tool-name property the closed fx-* verb set gives the
- * guest.  host_cat (path) and http_get (url) are the classed tools; their
- * arguments are judged by the operator's tables (ops-aliases.tsv for the
- * path dimension, ops-hosts.tsv for the authority dimension) via D3, and an
+ * guest.  host_cat (path) is the classed tool; its argument is judged by the
+ * operator's alias table (ops-aliases.tsv, the path dimension) via D3, and an
  * argument matching NO class row is refused by name (unclassed-arg). */
 #ifdef FH_MUTANT_EXTRA_UNCLASSED_TOOL
 /* S2-FIX 4 MUTATION BLIND (build/fx-hostgate-extrauncl): ONE EXTRA registry
@@ -2676,20 +2661,16 @@ struct host_tool {
  * crosses unjudged.  Never a product build. */
 #define FH_HOST_TOOL_EXTRA \
     { "host_fetch", FH_HOST_CAT_PROGRAM, NULL, NULL, 1, \
-      FH_HOSTTOOL_DEADLINE_MS, FH_HOSTTOOL_OUT_CAP, NULL, NULL },
+      FH_HOSTTOOL_DEADLINE_MS, FH_HOSTTOOL_OUT_CAP },
 #else
 #define FH_HOST_TOOL_EXTRA
 #endif
 
 static const struct host_tool fh_host_tools[] = {
     { FH_HOSTTOOL_NAME, FH_HOST_TIME_PROGRAM, NULL, NULL, 0,
-      FH_HOSTTOOL_DEADLINE_MS, FH_HOSTTOOL_OUT_CAP,
-      FH_HOST_TIME_PROMISES_FLOOR, FH_HOST_TIME_LANDLOCK_FLOOR },
+      FH_HOSTTOOL_DEADLINE_MS, FH_HOSTTOOL_OUT_CAP },
     { "host_cat", FH_HOST_CAT_PROGRAM, NULL, "path", 1,
-      FH_HOSTTOOL_DEADLINE_MS, FH_HOSTTOOL_OUT_CAP,
-      FH_HOST_CAT_PROMISES_FLOOR, FH_HOST_CAT_LANDLOCK_FLOOR },
-    { "http_get", FH_HTTP_GET_PROGRAM, NULL, "url", 1,
-      FH_HOSTTOOL_DEADLINE_MS, FH_HOSTTOOL_OUT_CAP, NULL, NULL },
+      FH_HOSTTOOL_DEADLINE_MS, FH_HOSTTOOL_OUT_CAP },
     FH_HOST_TOOL_EXTRA
 };
 
@@ -2711,20 +2692,27 @@ static int fh_host_tool_is(const char *name) {
 }
 #endif /* !FH_MUTANT_NO_OPS_SEAT */
 
-/* The registry's PINNED BYTES, rendered from the ONE table.  S1 extends the
- * render to name + promises_floor + landlock_floor, so a FLOOR edit is a
- * re-pin (visible to the audit boot line and the reach-tool rows) — the pin
- * covers what the sandbox actually allows, not just the name list.  A NULL
- * floor renders as an empty field (that tool is not sandboxed yet). */
+/* The registry's PINNED BYTES, rendered from the ONE table.  S3 (REVISED)
+ * renders name + arg_key + reads_arg — the STRUCTURAL contract (the closed
+ * name list and which classed key the judge extracts for each), NOT any
+ * sandbox spec and NOT the program name: the sandbox is the executor's
+ * baseline + the tool's sidecar (a file beside the binary, read at startup,
+ * not in this table), and `program` is BUILD-TIME OVERRIDABLE (the gate
+ * substitutes mutant programs via -DFH_HOST_CAT_PROGRAM/-DFH_HOST_TIME_PROGRAM,
+ * so pinning it would break every such arm).  A classed-key change is a
+ * re-pin; a re-binding (host_time made to run something else) remains a
+ * reviewed C-code edit, exactly as before. */
 static void fh_host_tool_catalog(struct tbuf *t) {
     for (size_t i = 0; i < fh_host_tool_count(); i++) {
         tb_puts(t, fh_host_tools[i].name);
         tb_puts(t, "\t");
-        tb_puts(t, fh_host_tools[i].promises_floor
-                        ? fh_host_tools[i].promises_floor : "");
+        tb_puts(t, fh_host_tools[i].arg_key
+                        ? fh_host_tools[i].arg_key : "");
         tb_puts(t, "\t");
-        tb_puts(t, fh_host_tools[i].landlock_floor
-                        ? fh_host_tools[i].landlock_floor : "");
+        char rd[2];
+        rd[0] = (char)('0' + (fh_host_tools[i].reads_arg ? 1 : 0));
+        rd[1] = '\0';
+        tb_puts(t, rd);
         tb_puts(t, "\n");
     }
 }
@@ -2759,10 +2747,10 @@ static char *host_exe_dir(void) {
     return xstrdup(exe);
 }
 
-/* S2 forward: the composed (floor ∩ row) sandbox lookups — defined after the
- * OPS struct (they read OPS.srow), used here by the spawn.  Under
+/* S2 forward: the composed (baseline+sidecar ∩ row) sandbox lookups — defined
+ * after the OPS struct (they read OPS.srow), used here by the spawn.  Under
  * FH_MUTANT_NO_SANDBOX_TABLE the table is loaded but NOT applied, so both
- * return the floor. */
+ * return the baseline+sidecar. */
 static const char *fh_sandbox_promises(const struct host_tool *ht);
 static int fh_sandbox_allow(const struct host_tool *ht, const char *path);
 
@@ -2777,43 +2765,137 @@ static int fh_sandbox_allow(const struct host_tool *ht, const char *path);
  * not the executor's named one). */
 #define FH_HOST_PATH_MAX 200u
 
-/* S1/S2: THE EFFECTIVE LANDLOCK SPEC — ONE SPELLING.  Renders the resolved
- * program path (unveiled :rx so stage3 can exec it) prepended to the tool's
- * STATIC floor, plus — for a floored PATH tool — the per-call judged path
- * unveiled `:r` (S2's per-call unveil), but ONLY when the composed sandbox
- * (floor ∩ row) allows it: no ops-sandbox.tsv row (silence = the floor), or
- * the row's landlock allowlist names the judged path.  host_exec builds the
- * stage3 argv FROM this exact string, and the row's `sandbox` field records
- * the SAME string (plus the promises), so the recorded spec can never drift
- * from what the argv carried.  `judged_path` is ops_judge's CANONICALIZED
- * path — the judge is the ONE canonicalizer, and no second spelling is ever
- * computed at the spawn. */
+/* S3 (REVISED): THE SIDECAR — the tool's own declaration of what it needs
+ * BEYOND the executor's baseline.  A file "<program>.sidecar" next to the
+ * program binary, one line "<extra-promises><TAB><extra-landlock>".  The
+ * proxy reads it at startup (never at the spawn) and stores, per tool, the
+ * composed EFFECTIVE promises (baseline + extras) and the sidecar's extra
+ * landlock fragment.  A tool with NO sidecar has empty extras: it runs under
+ * the baseline only.  This INVERTS THE FAILURE DIRECTION: forgetting to
+ * declare a capability now means baseline-only and a loud first refusal,
+ * never a silent unsandboxed run. */
+#define FH_MAX_HOST_TOOLS 16
+#define FH_SIDECAR_SUFFIX ".sidecar"
+static char *fh_sb_promises[FH_MAX_HOST_TOOLS]; /* effective promises (owned) */
+static char *fh_sb_landlock[FH_MAX_HOST_TOOLS]; /* sidecar's extra landlock (owned) */
+static int   fh_sb_loaded;
+
+/* The 23-token cosmocc pledge vocabulary — the ONE spelling of what a sidecar
+ * (the new source of extra tokens) may declare.  Deliberately mirrored from
+ * the vendored stage3's KNOWN_TOKENS: a token outside this set is refused at
+ * STARTUP here, and a vendor adding a token is fail-closed by construction (a
+ * new token is unspellable by the sidecar until this list is reviewed). */
+static const char *const FH_KNOWN_TOKENS[] = {
+    "stdio", "rpath", "wpath", "cpath", "dpath", "flock", "fattr", "inet",
+    "unix",  "dns",   "tty",   "recvfd", "proc",  "exec",  "id",   "unveil",
+    "sendfd", "settime", "prot_exec", "vminfo", "tmppath", "chown", "anet",
+    NULL,
+};
+
+static int fh_token_known(const char *tok) {
+    for (size_t i = 0; FH_KNOWN_TOKENS[i]; i++)
+        if (strcmp(tok, FH_KNOWN_TOKENS[i]) == 0) return 1;
+    return 0;
+}
+
+/* Is `promises` (a space-joined token string) composed of known tokens only?
+ * Used to validate the SIDECAR (the row's tokens are checked as a SUBSET of
+ * the effective set instead, which transitively validates them). */
+static int fh_promises_all_known(const char *promises) {
+    const char *p = promises ? promises : "";
+    for (;;) {
+        while (*p == ' ' || *p == '\t') p++;
+        if (!*p) return 1;
+        const char *e = p;
+        while (*e && *e != ' ' && *e != '\t') e++;
+        char tok[64];
+        if ((size_t)(e - p) >= sizeof tok) return 0;
+        memcpy(tok, p, (size_t)(e - p));
+        tok[e - p] = '\0';
+        if (!fh_token_known(tok)) return 0;
+        p = e;
+    }
+}
+
+/* Is `spec` ("path:perm;...", perm over {r,w,x,c}) a well-formed sidecar
+ * landlock fragment?  The sidecar is the tool's OWN declaration, so any perm
+ * is admitted (unlike the ops-sandbox row, which may only be read-only); only
+ * the GRAMMAR is checked here. */
+static int fh_landlock_fragment_ok(const char *spec) {
+    if (!spec || !*spec) return 1;
+    char *dup = xstrdup(spec);
+    int ok = 1;
+    char *save = NULL;
+    for (char *entry = strtok_r(dup, ";", &save); entry;
+         entry = strtok_r(NULL, ";", &save)) {
+        while (*entry == ' ' || *entry == '\t') entry++;
+        if (!*entry) continue;
+        char *colon = strrchr(entry, ':');
+        char *pp, *perm;
+        if (colon) { *colon = '\0'; pp = entry; perm = colon + 1; }
+        else { pp = entry; perm = (char *)"r"; }
+        if (pp[0] != '/' || strlen(pp) < 2) { ok = 0; break; }
+        if (!*perm) { ok = 0; break; }
+        for (const char *q = perm; *q; q++)
+            if (!strchr("rwxc", *q)) { ok = 0; break; }
+        if (!ok) break;
+    }
+    free(dup);
+    return ok;
+}
+
+/* S3 (REVISED): THE STATIC LANDLOCK — ONE SPELLING.  The baseline (loader
+ * :rx + libc :r) plus the tool's sidecar extra, rendered the SAME way by
+ * --print-sandbox and by the spawn (which prepends the resolved program path
+ * :rx and appends the per-call judged path :r). */
+static void fh_static_landlock(const struct host_tool *ht, struct tbuf *t) {
+    size_t idx = (size_t)(ht - fh_host_tools);
+    tb_puts(t, FH_BASELINE_LANDLOCK);
+    if (idx < FH_MAX_HOST_TOOLS && fh_sb_landlock[idx] && *fh_sb_landlock[idx]) {
+        tb_puts(t, ";");
+        tb_puts(t, fh_sb_landlock[idx]);
+    }
+}
+
+/* THE EFFECTIVE LANDLOCK SPEC — ONE SPELLING.  Renders the resolved program
+ * path (unveiled :rx so stage3 can exec it), the baseline + sidecar static
+ * landlock, plus — for a PATH tool — the per-call judged path unveiled `:r`
+ * (S2's per-call unveil), but ONLY when the composed sandbox
+ * (baseline+sidecar ∩ row) allows it: no ops-sandbox.tsv row (silence = the
+ * declaration), or the row's landlock allowlist names the judged path.
+ * host_exec builds the stage3 argv FROM this exact string, and the row's
+ * `sandbox` field records the SAME string (plus the promises), so the
+ * recorded spec can never drift from what the argv carried.  `judged_path`
+ * is ops_judge's CANONICALIZED path — the judge is the ONE canonicalizer,
+ * and no second spelling is ever computed at the spawn. */
 static void host_effective_landlock(const struct host_tool *ht,
                                     const char *program_path,
                                     const char *judged_path, struct tbuf *t) {
     tb_puts(t, program_path);
-    tb_puts(t, ":rx");
-    if (ht->landlock_floor && *ht->landlock_floor) {
-        tb_puts(t, ";");
-        tb_puts(t, ht->landlock_floor);
-    }
+    tb_puts(t, ":rx;");
+    fh_static_landlock(ht, t);
+    /* Unveil the judged path :r ONLY when it is representable in stage3's
+     * 'path:perm;...' spec AND exists: a ';' or ':' in the path is a spec
+     * delimiter (unrepresentable — a model-supplied path would corrupt the
+     * spec), and a non-existent path cannot be read anyway, so unveiling it
+     * would make stage3 die with its OWN ENOENT instead of the program
+     * rendering a clean refusal.  Skipping the unveil is FAIL-CLOSED: the
+     * program's own open(2) is denied by Landlock (or returns ENOENT), never
+     * admitted. */
     if (judged_path && *judged_path &&
         strlen(judged_path) <= FH_HOST_PATH_MAX &&
-        fh_sandbox_allow(ht, judged_path)) {
+        !strpbrk(judged_path, ";:") &&
+        fh_sandbox_allow(ht, judged_path) &&
+        access(judged_path, F_OK) == 0) {
         tb_puts(t, ";");
         tb_puts(t, judged_path);
         tb_puts(t, ":r");
     }
 }
 
-/* S1: THE STARTUP SELF-CHECK OF THE FLOORS — the same refusal posture as the
- * registry pin check, extended to the floor's own invariants.  A floor without
- * `exec` fails EVERY call (stage3's own execvp runs under the merged filter and
- * returns EPERM — measured) — a total failure masquerading as "the tool is
- * broken" — and a floor without `stdio` breaks the program contract, so both
- * are refused here rather than discovered per call.  Only floored tools are
- * checked (a NULL floor is a not-yet-migrated tool, not an empty sandbox). */
-static int floor_has_token(const char *promises, const char *tok) {
+/* Is `tok` one of the tokens in the space-joined `promises`?  (Also used by
+ * the ops-sandbox row's subset check, below.) */
+static int fh_promises_has_token(const char *promises, const char *tok) {
     if (!promises) return 0;
     size_t tl = strlen(tok);
     const char *p = promises;
@@ -2827,51 +2909,144 @@ static int floor_has_token(const char *promises, const char *tok) {
     }
 }
 
-static void fh_floor_check(void) {
+/* S3 (REVISED): THE SIDECAR LOAD — the startup composition.  For every tool,
+ * read "<program>.sidecar" (next to the binary, resolved the SAME way the
+ * spawn resolves the program), validate its grammar, and store the composed
+ * EFFECTIVE promises (baseline + extras) and the sidecar's extra landlock.
+ * A missing sidecar is the baseline-only case (empty extras).  An UNREADABLE
+ * or MALFORMED sidecar is a LOUD startup refusal — a tool whose declaration
+ * cannot be honoured must not silently degrade to baseline (the old fail-open
+ * direction).  Idempotent: --print-sandbox and the normal boot both call it. */
+static void fh_sandbox_load(void) {
+    if (fh_sb_loaded) return;
+    if (fh_host_tool_count() > FH_MAX_HOST_TOOLS) {
+        note("FATAL: the host-tool registry has %zu tools, over the sandbox "
+             "sidecar table's bound %d; REFUSING TO START",
+             fh_host_tool_count(), FH_MAX_HOST_TOOLS);
+        exit(1);
+    }
+    char *exe_dir = host_exe_dir();
+    if (!exe_dir) {
+        note("FATAL: cannot resolve this proxy's own directory (/proc/self/exe), "
+             "so the tools' sidecars cannot be located; REFUSING TO START");
+        exit(1);
+    }
     for (size_t i = 0; i < fh_host_tool_count(); i++) {
         const struct host_tool *ht = &fh_host_tools[i];
-        if (!ht->promises_floor && !ht->landlock_floor) continue; /* not yet */
-        if (!ht->promises_floor || !*ht->promises_floor) {
-            note("FATAL: the host tool \"%s\" declares a landlock floor but an "
-                 "EMPTY promise floor — the sandbox would be on but the promise "
-                 "set empty; REFUSING TO START", ht->name);
+        size_t pl = strlen(exe_dir) + 1 + strlen(ht->program) +
+                    strlen(FH_SIDECAR_SUFFIX) + 1;
+        char *sp = malloc(pl);
+        if (!sp) { free(exe_dir); exit(1); }
+        snprintf(sp, pl, "%s/%s%s", exe_dir, ht->program, FH_SIDECAR_SUFFIX);
+
+        FILE *f = fopen(sp, "rb");
+        if (!f) {
+            if (errno != ENOENT) {
+                note("FATAL: the sidecar %s for the host tool \"%s\" exists but "
+                     "cannot be read (%s) — a declaration that cannot be "
+                     "honoured must not silently degrade to the baseline; "
+                     "REFUSING TO START", sp, ht->name, strerror(errno));
+                free(sp); free(exe_dir);
+                exit(1);
+            }
+            free(sp);
+            fh_sb_promises[i] = xstrdup(FH_BASELINE_PROMISES);
+            fh_sb_landlock[i] = xstrdup("");
+            continue; /* no sidecar = baseline only (the fail-closed default) */
+        }
+        char buf[1024];
+        size_t n = fread(buf, 1, sizeof buf - 1, f);
+        int overflow = 0;
+        if (n == sizeof buf - 1 && fgetc(f) != EOF) overflow = 1;
+        fclose(f);
+        free(sp);
+        if (overflow) {
+            note("FATAL: the sidecar for the host tool \"%s\" is over %zu bytes "
+                 "— a declaration that large is not a capability list; "
+                 "REFUSING TO START", ht->name, sizeof buf - 1);
+            free(exe_dir);
             exit(1);
         }
-        if (!ht->landlock_floor || !*ht->landlock_floor) {
-            note("FATAL: the host tool \"%s\" declares a promise floor but an "
-                 "EMPTY landlock floor — the loader would be un-unveiled and "
-                 "EVERY call would die EACCES; REFUSING TO START", ht->name);
+        buf[n] = '\0';
+        /* strip a trailing newline */
+        while (n > 0 && (buf[n-1] == '\n' || buf[n-1] == '\r')) buf[--n] = '\0';
+        /* one line: <extra-promises><TAB><extra-landlock> (both may be empty) */
+        char *tab = strchr(buf, '\t');
+        char *extra_promises, *extra_landlock;
+        if (tab) { *tab = '\0'; extra_promises = buf; extra_landlock = tab + 1; }
+        else { extra_promises = buf; extra_landlock = (char *)""; }
+        if (strchr(extra_promises, '\n') || strchr(extra_landlock, '\n') ||
+            strchr(extra_promises, '\r') || strchr(extra_landlock, '\r')) {
+            note("FATAL: the sidecar for the host tool \"%s\" has more than one "
+                 "line — the declaration is exactly one "
+                 "promises<TAB>landlock line; REFUSING TO START", ht->name);
+            free(exe_dir);
             exit(1);
         }
-        if (!floor_has_token(ht->promises_floor, "stdio")) {
-            note("FATAL: the host tool \"%s\" floor lacks `stdio` — the program "
-                 "contract (stdin/stdout) would break on every call; REFUSING TO "
-                 "START", ht->name);
+        if (!fh_promises_all_known(extra_promises)) {
+            note("FATAL: the sidecar for the host tool \"%s\" declares a promise "
+                 "token outside the 23-token cosmocc pledge vocabulary "
+                 "(\"%s\") — a typo must be refused LOUD, never silently "
+                 "granted or dropped; REFUSING TO START",
+                 ht->name, extra_promises);
+            free(exe_dir);
             exit(1);
         }
-        if (!floor_has_token(ht->promises_floor, "exec")) {
-            note("FATAL: the host tool \"%s\" floor lacks `exec` — stage3's own "
-                 "execvp runs under the merged filter and returns EPERM, so "
-                 "EVERY call would be refused (a total failure); REFUSING TO "
-                 "START", ht->name);
+        if (!fh_landlock_fragment_ok(extra_landlock)) {
+            note("FATAL: the sidecar for the host tool \"%s\" has a malformed "
+                 "landlock fragment (\"%s\") — each entry is "
+                 "path:perm with an absolute path and perms over {r,w,x,c}; "
+                 "REFUSING TO START", ht->name, extra_landlock);
+            free(exe_dir);
             exit(1);
         }
+        size_t el = strlen(extra_promises);
+        while (el > 0 && (extra_promises[el-1] == ' ' || extra_promises[el-1] == '\t'))
+            extra_promises[--el] = '\0';
+        while (*extra_promises == ' ' || *extra_promises == '\t') extra_promises++;
+        fh_sb_landlock[i] = xstrdup(extra_landlock);
+        if (*extra_promises) {
+            size_t pl2 = strlen(FH_BASELINE_PROMISES) + 1 + strlen(extra_promises) + 1;
+            fh_sb_promises[i] = malloc(pl2);
+            if (!fh_sb_promises[i]) { free(exe_dir); exit(1); }
+            snprintf(fh_sb_promises[i], pl2, "%s %s",
+                     FH_BASELINE_PROMISES, extra_promises);
+        } else {
+            fh_sb_promises[i] = xstrdup(FH_BASELINE_PROMISES);
+        }
+    }
+    free(exe_dir);
+    fh_sb_loaded = 1;
+}
+
+/* S3 (REVISED): THE BASELINE SELF-CHECK — the executor's own baseline is a
+ * compile-time constant, but its two load-bearing tokens are asserted at
+ * startup anyway (a floor without `exec` fails EVERY call — stage3's own
+ * execvp runs under the merged filter and returns EPERM — and one without
+ * `stdio` breaks the program contract).  Cheap, and the refusal posture is
+ * the same as the registry pin check. */
+static void fh_baseline_check(void) {
+    if (!fh_promises_has_token(FH_BASELINE_PROMISES, "stdio")) {
+        note("FATAL: the executor's baseline lacks `stdio` — the program "
+             "contract would break on every call; REFUSING TO START");
+        exit(1);
+    }
+    if (!fh_promises_has_token(FH_BASELINE_PROMISES, "exec")) {
+        note("FATAL: the executor's baseline lacks `exec` — stage3's own "
+             "execvp runs under the merged filter and returns EPERM, so EVERY "
+             "call would be refused (a total failure); REFUSING TO START");
+        exit(1);
     }
 }
 
-/* S1: THE STARTUP --verify REFUSAL.  The proxy runs the pinned stage3's OWN
+/* S3: THE STARTUP --verify REFUSAL.  The proxy runs the pinned stage3's OWN
  * verification (--verify) once at boot, before the slave path is published: a
  * stage3 that is MISSING, not executable, or present-but-INERT (a swapped or
  * regressed binary whose Landlock/seccomp no longer enforces) refuses the boot
  * loudly, naming the reason.  A sandbox that is present but broken must not be
  * silently used — "the proxy started" is the last moment a reader could be
- * told.  Runs only when at least one tool is floored (otherwise there is no
- * sandbox to verify). */
+ * told.  Every spawn is wrapped, so the verify runs unconditionally. */
 static void fh_sandbox_verify(void) {
-    int any_floor = 0;
-    for (size_t i = 0; i < fh_host_tool_count(); i++)
-        if (fh_host_tools[i].promises_floor) { any_floor = 1; break; }
-    if (!any_floor) return;
 
     char *exe_dir = host_exe_dir();
     if (!exe_dir) {
@@ -2981,14 +3156,15 @@ static char *host_exec(const struct host_tool *ht, const char *args_json,
     }
     snprintf(full, flen, "%s/%s", exe_dir, ht->program);
 
-    /* S1: the sandbox spec (promises + the effective landlock), computed ONCE
-     * here and used BOTH for the stage3 argv below AND for the row's `sandbox`
-     * field — one spelling, so the recorded spec cannot drift from what ran. */
+    /* S3 (REVISED): the sandbox spec (promises + the effective landlock),
+     * computed ONCE here and used BOTH for the stage3 argv below AND for the
+     * row's `sandbox` field — one spelling, so the recorded spec cannot drift
+     * from what ran.  EVERY spawn computes it: the wrap is UNCONDITIONAL, there
+     * is no per-tool conditional and no "unsandboxed" branch. */
     char *landlock_spec = NULL;
     char *stage3_path = NULL;
     char *sandbox = NULL;
-    int has_floor = ht->promises_floor != NULL;
-    if (has_floor) {
+    {
         struct tbuf lk = {0};
         host_effective_landlock(ht, full, judged_path, &lk);
         landlock_spec = lk.p;
@@ -3011,7 +3187,7 @@ static char *host_exec(const struct host_tool *ht, const char *args_json,
         }
         snprintf(sandbox, speclen, "%s %s", promises, landlock_spec);
     }
-    int wrap = has_floor;
+    int wrap = 1;
 #ifdef FH_MUTANT_NO_STAGE3
     /* the blind (FH_MUTANT_NO_STAGE3): the spec is still COMPUTED and RECORDED
      * above (the row's `sandbox` field claims the call was sandboxed), but NOT
@@ -3237,7 +3413,7 @@ static char *host_exec(const struct host_tool *ht, const char *args_json,
         result = xmalloc(300);
         snprintf(result, 300,
                  "(hostgate: REFUSED — the sandbox binary \"stage3\" could not "
-                 "be executed for the host tool \"%s\"; a floored tool NEVER "
+                 "be executed for the host tool \"%s\"; a host tool NEVER "
                  "falls back to an unsandboxed exec, so the call is refused by "
                  "name)", ht->name);
     } else {
@@ -3282,10 +3458,12 @@ static void fh_host_tool_check(void) {
         exit(1);
     }
     free(t.p);
-    /* S1: the FLOOR self-check (stdio+exec required, no empty floor) and the
+    /* S3 (REVISED): load the sidecars (the baseline + per-tool declaration
+     * composition), assert the baseline's load-bearing tokens, and run the
      * startup --verify refusal (the pinned stage3 must actually enforce, or the
-     * proxy refuses the boot).  Both run BEFORE the slave path is published. */
-    fh_floor_check();
+     * proxy refuses the boot).  All run BEFORE the slave path is published. */
+    fh_sandbox_load();
+    fh_baseline_check();
     fh_sandbox_verify();
     /* S2-FIX 4: THE CLASSED-ARGUMENT CONTRACT — a tool that READS an argument
      * must DECLARE the key that argument is judged by.  The judge extracts by
@@ -3631,13 +3809,25 @@ static int ops_seat_present(void) {
 #endif
 }
 
-/* ── S2: the composed (floor ∩ row) sandbox lookups ───────────────────────
- * The composition is computed ONCE at startup by ops_load_sandbox (the
- * operator's ops-sandbox.tsv, validated against the ONE registry) and read
- * here at spawn.  A tool with no row has no entry: silence = the floor.  The
- * lookups are compiled UNCONDITIONALLY (outside the NO_OPS_SEAT guard) so the
- * spawn works in every build; under FH_MUTANT_NO_SANDBOX_TABLE the table is
- * LOADED but NOT APPLIED, so both return the floor. */
+/* ── S2: the composed (baseline+sidecar ∩ row) sandbox lookups ─────────────
+ * The composition is computed ONCE at startup: fh_sandbox_load reads each
+ * tool's SIDECAR into fh_sb_promises/fh_sb_landlock, and ops_load_sandbox
+ * (the operator's ops-sandbox.tsv, validated against that effective set)
+ * narrows it.  A tool with no row has no entry: silence = its declaration
+ * (baseline + sidecar).  The lookups are compiled UNCONDITIONALLY (outside
+ * the NO_OPS_SEAT guard) so the spawn works in every build; under
+ * FH_MUTANT_NO_SANDBOX_TABLE the table is LOADED but NOT APPLIED, so both
+ * return the declaration. */
+static size_t fh_tool_index(const struct host_tool *ht) {
+    return (size_t)(ht - fh_host_tools);
+}
+
+static const char *fh_tool_effective_promises(const struct host_tool *ht) {
+    size_t i = fh_tool_index(ht);
+    return (i < FH_MAX_HOST_TOOLS && fh_sb_promises[i]) ? fh_sb_promises[i]
+                                                        : FH_BASELINE_PROMISES;
+}
+
 #ifndef FH_MUTANT_NO_SANDBOX_TABLE
 static const FhSandboxRow *fh_sandbox_find(const char *name) {
     if (!name) return NULL;
@@ -3649,14 +3839,14 @@ static const FhSandboxRow *fh_sandbox_find(const char *name) {
 
 static const char *fh_sandbox_promises(const struct host_tool *ht) {
 #ifdef FH_MUTANT_NO_SANDBOX_TABLE
-    return ht->promises_floor;
+    return fh_tool_effective_promises(ht);
 #else
     const FhSandboxRow *sr = fh_sandbox_find(ht->name);
-    return (sr && sr->promises) ? sr->promises : ht->promises_floor;
+    return (sr && sr->promises) ? sr->promises : fh_tool_effective_promises(ht);
 #endif
 }
 
-/* May the spawn unveil `path` (the per-call judged path) :r?  The floor
+/* May the spawn unveil `path` (the per-call judged path) :r?  The declaration
  * (silence, or the blind) allows it; a composed row narrows it to the row's
  * landlock allowlist. */
 static int fh_sandbox_allow(const struct host_tool *ht, const char *path) {
@@ -4009,9 +4199,12 @@ static void ops_load_aliases(const char *path, char *tsv_owned) {
  * (scheme dropped, host lowercased, port dropped; the operator's trust is in
  * the HOST name, not the scheme or port).  A url carrying userinfo, or with
  * no host, returns NULL — the seat treats that as unclassable (refused by the
- * totality check or, on the allowed path, by the http_get program itself).
- * The http_get program (tools/fx-http-get.c) parses the same url for its own
- * fetching; the two agree on the host because both extract it the same way. */
+ * totality check or, on the allowed path, by the declared program itself).
+ * THE AUTHORITY DIMENSION CURRENTLY HAS NO CONSUMER: http_get was dropped in
+ * S3 (REVISED) and HTTP returns LATER as a declared program (host curl or
+ * similar) with an inet/dns sidecar — at which point a tool declaring
+ * arg_key "url" re-arms this normalizer and the ops-hosts.tsv table.  It is
+ * kept (not deleted) so that re-arm is a table edit, not a re-derivation. */
 static char *authority_of(const char *url) {
     const char *scheme_end = strstr(url, "://");
     if (!scheme_end) return NULL;
@@ -4118,21 +4311,29 @@ static void ops_load_hosts(const char *path, char *tsv_owned) {
     }
     free(tsv);
     if (OPS.n_hrow == 0)
-        ops_gate_die("%s carries no host rows — the authority binding table is "
-                     "empty and every url would be unclassified", path);
+        /* S3 (REVISED): an EMPTY authority table is CORRECT while no tool
+         * declares a url-classed argument (http_get was dropped).  The table
+         * is kept, header-only, so HTTP's later return as a declared program
+         * is a re-population, not a re-derivation — and for any url tool an
+         * empty table remains FAIL-CLOSED (every url unclassed -> refused). */
+        note("ops-policy: the authority table %s carries no host rows — there "
+             "is no url-classed host tool, so every url would be unclassified "
+             "(and refused by the totality check) if one is re-added", path);
 }
 
-/* ── S2: the sandbox table (the seat's AUTHORITATIVE floor ∩ row) ──────────
+/* ── S2: the sandbox table (the seat's AUTHORITATIVE baseline+sidecar ∩ row) ─
  * ops_load_sandbox is the ONE place the operator's ops-sandbox.tsv is judged:
  * it validates grammar (tool charset, landlock perm set, absolute path) and —
  * the composition the whole slice is about — that the row only ever NARROWS
- * the tool's compiled-in floor.  A row asking for MORE is a STARTUP REFUSAL
- * naming the row, never a silent widening.  policy/ops/eval_ops.py's
- * --check-sandbox checks the SAME grammar but NEVER re-spells the registry;
- * the registry (the floors) is the single source, and this seat is the
- * authority on the subset. */
+ * the tool's EFFECTIVE spec (the executor's baseline + the tool's sidecar).
+ * A row asking for MORE is a STARTUP REFUSAL naming the row, never a silent
+ * widening.  policy/ops/eval_ops.py's --check-sandbox checks the SAME grammar
+ * but NEVER re-spells the effective set; the seat (fh_sandbox_load's sidecar
+ * composition) is the single source, and this seat is the authority on the
+ * subset. */
 static void sandbox_check_promises(const char *path, const char *row_promises,
                                    const struct host_tool *ht) {
+    const char *effective = fh_tool_effective_promises(ht);
     const char *p = row_promises;
     for (;;) {
         while (*p == ' ' || *p == '\t') p++;
@@ -4145,18 +4346,19 @@ static void sandbox_check_promises(const char *path, const char *row_promises,
                          "bytes — REFUSING TO START", path, ht->name);
         char tok[64];
         memcpy(tok, p, tl); tok[tl] = '\0';
-        if (!floor_has_token(ht->promises_floor, tok))
+        if (!fh_promises_has_token(effective, tok))
             ops_gate_die("%s: the sandbox row for \"%s\" asks for the promise "
-                         "'%s', which is BEYOND its floor '%s' — the table is "
-                         "DENY-MORE-ONLY, a row may only NARROW; REFUSING TO "
-                         "START", path, ht->name, tok, ht->promises_floor);
+                         "'%s', which is BEYOND its declared set (baseline + "
+                         "sidecar) '%s' — the table is DENY-MORE-ONLY, a row "
+                         "may only NARROW; REFUSING TO START",
+                         path, ht->name, tok, effective);
         p = e;
     }
-    if (!floor_has_token(row_promises, "stdio"))
+    if (!fh_promises_has_token(row_promises, "stdio"))
         ops_gate_die("%s: the sandbox row for \"%s\" drops `stdio` — the "
                      "program contract (stdin/stdout) would break on every "
                      "call; REFUSING TO START", path, ht->name);
-    if (!floor_has_token(row_promises, "exec"))
+    if (!fh_promises_has_token(row_promises, "exec"))
         ops_gate_die("%s: the sandbox row for \"%s\" drops `exec` — stage3's "
                      "own execvp runs under the merged filter and would refuse "
                      "EVERY call (a total failure); REFUSING TO START",
@@ -4244,11 +4446,6 @@ static void ops_load_sandbox(const char *path, char *tsv_owned) {
                          "NOT in the pinned host-tool registry — a sandbox for "
                          "a tool the proxy does not run; REFUSING TO START",
                          path, f[0]);
-        if (!ht->promises_floor)
-            ops_gate_die("%s: the sandbox row names \"%s\", which has NO "
-                         "compiled-in floor yet — a tool must be floored before "
-                         "its sandbox can be narrowed; REFUSING TO START",
-                         path, f[0]);
         sandbox_check_promises(path, f[1], ht);
         size_t n_paths = 0;
         char **paths = sandbox_landlock_paths(path, f[2], &n_paths);
@@ -4269,15 +4466,15 @@ static void ops_load_sandbox(const char *path, char *tsv_owned) {
 #ifdef FH_MUTANT_NO_SANDBOX_TABLE
     /* THE MANDATED BLIND (FH_MUTANT_NO_SANDBOX_TABLE): the table is LOADED,
      * PINNED and VALIDATED (so a malformed table still refuses and the pin
-     * still covers it), but NOT APPLIED — every floored tool runs at its
-     * compiled-in FLOOR and a row's narrowing is discarded.  The gate must
+     * still covers it), but NOT APPLIED — every tool runs at its DECLARED set
+     * (baseline + sidecar) and a row's narrowing is discarded.  The gate must
      * catch this on the WIRE: host_cat reads a path the (tightened) row
-     * dropped, while the row's `sandbox` field shows the FLOOR. */
+     * dropped, while the row's `sandbox` field shows the declared set. */
     note("ops-policy: MUTANT (FH_MUTANT_NO_SANDBOX_TABLE) — the sandbox table "
          "%s is LOADED, PINNED and VALIDATED (%zu row(s)), but NOT APPLIED: "
-         "every floored tool runs at its COMPILED-IN FLOOR and a row's "
-         "narrowing is discarded (the row's `sandbox` field shows the floor)",
-         path, n_rows);
+         "every tool runs at its DECLARED set (baseline + sidecar) and a row's "
+         "narrowing is discarded (the row's `sandbox` field shows the declared "
+         "set)", path, n_rows);
     for (size_t i = 0; i < n_rows; i++) {
         for (size_t k = 0; k < rows[i].n_paths; k++) free(rows[i].paths[k]);
         free(rows[i].paths); free(rows[i].promises); free(rows[i].tool);
@@ -4695,10 +4892,11 @@ static int ops_judge(const char *name, const char *args, char *why, size_t whyca
         argkey = "path"; /* the write verbs' classed argument — unchanged */
     }
     /* S3: the classed argument's DIMENSION — a PATH (host_cat, and the write
-     * verbs) is canonicalized and matched against ops-aliases.tsv; a URL
-     * (http_get) is normalized to its AUTHORITY and matched against
-     * ops-hosts.tsv.  The SAME touches/class/protected facts and the SAME D3
-     * rule carry both — no second predicate, no second policy path. */
+     * verbs) is canonicalized and matched against ops-aliases.tsv; a URL (a
+     * future declared program declaring arg_key "url", when HTTP returns) is
+     * normalized to its AUTHORITY and matched against ops-hosts.tsv.  The
+     * SAME touches/class/protected facts and the SAME D3 rule carry both — no
+     * second predicate, no second policy path. */
     const int is_url = (strcmp(argkey, "url") == 0);
 
     /* THE CLASSED ARGUMENT — the per-call binding the in-guest seat resolves
@@ -8069,10 +8267,10 @@ static void usage(void) {
     note("                  SECOND closed list beside the guest's, pinned the");
     note("                  same way, and no host-tool name may collide with a");
     note("                  guest verb (a startup refusal)");
-    note("  --print-sandbox      print each host tool's COMPILED-IN sandbox floor");
-    note("                  (name<TAB>promises<TAB>landlock, one line per tool),");
-    note("                  and exit — the floor is the LEAST the tool needs,");
-    note("                  MEASURED from ldd, and is what the spawn applies");
+    note("  --print-sandbox      print each host tool's EFFECTIVE sandbox spec");
+    note("                  (name<TAB>promises<TAB>static-landlock, one line per");
+    note("                  tool) — the executor's baseline plus the tool's");
+    note("                  sidecar, exactly what the spawn applies");
 }
 
 int main(int argc, char **argv) {
@@ -8149,17 +8347,22 @@ int main(int argc, char **argv) {
             free(t.p);
             return 0;
         } else if (!strcmp(argv[i], "--print-sandbox")) {
-            /* S1: the COMPILED-IN FLOORS, printed per tool so a floor is
+            /* S3 (REVISED): the EFFECTIVE spec per tool — the executor's
+             * baseline + the tool's sidecar, printed so the ACTUAL sandbox is
              * inspectable rather than implicit.  One line per tool,
-             * name<TAB>promises_floor<TAB>landlock_floor; a NULL floor (a
-             * not-yet-migrated tool) renders empty fields.  The same bytes the
-             * catalog pin covers (and S4's reach-sandbox rows consume). */
-            for (size_t k = 0; k < fh_host_tool_count(); k++)
+             * name<TAB>promises<TAB>static-landlock (the static part; the
+             * spawn prepends the program path :rx and appends the judged path
+             * :r).  Loads the sidecars first (the same loader the boot runs),
+             * so this is the real composition, never a stale render. */
+            fh_sandbox_load();
+            for (size_t k = 0; k < fh_host_tool_count(); k++) {
+                struct tbuf lk = {0};
+                fh_static_landlock(&fh_host_tools[k], &lk);
                 printf("%s\t%s\t%s\n", fh_host_tools[k].name,
-                       fh_host_tools[k].promises_floor
-                           ? fh_host_tools[k].promises_floor : "",
-                       fh_host_tools[k].landlock_floor
-                           ? fh_host_tools[k].landlock_floor : "");
+                       fh_tool_effective_promises(&fh_host_tools[k]),
+                       lk.p ? lk.p : "");
+                free(lk.p);
+            }
             return 0;
         } else {
             note("FATAL: unknown/incomplete argument '%s'", argv[i]);

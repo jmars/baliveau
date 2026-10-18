@@ -1,62 +1,68 @@
-# policy/ops/ops-sandbox.tsv — THE OPERATOR'S PER-TOOL SANDBOX TABLE (S2).
+# policy/ops/ops-sandbox.tsv — THE OPERATOR'S PER-TOOL SANDBOX TABLE (S2/S3).
 #
 # THE AUTHOR IS THE OPERATOR, exactly like ops-aliases.tsv and ops-hosts.tsv.
 # This table lets the operator TIGHTEN a host tool's sandbox below its
-# compiled-in floor.  It is the palisade half of "configure the sandbox by
-# policy": the proxy is the only process at the spawn, it already evaluates
-# this operator policy in-process, and the pin (policy/ops/PINS) makes every
-# edit a visible release — a per-generation Dhall spec would be invisible to
-# the per-boot record, so datalog/ops policy owns the spec and Dhall has no
-# role in v1 (do not re-open that decision).
+# DECLARED set — which is the executor's BASELINE plus the tool's SIDECAR (a
+# file next to its program binary declaring what it needs beyond the baseline).
+# It is the palisade half of "configure the sandbox by policy": the proxy is
+# the only process at the spawn, it already evaluates this operator policy
+# in-process, and the pin (policy/ops/PINS) makes every edit a visible release
+# — a per-generation Dhall spec would be invisible to the per-boot record, so
+# datalog/ops policy owns the spec and Dhall has no role in v1 (do not re-open
+# that decision).
 #
 # Columns (TAB-separated; '#' starts a comment):
 #   tool        a HOST TOOL name (one of the proxy's pinned registry names —
-#               host_time, host_cat, http_get).  An unknown tool is a STARTUP
-#               REFUSAL naming the row.
+#               host_time, host_cat).  An unknown tool is a STARTUP REFUSAL
+#               naming the row.
 #   promises    the tool's pledge tokens, space-separated, from the 23-token
 #               cosmocc vocabulary (stdio rpath wpath cpath dpath flock fattr
 #               inet unix dns tty recvfd proc exec id unveil sendfd settime
 #               prot_exec vminfo tmppath chown anet).
 #   landlock    "path:perms;path:perms;..." — the operator's ALLOWLIST of the
-#               paths the tool may unveil beyond its static floor (the loader
-#               + libc, which the spawn always adds).  perms is an unveil perm
-#               string over {r,w,x,c}.
+#               paths the tool may unveil beyond its static spec (the baseline
+#               loader + libc + the sidecar's own paths, which the spawn always
+#               adds).  perms is an unveil perm string over {r,w,x,c}.
 #
-# SILENCE = THE FLOOR.  A tool with NO row here runs at its COMPILED-IN FLOOR
-# — the LEAST it needs, measured from ldd — never "unsandboxed".  There is no
-# unsandboxed state in the real build; the spawn ALWAYS wraps a floored tool
-# in stage3.  This table's shipped state is the FLOOR for every tool (no
-# rows), and the restriction a host tool actually faces is the compiled-in
-# floor PLUS the operator's alias/host class tables (D3 + the totality check).
+# SILENCE = THE TOOL'S OWN DECLARATION.  A tool with NO row here runs under
+# its DECLARED set — the baseline + its sidecar, or the baseline alone if it
+# declares no sidecar.  There is NO "unsandboxed" state: every spawn is
+# wrapped in stage3, and a tool that needs MORE than it declared FAILS LOUDLY
+# on its first attempt instead of silently running bare.  This table's shipped
+# state is the declaration for every tool (no rows), and the restriction a
+# host tool actually faces is the declared set PLUS the operator's alias class
+# table (D3 + the totality check).
 #
 # DENY-MORE-ONLY, IN BOTH DIMENSIONS, ENFORCED AT THE SEAT (not just stated):
-#   * promises — the row's tokens must be a SUBSET of the tool's floor tokens.
-#     A token beyond the floor is a STARTUP REFUSAL naming the row and the
-#     token (never a silent widening).  The row may also not drop `stdio` or
-#     `exec` (the floor's own self-check: a floor without exec kills every
-#     call, a floor without stdio breaks the program contract).
+#   * promises — the row's tokens must be a SUBSET of the tool's DECLARED set
+#     (baseline + sidecar).  A token beyond the declared set is a STARTUP
+#     REFUSAL naming the row and the token (never a silent widening).  The row
+#     may also not drop `stdio` or `exec` (the baseline's own self-check: a
+#     set without exec kills every call, one without stdio breaks the program
+#     contract).
 #   * landlock — the row's allowlist can only NARROW which paths the tool may
 #     read: the spawn unveils EXACTLY the per-call judged path `:r` (and never
 #     a path the call did not name), and only when that path appears in the
 #     row's allowlist.  A path dropped from the row makes the call's open fail
 #     EACCES while the alias table still judges the call allowed.  A perm wider
-#     than the floor's per-call `r` is a STARTUP REFUSAL naming the row.
+#     than the per-call `r` is a STARTUP REFUSAL naming the row.
 #
 # RLIMITS ARE DELIBERATELY NOT HERE.  stage3's resource limits (RATTAN_RLIMITS)
-# are a compiled-in floor field, not an operator lever: deny-more-only for
+# are a compiled-in executor field, not an operator lever: deny-more-only for
 # rlimits is awkward and the operator has no business tuning them.
 #
 # ONE SPELLING.  The AUTHORITATIVE check of this table is the SEAT's own
-# floor-subset composition (tools/fx-hostgate.c: ops_load_sandbox, run at
-# startup, before the slave path is published).  policy/ops/eval_ops.py's
-# --check-sandbox is GRAMMAR ONLY — the promise-token vocabulary, the landlock
-# perm grammar, the tool-name charset — and it NEVER re-spells the registry:
-# the registry (the floors) is the single source, so a floor edit and the
-# python check can never drift into two different vocabularies.
+# subset composition (tools/fx-hostgate.c: ops_load_sandbox, run at startup,
+# before the slave path is published) against the DECLARED set the sidecar
+# loader (fh_sandbox_load) composed.  policy/ops/eval_ops.py's --check-sandbox
+# is GRAMMAR ONLY — the promise-token vocabulary, the landlock perm grammar,
+# the tool-name charset — and it NEVER re-spells the declared set: the seat is
+# the single source, so a sidecar edit and the python check can never drift
+# into two different vocabularies.
 #
 # The table is pinned in policy/ops/PINS: editing it is a re-pin (a release),
 # artifact + PINS in the SAME commit.
 #
-# The shipped state is the FLOOR (no rows).  To narrow host_cat to a specific
-# readable set, add a row (the example below is commented out):
+# The shipped state is the DECLARATION (no rows).  To narrow host_cat to a
+# specific readable set, add a row (the example below is commented out):
 # host_cat	stdio rpath exec prot_exec	/fx/disk/agent-data/file.txt:r

@@ -356,7 +356,6 @@ BIN_HOSTGATE := build/fx-hostgate
 BIN_HOST_TIME := build/fx-host-time
 BIN_HOST_CAT := build/fx-host-cat
 BIN_HOST_CAT_NOPLAIN := build/fx-host-cat-noplainfile
-BIN_HTTP_GET := build/fx-http-get
 BIN_HOSTGATE_MUTANT := build/fx-hostgate-mutant
 BIN_HOSTGATE_UNBOUND := build/fx-hostgate-unbound
 BIN_HOSTGATE_NOREWRITE := build/fx-hostgate-norewrite
@@ -437,6 +436,34 @@ BIN_HOSTGATE_NOPLAINFILE := build/fx-hostgate-noplainfile
 BIN_HOSTGATE_OPSLITKEY := build/fx-hostgate-opslitkey
 BIN_HOSTGATE_EXTRAUNCL := build/fx-hostgate-extrauncl
 
+# ── the host-tool gate's remaining binary names, defined HERE (before the
+# test-hostgate prerequisite list) because GNU make expands prerequisites
+# at READ-IN time: a := definition below the rule would expand empty there
+# and the binary would never be built (latent until a clean rebuild).
+BIN_ECHO_CONTRACT := build/fx-echo-contract
+BIN_HOSTGATE_ECHOCONTRACT := build/fx-hostgate-echocontract
+BIN_SPAWN_HANG := build/fx-spawn-hang
+BIN_SPAWN_FLOOD := build/fx-spawn-flood
+BIN_SPAWN_NONZERO := build/fx-spawn-nonzero
+BIN_HOSTGATE_SPAWNHANG := build/fx-hostgate-spawnhang
+BIN_HOSTGATE_SPAWNFLOOD := build/fx-hostgate-spawnflood
+BIN_HOSTGATE_SPAWNNONZERO := build/fx-hostgate-spawnnonzero
+BIN_HOSTGATE_SPAWNMISSING := build/fx-hostgate-spawnmissing
+BIN_HOST_TIME_ESCAPE := build/fx-host-time-escape
+BIN_HOST_TIME_SOCKET := build/fx-host-time-socket
+BIN_HOST_TIME_ENV    := build/fx-host-time-env
+BIN_HOST_TIME_SIGSYS := build/fx-host-time-sigsys
+BIN_HOST_TIME_WRITE  := build/fx-host-time-write
+BIN_HOSTGATE_ESCAPE  := build/fx-hostgate-escape
+BIN_HOSTGATE_SOCKET  := build/fx-hostgate-socket
+BIN_HOSTGATE_ENV     := build/fx-hostgate-env
+BIN_HOSTGATE_WRITE   := build/fx-hostgate-write
+BIN_HOSTGATE_NOSTAGE3 := build/fx-hostgate-nostage3
+BIN_HOSTGATE_NOSTAGE3_SIGSYS := build/fx-hostgate-nostage3-sigsys
+BIN_HOSTGATE_NOSANDBOX := build/fx-hostgate-nosandboxtable
+BIN_HOST_CAT_SIBLING := build/fx-host-cat-sibling
+BIN_HOSTGATE_CATSIBLING := build/fx-hostgate-catsibling
+
 test-hostgate: $(BIN_HOSTGATE) $(BIN_HOSTGATE_MUTANT) $(BIN_HOSTGATE_UNBOUND) \
                $(BIN_HOSTGATE_NOREWRITE) $(BIN_HOSTGATE_BLINDADD) \
                $(BIN_HOSTGATE_SINGLEITEM) $(BIN_HOSTGATE_NOSUBST) \
@@ -454,13 +481,14 @@ test-hostgate: $(BIN_HOSTGATE) $(BIN_HOSTGATE_MUTANT) $(BIN_HOSTGATE_UNBOUND) \
                $(BIN_HOSTGATE_NOPLAINFILE) $(BIN_HOSTGATE_OPSLITKEY) \
                $(BIN_HOSTGATE_EXTRAUNCL) $(BIN) \
                $(BIN_HOST_TIME) $(BIN_HOST_CAT) $(BIN_HOST_CAT_NOPLAIN) \
-               $(BIN_HTTP_GET) $(BIN_ECHO_CONTRACT) $(BIN_HOSTGATE_ECHOCONTRACT) \
+               $(BIN_ECHO_CONTRACT) $(BIN_HOSTGATE_ECHOCONTRACT) \
                $(BIN_SPAWN_HANG) $(BIN_SPAWN_FLOOD) $(BIN_SPAWN_NONZERO) \
                $(BIN_HOSTGATE_SPAWNHANG) $(BIN_HOSTGATE_SPAWNFLOOD) \
                $(BIN_HOSTGATE_SPAWNNONZERO) $(BIN_HOSTGATE_SPAWNMISSING) \
                $(BIN_HOST_TIME_ESCAPE) $(BIN_HOST_TIME_SOCKET) \
-               $(BIN_HOST_TIME_ENV) $(BIN_HOST_TIME_SIGSYS) \
+               $(BIN_HOST_TIME_ENV) $(BIN_HOST_TIME_SIGSYS) $(BIN_HOST_TIME_WRITE) \
                $(BIN_HOSTGATE_ESCAPE) $(BIN_HOSTGATE_SOCKET) $(BIN_HOSTGATE_ENV) \
+               $(BIN_HOSTGATE_WRITE) \
                $(BIN_HOSTGATE_NOSTAGE3) $(BIN_HOSTGATE_NOSTAGE3_SIGSYS) \
                $(BIN_HOSTGATE_NOSANDBOX) $(BIN_HOST_CAT_SIBLING) \
                $(BIN_HOSTGATE_CATSIBLING) \
@@ -668,7 +696,7 @@ $(BIN_HOSTGATE_OPSLITKEY): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJ
 #     real build starts (the arm's fixture is not the cause); this one must
 #     REFUSE TO START naming the tool, because without the contract its
 #     argument would be neither classed nor totality-checked.
-HOSTTOOL_EXTRA_PIN := -DFH_HOSTTOOL_SHA256='"aceb671863f77ba5eef3a03b2ef24c3d7ad796ccc1872b747ea5807330df6dd7"'
+HOSTTOOL_EXTRA_PIN := -DFH_HOSTTOOL_SHA256='"ecf94b0b19aef95638bbc4deafae57d74e60a25d89f54285f9bdb90ea9987bb4"'
 
 $(BIN_HOSTGATE_EXTRAUNCL): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(DATALOG_DIR)/zig-out/lib/libdatalog.so | $(DATALOG_SHIM)
 	@mkdir -p build
@@ -694,16 +722,10 @@ $(BIN_HOST_CAT_NOPLAIN): tools/fx-host-cat.c $(YYJSON_SRC)
 	@mkdir -p build
 	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_MUTANT_NO_PLAINFILE -o $@ tools/fx-host-cat.c $(YYJSON_SRC)
 
-$(BIN_HTTP_GET): tools/fx-http-get.c $(YYJSON_SRC)
-	@mkdir -p build
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ tools/fx-http-get.c $(YYJSON_SRC)
-
 # THE PROGRAM-CONTRACT PROBE (gate phase 97): a substitute DECLARED PROGRAM
 # that echoes its argv AND its stdin, so the gate proves the spawn passes the
 # call's arguments VERBATIM on stdin and NEVER on the command line.  The
 # mutant proxy below names it in place of host_cat.
-BIN_ECHO_CONTRACT := build/fx-echo-contract
-BIN_HOSTGATE_ECHOCONTRACT := build/fx-hostgate-echocontract
 
 $(BIN_ECHO_CONTRACT): tests/fixtures/echo_argv_stdin.c
 	@mkdir -p build
@@ -716,13 +738,6 @@ $(BIN_HOSTGATE_ECHOCONTRACT): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(
 # THE SPAWN-BOUNDS PROBES (gate phase 98): each is a substitute program (or a
 # missing one) named by a mutant proxy, exercising one spawn bound — the
 # deadline, the output cap, the non-zero exit, and a missing program.
-BIN_SPAWN_HANG := build/fx-spawn-hang
-BIN_SPAWN_FLOOD := build/fx-spawn-flood
-BIN_SPAWN_NONZERO := build/fx-spawn-nonzero
-BIN_HOSTGATE_SPAWNHANG := build/fx-hostgate-spawnhang
-BIN_HOSTGATE_SPAWNFLOOD := build/fx-hostgate-spawnflood
-BIN_HOSTGATE_SPAWNNONZERO := build/fx-hostgate-spawnnonzero
-BIN_HOSTGATE_SPAWNMISSING := build/fx-hostgate-spawnmissing
 
 $(BIN_SPAWN_HANG): tests/fixtures/spawn_hang.c
 	@mkdir -p build
@@ -756,15 +771,6 @@ $(BIN_HOSTGATE_SPAWNMISSING): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(
 # Each is spawned in place of the real fx-host-time via the proxy's
 # -DFH_HOST_TIME_PROGRAM override (the same same-source discipline as the
 # FH_HOST_CAT_PROGRAM spawn-bounds probes above).
-BIN_HOST_TIME_ESCAPE := build/fx-host-time-escape
-BIN_HOST_TIME_SOCKET := build/fx-host-time-socket
-BIN_HOST_TIME_ENV    := build/fx-host-time-env
-BIN_HOST_TIME_SIGSYS := build/fx-host-time-sigsys
-BIN_HOSTGATE_ESCAPE  := build/fx-hostgate-escape
-BIN_HOSTGATE_SOCKET  := build/fx-hostgate-socket
-BIN_HOSTGATE_ENV     := build/fx-hostgate-env
-BIN_HOSTGATE_NOSTAGE3 := build/fx-hostgate-nostage3
-BIN_HOSTGATE_NOSTAGE3_SIGSYS := build/fx-hostgate-nostage3-sigsys
 
 $(BIN_HOST_TIME_ESCAPE): tests/fixtures/host_time_escape.c
 	@mkdir -p build
@@ -778,9 +784,12 @@ $(BIN_HOST_TIME_ENV): tests/fixtures/host_time_env.c
 $(BIN_HOST_TIME_SIGSYS): tests/fixtures/host_time_sigsys.c
 	@mkdir -p build
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ tests/fixtures/host_time_sigsys.c
+$(BIN_HOST_TIME_WRITE): tests/fixtures/host_time_write.c
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ tests/fixtures/host_time_write.c
 
 # The REAL S1 proxy with the mutant program named in place of fx-host-time —
-# the escape probe runs through the REAL sandbox (stage3 wrap + floor).
+# the escape probe runs through the REAL sandbox (stage3 wrap + baseline).
 $(BIN_HOSTGATE_ESCAPE): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(DATALOG_DIR)/zig-out/lib/libdatalog.so | $(DATALOG_SHIM)
 	@mkdir -p build
 	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_HOST_TIME_PROGRAM='"fx-host-time-escape"' -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(HOSTGATE_LIBS)
@@ -790,6 +799,9 @@ $(BIN_HOSTGATE_SOCKET): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON
 $(BIN_HOSTGATE_ENV): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(DATALOG_DIR)/zig-out/lib/libdatalog.so | $(DATALOG_SHIM)
 	@mkdir -p build
 	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_HOST_TIME_PROGRAM='"fx-host-time-env"' -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(HOSTGATE_LIBS)
+$(BIN_HOSTGATE_WRITE): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(DATALOG_DIR)/zig-out/lib/libdatalog.so | $(DATALOG_SHIM)
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_HOST_TIME_PROGRAM='"fx-host-time-write"' -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(HOSTGATE_LIBS)
 
 # THE MANDATED BLIND — FH_MUTANT_NO_STAGE3 compiles the stage3 wrap OUT of the
 # spawn while the spec is STILL COMPUTED and RECORDED on the row: the escape
@@ -814,13 +826,10 @@ $(BIN_HOSTGATE_NOSTAGE3_SIGSYS): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c
 # and reads a path the row dropped, and the row's `sandbox` field shows the
 # FLOOR.  That is the table-LOADED-BUT-NOT-APPLIED direction the gate exists to
 # catch — the S2 sibling of S1's FH_MUTANT_NO_STAGE3.
-BIN_HOSTGATE_NOSANDBOX := build/fx-hostgate-nosandboxtable
 # THE SIBLING-PATH ESCAPE PROBE: the REAL S2 proxy with the MUTANT host_cat
 # (build/fx-host-cat-sibling) named in place of fx-host-cat — the mutant reads
 # the judged path's SIBLING, which the sandbox does NOT unveil, so the open
 # fails EACCES post-fix and reads the sibling pre-fix.
-BIN_HOST_CAT_SIBLING := build/fx-host-cat-sibling
-BIN_HOSTGATE_CATSIBLING := build/fx-hostgate-catsibling
 
 $(BIN_HOST_CAT_SIBLING): tests/fixtures/host_cat_sibling.c $(YYJSON_SRC)
 	@mkdir -p build
@@ -909,7 +918,7 @@ $(BIN_HOSTGATE_NOSCOPECARRY): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(
 #     slave path is published: a host tool that shadows a guest verb is executed
 #     by the host AND dispatched by the guest under one name.
 HOSTTOOL_COLLIDING_NAME := -DFH_HOSTTOOL_NAME='"fx_read"'
-HOSTTOOL_COLLIDING_PIN := -DFH_HOSTTOOL_SHA256='"8771d9390e7f5b93fe80aea9e2eccdd9432e71586fa9d666664b04c5880209d7"'
+HOSTTOOL_COLLIDING_PIN := -DFH_HOSTTOOL_SHA256='"75248d9f0ff0ea75aeb444eb5722aa177c99052ac00af1855792fea574bca451"'
 
 $(BIN_HOSTGATE_HOSTCOLLIDE): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(DATALOG_DIR)/zig-out/lib/libdatalog.so | $(DATALOG_SHIM)
 	@mkdir -p build

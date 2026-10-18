@@ -260,13 +260,15 @@ cmp -s "$TSV" "$W/ambig.tsv" && fail "the ambiguous-pattern sed matched NOTHING"
 grep -q '/fx/disk/agent-data/\*$' "$W/ambig.tsv" || fail "the ambiguous mutant does not carry the trailing single star"
 arm b0g-alias-ambiguous-pattern 1 'alias-ambiguous-pattern' --check-aliases --aliases "$W/ambig.tsv" --policy-lexicon "$LEX"
 # b0h (S3): the AUTHORITY table is validated with its own two-form grammar
-# (exact host / '*.suffix'), the argclass sort, and the protected flag.
+# (exact host / '*.suffix'), the argclass sort, and the protected flag.  The
+# shipped table is EMPTY (http_get was dropped), and empty is correct — the
+# checker accepts it.
 arm b0h-hosts-ok 0 'host table OK' --check-hosts --hosts "$HOSTS" --policy-lexicon "$LEX"
-sed -e "s@^example.com	Blockedhost@example.com	Blockedhostx@" "$HOSTS" > "$W/foreignhost.tsv"
-cmp -s "$HOSTS" "$W/foreignhost.tsv" && fail "the hosts sed matched NOTHING"
+# the grammar arms are re-pointed at INLINE fixtures (the shipped table has no
+# rows to sed), so the mechanism is still exercised rather than deleted.
+printf 'example.com\tBlockedhostx\tyes\n' > "$W/foreignhost.tsv"
 arm b0i-host-foreign-sort 1 'host-foreign-sort' --check-hosts --hosts "$W/foreignhost.tsv" --policy-lexicon "$LEX"
-sed -e "s@^example.com@*example.com@" "$HOSTS" > "$W/ambighost.tsv"
-cmp -s "$HOSTS" "$W/ambighost.tsv" && fail "the hosts ambiguous sed matched NOTHING"
+printf '*example.com\tBlockedhost\tyes\n' > "$W/ambighost.tsv"
 arm b0j-host-ambiguous-pattern 1 'host-ambiguous-pattern' --check-hosts --hosts "$W/ambighost.tsv" --policy-lexicon "$LEX"
 # b0k (S2): the SANDBOX table's GRAMMAR — the promise-token vocabulary, the
 # landlock perm grammar, and the tool-name charset.  GRAMMAR ONLY: the

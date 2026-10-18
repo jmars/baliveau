@@ -1635,7 +1635,7 @@ fi
     # every row is a STALE GRANT and each one is its own FINDING.
     rc=$(report_reach "$WORK/out-reach-a" "$RPOL" \
             --proxy-log "$WORK/call-log-host.jsonl" \
-            --class-arg path:host_cat=path --class-arg authority:http_get=url)
+            --class-arg path:host_cat=path)
     [ "$rc" = "1" ] || fail "REACH(a): stale grants are FINDINGS — expected exit 1, got $rc"
     for _f in ops-policy.dl ops-aliases.tsv ops-hosts.tsv ops-lexicon.ini; do
         grep -q "^reach-pin${TAB}$_f${TAB}sha${TAB}[0-9a-f]*${TAB}pinned${TAB}[0-9a-f]*${TAB}MATCH${TAB}MEASURED" "$WORK/out-reach-a" \
@@ -1645,8 +1645,12 @@ fi
         && fail "REACH(a): a pin-drift was FABRICATED on tables that hash to their PINS"
     grep -q "^stale-class-row${TAB}ops-aliases.tsv${TAB}line${TAB}[0-9]*${TAB}dimension${TAB}path" "$WORK/out-reach-a" \
         || fail "REACH(a): a pinned path class no observed call exercised is not a stale-class-row FINDING"
-    grep -q "^reach-row${TAB}ops-hosts.tsv${TAB}line${TAB}[0-9]*${TAB}dimension${TAB}authority${TAB}pattern${TAB}example.com${TAB}class${TAB}Blockedhost${TAB}protected${TAB}yes${TAB}exercised${TAB}NO${TAB}DERIVED" "$WORK/out-reach-a" \
-        || fail "REACH(a): the authority row's exercised direction is not surfaced per row"
+    # S3 (REVISED): the AUTHORITY dimension has NO consumer (http_get was
+    # dropped; ops-hosts.tsv ships EMPTY), so no authority reach-row is emitted
+    # — the absence is itself the re-pointed assertion (the reach-row mechanism
+    # is still exercised by the path rows above).
+    grep -q "^reach-row${TAB}ops-hosts.tsv${TAB}" "$WORK/out-reach-a" \
+        && fail "REACH(a): an authority reach-row was emitted from an EMPTY authority table"
     grep -q 'a STALE GRANT' "$WORK/out-reach-a" || fail "REACH(a): the finding does not state what it means"
     grep -q 'WEAKENED AUDIT, stated' "$WORK/out-reach-a" \
         || fail "REACH(a): the finding does not state that this is the WEAKENED audit (not the type-enforced one)"
@@ -1680,7 +1684,7 @@ PYCOPY
     [ $? -eq 0 ] || fail "REACH(b) SETUP: the log copy carries no call row to rewrite"
     rc=$(report_reach "$WORK/out-reach-b" "$RPOL" \
             --proxy-log "$WORK/call-log-exercised.jsonl" \
-            --class-arg path:host_cat=path --class-arg authority:http_get=url)
+            --class-arg path:host_cat=path)
     grep -q "^reach-row${TAB}ops-aliases.tsv${TAB}line${TAB}[0-9]*${TAB}dimension${TAB}path${TAB}pattern${TAB}/fx/disk/agent-config.dhall${TAB}class${TAB}Configpath${TAB}protected${TAB}yes${TAB}exercised${TAB}YES${TAB}DERIVED" "$WORK/out-reach-b" \
         || fail "REACH(b): the exercised row does not read YES (the //-spelling must canonicalize, as the seat's own matcher does)"
     grep -q "^stale-class-row${TAB}ops-aliases.tsv${TAB}line${TAB}[0-9]*${TAB}dimension${TAB}path${TAB}pattern${TAB}/fx/disk/agent-data" "$WORK/out-reach-b" \
@@ -1720,7 +1724,7 @@ PYCOPY
     printf 'evil.example.com\tEvil\tno\n' >> "$WORK/reach-pol-drift/ops-hosts.tsv"
     rc=$(report_reach "$WORK/out-reach-d" "$WORK/reach-pol-drift" \
             --proxy-log "$WORK/call-log-host.jsonl" \
-            --class-arg path:host_cat=path --class-arg authority:http_get=url)
+            --class-arg path:host_cat=path)
     [ "$rc" = "1" ] || fail "REACH(d): pin-drift is a FINDING — expected exit 1, got $rc"
     grep -q "^reach-pin${TAB}ops-hosts.tsv${TAB}sha${TAB}[0-9a-f]*${TAB}pinned${TAB}[0-9a-f]*${TAB}DRIFT" "$WORK/out-reach-d" \
         || fail "REACH(d): the drifted artifact does not read DRIFT in its own reach-pin row"
@@ -1746,7 +1750,7 @@ PYCOPY
     mutbuild reach 's/printf("stale-class-row\\t%s\\tline/printf("disabled-stale-class-row\\t%s\\tline/'
     FXSTORE_BIN="$FXSTORE" "$REPO/build/fx-report-reach" --store "$WORK/s1" --policy-dir "$RPOL" \
         --proxy-log "$WORK/call-log-host.jsonl" --class-arg path:host_cat=path \
-        --class-arg authority:http_get=url > "$WORK/out-mutreach" 2>/dev/null
+        > "$WORK/out-mutreach" 2>/dev/null
     grep -q "^stale-class-row${TAB}" "$WORK/out-mutreach" \
         && fail "MUT-REACH: the stale-grant arm still passes with its row disabled — the finding is decoration"
 
@@ -1757,7 +1761,7 @@ PYCOPY
     mutbuild pindrift 's/} else if (strcmp(P->got, P->want) != 0) {/} else if (strcmp(P->got, P->got) != 0) {/'
     FXSTORE_BIN="$FXSTORE" "$REPO/build/fx-report-pindrift" --store "$WORK/s1" --policy-dir "$WORK/reach-pol-drift" \
         --proxy-log "$WORK/call-log-host.jsonl" --class-arg path:host_cat=path \
-        --class-arg authority:http_get=url > "$WORK/out-mutpindrift" 2>/dev/null
+        > "$WORK/out-mutpindrift" 2>/dev/null
     grep -q "^pin-drift${TAB}" "$WORK/out-mutpindrift" \
         && fail "MUT-PINDRIFT: the join-on-the-drifted-pin build STILL reports the drift — the arm is not load-bearing"
     # the READING survives the mutant and the JUDGEMENT does not, which is the

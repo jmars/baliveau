@@ -2036,10 +2036,14 @@ grep -q 'proxy log: 0 byte(s) recorded as a KNOWN record' "$WORK/out.s4-enrol" \
     || fail "S4(a): the proxy log was not taken as a known record"
 grep -q '^reach-tool	host_time$' "$WORK/out.s4-enrol" \
     || fail "S4(a): the registry was not read into the reach observation"
-grep -q '^reach-tool	http_get$' "$WORK/out.s4-enrol" \
+grep -q '^reach-tool	host_cat$' "$WORK/out.s4-enrol" \
     || fail "S4(a): the registry is incomplete"
-grep -q '^reach-grant	authority	example.com	Blockedhost	yes$' "$WORK/out.s4-enrol" \
-    || fail "S4(a): the pinned authority class was not read into the reach observation"
+# S3 (REVISED): the AUTHORITY dimension has NO consumer (http_get was dropped;
+# ops-hosts.tsv ships EMPTY), so no authority grant is enrolled — the absence
+# is itself the re-pointed assertion (the reach-grant mechanism is still
+# exercised by the path rows below).
+grep -q '^reach-grant	authority' "$WORK/out.s4-enrol" \
+    && fail "S4(a): an authority grant was enrolled from an EMPTY authority table"
 grep -q '^reach-grant	path	/fx/disk/agent-data	Datadir	no$' "$WORK/out.s4-enrol" \
     || fail "S4(a): the pinned path class was not read into the reach observation"
 S4BV=$(tail -1 "$STORE/.bootlog" | awk '{print $1}')

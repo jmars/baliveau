@@ -1370,7 +1370,36 @@ argument matching no operator class row is REFUSED BY NAME — rather than by a 
       stated. Also: the spawn bounds the judged path to `FH_HOST_PATH_MAX` before unveiling, because an
       over-long model path would overflow stage3's 512-byte `LANDLOCK_SPEC` before the executor's own
       length refusal ran.
-- [ ] **S3** — `http_get` under `inet`+`dns`, with the write-escape probe (a mutant that opens O_WRONLY →
+- [x] **S3 (REVISED) — THE SANDBOX IS STRUCTURAL TO THE EXECUTOR, AND THE HTTP TOOL IS DROPPED**
+      (**UNCOMMITTED**). **The user corrected the shape and the code had already admitted the defect:**
+      the floor-validation comment said *"a NULL floor is a not-yet-migrated tool, not an empty sandbox"* —
+      i.e. S1/S2 made the sandbox **opt-in per tool**, and `--print-sandbox` showed an **empty floor for
+      `http_get`, the only network-capable tool**, which therefore ran **completely unsandboxed**. User:
+      *"why do we need to sandbox the tools individually? it shouldnt be like that."* They are right:
+      **sandboxing is a property of the EXECUTOR.** Now: `promises_floor`/`landlock_floor` are **gone from
+      the registry struct**; `host_exec` computes `wrap = 1` unconditionally (only the
+      `FH_MUTANT_NO_STAGE3` blind zeroes it); the **BASELINE** (`stdio rpath exec prot_exec` + loader `:rx`
+      + libc `:r`) belongs to the executor and is applied to **every** spawn; extra capabilities come from
+      **a sidecar beside the tool binary** (`<program>.sidecar`, one `promises<TAB>landlock` line), read
+      and validated at startup. **THE FAILURE DIRECTION IS INVERTED, which is the real fix:** forgetting a
+      declaration now means **baseline only** (no network, no write) and a **loud first refusal**, instead
+      of silently running bare. The operator table still only **tightens** (row ⊆ baseline+sidecar).
+      **`fx-http-get` IS GONE** — source deleted, registry entry and arms removed, the policy-parity arm
+      re-pointed at `host_cat`; HTTP returns later as a declared program (host curl or similar) with an
+      `inet dns` sidecar.
+      *Orchestrator-verified:* 207 OK / 0 FAIL; **104b** the same socket mutant **succeeds once its sidecar
+      declares `inet`** (the capability comes from the tool, the wrap from the executor); **104c** the
+      write-escape probe — `O_WRONLY` → **EPERM**, since `wpath` is in no baseline; the `FH_MUTANT_NO_STAGE3`
+      blind still caught; missing-`stage3` still a startup **and** per-call refusal with no unsandboxed
+      fallback; and no tool currently ships a sidecar, so both run on the same baseline.
+      **Two real bugs found beyond the brief:** a latent Makefile defect (`:=` `BIN_*` definitions placed
+      *after* the prerequisite list that used them, so those prerequisites expanded **empty** and two
+      mutant binaries were never built on a clean rebuild — the gate died at phase 0 and I diagnosed it
+      before resuming); and the S2 judged-path unveil dying on a `;`-containing non-existent path in the
+      echo-contract probe (now skips non-existent / spec-delimiter paths, fail-closed).
+- [ ] **STILL OWED (S4 of the palisade plan):** the `sandbox` column in `fx-report`'s call class (the row
+      field has existed since S1), `--print-sandbox` consumed by `fx-select`/`fx-audit`, and reach-sandbox
+      rows in the shared grammar.- [ ] **S3** — `http_get` under `inet`+`dns`, with the write-escape probe (a mutant that opens O_WRONLY →
       EPERM, since `wpath` is absent from every floor). **S4** — the `sandbox` column in `fx-report`'s call
       class (**OWED from S1**: the row field exists, the reporter column does not), `--print-sandbox`
       consumed by `fx-select`/`fx-audit`, and the reach-sandbox rows in the shared grammar.

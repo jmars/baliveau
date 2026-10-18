@@ -1,14 +1,13 @@
 # policy/ops/ops-hosts.tsv — THE PINNED AUTHORITY TABLE (operator host classes).
 #
 # THE AUTHOR IS THE OPERATOR, exactly like ops-aliases.tsv: this table is the
-# bridge across the vocabulary seam for the AUTHORITY dimension — the
-# host-tool http_get's classed argument is its `url`, and what the policy can
-# say about a url is which CLASS its AUTHORITY (the host, normalized: scheme
-# dropped, host lowercased, port dropped) belongs to, and whether that class
-# is PROTECTED (which is what policy rule D3 consumes, through the SAME
-# touches/class/protected facts and the SAME hosttool(W) bridge a host_cat
-# path rides — there is deliberately NO second predicate and NO second policy
-# path).
+# bridge across the vocabulary seam for the AUTHORITY dimension — a host tool
+# whose classed argument is a URL is judged by which CLASS its AUTHORITY (the
+# host, normalized: scheme dropped, host lowercased, port dropped) belongs to,
+# and whether that class is PROTECTED (which is what policy rule D3 consumes,
+# through the SAME touches/class/protected facts and the SAME hosttool(W)
+# bridge a host_cat path rides — there is deliberately NO second predicate and
+# NO second policy path).
 #
 # Columns (TAB-separated; '#' starts a comment):
 #   pattern     the HOST pattern.  THE GRAMMAR IS TWO FORMS, STATED AND
@@ -28,9 +27,9 @@
 # they have not classified is not permitted.  An IP-literal authority can
 # never match a host pattern, so it is unclassable BY CONSTRUCTION.
 #
-# THE SHIPPED STATE IS FAIL-CLOSED: the one row below classes a DOCUMENTATION
-# example host as PROTECTED, and authorizes NOTHING.  To let http_get fetch a
-# real host, the operator adds a row classing that host as a NON-protected
-# argclass (a re-pin release) — and that grant is a capability increase the
-# log makes visible, exactly like a new write alias.
-example.com	Blockedhost	yes
+# S3 (REVISED): THE TABLE SHIPS EMPTY, AND EMPTY IS CORRECT — the ONLY
+# url-classed tool (http_get) was DROPPED, so there is no authority to class.
+# HTTP returns LATER as a declared program (host curl or similar) with an
+# inet/dns sidecar; at that point the operator re-adds rows here (a re-pin
+# release), and until then an EMPTY table is FAIL-CLOSED for any url tool:
+# every url is unclassed and refused by the totality check.

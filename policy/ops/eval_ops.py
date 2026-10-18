@@ -400,11 +400,14 @@ def _check_hosts(args) -> None:
         seen[pattern] = str(lineno)
         rows.append((pattern, argclass, protected, coverage))
     if not rows:
-        _refuse(
-            "host-table-empty",
-            f"{args.hosts}: the authority table carries no rows -- every url "
-            "would be unclassified",
-        )
+        # S3 (REVISED): an EMPTY authority table is CORRECT while no host tool
+        # declares a url-classed argument (http_get was dropped).  The table
+        # stays, header-only, so HTTP's later return as a declared program is
+        # a re-population rather than a re-derivation; for any url tool an
+        # empty table remains fail-closed (every url unclassed -> refused).
+        print(f"# fx-ops: host table OK -- {args.hosts} (0 rows; no url-classed "
+              "host tool, so empty is the fail-closed shipped state)")
+        return
     print(f"# fx-ops: host table OK -- {args.hosts} ({len(rows)} row(s))")
     for pattern, argclass, protected, coverage in rows:
         print(f"host\t{pattern}\t{argclass.lower()}\tprotected={protected}"
@@ -417,8 +420,9 @@ def _check_sandbox(args) -> None:
     vocabulary (the 23-token cosmocc pledge set), the landlock perm grammar
     (a non-empty string over {r,w,x,c}), and the tool-name charset (the
     guest's identifier shape).  NOT the authority: a token beyond a tool's
-    FLOOR is refused by the SEAT's floor-subset composition at startup, never
-    here — this check must not re-spell the registry, or the two would drift."""
+    DECLARED set (the executor's baseline + its sidecar) is refused by the
+    SEAT's subset composition at startup, never here — this check must not
+    re-spell the declared set, or the two would drift."""
     rows = []
     for lineno, line in enumerate(
             _read(args.sandbox, "sandbox table").splitlines(), 1):
