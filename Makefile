@@ -105,6 +105,77 @@ BIN_MUSL := build/fx-agent.musl
 
 all: $(BIN)
 
+# ─── vendored: palisade — the sandbox core (stage3) ────────────────────────
+# VENDORED AS SOURCE at vendor/palisade/ (see its VENDOR.txt): the sandbox
+# binary the guest's fxstore demands (X_OK before any Shell recipe) is built
+# HERE, from THIS tree's copy, with cosmocc.  This tree no longer reads the
+# fxstore checkout for palisade; that checkout remains only the in-guest
+# fxstore BUILDER's source, a different dependency.
+#
+# The build is REPRODUCIBLE — MEASURED: two clean builds in-tree and a clean
+# build in a different absolute path all produced the same sha256 — so the
+# artifact is PINNED the way every other frozen artifact in this tree is:
+# vendor/palisade/PINS holds `name<TAB>sha256`, and `make palisade` REFUSES,
+# naming both values, when the fresh build disagrees.  A re-pin is a release
+# (it changes the sandbox binary the guest receives), never a silent update.
+#
+# The vendored Makefile stays the authority on HOW stage3 is built (flags,
+# objects, assimilate ordering); this arm supplies the toolchain and copies
+# the artifact into build/ with the tree's other build outputs.  COSMCC and
+# ASSIMILATE are resolved the way the tree resolves its siblings: an explicit
+# environment override wins, else the ~/.local/cosmo/bin default.  Every gate
+# that STAGES the guest (test-agent-slot, test-agent-slot-inguest,
+# test-luajit-guest, test-sibling-paths) depends on this arm, so a clean tree
+# cannot reach staging without the pinned binary — and staging itself refuses
+# loudly rather than borrowing one from another checkout.
+COSMCC      ?= $(HOME)/.local/cosmo/bin/cosmocc
+ASSIMILATE  ?= $(HOME)/.local/cosmo/bin/assimilate
+PALISADE_DIR    := vendor/palisade
+PALISADE_PIN    := $(PALISADE_DIR)/PINS
+PALISADE_STAGE3 := build/stage3
+PALISADE_SRC    := $(PALISADE_DIR)/Makefile \
+                   $(PALISADE_DIR)/src/palisade/stage3.c \
+                   $(PALISADE_DIR)/src/palisade/cosmo/pledge-rattan.c \
+                   $(PALISADE_DIR)/src/palisade/cosmo/pledge-linux.c
+
+palisade: $(PALISADE_STAGE3) palisade-pin
+
+$(PALISADE_STAGE3): $(PALISADE_SRC)
+	@mkdir -p build
+	$(MAKE) -C $(PALISADE_DIR) stage3 \
+	    COSMCC='$(COSMCC)' ASSIMILATE='$(ASSIMILATE)'
+	cp $(PALISADE_DIR)/bin/stage3 $@
+
+palisade-pin: $(PALISADE_STAGE3)
+	@want=$$(awk -F'\t' '$$1 == "stage3" { print $$2 }' $(PALISADE_PIN)); \
+	if [ -z "$$want" ]; then \
+	    echo "ERROR: $(PALISADE_PIN) carries no stage3 pin" >&2; exit 1; fi; \
+	got=$$(sha256sum $(PALISADE_STAGE3) | cut -d' ' -f1); \
+	if [ "$$want" != "$$got" ]; then \
+	    echo "ERROR: $(PALISADE_STAGE3) sha256 $$got is NOT the pinned $$want" >&2; \
+	    echo "       a re-pin is a release — see $(PALISADE_DIR)/VENDOR.txt" >&2; \
+	    exit 1; fi; \
+	echo "palisade: pin OK — $(PALISADE_STAGE3) sha256 $$got"
+
+# THE REPRODUCIBILITY CHECK the pin rests on: TWO CLEAN builds (the vendored
+# bin/ and build/stage3 both removed) must agree byte-for-byte, and agreeing
+# with the pin is what `make palisade` above already refuses on.  Re-runnable,
+# so "reproducible" is a measurement on this toolchain, never a claim.
+palisade-repro:
+	@set -e; \
+	rm -rf $(PALISADE_DIR)/bin $(PALISADE_STAGE3); \
+	$(MAKE) --no-print-directory palisade >/dev/null; \
+	a=$$(sha256sum $(PALISADE_STAGE3) | cut -d' ' -f1); \
+	rm -rf $(PALISADE_DIR)/bin $(PALISADE_STAGE3); \
+	$(MAKE) --no-print-directory palisade >/dev/null; \
+	b=$$(sha256sum $(PALISADE_STAGE3) | cut -d' ' -f1); \
+	if [ "$$a" != "$$b" ]; then \
+	    echo "ERROR: the palisade build is NOT reproducible: $$a != $$b" >&2; \
+	    exit 1; fi; \
+	echo "palisade: reproducible — two clean builds agree: $$a"
+
+.PHONY: palisade palisade-pin palisade-repro
+
 # runstore.h includes "vendor/datalog-dafsa/src/dl.h" (the pre-swap path);
 # build/include/vendor/datalog-dafsa/src is a symlink to the sibling's src/
 # so that include resolves against the ENGINE'S OWN headers — no src/ edit.
@@ -780,7 +851,7 @@ $(BIN_HOSTGATE_NOEXEC): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON
 # on that script), and with no override each script must get PAST resolution —
 # and pins the pre-fix revision (cmp-proven to differ) to show it SKIPPED.
 # Slow (~9 min): it runs the gate scripts under a stated bound.
-test-sibling-paths:
+test-sibling-paths: palisade
 	bash tests/test_sibling_paths.sh
 
 .PHONY: test-sibling-paths
@@ -986,7 +1057,7 @@ calls-policy-artifact:
 # 0% -> non-zero over the RUN SET on the GUEST'S OWN disk store, attributed
 # by src_of.  Needs qemu+kvm, e2fsprogs (e2fsck/debugfs/mke2fs), zig, the
 # built sibling fxstore, and fx-init's m3/package-set-slot.dhall.
-test-agent-slot:
+test-agent-slot: palisade
 	bash tests/qemu-agent-slot.sh
 
 .PHONY: test-agent-slot
@@ -1001,7 +1072,7 @@ test-agent-slot:
 # the CROSS-MACHINE claim (a HOST-built hash adopted by a GUEST activation)
 # and the injection path a deployment without an in-guest builder needs.
 # Same deps as test-agent-slot.
-test-agent-slot-inguest:
+test-agent-slot-inguest: palisade
 	bash tests/qemu-agent-slot-inguest.sh
 
 .PHONY: test-agent-slot-inguest
@@ -1013,13 +1084,13 @@ test-agent-slot-inguest:
 # artifact (the v86 lane's) cannot exec there at all (no IA32 emulation) and
 # is the in-boot negative control.  Same deps as test-agent-slot, plus the
 # vendored LuaJIT tree (tools/build-luajit.sh builds both artifacts).
-test-luajit-guest:
+test-luajit-guest: palisade
 	bash tests/qemu-luajit.sh
 
 .PHONY: test-luajit-guest
 
 clean:
-	rm -rf build
+	rm -rf build vendor/palisade/bin
 
 # The two oracles of the agent loop.
 #   test_resume.sh  — kills the harness mid-dispatch with a tool that SIGKILLs

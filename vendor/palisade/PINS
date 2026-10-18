@@ -1,0 +1,6 @@
+# vendor/palisade/PINS -- the built sandbox binary's pin (name<TAB>sha256).
+# The named artifact is build/stage3, produced by `make palisade` from the
+# sources in this directory.  `make palisade` recomputes this sha and REFUSES
+# when it differs: a toolchain drift or a source edit cannot silently swap the
+# binary that rides into the guest.  Re-pinning is a release (see VENDOR.txt).
+stage3	b20765fec378c7a80ff4a2edc5e4a47e8fecdb2db16065638c1e7fa2d4d7b932

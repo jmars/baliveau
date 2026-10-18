@@ -296,9 +296,20 @@ assert_guest_elf "$BINDIR/luajit.i386" "i386"
 FXSTORE_REPO="${FXSTORE_REPO:-$SIBS/fxstore}"
 [ -f "$FXSTORE_REPO/build.zig" ] \
     || skip "fxstore checkout not found at $FXSTORE_REPO (set FXSTORE_REPO or FX_SIBLINGS; the in-guest builder)"
-STAGE3_SRC="$FXSTORE_REPO/vendor/palisade/bin/stage3"
+# The sandbox binary comes from THIS tree's build, NOT the fxstore checkout:
+# palisade is vendored here as source (vendor/palisade/VENDOR.txt) and built
+# by `make palisade`.  The staged binary must be the PINNED one — a stale or
+# foreign build/stage3 (an old pin, a hand-swapped file) is refused by name
+# exactly as an absent one is.  NO fallback to any other checkout.
+STAGE3_SRC="$REPO/build/stage3"
 [ -x "$STAGE3_SRC" ] \
-    || fail "palisade stage3 not executable at $STAGE3_SRC (fxstore refuses every Shell recipe without it)"
+    || fail "palisade stage3 not executable at $STAGE3_SRC (build it: make palisade; fxstore refuses every Shell recipe without it)"
+command -v sha256sum >/dev/null 2>&1 || skip "sha256sum not found (the stage3 pin check)"
+_sha_pin=$(awk -F'\t' '$1 == "stage3" { print $2 }' "$REPO/vendor/palisade/PINS")
+[ -n "$_sha_pin" ] || fail "$REPO/vendor/palisade/PINS carries no stage3 pin"
+_sha_got=$(sha256sum "$STAGE3_SRC" | cut -d' ' -f1)
+[ "$_sha_got" = "$_sha_pin" ] \
+    || fail "$STAGE3_SRC sha256 $_sha_got is NOT the pinned $_sha_pin (a re-pin is a release: make palisade; see vendor/palisade/VENDOR.txt)"
 FXS_OUT="$OUT/fxstore-x86_64-musl"
 # NO output reuse: zig's own cache (content-addressed on sources) makes a
 # warm rebuild ~seconds, and a reused PREFIX binary is exactly the stale-

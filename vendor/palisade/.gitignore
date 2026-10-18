@@ -1,0 +1,18 @@
+# Built binaries (sources at src/palisade/stage3.c and tests/probes/*.c).
+bin/stage3
+tests/probes/keytest
+tests/probes/ptracetest
+tests/probes/mounttest
+tests/probes/unsharetest
+tests/probes/reverse_order_probe
+# cosmocc build intermediates (fat APE + multi-arch artifacts)
+*.ape
+*.com.dbg
+*.aarch64.elf
+*.ape.bak
+bin/.aarch64/
+bin/*.o
+
+# Local dev only
+.venv/
+__pycache__/

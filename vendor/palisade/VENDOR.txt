@@ -1,0 +1,58 @@
+vendor/palisade — VENDOR PROVENANCE
+===================================
+
+WHAT THIS IS
+  Palisade, the C-only sandbox core: stage3.c (the layer sequence
+  nnprivs -> landlock -> rlimits -> seccomp, then exec) plus the patched
+  cosmocc pledge (src/palisade/cosmo/pledge-{linux,rattan}.c).  Its interface
+  is
+
+      stage3 PROMISES LANDLOCK_SPEC [--verify] -- cmd [args...]
+
+  Vendored as SOURCE so this tree can modify it deliberately; the binary is
+  NOT vendored — it is built here by `make palisade` (see the top-level
+  Makefile) into build/stage3.
+
+ORIGIN                                                   [MEASURED 2026-10-18]
+  origin repo:   https://github.com/fixpoint-linux/palisade
+  vendored from: ~/fixpoint-linux/fxstore/vendor/palisade (a git submodule of
+                 the fxstore checkout)
+  fxstore HEAD at copy time:  e97758c92fbe78227b855ac9e82da64aaba58c3a
+  palisade commit at copy:    3c7dc1bd59d7d3598ddaa4401441950a5915ecc7
+                              (git -C ~/fixpoint-linux/fxstore/vendor/palisade
+                               rev-parse HEAD, at that fxstore HEAD)
+  copy date:     2026-10-18
+  copied:        README.md Makefile .gitignore Dhakefile.dhall
+                 src/palisade/stage3.c src/palisade/cosmo/{pledge-linux.c,
+                 pledge-rattan.c,README.md} tests/probes/*.c
+  NOT copied:    bin/ — that directory held the submodule's own BUILD OUTPUTS
+                 (stage3, .ape, .com.dbg, .aarch64/).  They are upstream
+                 build artifacts, not source, and are gitignored upstream.
+
+  Every copied file is byte-identical to its origin (proven at copy time with
+  `cmp` over all 13 files).  The vendored tree is otherwise UNMODIFIED — this
+  slice (S0) changes nothing in it; the only files added here are this
+  VENDOR.txt and PINS.
+
+THIS TREE OWNS ITS COPY
+  There is NO dependency on the fxstore checkout for palisade: nothing here
+  is read from ~/fixpoint-linux/fxstore, and `make palisade` builds from the
+  sources in THIS directory.  (tools/stage-guest.sh still reads the fxstore
+  checkout for the IN-GUEST fxstore BUILDER — a different, unchanged
+  dependency.)  From here on, a palisade change is a deliberate local change
+  to THIS copy; upstream is a reference to diff against, not a source to
+  follow.
+
+RESYNC (when upstream moves)
+  cp the source list above over this directory, re-record the two commit
+  shas and the date in this file, then `make palisade-repro` to re-measure
+  byte-reproducibility and update PINS with the sha it reports.  A pin change
+  is a release: it changes the sandbox binary the guest receives.
+
+PIN
+  PINS holds `stage3<TAB>sha256` for the binary `make palisade` produces.
+  `make palisade` refuses (loudly) when the built binary does not match the
+  pin: a toolchain drift or a source edit cannot silently swap the sandbox
+  binary that goes into the guest.  MEASURED reproducible: two clean builds
+  in-tree, and a clean build in a different absolute path, all produced the
+  same sha256.
