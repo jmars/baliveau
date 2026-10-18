@@ -202,6 +202,26 @@
  * (call-join, each its own row and meaning), and the log's echo telemetry
  * (call-telemetry; NO LANE STOP by default — the deliberate G7 demotion).
  * It READS both sides and never rewrites either.
+ *
+ * THE EXEC DIMENSION (S4), on the SAME class: every judged call also gets a
+ * `call-exec` row saying WHICH SIDE RAN IT — MEASURED from the row's own
+ * `exec` field when the HOST executed the call, and DERIVED from the
+ * writer's stated grammar when it is absent (absence means the guest ran
+ * it).  §7.1a's residual is why: an egress grant is a CAPABILITY INCREASE,
+ * and a report that could not tell a host-executed call from a guest one
+ * would be blind to exactly that.
+ *
+ * THE REACH CLASS (S4): the WEAKENED declared-vs-observed audit, its own
+ * rows and its own two findings — stale-class-row (a pinned class row no
+ * observed call exercised: a STALE GRANT) and pin-drift (an artifact that is
+ * not the bytes PINS froze).  It is NOT the type-enforced audit round 1
+ * would have given, because an egress call is judged ARGUMENTS rather than
+ * typed: "declared" here is the operator's pinned class tables plus PINS, and
+ * the strong "observed traffic no declaration licenses" direction does not
+ * exist in this shape.  It says so in the taxonomy, in both finding rows and
+ * in its bound (bound/reach-audit-is-the-weakened-one), and it keeps the
+ * §1a gap-3 discipline on every side: a missing log, policy dir, PINS file
+ * or --class-arg mapping is NOT-KNOWN, never "none" and never "stale".
  */
 
 #define _POSIX_C_SOURCE 200809L
@@ -403,7 +423,12 @@ typedef struct {
     long turn;
     int turn_set;
     char *true_name;
+    char *args;           /* the model's args text, VERBATIM (the classed
+                           * argument is read out of it for the reach class;
+                           * never re-rendered) */
     char *justification;  /* the CLAIM, from the call's args */
+    char *exec;           /* S4: WHICH SIDE RAN IT — the row's own `exec`
+                           * field, present ONLY on a host-executed call */
     int pending;
     char *outcome;        /* the OUTCOME: the replayed function_call_output */
     char *verdict;
@@ -452,6 +477,67 @@ static unsigned g_nguest;
 static const char *g_proxy_log;  /* --proxy-log: the host proxy's one log */
 static const char *g_transcript; /* --transcript: the guest's messages.jsonl */
 static int g_plog_present, g_tran_present; /* the named file existed */
+
+/* ── S4: THE REACH CLASS — the WEAKENED declared-vs-observed audit ────────
+ * "declared reach" is what the operator PINNED and what the host can run:
+ * the class tables in --policy-dir (policy/ops/ops-aliases.tsv — the PATH
+ * dimension — and policy/ops/ops-hosts.tsv — the AUTHORITY dimension), each
+ * row a GRANT (a class, and whether it is protected), and the PINS file
+ * that freezes them.  "observed" is the one log's own call rows.  The two
+ * findings that SURVIVE in this shape, each its own row with its own
+ * meaning: stale-class-row (a pinned row no observed call exercised — a
+ * STALE GRANT) and pin-drift (an artifact that no longer hashes to PINS).
+ *
+ * THE WEAKENING IS STATED, NOT SOFTENED: this is NOT the type-enforced
+ * audit round 1 would have given.  Egress is JUDGED ARGUMENTS, not a type,
+ * so there is no per-generation declaration for observed traffic to
+ * violate, and the "unlicensed traffic" direction does not exist here.  What
+ * is left is what the pinned tables + the log can honestly support.
+ *
+ * TWO DIRECTIONS OF ABSENCE, once per side (§1a gap 3), and NOTHING here
+ * ever reads a missing side as "none": no --policy-dir means the DECLARED
+ * side is NOT-KNOWN (never "nothing is granted"); no --proxy-log means the
+ * OBSERVED side is NOT-KNOWN (never "nothing was called", and emphatically
+ * never "every row is stale"); no --class-arg for a tool means that tool's
+ * classed argument cannot be attributed, so the rows only it could have
+ * exercised read NOT-KNOWN, not stale. */
+#define MAX_CLASSARGS 32
+#define MAX_REACH_ROWS 4096
+#define MAX_PIN_ROWS 64
+
+typedef struct {
+    char *dim;    /* the DIMENSION the classed argument belongs to:
+                   * "path" (the ops-aliases table) or "authority" (the
+                   * ops-hosts table) — the caller states it because the
+                   * registry is C and this seat will not respell it */
+    char *tool;   /* the call's true_name / the guest verb's name */
+    char *key;    /* the argument key the registry declares as classed */
+} classarg_t;
+
+typedef struct {
+    char *table;    /* the artifact the row came from (its file name) */
+    char *pattern;  /* the row's pattern, VERBATIM */
+    char *cls;      /* the class the seat injects */
+    int  prot;      /* protected: yes=1, no=0 */
+    unsigned lineno;
+} reachrow_t;
+
+typedef struct {
+    char name[256];  /* the artifact name PINS names */
+    char want[65];   /* PINS' sha256 */
+    char got[65];    /* the bytes on disk now ("" when the file is absent) */
+    int  present;
+} pinrow_t;
+
+static const char *g_policy_dir;             /* --policy-dir (the DECLARED side) */
+static classarg_t g_classargs[MAX_CLASSARGS];
+static unsigned g_nclassargs;
+static reachrow_t g_rrows[MAX_REACH_ROWS];
+static unsigned g_nrrows;
+static pinrow_t g_pins[MAX_PIN_ROWS];
+static unsigned g_npins;
+static int g_pins_present, g_alias_present, g_hosts_present;
+static int g_reach_tables_read;  /* at least one class table was read */
 
 /* ── running fxstore (read-only subcommands only; the osier-share seat's
  *    pattern) ──────────────────────────────────────────────────────────── */
@@ -1158,6 +1244,12 @@ static const struct { const char *cls, *record, *absence; } TAXONOMY[] = {
     { "call-telemetry",
       "MEASURED — the ONE LOG's telemetry rows (types unjoined-output, echo-anomaly, unresolved-substitution), surfaced verbatim as call-telemetry records with their meanings stated",
       "no-telemetry-row-in-the-log = no SUCH anomaly was recorded within the log this run holds — a MEASUREMENT of the log, never a claim that none occurred (the log may be a slice, and a row absent because no proxy ran is not 'no anomaly')" },
+    { "call-exec",
+      "MEASURED (host) / DERIVED (guest) — the call row's own `exec` field, the ONE value the proxy writes when the HOST ran the call (a declared program from the pinned registry, its bounded result substituted over the guest's sentinel).  Emitted for EVERY judged call, so the §7.1a question 'did this call widen what the agent can reach?' is answerable from the report: a host-executed call IS a capability the guest did not have",
+      "no-`exec`-field = the GUEST executed the call, DERIVED from the writer's OWN grammar (the field renders only where the host ran it), never from a default — and unambiguous only because host execution did not exist before the field did.  A call the log does NOT hold is absent from this class entirely: absence here is 'not in this log', never 'not executed'" },
+    { "reach",
+      "MEASURED/DERIVED — the WEAKENED declared-vs-observed audit, and it is named as weakened on every run (bound/reach-audit-is-the-weakened-one): DECLARED = the operator's pinned class tables (--policy-dir: ops-aliases.tsv's path classes, ops-hosts.tsv's authority classes, each row a GRANT with its protected flag) plus PINS that freezes them; OBSERVED = the one log's own call rows, attributed by the classed argument the CALLER declares (--class-arg DIM:TOOL=KEY).  Rows: reach-pin (each pinned artifact, sha on disk vs the pinned sha), reach-row (each class row and whether an observed call exercised it), reach-class-arg (the declared mappings the attribution rested on)",
+      "TWO DIRECTIONS, once per side, and no absence is ever read as 'none': no --policy-dir = the DECLARED side is NOT-KNOWN (never 'nothing is granted'); no --proxy-log, or a log that does not exist, = the OBSERVED side is NOT-KNOWN (never 'nothing was called' — and NEVER 'every row is stale'); no PINS = the pin-drift direction is NOT-KNOWN (never 'no drift'); no --class-arg for a dimension = that dimension cannot be attributed, so its rows read NOT-KNOWN (never stale).  The two FINDINGS are stale-class-row (a pinned grant no observed call consumed — a REVOCATION question) and pin-drift (the artifact on disk is not the artifact PINS froze, reported with BOTH pins)" },
 };
 #define NTAX (sizeof TAXONOMY / sizeof TAXONOMY[0])
 
@@ -1226,6 +1318,10 @@ static const struct { const char *id, *text; } BOUNDS[] = {
       "the evaluator's LOCATION — host-side Python (policy/eval_claim.py over the le checkout) TODAY, a DEPLOYMENT STOPGAP; in-guest in the qemu lane (the le->Osier port emitting x64 via QBE) once the port lands — is a DEPLOYMENT DIFFERENCE WITH IDENTICAL SEMANTICS: the same closed agent lexicon (policy/claims-lexicon.ini), the same frozen policy (policy/claims-policy.dl, sha-pinned in policy/PINS), the same claim bytes, the same record format.  The verdict does not encode where the evaluator ran and the record does not say — because it does not matter: this row exists so the location can never silently become a reason to shrink the language again (round 1 chose a crippled template checker to avoid executing LE, and was overturned for exactly that)" },
     { "same-store-only",
       "this report is a function of ONE store directory; anything recorded elsewhere (the runtime log, the harness's own transcript, the audit's observation file) is out of domain, and the report never guesses at it — the ONE in-domain exception is the judge seat's claim observation <store>.fx-claim-obs (bound/claim-obs-is-host-side), which is the claim class's record, not a harness self-report" },
+    { "reach-audit-is-the-weakened-one",
+      "STATEMENT, not a bound to discover later: the reach class is the WEAKENED declared-vs-observed audit (plan Q5), NOT the type-enforced one round 1 would have given.  Because an egress call is JUDGED ARGUMENTS rather than typed, there is no per-generation DECLARATION for observed traffic to violate — so the strong direction ('observed traffic no declaration licenses') DOES NOT EXIST in this shape and this seat does not print it.  What survives is what the pinned tables and the log can honestly support: a stale GRANT (a pinned class row no observed call consumed) and PIN DRIFT (an artifact that is not the bytes PINS froze).  A reader must not read either finding as stronger than that" },
+    { "reach-attribution-mirrors-the-seat",
+      "the exercised direction attributes a class row to a call by MIRRORING three things from tools/fx-hostgate.c (file-static in a seat this unit may not touch): the lexical path canonicalizer, the two-form path matcher, and the authority normalizer + its two-form matcher.  MIRRORED, NOT SHARED — and that is the risk, named: a widening of the seat's matcher that this one does not follow would make a CONSUMED row read STALE (a false revocation question) or, in the other direction, an unexercised row read exercised.  The grammar itself cannot drift silently: eval_ops.py refuses any third pattern form at pin time, so both matchers are frozen by the pinned tables, not by this seat.  The MAPPING side is bounded too: --class-arg declares which key carries the classed argument, and an INCOMPLETE mapping can only under-attribute (NOT-KNOWN, or a false STALE) — it can never make a stale grant read exercised" },
     { "call-record-is-host-side",
       "the host proxy's ONE LOG (tools/fx-hostgate.c --log) and the guest's TRANSCRIPT (messages.jsonl) are named by the CALLER (--proxy-log / --transcript); neither has a store-sibling default, so the call class is UNARMED unless a side is named.  The reporter only READS both — byte-identical in, byte-identical out — and never re-renders or rewrites either.  The two sides are CHECKABLE against each other by call_id (the join key, never rewritten on either leg), NOT authoritative over each other: the log records what the MODEL said and what the host judged, the transcript records what CROSSED the gate (the rewritten name + a generic sentinel for a denial)" },
     { "call-auditing-not-proofing",
@@ -1351,7 +1447,16 @@ static void read_proxy_log(void) {
             jturn(o, &H->turn, &H->turn_set);
             const char *tn = jstr(o, "true_name");
             H->true_name = xstrdup(tn ? tn : "-");
-            H->justification = justification_of(jstr(o, "args"));
+            const char *aj = jstr(o, "args");
+            H->args = aj ? xstrdup(aj) : NULL;
+            H->justification = justification_of(aj);
+            /* S4: THE EXECUTOR FIELD, carried VERBATIM and NEVER derived
+             * from the registry (a name that later becomes a host tool —
+             * or ceases to be one — would otherwise REWRITE the history of
+             * old rows: a row carries ITS OWN reading of its scope, the
+             * P6-fix R5 lesson). */
+            const char *ex = jstr(o, "exec");
+            H->exec = ex ? xstrdup(ex) : NULL;
             yyjson_val *pv = yyjson_obj_get(o, "pending");
             H->pending = (pv && yyjson_is_bool(pv)) ? yyjson_get_bool(pv) : 0;
             const char *oc = jstr(o, "outcome");
@@ -1483,7 +1588,7 @@ static void read_transcript(void) {
 
 /* The call class's counters (the human summary reads them). */
 static unsigned g_c_denied, g_c_allowed, g_c_nov, g_c_joined, g_c_hostonly,
-    g_c_tranonly, g_c_disagree, g_c_tele;
+    g_c_tranonly, g_c_disagree, g_c_tele, g_c_hostexec, g_c_guesexec;
 
 static void emit_turn(long t, int set) {
     if (set) printf("%ld", t); else putchar('-');
@@ -1514,6 +1619,42 @@ static void emit_calls(void) {
         fputs("\tjustification\t", stdout);
         emit_text(H->justification);
         fputs("\tMEASURED\n", stdout);
+
+        /* S4: THE EXECUTOR DIMENSION — who RAN the call.  The row's `exec`
+         * field is the proxy's own reading at row-creation time and it
+         * renders ONLY on a host-executed call, so the dimension is
+         * emitted for EVERY judged call, in both directions:
+         *   present  -> MEASURED (the field is in the record);
+         *   absent   -> DERIVED, and the derivation is the WRITER's stated
+         *               grammar ("`exec` renders exactly when the HOST ran
+         *               the call"), never a default this seat invented.  It
+         *               is unambiguous only because host execution did not
+         *               exist before the field did: a row carried verbatim
+         *               from a pre-S1 log is a guest row BY CONSTRUCTION.
+         * This is the seat §7.1a demands: an egress grant is a CAPABILITY
+         * INCREASE, and a report that could not tell a host-executed call
+         * from a guest one would be blind to exactly that increase. */
+        if (H->exec) {
+            fputs("call-exec\t", stdout);
+            emit_text(H->call_id);
+            fputs("\texec\t", stdout);
+            emit_text(H->exec);
+            fputs("\tMEASURED\tthe row's OWN `exec` field: the HOST ran this call — a "
+                  "declared program from the operator's pinned registry executed it on the "
+                  "host and its bounded result was substituted over the guest's sentinel "
+                  "(the capability the log exists to make visible, carried VERBATIM, never "
+                  "re-derived from today's registry)\n", stdout);
+            g_c_hostexec++;
+        } else {
+            fputs("call-exec\t", stdout);
+            emit_text(H->call_id);
+            fputs("\texec\tguest\tDERIVED\tthe row carries NO `exec` field, and the writer's "
+                  "own grammar says it renders ONLY where the host ran the call — so the "
+                  "GUEST executed this one (DERIVED from the record's shape, not from a "
+                  "default; a row carried verbatim from a pre-S1 log is a guest row by "
+                  "construction, because host execution did not exist then)\n", stdout);
+            g_c_guesexec++;
+        }
 
         /* the VERDICT: the host's, with its author and refusal name.  NO
          * fabricated verdict — a row with no verdict field reads NOT-RECORDED. */
@@ -1682,6 +1823,458 @@ static void emit_calls(void) {
     }
 }
 
+/* ── S4: THE REACH CLASS — the weakened declared-vs-observed audit ────────
+ *
+ * WHERE THE "DECLARED" SIDE COMES FROM, stated as narrowly as it is true:
+ * the operator's PINNED CLASS TABLES (--policy-dir) plus the PINS file that
+ * freezes them.  NOT a type, NOT a per-generation declaration: because an
+ * egress call is judged ARGUMENTS rather than typed, the "declared vs
+ * observed" audit survives here only in its WEAKENED form (plan Q5).  The
+ * strong direction round 1 would have given — an OBSERVED call that no
+ * declaration licenses — does not exist in this shape, and this seat does
+ * not pretend it does.
+ *
+ * WHAT THE TWO FINDINGS MEAN (each its own row, each its own meaning):
+ *   stale-class-row  a pinned class row that NO observed call exercised —
+ *                    a STALE GRANT: the operator granted a class (and
+ *                    whether it is protected) and the log shows no call that
+ *                    consumed it.  This is a REVOCATION question, not a
+ *                    tamper: the grant is wider than the traffic.
+ *   pin-drift        an artifact that no longer hashes to PINS — the table
+ *                    the seat judged against is NOT the table the release
+ *                    pinned.  Reported as a finding with BOTH pins, never
+ *                    silently joined.
+ *
+ * HOW A ROW IS ATTRIBUTED TO A CALL, and the mirroring that makes it
+ * honest: the call's classed argument is read out of the log row's args by
+ * the KEY the CALLER declares (--class-arg DIM:TOOL=KEY — the registry's
+ * arg_key is C, and this seat will NOT spell it a second time), the value is
+ * normalized and matched against the row's pattern with the seat's OWN
+ * grammar, MIRRORED here: the two-form path matcher plus the lexical
+ * canonicalizer (fx-hostgate.c's fh_canon_abs/ops_pattern_hits) and the
+ * authority normalizer plus its two-form matcher (authority_of/
+ * host_pattern_hits).  MIRRORED, not shared — these are file-static in a
+ * seat this unit may not touch — and that mirroring is the RISK, named: if
+ * the seat's matcher ever widens, this one must follow or a consumed row
+ * will read STALE (the harmless direction: a false revocation question) or,
+ * worse, an unexercised row will read exercised.  The grammar itself is
+ * frozen by the tables (eval_ops.py refuses any third form at pin time), so
+ * the shape cannot drift silently under this seat.
+ *
+ * THE EXERCISED DIRECTION IS A MEASUREMENT ONLY WHEN BOTH SIDES ARE GIVEN
+ * AND THE DIMENSION IS MAPPED — the §1a gap-3 discipline, once per side,
+ * spelled out in the absence records the class emits.  No log, no policy
+ * dir, or no --class-arg for the dimension that could consume the row is
+ * NOT-KNOWN, NEVER "no call used it" and NEVER "stale". */
+
+/* The lexical canonicalizer, MIRRORED from fx-hostgate.c's fh_canon_abs
+ * (fx-verbs-server.c:388's canon_root_rel, the seat's own copy): collapse
+ * '//', drop '.', resolve '..', refuse an escape or a relative path. */
+static char *reach_canon_abs(const char *abs) {
+    if (!abs || abs[0] != '/') return NULL;
+    size_t cap = strlen(abs) + 2;
+    char *out = xmalloc(cap);
+    size_t olen = 0;
+    int depth = 0;
+    const char *p = abs;
+    while (*p) {
+        while (*p == '/') p++;
+        if (!*p) break;
+        const char *seg = p;
+        while (*p && *p != '/') p++;
+        size_t sl = (size_t)(p - seg);
+        if (sl == 1 && seg[0] == '.') continue;
+        if (sl == 2 && seg[0] == '.' && seg[1] == '.') {
+            if (depth == 0) { free(out); return NULL; } /* escapes the root */
+            while (olen > 0 && out[olen - 1] != '/') olen--;
+            if (olen > 0) olen--;
+            depth--;
+            continue;
+        }
+        if (olen + sl + 2 >= cap) { free(out); return NULL; }
+        out[olen++] = '/';
+        memcpy(out + olen, seg, sl);
+        olen += sl;
+        depth++;
+    }
+    if (olen == 0) out[olen++] = '/'; /* the root itself */
+    out[olen] = 0;
+    return out;
+}
+
+/* The authority normalizer, MIRRORED from fx-hostgate.c's authority_of:
+ * scheme dropped, host lowercased, port dropped; userinfo or no host returns
+ * NULL (unclassable — it can attribute nothing to any row). */
+static char *reach_authority_of(const char *url) {
+    if (!url) return NULL;
+    const char *scheme_end = strstr(url, "://");
+    if (!scheme_end) return NULL;
+    const char *p = scheme_end + 3;
+    const char *slash = strchr(p, '/');
+    const char *at = strchr(p, '@');
+    if (at && (!slash || at < slash)) return NULL; /* userinfo: unclassable */
+    const char *hostpart_end = slash ? slash : p + strlen(p);
+    const char *colon = NULL;
+    for (const char *q = p; q < hostpart_end; q++)
+        if (*q == ':') { colon = q; break; }
+    size_t host_len = colon ? (size_t)(colon - p) : (size_t)(hostpart_end - p);
+    if (host_len == 0 || host_len > 255) return NULL;
+    char *host = xmalloc(host_len + 1);
+    memcpy(host, p, host_len);
+    host[host_len] = 0;
+    for (size_t i = 0; i < host_len; i++) {
+        unsigned char c = (unsigned char)host[i];
+        host[i] = (char)((c >= 'A' && c <= 'Z') ? c | 0x20 : c);
+    }
+    return host;
+}
+
+/* The PATH pattern matcher, MIRRORED from ops_pattern_hits: the two-form
+ * grammar only — an EXACT path, or the SUBTREE form (the path plus a
+ * trailing slash and two stars: the path and its descendants). */
+static int reach_path_hits(const char *pattern, const char *canon) {
+    size_t pl = strlen(pattern);
+    if (pl >= 3 && strcmp(pattern + pl - 3, "/**") == 0) {
+        size_t bl = pl - 3;
+        size_t cl = strlen(canon);
+        if (cl < bl || strncmp(canon, pattern, bl) != 0) return 0;
+        return cl == bl || canon[bl] == '/';
+    }
+    return strcmp(canon, pattern) == 0;
+}
+
+/* The AUTHORITY pattern matcher, MIRRORED from host_pattern_hits: an EXACT
+ * host, or '*.suffix' (exactly one label under the suffix). */
+static int reach_host_hits(const char *pattern, const char *host) {
+    size_t pl = strlen(pattern);
+    if (pl >= 2 && pattern[0] == '*' && pattern[1] == '.') {
+        const char *suffix = pattern + 2;
+        size_t sl = strlen(suffix);
+        size_t hl = strlen(host);
+        if (hl > sl && host[hl - sl - 1] == '.' && strcmp(host + hl - sl, suffix) == 0)
+            return 1;
+        return 0;
+    }
+    return strcmp(pattern, host) == 0;
+}
+
+/* stat()-then-read: an ABSENT artifact and an UNREADABLE one are different
+ * states, and a read error is not an absence (this file's every reader). */
+static char *reach_slurp(const char *path, int *present) {
+    struct stat st;
+    *present = 0;
+    if (stat(path, &st) != 0) {
+        if (errno == ENOENT) return NULL;
+        die("cannot stat %s: %s (a read error is not an absence)", path, strerror(errno));
+    }
+    *present = 1;
+    size_t len = 0;
+    char *b = slurp_file(path, &len);
+    if (!b) die("cannot read %s: %s (a read error is not an absence)", path, strerror(errno));
+    return b;
+}
+
+/* PINS: '#' comments + '<artifact><TAB><sha256>' rows.  A row this seat
+ * cannot read is a LOUD failure, never a skipped line: a pin nobody read is
+ * a pin nobody checked. */
+static void reach_read_pins(void) {
+    char path[4096];
+    snprintf(path, sizeof path, "%s/PINS", g_policy_dir);
+    char *b = reach_slurp(path, &g_pins_present);
+    if (!b) return;
+    char *save = NULL;
+    for (char *line = strtok_r(b, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
+        size_t ll = strlen(line);
+        if (ll && line[ll - 1] == '\r') line[--ll] = 0;
+        if (!ll || line[0] == '#') continue;
+        char *tab = strchr(line, '\t');
+        if (!tab) die("%s: a PINS row is <artifact><TAB><sha256>: \"%s\"", path, line);
+        *tab = 0;
+        if (g_npins >= MAX_PIN_ROWS) die("%s: more than %u pin rows", path, (unsigned)MAX_PIN_ROWS);
+        pinrow_t *P = &g_pins[g_npins++];
+        memset(P, 0, sizeof *P);
+        snprintf(P->name, sizeof P->name, "%s", line);
+        snprintf(P->want, sizeof P->want, "%s", tab + 1);
+        char apath[4096];
+        snprintf(apath, sizeof apath, "%s/%s", g_policy_dir, P->name);
+        int present = 0;
+        char *ab = reach_slurp(apath, &present);
+        P->present = present;
+        if (ab) {
+            size_t alen = strlen(ab);
+            char sha[65];
+            sha256_hex((const unsigned char *)ab, (unsigned)alen, sha);
+            snprintf(P->got, sizeof P->got, "%s", sha);
+            free(ab);
+        }
+    }
+    free(b);
+}
+
+/* THE CLASS TABLES.  Two artifacts, two dimensions, one row shape: the
+ * grant the operator wrote (pattern, class, protected).  ops-aliases.tsv's
+ * columns are alias<TAB>pathclass<TAB>protected<TAB>pattern (the pattern is
+ * the RUNTIME surface, last); ops-hosts.tsv's are
+ * pattern<TAB>argclass<TAB>protected.  Rows are parsed, never validated
+ * here — eval_ops.py validates at pin time and this seat reports what the
+ * pinned table SAYS; a row it cannot parse is a loud failure, because a
+ * skipped row is a grant that vanishes from the audit. */
+static void reach_read_table(const char *table, int aliases) {
+    char path[4096];
+    snprintf(path, sizeof path, "%s/%s", g_policy_dir, table);
+    int *present = aliases ? &g_alias_present : &g_hosts_present;
+    char *b = reach_slurp(path, present);
+    if (!b) return;
+    g_reach_tables_read = 1;
+    char *save = NULL;
+    unsigned ln = 0;
+    for (char *line = strtok_r(b, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
+        ln++;
+        size_t ll = strlen(line);
+        if (ll && line[ll - 1] == '\r') line[--ll] = 0;
+        if (!ll || line[0] == '#') continue;
+        char *f[4] = {0};
+        int nf = 0;
+        char *lsave = NULL;
+        for (char *tok = strtok_r(line, "\t", &lsave); tok && nf < 4;
+             tok = strtok_r(NULL, "\t", &lsave))
+            f[nf++] = tok;
+        const char *pattern, *cls, *prot;
+        if (aliases) {
+            if (nf != 4)
+                die("%s:%u: a path-class row is alias<TAB>pathclass<TAB>protected<TAB>pattern "
+                    "(eval_ops.py --check-aliases is the validator; this seat refuses to skip "
+                    "a row it cannot read): \"%s\"", path, ln, line);
+            pattern = f[3]; cls = f[1]; prot = f[2];
+        } else {
+            if (nf != 3)
+                die("%s:%u: a host row is pattern<TAB>argclass<TAB>protected "
+                    "(eval_ops.py --check-hosts is the validator; this seat refuses to skip a "
+                    "row it cannot read): \"%s\"", path, ln, line);
+            pattern = f[0]; cls = f[1]; prot = f[2];
+        }
+        if (g_nrrows >= MAX_REACH_ROWS) die("%s: more than %u class rows", path, (unsigned)MAX_REACH_ROWS);
+        reachrow_t *R = &g_rrows[g_nrrows++];
+        memset(R, 0, sizeof *R);
+        R->table = xstrdup(table);
+        R->pattern = xstrdup(pattern);
+        R->cls = xstrdup(cls);
+        R->prot = !strcmp(prot, "yes"); /* anything else reads not-protected: the
+                                         * pin-time validator owns the vocabulary,
+                                         * and no row reaches here unvalidated */
+        R->lineno = ln;
+    }
+    free(b);
+}
+
+/* The call's classed argument, by the KEY the caller declared.  The args
+ * text is the log row's own (the model's bytes, VERBATIM) and is parsed
+ * here only to read one value out. */
+static int call_classed_value(const hostcall_t *H, const char *key, char *out, size_t cap) {
+    if (!H->args) return 0;
+    yyjson_doc *d = yyjson_read(H->args, strlen(H->args), YYJSON_READ_NOFLAG);
+    if (!d) return 0;
+    int ok = 0;
+    yyjson_val *o = yyjson_doc_get_root(d);
+    if (yyjson_is_obj(o)) {
+        yyjson_val *v = yyjson_obj_get(o, key);
+        if (v && yyjson_is_str(v)) {
+            snprintf(out, cap, "%s", yyjson_get_str(v));
+            ok = 1;
+        }
+    }
+    yyjson_doc_free(d);
+    return ok;
+}
+
+/* WAS THE ROW EXERCISED by a call the log holds?  `*known` is 0 when the
+ * direction cannot be measured at all (no log, or no declared mapping for
+ * the dimension) — the caller then emits NOT-KNOWN, never "stale". */
+static int reach_row_exercised(const reachrow_t *R, int aliases, int *known) {
+    *known = 0;
+    if (!g_proxy_log || !g_plog_present) return 0;   /* the observed side is absent */
+    int mapped = 0;
+    for (unsigned i = 0; i < g_nclassargs; i++)
+        if (!strcmp(g_classargs[i].dim, aliases ? "path" : "authority")) mapped = 1;
+    if (!mapped) return 0;                            /* the dimension is unmapped */
+    *known = 1;
+    for (unsigned i = 0; i < g_nhcalls; i++) {
+        hostcall_t *H = &g_hcalls[i];
+        for (unsigned c = 0; c < g_nclassargs; c++) {
+            classarg_t *CA = &g_classargs[c];
+            if (strcmp(CA->dim, aliases ? "path" : "authority")) continue;
+            if (strcmp(CA->tool, H->true_name)) continue;
+            char val[4096];
+            if (!call_classed_value(H, CA->key, val, sizeof val)) continue;
+            if (aliases) {
+                char *canon = reach_canon_abs(val);
+                if (canon) {
+                    int hit = reach_path_hits(R->pattern, canon);
+                    free(canon);
+                    if (hit) return 1;
+                }
+            } else {
+                char *host = reach_authority_of(val);
+                if (host) {
+                    int hit = reach_host_hits(R->pattern, host);
+                    free(host);
+                    if (hit) return 1;
+                }
+            }
+        }
+    }
+    return 0;
+}
+
+/* Emit the reach class.  THREE ROW TAGS plus the TWO findings, each with
+ * its own meaning, and one absence record per side that was not given. */
+static void emit_reach(void) {
+    if (!g_policy_dir && !g_proxy_log) return; /* unarmed: named in the usage */
+
+    reach_read_pins();
+    if (g_policy_dir) {
+        reach_read_table("ops-aliases.tsv", 1);
+        reach_read_table("ops-hosts.tsv", 0);
+    }
+
+    /* (1) THE DECLARED SIDE, SHA-NAILED: every artifact PINS names, with
+     * the pin the release wrote and the bytes on disk now. */
+    if (!g_policy_dir) {
+        printf("absence\treach-declared\tnot-given-no---policy-dir-the-operator-s-pinned-"
+               "class-tables-were-not-supplied-so-the-DECLARED-side-is-NOT-KNOWN (NOT "
+               "'nothing is granted' and NOT 'every row is stale')\tABSENT\n");
+    } else if (!g_pins_present) {
+        printf("absence\treach-pins\tnot-durably-recorded-%s/PINS-does-not-exist-so-no-"
+               "artifact-can-be-checked-against-a-pin (the pin-drift direction is "
+               "NOT-KNOWN, never 'no drift')\tABSENT\n", g_policy_dir);
+    } else {
+        for (unsigned i = 0; i < g_npins; i++) {
+            pinrow_t *P = &g_pins[i];
+            const char *state;
+            if (!P->present) state = "MISSING";
+            else if (!strcmp(P->got, P->want)) state = "MATCH";
+            else state = "DRIFT";
+            printf("reach-pin\t%s\tsha\t%s\tpinned\t%s\t%s\t%s\n", P->name,
+                   P->present ? P->got : "-", P->want, state,
+                   P->present ? "MEASURED" : "DERIVED");
+            if (!P->present) {
+                printf("pin-drift\t%s\tsha\t-\tpinned\t%s\tFINDING\tDERIVED\tthe artifact "
+                       "PINS names is NOT THERE — the table this seat is asked to judge "
+                       "against is not the table the release pinned (and a release is "
+                       "artifact + PINS in the SAME commit, so this cannot be a licensed "
+                       "state)\n", P->name, P->want);
+                g_findings++;
+            } else if (strcmp(P->got, P->want) != 0) {
+                printf("pin-drift\t%s\tsha\t%s\tpinned\t%s\tFINDING\tMEASURED\tthe artifact "
+                       "on disk hashes to %s but PINS pins %s — the table the RELEASE "
+                       "froze and the table this report reads are different bytes, so any "
+                       "class row below is the CURRENT table's, not the pinned one's.  "
+                       "Reported with BOTH pins; never silently joined\n",
+                       P->name, P->got, P->want, P->got, P->want);
+                g_findings++;
+            }
+        }
+    }
+
+    /* (2) THE CLASS ROWS, each a GRANT, with the exercised direction and the
+     * §1a gap-3 discipline applied per side. */
+    if (g_policy_dir) {
+        if (!g_alias_present && !g_hosts_present)
+            printf("absence\treach-tables\tnot-durably-recorded-neither-ops-aliases.tsv-nor-"
+                   "ops-hosts.tsv-is-in-%s-so-there-is-NO-declared-class-row-to-audit "
+                   "(NOT 'no class is granted')\tABSENT\n", g_policy_dir);
+        unsigned n_stale = 0, n_unk = 0, n_yes = 0;
+        for (unsigned i = 0; i < g_nrrows; i++) {
+            reachrow_t *R = &g_rrows[i];
+            int aliases = !strcmp(R->table, "ops-aliases.tsv");
+            int known = 0;
+            int hit = reach_row_exercised(R, aliases, &known);
+            const char *state;
+            if (hit) { state = "YES"; n_yes++; }
+            else if (known) { state = "NO"; n_stale++; }
+            else { state = "NOT-KNOWN"; n_unk++; }
+            printf("reach-row\t%s\tline\t%u\tdimension\t%s\tpattern\t", R->table, R->lineno,
+                   aliases ? "path" : "authority");
+            emit_text(R->pattern);
+            fputs("\tclass\t", stdout);
+            emit_text(R->cls);
+            printf("\tprotected\t%s\texercised\t%s\t%s\n", R->prot ? "yes" : "no", state,
+                   hit ? "DERIVED"
+                       : (known ? "DERIVED" : "ABSENT"));
+            if (!strcmp(state, "NO")) {
+                printf("stale-class-row\t%s\tline\t%u\tdimension\t%s\tpattern\t", R->table,
+                       R->lineno, aliases ? "path" : "authority");
+                emit_text(R->pattern);
+                fputs("\tclass\t", stdout);
+                emit_text(R->cls);
+                printf("\tprotected\t%s\tFINDING\tDERIVED\ta STALE GRANT: the operator "
+                       "pinned this class row (%s, protected=%s) and NO observed call in the "
+                       "log consumed it.  WEAKENED AUDIT, stated: 'declared' here is the "
+                       "pinned class table, NOT a per-generation type — this is a REVOCATION "
+                       "question (a grant wider than the traffic), never a claim that "
+                       "unlicensed traffic happened\n",
+                       R->prot ? "yes" : "no",
+                       aliases ? "a path class" : "an authority class",
+                       R->prot ? "yes" : "no");
+                g_findings++;
+            }
+        }
+        (void)n_yes;
+        if (g_nrrows == 0) {
+            /* nothing to say beyond the absence rows above */
+        } else if (n_unk)
+            printf("reach-row-note\trows\t%u-unexercised-measured\t%u-not-known\tDEFERRED\t"
+                   "a NOT-KNOWN row is one whose dimension no --class-arg declaration "
+                   "covers, or whose observed side was not given: it is NEVER reported as "
+                   "stale (the absence discipline, once per side)\n", n_stale, n_unk);
+    }
+
+    /* (3) THE MAPPINGS the caller declared, echoed so the record says what
+     * the attribution rested on.  The registry's arg_key is C: this seat
+     * takes it as an INPUT and its ABSENCE is NOT-KNOWN, never "this tool
+     * has no classed argument". */
+    if (!g_nclassargs)
+        printf("absence\treach-class-arg\tnot-given-no---class-arg-DIM:TOOL=KEY-was-declared-"
+               "so-no-call-s-classed-argument-can-be-attributed-and-every-row-reads-"
+               "NOT-KNOWN (the registry's arg_key is C; this seat will not respell it, and "
+               "an unmapped dimension is NOT 'no classed argument')\tABSENT\n");
+    for (unsigned i = 0; i < g_nclassargs; i++)
+        printf("reach-class-arg\t%s\ttool\t%s\tkey\t%s\tMEASURED\t(the DECLARED mapping this "
+               "run was given: the registry's own arg_key is the truth and it is C — the "
+               "mapping is an INPUT here, so an incomplete set can only make a row read "
+               "NOT-KNOWN or, worst, STALE; it can never make a stale row read exercised)\n",
+               g_classargs[i].dim, g_classargs[i].tool, g_classargs[i].key);
+    (void)g_reach_tables_read;
+}
+
+/* --class-arg DIM:TOOL=KEY — the declared bridge from a call's tool to the
+ * argument the registry classes.  LOUD on any shape it does not know: a
+ * dimension this seat cannot judge must not be silently dropped (a dropped
+ * mapping reads as NOT-KNOWN at best and as a stale grant at worst). */
+static void add_classarg(const char *spec) {
+    const char *colon = strchr(spec, ':');
+    const char *eq = strchr(spec, '=');
+    if (!colon || !eq || colon > eq || colon == spec || eq == colon + 1 || !eq[1])
+        die("--class-arg is DIM:TOOL=KEY (e.g. path:host_cat=path): \"%s\"", spec);
+    char dim[32], tool[128], key[128];
+    snprintf(dim, sizeof dim, "%.*s", (int)(colon - spec), spec);
+    snprintf(tool, sizeof tool, "%.*s", (int)(eq - colon - 1), colon + 1);
+    snprintf(key, sizeof key, "%s", eq + 1);
+    if (strcmp(dim, "path") && strcmp(dim, "authority"))
+        die("--class-arg dimension \"%s\" is not one this seat judges (path|authority) — the "
+            "two pinned class tables are the two dimensions that exist", dim);
+    if (g_nclassargs >= MAX_CLASSARGS)
+        die("more than %u --class-arg declarations", (unsigned)MAX_CLASSARGS);
+    for (unsigned i = 0; i < g_nclassargs; i++)
+        if (!strcmp(g_classargs[i].dim, dim) && !strcmp(g_classargs[i].tool, tool))
+            die("--class-arg declares \"%s\" twice for tool %s — a second spelling of the "
+                "same mapping is a mapping nobody can trust", dim, tool);
+    classarg_t *CA = &g_classargs[g_nclassargs++];
+    CA->dim = xstrdup(dim);
+    CA->tool = xstrdup(tool);
+    CA->key = xstrdup(key);
+}
+
 /* ── main ───────────────────────────────────────────────────────────────── */
 
 /* For version index i (which must carry a genhash): the index of the
@@ -1720,9 +2313,20 @@ int main(int argc, char **argv) {
         else if (!strncmp(argv[i], "--proxy-log=", 12)) g_proxy_log = argv[i] + 12;
         else if (!strcmp(argv[i], "--transcript") && i + 1 < argc) g_transcript = argv[++i];
         else if (!strncmp(argv[i], "--transcript=", 13)) g_transcript = argv[i] + 13;
+        else if (!strcmp(argv[i], "--policy-dir") && i + 1 < argc) g_policy_dir = argv[++i];
+        else if (!strncmp(argv[i], "--policy-dir=", 13)) g_policy_dir = argv[i] + 13;
+        else if (!strcmp(argv[i], "--class-arg") && i + 1 < argc) add_classarg(argv[++i]);
+        else if (!strncmp(argv[i], "--class-arg=", 12)) add_classarg(argv[i] + 12);
         else if (!strcmp(argv[i], "--help")) {
             printf("usage: fx-report [--store DIR] [--fxstore BIN] [--max-config-lines N]"
-                   " [--proxy-log FILE] [--transcript FILE]\n");
+                   " [--proxy-log FILE] [--transcript FILE]\n"
+                   "                  [--policy-dir DIR] [--class-arg DIM:TOOL=KEY]...\n"
+                   "  --policy-dir DIR   the operator's PINNED class tables (ops-aliases.tsv,\n"
+                   "                     ops-hosts.tsv) + PINS: the reach class's DECLARED side\n"
+                   "  --class-arg D:TOOL=KEY  declare that TOOL's classed argument is KEY in\n"
+                   "                     dimension D (path|authority) — the registry's arg_key\n"
+                   "                     is C and this seat will not respell it; an undeclared\n"
+                   "                     dimension reads NOT-KNOWN, never 'no classed argument'\n");
             return 0;
         } else {
             fprintf(stderr, "fx-report: unknown argument '%s'\n", argv[i]);
@@ -2038,6 +2642,13 @@ int main(int argc, char **argv) {
      * caller names, so there is no store-sibling default to read). ──────── */
     emit_calls();
 
+    /* ── THE REACH CLASS (S4): the WEAKENED declared-vs-observed audit —
+     * the operator's pinned class tables + PINS against the one log's own
+     * rows.  Two findings, each its own row and meaning: stale-class-row (a
+     * stale grant) and pin-drift (the table judged against is not the table
+     * pinned).  Armed only when a side is named (the call class's rule). ── */
+    emit_reach();
+
     /* ── the reconstruction: adjacent pairs, both inputs, the diff ────── */
     for (unsigned i = 1; i < g_nvers; i++) {
         version_t *A = &g_vers[i - 1], *B = &g_vers[i];
@@ -2127,16 +2738,49 @@ int main(int argc, char **argv) {
     }
     if (g_proxy_log || g_transcript) {
         h("call records: the host log <-> guest transcript join by call_id — %u judged call(s) "
-          "(%u denied, %u allowed, %u with NO verdict recorded), %u joined to the transcript, "
+          "(%u denied, %u allowed, %u with NO verdict recorded; %u HOST-executed, %u "
+          "guest-executed — the exec dimension is what makes an egress grant visible), "
+          "%u joined to the transcript, "
           "%u host-log-only and %u transcript-only (%s), %u disagreement(s) (the record of the "
           "gate working, VERBATIM — not a reporter verdict), %u telemetry row(s) (records, NOT "
           "triggers: no lane stop by default).",
-          g_nhcalls, g_c_denied, g_c_allowed, g_c_nov, g_c_joined, g_c_hostonly, g_c_tranonly,
+          g_nhcalls, g_c_denied, g_c_allowed, g_c_nov, g_c_hostexec, g_c_guesexec,
+          g_c_joined, g_c_hostonly, g_c_tranonly,
           (g_c_hostonly || g_c_tranonly) ? "each its own FINDING" : "the join fired in both directions",
           g_c_disagree, g_c_tele);
         if (!g_proxy_log || !g_transcript)
             h("  (one side of the join was NOT given — its silence is NOT-KNOWN, named in the "
               "absence records above, never read as 'no call'.)");
+    }
+    if (g_policy_dir || g_proxy_log) {
+        unsigned n_stale = 0, n_unk = 0, n_hit = 0, n_drift = 0;
+        for (unsigned i = 0; i < g_nrrows; i++) {
+            int aliases = !strcmp(g_rrows[i].table, "ops-aliases.tsv");
+            int known = 0;
+            int hit = reach_row_exercised(&g_rrows[i], aliases, &known);
+            if (hit) n_hit++; else if (known) n_stale++; else n_unk++;
+        }
+        for (unsigned i = 0; i < g_npins; i++)
+            if (!g_pins[i].present || strcmp(g_pins[i].got, g_pins[i].want) != 0) n_drift++;
+        h("reach (the WEAKENED declared-vs-observed audit, named as such): %u pinned class "
+          "row(s) — %u exercised by an observed call, %u STALE (no observed call consumed "
+          "them: a revocation question, each its own FINDING), %u NOT-KNOWN (no observed "
+          "side or no --class-arg mapping for their dimension — never read as stale); "
+          "%u artifact(s) drifted from PINS (each its own FINDING with both pins); %u "
+          "declared --class-arg mapping(s).", g_nrrows, n_hit, n_stale, n_unk, n_drift,
+          g_nclassargs);
+        if (!g_policy_dir)
+            h("  the DECLARED side was NOT given (no --policy-dir): the reach class cannot "
+              "say what is granted, and that is NOT-KNOWN — never 'nothing is granted'.");
+        if (!g_proxy_log)
+            h("  the OBSERVED side was NOT given (no --proxy-log): no class row can be "
+              "attributed, so every row reads NOT-KNOWN — NEVER stale, and never 'nothing "
+              "was called'.");
+        h("  this is NOT the type-enforced audit: egress is judged ARGUMENTS, not a type, so "
+          "there is no per-generation declaration for observed traffic to violate (bound/"
+          "reach-audit-is-the-weakened-one).  What it can see — and what §7.1a demands an "
+          "oracle see — is a grant that is WIDER than the traffic, and a table that is not "
+          "the table the release pinned.");
     }
     h("the reconstruction question — 'what changed between N and N+1, and from");
     h("which input?' — is answered by the config/config-line/config-diff records");

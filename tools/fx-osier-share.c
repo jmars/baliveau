@@ -8,6 +8,45 @@
  * frozen OSIER_EXTS below, and the chosen set PRINTS in this tool's own
  * output — a metric whose definition is invisible cannot be audited.
  *
+ * ── WHAT THIS NUMBER CANNOT SEE, STATED BECAUSE IT CANNOT BE FIXED HERE
+ *    (design record §7.1a's residual) ─────────────────────────────────────
+ * A CAPABILITY CHANGE IS INVISIBLE TO THIS SEAT, and it will stay invisible
+ * for as long as the metric is what it is.  §7.1a: "every oracle in the
+ * family must be able to SEE capability changes, because an egress grant is
+ * a capability increase, and a code-only oracle is blind to it.  Otherwise
+ * the agent satisfies the oracle while quietly widening what it can reach."
+ *
+ * WHY, precisely — not "the tool is limited", but this: the number is a
+ * SHARE OF SOURCE BYTES over the components the active generation runs.  An
+ * egress grant is not a component and not source: the host-tool registry is
+ * C in the proxy (tools/fx-hostgate.c) and the operator's class tables
+ * (policy/ops/ops-aliases.tsv, ops-hosts.tsv) are DATA.  Neither is Osier
+ * source, neither is in the run set's byte counts, and — the part that makes
+ * this blindness rather than a rounding question — a grant added, a
+ * `protected yes` flipped to `no`, or a host tool made executable moves this
+ * fraction by EXACTLY ZERO.  So the share can be maximised while reach
+ * widens, which is the failure §7.1a names: the agent satisfies the oracle
+ * and the oracle says nothing about what it can now reach.
+ *
+ * NOTHING IS PATCHED IN TO COMPENSATE.  A seat that multiplied its share by
+ * a reach factor, or subtracted a penalty for a new grant, would be
+ * inventing a second metric under the first one's name — the one thing a
+ * frozen metric must never do (this file's own rule for
+ * closure_share_fraction: never averaged in, never substituted).  The
+ * BLINDNESS IS OUTPUT INSTEAD, as its own line, so a consumer reading this
+ * seat's number cannot mistake it for an account of capability:
+ *   capability_blindness egress-reach <the statement>
+ *
+ * WHERE THE SIGHT ACTUALLY LIVES (the family's division of labour, so
+ * "nobody can see it" is not the conclusion): tools/fx-report.c's reach
+ * class (the WEAKENED declared-vs-observed audit: a stale grant, pin drift,
+ * and every judged call's `exec` dimension), tools/fx-select.c's reach-delta
+ * term (order step 6: a widening NAMED, with the disqualification
+ * consequence deliberately left open) and tools/fx-audit.c's per-boot reach
+ * record (a widening that nothing released is an incoherence).  §7.1a's
+ * residual closes FOR THE FAMILY, not for every member — this member states
+ * its own limit rather than inheriting a claim.
+ *
  * IT READS THE STORE, NOT THE SOURCE TREE.  The run set comes from the
  * ACTIVE GENERATION's own provenance facts (svc_bin / provides / install /
  * srcstore, read as-of the resolved snapshot through `fxstore facts`), so a
@@ -1056,5 +1095,20 @@ int main(int argc, char **argv) {
     printf("closure_share_fraction %.6f\n",
            cl.total_bytes ? (double)cl.osier_bytes / (double)cl.total_bytes : 0.0);
     printf("closure_components_resolved %zu of %zu\n", cl_res, ncomps);
+    /* S4: THE BLINDNESS, OUTPUT AS ITS OWN LINE (see the header block).  It
+     * is a statement, never a factor: no share above is adjusted by it, and
+     * no reach quantity enters either fraction. */
+    printf("capability_blindness egress-reach CANNOT-SEE-IT: this number is a share of SOURCE "
+           "BYTES over the components the active generation runs, and an egress grant is "
+           "neither — the host-tool registry is C in the tool proxy and the operator's class "
+           "tables are data, so adding a grant, flipping a class's `protected` flag or making "
+           "a host tool executable moves this fraction by EXACTLY ZERO (design record 7.1a: a "
+           "code-only oracle is blind to a capability increase, so the agent can satisfy this "
+           "oracle while quietly widening what it can reach).  NOTHING IS PATCHED IN TO "
+           "COMPENSATE: a reach factor or a grant penalty would be a second metric under this "
+           "one's name.  The sight lives in the family: fx-report's reach class (stale grant + "
+           "pin drift + the per-call exec dimension), fx-select's reach-delta (order step 6, "
+           "the widening NAMED and the consequence deliberately open) and fx-audit's per-boot "
+           "reach record (a widening nothing released is an incoherence)\n");
     return 0;
 }

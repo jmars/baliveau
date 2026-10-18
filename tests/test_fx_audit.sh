@@ -21,6 +21,25 @@
 #               the recorded failure does not).
 #   DRIFT       an unmanaged rootfs file fires verify-drift through
 #               `fxstore verify` exit 1 (control: the clean rootfs passes).
+#   S4          the two capability dimensions, each with its own check and its
+#               own fixture family: (i) the host proxy's ONE LOG as a KNOWN
+#               RECORD — its bytes scored in the observation, its previously
+#               observed prefix re-hashed on the next run: a legitimate
+#               append is accounted, a TRUNCATED log and a DELETED one are
+#               findings (the host's own account of what it ran is
+#               tamper-evident in both directions); (ii) the DECLARED REACH
+#               recorded BESIDE the boot the audit ran after (the proxy's
+#               compiled-in registry + the operator's pinned class tables, in
+#               the shared reach-tool/reach-grant grammar fx-select consumes),
+#               compared with the previous observation: an unchanged reach
+#               reads NONE, a widening whose tables were NOT re-pinned is the
+#               incoherence reach-widened-unreleased, and the SAME widening
+#               WITH a correct re-pin is a RELEASE (named, coherent) — a
+#               re-pin release is how reach is supposed to change.  An
+#               unarmed run NAMES both dimensions NOT-KNOWN.  MUTANTS via
+#               this file's own idiom: `mutate proxy-log-record` makes the
+#               truncated log coherent and `mutate egress-reach` makes the
+#               unreleased widening coherent.
 #   GONE        deleting a store dir the provides facts name fires
 #               facts-path-gone.
 #   CHAIN       CURRENT=99 (not a published version) fires version-chain;
@@ -1977,6 +1996,121 @@ grep -q 'TORN' "$WORK/out.tpin3" \
     || fail "TORNLEGIT-BEFORE/AFTER: the fixed tool does not even mention the torn line it tolerated"
 echo "test_fx_audit: TORNLEGIT-BEFORE: on the pinned fcebaa3 the SAME healthy torn-verdict store is REJECTED (exit 1, message contradicting its own accounting); 88a73b8 accepts it on the same store and observation (the nonce-era working tree accepts the nonce-line twin in TORNLEGIT)"
 
+# ══ S4: THE PROXY'S ONE LOG AS A KNOWN RECORD, AND THE REACH RECORD ══════
+# §7.1a's residual aimed at the observatory: the host's own account of what
+# it RAN is a known record (recording its bytes, and requiring the previously
+# observed prefix to still hash the same — the .bootlog/.recovery append
+# discipline), and the DECLARED REACH (the proxy's compiled-in registry + the
+# operator's pinned class tables) is recorded BESIDE THE BOOT the audit ran
+# after, so a capability change between observations is NAMED.  The delta's
+# classification is PINS: a widening whose tables still hash to their pin is
+# an operator RELEASE (named, not a finding) and one whose tables do not is
+# the incoherence `reach-widened-unreleased`.
+S4LOG="$WORK/s4-host.log"
+S4OB="$WORK/s4.obs"
+: > "$S4LOG"
+s4_run() { # s4_run OUT OBSFILE [extra args...] -> exit code
+    _o="$1"; _ob="$2"; shift 2
+    audit "$STORE" "$ROOT" 4 "$WORK/nonces-main.led" --obs-file "$_ob" "$@" > "$_o" 2>&1
+    echo $?
+}
+
+# (h) NOT-ARMED is named, never silent: no --proxy-log and no reach inputs is
+# a coherent run whose two new dimensions are stated NOT-KNOWN.
+rc=$(s4_run "$WORK/out.s4-unarmed" "$WORK/s4-unarmed.obs")
+[ "$rc" = "0" ] || fail "S4(h): an unarmed run must stay coherent, got $rc: $(grep INCOHERENT "$WORK/out.s4-unarmed")"
+grep -q 'no --proxy-log given' "$WORK/out.s4-unarmed" \
+    || fail "S4(h): an absent --proxy-log is not named (NOT-KNOWN, never 'the host ran nothing')"
+grep -q 'reach: NOT ARMED' "$WORK/out.s4-unarmed" \
+    || fail "S4(h): the unarmed reach dimension is not named (§7.1a's blindness, stated not discovered)"
+grep -q '^reach-tool' "$WORK/out.s4-unarmed" \
+    && fail "S4(h): a reach observation was emitted with NO inputs — fabricated"
+echo "test_fx_audit: S4(h) an unarmed audit names both new dimensions as NOT-KNOWN and stays coherent"
+
+# (a) ENROL: the log becomes a KNOWN record and the reach is recorded beside
+# the boot the audit runs after.
+rc=$(s4_run "$WORK/out.s4-enrol" "$S4OB" --proxy-log "$S4LOG" \
+        --proxy "$REPO/build/fx-hostgate" --ops-policy-dir "$REPO/policy/ops")
+[ "$rc" = "0" ] || fail "S4(a): the enrolling run must be coherent, got $rc: $(grep INCOHERENT "$WORK/out.s4-enrol")"
+grep -q 'proxy log: 0 byte(s) recorded as a KNOWN record' "$WORK/out.s4-enrol" \
+    || fail "S4(a): the proxy log was not taken as a known record"
+grep -q '^reach-tool	host_time$' "$WORK/out.s4-enrol" \
+    || fail "S4(a): the registry was not read into the reach observation"
+grep -q '^reach-tool	http_get$' "$WORK/out.s4-enrol" \
+    || fail "S4(a): the registry is incomplete"
+grep -q '^reach-grant	authority	example.com	Blockedhost	yes$' "$WORK/out.s4-enrol" \
+    || fail "S4(a): the pinned authority class was not read into the reach observation"
+grep -q '^reach-grant	path	/fx/disk/agent-data	Datadir	no$' "$WORK/out.s4-enrol" \
+    || fail "S4(a): the pinned path class was not read into the reach observation"
+S4BV=$(tail -1 "$STORE/.bootlog" | awk '{print $1}')
+S4BN=$(tail -1 "$STORE/.bootlog" | awk '{print $4}')
+grep -q "^reach-boot	$S4BV	nonce	$S4BN	MEASURED" "$WORK/out.s4-enrol" \
+    || fail "S4(a): the reach observation is not anchored to the LAST .bootlog line (v$S4BV nonce $S4BN), the boot the audit ran after: $(grep -m1 '^reach-boot' "$WORK/out.s4-enrol")"
+grep -q 'a registry read at observation time' "$WORK/out.s4-enrol" \
+    || fail "S4(a): the reach-boot row does not say it is a read NOW (never a reconstruction of an earlier boot's reach)"
+grep -q '^reach-delta' "$WORK/out.s4-enrol" \
+    && fail "S4(a): a delta was computed against no baseline (the first observation must ENROL, not invent a change)"
+echo "test_fx_audit: S4(a) the proxy log is a known record and the declared reach is recorded beside the boot it was taken around"
+
+# (b) GROWTH is legitimate (the proxy appends), and (c) NO widening where the
+# two observations agree are BOTH measured on the enrolled baseline.
+printf '{"turn":9,"call_id":"s4-1","true_name":"host_time","exec":"host"}\n' >> "$S4LOG"
+rc=$(s4_run "$WORK/out.s4-grow" "$S4OB" --proxy-log "$S4LOG" \
+        --proxy "$REPO/build/fx-hostgate" --ops-policy-dir "$REPO/policy/ops")
+[ "$rc" = "0" ] || fail "S4(b): an appended host log must stay coherent, got $rc: $(grep INCOHERENT "$WORK/out.s4-grow")"
+grep -q 'proxy log grew by' "$WORK/out.s4-grow" \
+    || fail "S4(b): the append accounting did not see the legitimate growth"
+grep -q '^reach-delta	-	-	NONE	DERIVED' "$WORK/out.s4-grow" \
+    || fail "S4(c): the same reach on both sides did not read NONE: $(grep -m1 '^reach-delta' "$WORK/out.s4-grow")"
+grep -q 'reach-delta	tool\|reach-delta	grant' "$WORK/out.s4-grow" \
+    && fail "S4(c): a capability change was FABRICATED where the two observations agree"
+cp "$S4OB" "$WORK/s4-base.obs"   # the baseline the mutant arms re-use
+echo "test_fx_audit: S4(b)/(c) a legitimate append is accounted and an unchanged reach reads NONE"
+
+# (d) AN UNRELEASED WIDENING IS AN INCOHERENCE: a class row added to a COPY of
+# the pinned tables with PINS left alone — a capability change nothing pinned.
+S4POL="$WORK/s4-pol"; S4POLR="$WORK/s4-pol-rel"
+cp -r "$REPO/policy/ops" "$S4POL" || fail "S4(d): cannot copy the pinned tables"
+printf 'evil.example.com\tEvil\tno\n' >> "$S4POL/ops-hosts.tsv"
+rc=$(s4_run "$WORK/out.s4-unrel" "$S4OB" --proxy-log "$S4LOG" \
+        --proxy "$REPO/build/fx-hostgate" --ops-policy-dir "$S4POL")
+expect_incoh "$WORK/out.s4-unrel" "$rc" "S4(d) unreleased widening" reach-widened-unreleased
+grep -q '^reach-delta	grant	authority:evil.example.com	WIDENED' "$WORK/out.s4-unrel" \
+    || fail "S4(d): the new grant is not NAMED as a widening"
+grep -q 'NOT RELEASED' "$WORK/out.s4-unrel" \
+    || fail "S4(d): the finding does not say the declaration was not released"
+echo "test_fx_audit: S4(d) a widening nothing pinned is INCOHERENT (reach-widened-unreleased), named row by row"
+
+# (e) THE MIRROR: the SAME widening, RELEASED (PINS re-pinned in the copy) is
+# coherent and NAMED — a re-pin release is how reach is supposed to change.
+cp -r "$S4POL" "$S4POLR" || fail "S4(e): cannot copy"
+S4H=$(sha256sum "$S4POLR/ops-hosts.tsv" | cut -d' ' -f1)
+S4OLD=$(sed -n 's/^ops-hosts.tsv	//p' "$S4POLR/PINS")
+[ -n "$S4OLD" ] || fail "S4(e) SETUP: PINS does not pin ops-hosts.tsv"
+sed -i "s/^ops-hosts.tsv	$S4OLD$/ops-hosts.tsv	$S4H/" "$S4POLR/PINS"
+grep -q "^ops-hosts.tsv	$S4H$" "$S4POLR/PINS" || fail "S4(e) SETUP: the re-pin did not land"
+rc=$(s4_run "$WORK/out.s4-rel" "$S4OB" --proxy-log "$S4LOG" \
+        --proxy "$REPO/build/fx-hostgate" --ops-policy-dir "$S4POLR")
+expect_coh "$WORK/out.s4-rel" "$rc" "S4(e) released widening"
+grep -q '^reach-delta	grant	authority:evil.example.com	WIDENED' "$WORK/out.s4-rel" \
+    || fail "S4(e): the released widening is not NAMED (a release still has to be visible)"
+grep -q 'a RELEASED declaration (named, NOT a finding' "$WORK/out.s4-rel" \
+    || fail "S4(e): the released widening is not distinguished from the unreleased one"
+echo "test_fx_audit: S4(e) the same widening WITH a re-pin is coherent and NAMED — a release, not an incoherence"
+
+# (f)/(g) THE RECORD ITSELF IS TAMPER-EVIDENT: a truncated log and a removed
+# log are both findings (the host's account of what it ran was CUT, or deleted).
+head -c 20 "$S4LOG" > "$WORK/s4-host.trunc"
+rc=$(s4_run "$WORK/out.s4-trunc" "$S4OB" --proxy-log "$WORK/s4-host.trunc" \
+        --proxy "$REPO/build/fx-hostgate" --ops-policy-dir "$REPO/policy/ops")
+expect_incoh "$WORK/out.s4-trunc" "$rc" "S4(f) truncated host log" disagreement-proxy-log-rewritten
+rc=$(s4_run "$WORK/out.s4-gone" "$S4OB" --proxy-log "$WORK/s4-host.gone" \
+        --proxy "$REPO/build/fx-hostgate" --ops-policy-dir "$REPO/policy/ops")
+expect_incoh "$WORK/out.s4-gone" "$rc" "S4(g) vanished host log" record-vanished
+grep -q 'was REMOVED between audits' "$WORK/out.s4-gone" \
+    || fail "S4(g): a vanished log is not stated as a record removed (never 'no call was made')"
+echo "test_fx_audit: S4(f)/(g) a truncated host log and a DELETED one are findings — the record is tamper-evident in both directions"
+
 # ══ THE MUTATION CONTROL (positive control, per check) ══════════════════
 # a detector with exactly one check's registration deleted must go COHERENT
 # on that check's fixture (and the blind seat goes coherent on the COHERENT
@@ -2017,6 +2151,23 @@ expect_coh "$WORK/out.m-gone" $? "MUTANT facts-path-gone (missing store dir went
 mutate records-damaged           "$WORK/mut-records-damaged"
 mut_run "$WORK/mut-records-damaged" damaged > "$WORK/out.m-damaged" 2>&1
 expect_coh "$WORK/out.m-damaged" $? "MUTANT records-damaged (foreign line went coherent)"
+# S4: BOTH new checks are load-bearing, each on ITS OWN fixture.
+mutate proxy-log-record          "$WORK/mut-s4-log"
+rc=$(FXSTORE_BIN="$FXSTORE" "$WORK/mut-s4-log" --store "$STORE" --rootfs "$ROOT" --boots 4 \
+        --nonces "$WORK/nonces-main.led" --obs-file "$WORK/s4-base.obs" \
+        --proxy-log "$WORK/s4-host.trunc" --proxy "$REPO/build/fx-hostgate" \
+        --ops-policy-dir "$REPO/policy/ops" > "$WORK/out.m-s4log" 2>&1; echo $?)
+expect_coh "$WORK/out.m-s4log" "$rc" "MUTANT proxy-log-record (a TRUNCATED host log goes coherent — the record is no longer tamper-evident)"
+mutate egress-reach              "$WORK/mut-s4-reach"
+cp "$WORK/s4-base.obs" "$WORK/s4-mutreach.obs"
+rc=$(FXSTORE_BIN="$FXSTORE" "$WORK/mut-s4-reach" --store "$STORE" --rootfs "$ROOT" --boots 4 \
+        --nonces "$WORK/nonces-main.led" --obs-file "$WORK/s4-mutreach.obs" \
+        --proxy-log "$WORK/s4-host.log" --proxy "$REPO/build/fx-hostgate" \
+        --ops-policy-dir "$S4POL" > "$WORK/out.m-s4reach" 2>&1; echo $?)
+expect_coh "$WORK/out.m-s4reach" "$rc" "MUTANT egress-reach (an UNRELEASED widening goes coherent — the family's sight is gone)"
+grep -q '^reach-delta	grant	authority:evil.example.com	WIDENED' "$WORK/out.m-s4reach" \
+    && fail "MUTANT egress-reach: the blind check still NAMED the widening (the check, not another line, must have carried it)"
+echo "test_fx_audit: S4 MUTANTS the two new checks are load-bearing: without proxy-log-record a TRUNCATED host log is coherent, and without egress-reach an UNRELEASED widening is"
 mutate previous-observation      "$WORK/mut-previous-observation"
 mut_run "$WORK/mut-previous-observation" coh > "$WORK/out.m-prevobs" 2>&1
 expect_coh "$WORK/out.m-prevobs" $? "MUTANT previous-observation (THE BOUND: the coherent tamper goes coherent without host memory)"

@@ -20,6 +20,15 @@
 #
 #   S1  HEADLINE: every top-share generation FAILED its boot -> the decision
 #       must NOT name one.  FAILING DIRECTION: a seat that ranks by share
+#   S4-reach: the REACH-DELTA term (order step 6) NAMES a widening on a
+#       fixture where one exists and reports NONE where none does — both
+#       directions — and the decision/exit code are BYTE-IDENTICAL with and
+#       without it (the disqualification consequence is OPEN, and the gate
+#       pins that it is open, not merely says so).  Its mutant is the SAME
+#       source with the grant match widened to its dimension alone, so a NEW
+#       GRANT is silently read as a CHANGED row: the widening goes invisible
+#       and the arm must catch it (§7.1a's failure: an oracle that cannot see
+#       the grant).
 #       alone names the failed 1.000000 generation (the S1 mutant is exactly
 #       that seat and is asserted to name it).
 #   S2  the highest-share viable CANDIDATE is the incumbent and DRIFTS -> not
@@ -54,7 +63,8 @@
 #       has not booted, so the run after --apply WITHHOLDS (exit 3) instead
 #       of reverting back; once a boot judges it (line pair + materialized
 #       generation) the seat keeps it and a second --apply refuses.
-#   S9  the order table (all 8 steps) prints on every run (auditable).
+#   S9  the order table (all 9 steps, incl. S4's reach term) prints on every
+#       run (auditable).
 #   S10 the 3-field LEGACY .bootlog shape is tolerated with its meaning
 #       stated (the order table says what it is) — gated, not just claimed.
 #   S11 a missing oracle is a TOOL ERROR (exit 2), never a 0%.
@@ -512,18 +522,142 @@ write_bootlog "$S1"
 h_before=$(store_hash "$S1"); rt_before=$(rootfs_hash "$F1/rootfs")
 rc=$(run_select "$F1/o.s9" $SEL)
 [ "$rc" = "0" ] || fail "S9: expected exit 0, got $rc: $(sed -n 1,6p "$F1/o.s9")"
-for _n in 1 2 3 4 5 6 7 8; do
+for _n in 1 2 3 4 5 6 7 8 9; do
     grep -q "^order	$_n	" "$F1/o.s9" || fail "S9: order step $_n missing"
 done
 grep -q '^order	1	candidates	' "$F1/o.s9" || fail "S9: the frozen order table is not in the output"
-grep -q '^order	8	apply	' "$F1/o.s9" || fail "S9: the apply step of the order is not printed"
+grep -q '^order	9	apply	' "$F1/o.s9" || fail "S9: the apply step of the order is not printed"
+# S4: the REACH term is a step of the order, and it says the disqualification
+# consequence is OPEN — a rule that is not printed cannot be audited.
+grep -q '^order	6	reach	' "$F1/o.s9" || fail "S4: the reach term is not a step of the frozen order"
+grep -q 'THE CONSEQUENCE IS DELIBERATELY OPEN' "$F1/o.s9" \
+    || fail "S4: the reach step does not say its consequence is OPEN (a printed rule or nothing)"
+grep -q 'does NOT change eligibility, does NOT change the winner' "$F1/o.s9" \
+    || fail "S4: the reach step does not state that it leaves the decision alone"
 grep -q '^bound	candidate-set-is-a-pair	' "$F1/o.s9" || fail "S9: no bound states what the candidate bound cannot see"
 grep -q '^bound	predecessor-gap-after-gc	' "$F1/o.s9" \
     || fail "S9: the gc-pruned-predecessor bound is not printed"
 grep -q '^bound	predecessor-content-not-compared	' "$F1/o.s9" \
     || fail "S9: the content-identity bound is not printed"
 grep -q '^bound	share-of-a-partial-snapshot	' "$F1/o.s9" || fail "S9: the bounds table is not printed"
-echo "test_fx_select: S9 the order table (8 steps) + bounds print on every run"
+echo "test_fx_select: S9 the order table (9 steps, incl. the S4 reach term with its OPEN consequence) + bounds print on every run"
+
+# ═══ S4-REACH — the reach-delta term (order step 6) ══════════════════════
+# §7.1a's residual: an egress grant is a CAPABILITY INCREASE, so the seat that
+# judges generations must SEE it.  The term compares TWO OBSERVATIONS of
+# declared reach — the host proxy's own compiled-in registry plus the
+# operator's pinned class tables, against a PREVIOUS observation in the shared
+# reach-tool/reach-grant grammar — and NAMES each difference.  THE
+# DISQUALIFICATION CONSEQUENCE IS DELIBERATELY OPEN, and this gate pins BOTH
+# halves of that: the widening is NAMED, and the decision is untouched.
+GATE_BIN="$REPO/build/fx-hostgate"
+[ -x "$GATE_BIN" ] || skip "build/fx-hostgate missing (the reach term reads the registry from the proxy itself)"
+RPOL="$F1/reach-pol"; ROBS="$F1/reach-pol2"
+cp -r "$REPO/policy/ops" "$RPOL" || fail "S4-reach: cannot copy the pinned tables"
+cp -r "$REPO/policy/ops" "$ROBS" || fail "S4-reach: cannot copy the pinned tables"
+# the PREVIOUS observation: the real registry + the pristine tables, printed
+# in the shared grammar (the audit writes the same two tags per boot)
+{ "$GATE_BIN" --print-host-tools | sed 's/^/reach-tool\t/'
+  sed -n 's/^example\.com\t\(.*\)\t\(.*\)$/reach-grant\tauthority\texample.com\t\1\t\2/p' "$ROBS/ops-hosts.tsv"
+  awk -F'\t' '!/^#/ && NF==4 { printf "reach-grant\tpath\t%s\t%s\t%s\n", $4, $2, $3 }' "$ROBS/ops-aliases.tsv"
+} > "$F1/reach-prev.txt"
+grep -q '^reach-tool	' "$F1/reach-prev.txt" || fail "S4-reach SETUP: the previous observation carries no host tool"
+REACH="$SEL --proxy $GATE_BIN"
+
+# ── (a) NO WIDENING WHERE NONE EXISTS (the negative direction) ───────────
+rc=$(run_select "$F1/o.reach-none" $REACH --ops-policy-dir "$RPOL" --reach-prev "$F1/reach-prev.txt")
+grep -q '^reach-delta	-	-	NONE	DERIVED' "$F1/o.reach-none" \
+    || fail "S4-reach(a): the same tables on both sides did not read NONE: $(grep -m1 '^reach-delta' "$F1/o.reach-none")"
+grep -q '^egress-reach-widened' "$F1/o.reach-none" \
+    && fail "S4-reach(a): a widening was FABRICATED where the two observations agree"
+NONE_RC="$rc"; NONE_DEC="$(decision_kind "$F1/o.reach-none") $(decision_version "$F1/o.reach-none")"
+# THE GRAMMAR IS SHARED, not merely similar: this seat's OWN output is a valid
+# baseline for the next run (one tag set, two producers — fx-audit writes the
+# same reach-tool/reach-grant rows per boot), so a run against its own previous
+# observation reads NONE rather than inventing a difference.
+rc=$(run_select "$F1/o.reach-self" $REACH --ops-policy-dir "$RPOL" --reach-prev "$F1/o.reach-none")
+grep -q '^reach-delta	-	-	NONE	DERIVED' "$F1/o.reach-self" \
+    || fail "S4-reach(a): the seat's own output is not a valid baseline (the grammar is not shared): $(grep -m1 '^reach-delta' "$F1/o.reach-self")"
+
+# ── (b) A WIDENING IS NAMED (the positive direction) ─────────────────────
+# two changes, both of them real grants: a protection REMOVED from a pinned
+# row and a NEW class row — built in a COPY, so the shared policy is untouched
+sed -i 's/^example\.com	Blockedhost	yes$/example.com	Blockedhost	no/' "$ROBS/ops-hosts.tsv"
+printf 'evil.example.com	Evil	no\n' >> "$ROBS/ops-hosts.tsv"
+grep -q '^example.com	Blockedhost	no$' "$ROBS/ops-hosts.tsv" || fail "S4-reach SETUP: the protection flip did not land"
+rc=$(run_select "$F1/o.reach-wide" $REACH --ops-policy-dir "$ROBS" --reach-prev "$F1/reach-prev.txt")
+grep -q '^reach-delta	grant	authority:example.com	WIDENED' "$F1/o.reach-wide" \
+    || fail "S4-reach(b): a protection flipped yes->no is NOT named as a widening"
+grep -q '^reach-delta	grant	authority:evil.example.com	WIDENED' "$F1/o.reach-wide" \
+    || fail "S4-reach(b): a NEW class row is NOT named as a widening"
+grep -q '^egress-reach-widened	2	DERIVED' "$F1/o.reach-wide" \
+    || fail "S4-reach(b): the loud egress-reach-widened row does not count the two widenings"
+grep -q 'THE CONSEQUENCE IS DELIBERATELY OPEN' "$F1/o.reach-wide" \
+    || fail "S4-reach(b): the widening row does not say its consequence is OPEN"
+echo "test_fx_select: S4-reach(b) the widening is NAMED: a protection removed and a new grant, egress-reach-widened 2"
+
+# ── (c) THE CONSEQUENCE IS OPEN — the decision and the exit code do not move
+[ "$rc" = "$NONE_RC" ] \
+    || fail "S4-reach(c): the exit code CHANGED under a widening ($rc vs $NONE_RC) — the consequence is supposed to be OPEN"
+WIDE_DEC="$(decision_kind "$F1/o.reach-wide") $(decision_version "$F1/o.reach-wide")"
+[ "$WIDE_DEC" = "$NONE_DEC" ] \
+    || fail "S4-reach(c): the DECISION changed under a widening ($WIDE_DEC vs $NONE_DEC) — v1 makes a widening loud, it does not bake policy"
+sed -n 's/^candidate	\([0-9]*\).*/\1/p' "$F1/o.reach-none" > "$F1/cands-none.txt"
+sed -n 's/^candidate	\([0-9]*\).*/\1/p' "$F1/o.reach-wide" > "$F1/cands-wide.txt"
+cmp -s "$F1/cands-none.txt" "$F1/cands-wide.txt" \
+    || fail "S4-reach(c): the candidate TABLE changed under a widening — the term is not decision-neutral"
+echo "test_fx_select: S4-reach(c) the widening leaves the decision, the table and the exit code untouched ($WIDE_DEC, exit $rc) — the consequence is OPEN by construction, not by promise"
+
+# ── (d) NOT-KNOWN in BOTH absence directions ─────────────────────────────
+rc=$(run_select "$F1/o.reach-noprev" $REACH --ops-policy-dir "$RPOL")
+grep -q '^reach-delta	-	-	NOT-KNOWN' "$F1/o.reach-noprev" \
+    || fail "S4-reach(d): without --reach-prev the delta is not NOT-KNOWN (never 'no widening')"
+grep -q '^reach-delta	grant' "$F1/o.reach-noprev" \
+    && fail "S4-reach(d): a delta was computed against NO previous observation"
+rc=$(run_select "$F1/o.reach-nohalf" --store "$S1" --rootfs "$F1/rootfs" --fxstore "$FXSTORE" --oracle "$OSIER" --reach-prev "$F1/reach-prev.txt")
+grep -q '^reach-delta	-	-	NOT-KNOWN' "$F1/o.reach-nohalf" \
+    || fail "S4-reach(d): with NO current observation the delta is not NOT-KNOWN"
+grep -q '^reach-absence	registry' "$F1/o.reach-nohalf" \
+    || fail "S4-reach(d): the missing registry half is not named as an absence"
+grep -q '^reach-absence	class-tables' "$F1/o.reach-nohalf" \
+    || fail "S4-reach(d): the missing class-table half is not named as an absence"
+echo "test_fx_select: S4-reach(d) both absence directions are NOT-KNOWN, and each missing half is its own absence row"
+
+# ── (e) A PROXY THAT CANNOT BE RUN IS A TOOL ERROR, never "no host tools"
+rc=$(run_select "$F1/o.reach-noproxy" $SEL --proxy "$F1/no-such-proxy" --ops-policy-dir "$RPOL" --reach-prev "$F1/reach-prev.txt")
+[ "$rc" = "2" ] || fail "S4-reach(e): an unusable --proxy must be exit 2 (tool error), got $rc: an unreadable registry read as EMPTY would report the narrowest possible reach"
+grep -q '^decision' "$F1/o.reach-noproxy" && fail "S4-reach(e): a decision was printed for an unreadable registry"
+echo "test_fx_select: S4-reach(e) an unrunnable proxy is a TOOL ERROR (exit 2), never an empty registry"
+
+# ── (f) THE MUTANT: the delta cannot SEE a new grant or a removed protection
+# The same source with the two WIDENING branches emptied (the new-grant row is
+# skipped and the protection-flip test is compiled out): the seat still reads
+# both observations, still compares host tools, and reports NONE while a grant
+# was ADDED and a protection REMOVED — §7.1a's failure made concrete ("the
+# agent satisfies the oracle while quietly widening what it can reach").  The
+# gate must catch the instrument that cannot see, not merely a wrong label.
+sed -e 's/if (!P) {/if (!P) continue; if (0) {/' \
+    -e 's/if (P->prot \&\& !C->prot) {/if (0) {/' \
+    "$REPO/tools/fx-select.c" > "$WORK/fx-select-reachblind.c" || fail "S4-reach(f): cannot write the mutant source"
+cmp -s "$WORK/fx-select-reachblind.c" "$REPO/tools/fx-select.c" \
+    && fail "S4-reach(f): the mutant source is IDENTICAL to the seat — the sed matched nothing"
+grep -q 'if (!P) continue; if (0) {' "$WORK/fx-select-reachblind.c" \
+    || fail "S4-reach(f): the sed did not land the new-grant blind (check the source text)"
+grep -q 'if (0) { *$' "$WORK/fx-select-reachblind.c" \
+    || fail "S4-reach(f): the sed did not land the protection-flip blind (check the source text)"
+cc -std=c11 -O2 -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE -o "$WORK/fx-select-reachblind" \
+    "$WORK/fx-select-reachblind.c" || fail "S4-reach(f): the mutant does not compile"
+rm -f "$F1/o.reach-mut"
+FXSTORE_BIN="$FXSTORE" "$WORK/fx-select-reachblind" $REACH --ops-policy-dir "$ROBS" --reach-prev "$F1/reach-prev.txt" > "$F1/o.reach-mut" 2>&1
+grep -q '^reach-delta	grant	authority:evil.example.com	WIDENED' "$F1/o.reach-mut" \
+    && fail "S4-reach(f): the blind mutant STILL names the new grant — the arm is not load-bearing"
+grep -q '^reach-delta	grant	authority:example.com	WIDENED' "$F1/o.reach-mut" \
+    && fail "S4-reach(f): the blind mutant still names the REMOVED PROTECTION as a widening"
+grep -q '^egress-reach-widened' "$F1/o.reach-mut" \
+    && fail "S4-reach(f): the blind mutant still raises the loud widening row"
+grep -q '^reach-delta	-	-	NONE	DERIVED' "$F1/o.reach-mut" \
+    || fail "S4-reach(f): the mutant did not reproduce the dangerous shape the arm refuses (a seat reading NONE while reach widened)"
+echo "test_fx_select: S4-reach(f) MUTANT (both widening branches emptied) reports NONE while a grant was added and a protection removed — an oracle that cannot see the grant, caught"
 
 # ── S17: THE BOUND (rule 1) — the intermediate is NOT a candidate ───────
 # Failing direction: a seat whose candidates are EVERY published version (the
@@ -980,5 +1114,5 @@ grep -q 'cannot be run' "$F4/o.s11" || fail "S11: the tool error is not named: $
 grep -q '^decision' "$F4/o.s11" && fail "S11: a decision was produced off a missing oracle"
 echo "test_fx_select: S11 a missing oracle -> exit 2, no decision, named"
 
-echo "test_fx_select: PASS (the order is enforced: S1/S1-mutant, S2/S2-mutant, S3, S4/S4-mutant, S4b, S5a, S5b, S6, S7, S8a, S8b, S8c/S8d, S9, S10, S11, S12, S12b, S13, S15, S16, S17)"
+echo "test_fx_select: PASS (the order is enforced: S1/S1-mutant, S2/S2-mutant, S3, S4/S4-mutant, S4b, S5a, S5b, S6, S7, S8a, S8b, S8c/S8d, S9, S4-reach/S4-reach-mutant, S10, S11, S12, S12b, S13, S15, S16, S17)"
 exit 0

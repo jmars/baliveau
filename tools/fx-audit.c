@@ -26,6 +26,24 @@
  *                                     "#"-header + "<epoch> <published> <from-failed> <genhash|->\n"
  *   <store>/.db/snapshots/CURRENT     fxstore:             the current version number
  *   `fxstore facts <rel> --as-of N`   fx-activate's version-bound facts (TSV)
+ *   --proxy-log FILE                 the host proxy's ONE LOG, taken as a
+ *                                     KNOWN record (its bytes are recorded in
+ *                                     the observation and the previously
+ *                                     observed prefix must still hash the
+ *                                     same: a truncated or rewritten host log
+ *                                     is a TAMPER finding, a deleted one is a
+ *                                     record REMOVED — the host's own account
+ *                                     of what it ran, which no in-guest record
+ *                                     can be)
+ *   --proxy BIN / --ops-policy-dir DIR  the DECLARED REACH this observation
+ *                                     measured (the proxy's compiled-in
+ *                                     registry + the operator's pinned class
+ *                                     tables), recorded BESIDE the boot the
+ *                                     audit ran after and compared with the
+ *                                     previous observation: a widening whose
+ *                                     tables still hash to PINS is a RELEASE
+ *                                     (named), one whose tables do not is the
+ *                                     incoherence `reach-widened-unreleased`
  *   `fxstore verify <rootfs>`         fxstore: rootfs vs the install facts, exit 1 on drift
  *                                     (REUSED, never reimplemented)
  *
@@ -113,6 +131,21 @@
  *                              more ADDED verdicts than the in-progress
  *                              lines behind them plus the one the in-guest
  *                              activate re-arm can add
+ *   disagreement-proxy-log-rewritten / record-vanished
+ *                              the host proxy's ONE LOG was truncated or
+ *                              rewritten in place, or deleted, between
+ *                              observations — the log is append-only, so a
+ *                              shorter one is a record CUT, and a missing one
+ *                              is a record REMOVED (never "no call was made")
+ *   reach-widened-unreleased   what this host can REACH grew between
+ *                              observations (a new host tool, a new pinned
+ *                              class row, or a protection removed) and the
+ *                              declaration behind it was NOT RELEASED: the
+ *                              tables do not hash to PINS.  The same widening
+ *                              WITH a correct re-pin is a RELEASE and is
+ *                              NAMED, not a finding — a re-pin release is how
+ *                              reach is supposed to change.  §7.1a's covert
+ *                              direction, made an incoherence
  *   bootlog-unbound-nonce /
  *   recovery-unbound-nonce     an ADDED line/row carrying no nonce the host
  *                              issued for a boot in this window (no field,
@@ -483,6 +516,93 @@ static const char *g_nonces_path = NULL; /* --nonces (required when the window
 static int g_nonces_given = 0;
 
 static char g_store_abs[4096];
+/* ── S4: THE PROXY'S ONE LOG AS A KNOWN RECORD, and the DECLARED REACH ────
+ * §7.1a's residual, aimed at THIS seat: "every oracle in the family must be
+ * able to SEE capability changes, because an egress grant is a capability
+ * increase, and a code-only oracle is blind to it".  The observatory's two
+ * new inputs:
+ *
+ *   --proxy-log FILE      the host proxy's ONE LOG (tools/fx-hostgate.c).
+ *                         Taken as a KNOWN host-side record on exactly the
+ *                         terms .bootlog/.recovery are: its whole bytes are
+ *                         recorded in the observation, and the previously
+ *                         observed PREFIX must still hash the same — the log
+ *                         is append-only by construction, so a truncation or
+ *                         an in-place rewrite is a TAMPER FINDING, not a
+ *                         change of mind.  It is the host's own account of
+ *                         what it ran, which is the one thing an in-guest
+ *                         record cannot be (bound: the log is written by the
+ *                         proxy the harness started; a run whose proxy wrote
+ *                         no log leaves this seat silent, never reassured).
+ *
+ *   --proxy BIN           the DECLARED REACH half that is COMPILED IN, read
+ *   --ops-policy-dir DIR  from the proxy itself (--print-host-tools: the
+ *                         closed list the dispatch lookup reads), and the
+ *                         half the OPERATOR pinned (ops-aliases.tsv's path
+ *                         classes, ops-hosts.tsv's authority classes: every
+ *                         row a GRANT with its protected flag).  Each
+ *                         observation records them and names them BESIDE THE
+ *                         BOOT it ran after, so "what this boot's generation
+ *                         could reach" is in the record rather than in
+ *                         somebody's memory of what was deployed.
+ *
+ * AND THE COMPARISON IS THE SEAT'S OWN DISCIPLINE, applied to capability:
+ * the delta against the PREVIOUS OBSERVATION is named row by row (a new host
+ * tool, a new class row, a protection removed = WIDENED; the mirror cases
+ * NARROWED; a row bound to another class CHANGED, never dressed as a
+ * widening).  Then, because the audit's job is to tell a CHANGE from a
+ * TAMPER, the classification is the PINS: a widening whose tables STILL
+ * MATCH PINS is an operator RELEASE (a re-pin release is exactly how reach is
+ * supposed to change) and is NAMED, not a finding; a widening whose tables
+ * do NOT match PINS is a capability change NOTHING RELEASED, and that is the
+ * incoherence `reach-widened-unreleased` — the covert direction §7.1a is
+ * about.  A missing PINS cannot verify a release, so it takes the LOUD side
+ * (a finding), the same fail-closed choice the rest of this file makes.
+ *
+ * WHAT THIS WRITES, and it is deliberately SHARED with the selection seat:
+ * the stdout rows `reach-tool <name>` and `reach-grant <dim> <pattern>
+ * <class> <protected>` (the tab grammar fx-select PRINTS and consumes via
+ * --reach-prev), so an audit run IS a baseline another oracle can delta
+ * against — one grammar, two producers, no second spelling. */
+#define MAX_REACH_TOOLS 256
+#define MAX_REACH_GRANTS 4096
+
+typedef struct { char name[128]; } reachtool_t;
+typedef struct {
+    char dim[16];        /* "path" | "authority" */
+    char pattern[1024];
+    char cls[128];
+    int  prot;
+} reachgrant_t;
+
+static const char *g_plog = NULL;    /* --proxy-log */
+static const char *g_proxy = NULL;   /* --proxy */
+static const char *g_opsdir = NULL;  /* --ops-policy-dir */
+static char *g_plog_bytes = NULL;
+static size_t g_plog_len = 0;
+static int g_plog_absent = 0, g_plog_given = 0;
+
+static reachtool_t g_rtools[MAX_REACH_TOOLS]; static size_t g_nrtools = 0;
+static reachgrant_t g_rgrants[MAX_REACH_GRANTS]; static size_t g_ngrants = 0;
+static int g_rtools_known = 0, g_grants_known = 0;
+static reachtool_t g_ptools[MAX_REACH_TOOLS]; static size_t g_nptools = 0;
+static reachgrant_t g_pgrants[MAX_REACH_GRANTS]; static size_t g_npgrants = 0;
+/* 1 = the current tables hash to PINS (a RELEASE), 0 = they do not (an
+ * unreleased edit), -1 = PINS could not verify them (absent, or not naming
+ * them) — the loud side, because an unverifiable release is not a release */
+static int g_reach_pins_state = -1;
+static char g_reach_pins_detail[512];
+
+/* the boot this observation is anchored to: the LAST line in .bootlog */
+static unsigned long g_reach_boot_v = 0; static int g_reach_boot_known = 0;
+static char g_reach_boot_nonce[80] = "none";
+
+/* previous observation's halves */
+static int g_obs_plog_known = 0;
+static size_t g_obs_plog_bytes = 0; static char g_obs_plog_sha[65];
+static int g_obs_plog_absent = 0;
+static int g_obs_reach_known = 0;
+
 
 /* findings */
 typedef struct { char name[64]; char detail[LINE_MAX_]; } finding_t;
@@ -919,6 +1039,193 @@ static void hash_version_facts(unsigned v, char out[65]) {
     free(all);
 }
 
+/* ── S4: the reach readers (the report's/select's shapes, this seat's rule) ─
+ * The proxy's registry is read from THE PROXY (`--print-host-tools`: the one
+ * closed list its collision check and dispatch lookup read), never re-spelled
+ * here.  A named proxy that cannot be run is a LOUD state, not "no host
+ * tools": a seat that read a failed probe as an empty registry would record
+ * the narrowest possible reach, which is the one direction a capability
+ * instrument must never fail in. */
+static void reach_read_proxy(void) {
+    if (!g_proxy) return;
+    char cmd[8192];
+    snprintf(cmd, sizeof cmd, "'%s' --print-host-tools 2>/dev/null", g_proxy);
+    FILE *p = popen(cmd, "r");
+    if (!p) die("cannot popen '%s' (the host-tool registry probe)", g_proxy);
+    char line[LINE_MAX_];
+    while (fgets(line, sizeof line, p)) {
+        line[strcspn(line, "\r\n")] = 0;
+        char *q = line;
+        while (*q == ' ' || *q == '\t') q++;
+        if (!*q) continue;
+        if (g_nrtools >= MAX_REACH_TOOLS)
+            die("the proxy printed more than %u host tools", (unsigned)MAX_REACH_TOOLS);
+        if (strlen(q) >= sizeof g_rtools[0].name)
+            die("the proxy printed a host tool name longer than %zu bytes — a TRUNCATED name "
+                "is a different tool, so this seat refuses rather than shortens it",
+                sizeof g_rtools[0].name - 1);
+        snprintf(g_rtools[g_nrtools++].name, sizeof g_rtools[0].name, "%s", q);
+    }
+    int st = pclose(p);
+    int rc = WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+    if (rc != 0)
+        die("the host proxy '%s' did not answer --print-host-tools (exit %d): the DECLARED "
+            "reach of the running host cannot be read, and an unreadable registry is NOT an "
+            "empty one", g_proxy, rc);
+    g_rtools_known = 1;
+}
+
+/* The pinned class tables: the operator's grants.  A row this seat cannot
+ * read is LOUD (a skipped row is a grant that vanishes from the audit);
+ * eval_ops.py is the validator and owns the grammar. */
+static void reach_read_tables(void) {
+    static const struct { const char *file, *dim; int aliases; } T[] = {
+        { "ops-aliases.tsv", "path", 1 },
+        { "ops-hosts.tsv",   "authority", 0 },
+    };
+    if (!g_opsdir) return;
+    for (size_t t = 0; t < sizeof T / sizeof *T; t++) {
+        char path[4096];
+        snprintf(path, sizeof path, "%s/%s", g_opsdir, T[t].file);
+        size_t len = 0; int absent = 0;
+        char *b = read_file(path, &len, &absent);
+        if (absent) continue;
+        g_grants_known = 1;
+        char *save = NULL; size_t ln = 0;
+        for (char *line = strtok_r(b, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
+            ln++;
+            size_t ll = strlen(line);
+            if (ll && line[ll - 1] == '\r') line[--ll] = 0;
+            if (!ll || line[0] == '#') continue;
+            char *f[4] = {0}; int nf = 0;
+            char *lsave = NULL;
+            for (char *tok = strtok_r(line, "\t", &lsave); tok && nf < 4;
+                 tok = strtok_r(NULL, "\t", &lsave))
+                f[nf++] = tok;
+            const char *pattern, *cls, *prot;
+            if (T[t].aliases) {
+                if (nf != 4)
+                    die("%s:%u: a path-class row is alias<TAB>pathclass<TAB>protected<TAB>"
+                        "pattern (eval_ops.py --check-aliases validates it; this seat will "
+                        "not skip a row it cannot read): \"%s\"", path, ln, line);
+                pattern = f[3]; cls = f[1]; prot = f[2];
+            } else {
+                if (nf != 3)
+                    die("%s:%u: a host row is pattern<TAB>argclass<TAB>protected "
+                        "(eval_ops.py --check-hosts validates it; this seat will not skip a "
+                        "row it cannot read): \"%s\"", path, ln, line);
+                pattern = f[0]; cls = f[1]; prot = f[2];
+            }
+            if (strlen(pattern) >= sizeof g_rgrants[0].pattern)
+                die("%s:%u: the pattern exceeds this seat's %zu-byte cap", path, ln,
+                    sizeof g_rgrants[0].pattern);
+            if (g_ngrants >= MAX_REACH_GRANTS)
+                die("%s: more than %u class rows", path, (unsigned)MAX_REACH_GRANTS);
+            reachgrant_t *G = &g_rgrants[g_ngrants++];
+            snprintf(G->dim, sizeof G->dim, "%s", T[t].dim);
+            snprintf(G->pattern, sizeof G->pattern, "%s", pattern);
+            snprintf(G->cls, sizeof G->cls, "%s", cls);
+            G->prot = !strcmp(prot, "yes");
+        }
+        free(b);
+    }
+}
+
+/* THE RELEASE CHECK — is the table on disk the table PINS froze?  A re-pin
+ * release is exactly how reach is SUPPOSED to change, so this separates a
+ * RELEASED widening (named, not a finding) from an UNRELEASED one (a
+ * finding).  State: 1 verified, 0 drifted, -1 unverifiable (PINS absent, not
+ * naming a table, or a table it names is missing) — the last takes the LOUD
+ * side, because an unverifiable release is not a release. */
+static int reach_verify_pins(void) {
+    if (!g_opsdir) { snprintf(g_reach_pins_detail, sizeof g_reach_pins_detail, "no --ops-policy-dir"); return -1; }
+    char path[4096];
+    snprintf(path, sizeof path, "%s/PINS", g_opsdir);
+    size_t len = 0; int absent = 0;
+    char *b = read_file(path, &len, &absent);
+    if (absent) {
+        snprintf(g_reach_pins_detail, sizeof g_reach_pins_detail, "%.400s does not exist", path);
+        return -1;
+    }
+    int state = 1, checked = 0;
+    char *save = NULL;
+    for (char *line = strtok_r(b, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
+        size_t ll = strlen(line);
+        if (ll && line[ll - 1] == '\r') line[--ll] = 0;
+        if (!ll || line[0] == '#') continue;
+        char *tab = strchr(line, '\t');
+        if (!tab) die("%s: a PINS row is <artifact><TAB><sha256>: \"%s\"", path, line);
+        *tab = 0;
+        if (strcmp(line, "ops-aliases.tsv") && strcmp(line, "ops-hosts.tsv")) continue;
+        checked++;
+        char apath[4096];
+        snprintf(apath, sizeof apath, "%s/%s", g_opsdir, line);
+        size_t alen = 0; int aabsent = 0;
+        char *ab = read_file(apath, &alen, &aabsent);
+        if (aabsent) {
+            state = 0;
+            snprintf(g_reach_pins_detail, sizeof g_reach_pins_detail,
+                     "%.200s is named by PINS and is NOT THERE", line);
+            continue;
+        }
+        char sha[65];
+        sha256_hex(ab, alen, sha);
+        free(ab);
+        if (strcmp(sha, tab + 1) != 0) {
+            state = 0;
+            snprintf(g_reach_pins_detail, sizeof g_reach_pins_detail,
+                     "%.200s hashes to %s but PINS pins %s", line, sha, tab + 1);
+        }
+    }
+    free(b);
+    if (!checked) {
+        snprintf(g_reach_pins_detail, sizeof g_reach_pins_detail,
+                 "%.400s/PINS names neither class table", g_opsdir);
+        return -1;
+    }
+    if (state == 1) snprintf(g_reach_pins_detail, sizeof g_reach_pins_detail,
+                             "both class tables hash to their PIN");
+    return state;
+}
+
+/* The boot this observation is anchored to: the LAST line .bootlog holds.
+ * The reach measured NOW belongs to the boot the audit ran after — the seat
+ * says exactly that and never attributes today's registry to an earlier
+ * boot's generation. */
+static void reach_anchor_boot(void) {
+    if (g_nbl == 0) return;
+    bl_line_t *b = &g_bl[g_nbl - 1];
+    g_reach_boot_v = b->v;
+    g_reach_boot_known = 1;
+    snprintf(g_reach_boot_nonce, sizeof g_reach_boot_nonce, "%s", b->nonce[0] ? b->nonce : "none");
+}
+
+/* Emit the observation in the SHARED grammar (the tags fx-select prints and
+ * consumes), plus the boot it is anchored to. */
+static void emit_reach_rows(void) {
+    if (!g_proxy && !g_opsdir) return;
+    for (size_t i = 0; i < g_nrtools; i++) printf("reach-tool\t%s\n", g_rtools[i].name);
+    for (size_t i = 0; i < g_ngrants; i++)
+        printf("reach-grant\t%s\t%s\t%s\t%s\n", g_rgrants[i].dim, g_rgrants[i].pattern,
+               g_rgrants[i].cls, g_rgrants[i].prot ? "yes" : "no");
+    if (g_reach_boot_known)
+        printf("reach-boot\t%lu\tnonce\t%s\tMEASURED\tthe reach recorded around this boot "
+               "(the LAST .bootlog line): the host tool(s) and pinned class row(s) above are "
+               "what the HOST could run WHEN THIS OBSERVATION WAS TAKEN — a registry read at "
+               "observation time, never a reconstruction of what an earlier boot could reach\n",
+               g_reach_boot_v, g_reach_boot_nonce);
+    else
+        printf("reach-boot\t-\tnonce\t-\tABSENT\tthis store has no .bootlog line, so the reach "
+               "observation is NOT attributed to any boot (it is still measured — the host's "
+               "registry and tables are read now)\n");
+    if (!g_proxy)
+        printf("reach-absence\tregistry\tnot-given-no---proxy-so-the-host-tool-half-of-the-"
+               "reach-observation-is-NOT-KNOWN (NOT 'the host runs nothing')\tABSENT\n");
+    if (!g_opsdir)
+        printf("reach-absence\tclass-tables\tnot-given-no---ops-policy-dir-so-the-grant-half-"
+               "of-the-reach-observation-is-NOT-KNOWN (NOT 'nothing is granted')\tABSENT\n");
+}
+
 /* ── the observation store ─────────────────────────────────────────────── */
 
 static void obs_path_for(char *out, size_t cap) {
@@ -972,6 +1279,27 @@ static void obs_write(void) {
                 g_facts_hash[i][0] ? g_facts_hash[i] : "-");
     for (size_t i = 0; i < g_nartifacts; i++)
         fprintf(f, "artifact %s\n", g_artifacts[i]);
+    /* S4: the proxy's one log as a KNOWN RECORD (its bytes + sha, the
+     * .bootlog/.recovery discipline extended to the host's account of what
+     * it ran), and the DECLARED REACH this observation measured.  Both are
+     * written only when they were GIVEN: their absence in a baseline is
+     * NOT-KNOWN for that dimension, and an optional field that silently
+     * defaulted to "empty" would read as "no capability" — the one reading
+     * a capability instrument must never invent. */
+    if (g_plog_given) {
+        if (g_plog_absent) fprintf(f, "proxy_log_absent 1\n");
+        else {
+            sha256_hex(g_plog_bytes ? g_plog_bytes : "", g_plog_len, sha);
+            fprintf(f, "proxy_log_bytes %zu\nproxy_log_sha256 %s\n", g_plog_len, sha);
+        }
+    }
+    if (g_proxy || g_opsdir) {
+        for (size_t i = 0; i < g_nrtools; i++)
+            fprintf(f, "reach_tool\t%s\n", g_rtools[i].name);
+        for (size_t i = 0; i < g_ngrants; i++)
+            fprintf(f, "reach_grant\t%s\t%s\t%s\t%s\n", g_rgrants[i].dim,
+                    g_rgrants[i].pattern, g_rgrants[i].cls, g_rgrants[i].prot ? "yes" : "no");
+    }
     fprintf(f, "end\n");
     fflush(f);
     if (ferror(f)) die("cannot write observation '%s'", tmp);
@@ -1033,6 +1361,42 @@ static void obs_read(void) {
             g_nobs_vers++;
             continue;
         }
+        if (strncmp(line, "proxy_log_bytes ", 16) == 0) { g_obs_plog_bytes = strtoul(line + 16, NULL, 10); g_obs_plog_known = 1; continue; }
+        if (strncmp(line, "proxy_log_sha256 ", 17) == 0) {
+            if (sscanf(line + 17, "%64s", g_obs_plog_sha) != 1) die("bad obs line: %s", line);
+            g_obs_plog_known = 1;
+            continue;
+        }
+        if (strncmp(line, "proxy_log_absent", 16) == 0) { g_obs_plog_absent = 1; g_obs_plog_known = 1; continue; }
+        if (strncmp(line, "reach_tool\t", 11) == 0) {
+            char *n = line + 11;
+            n[strcspn(n, "\r\n")] = 0;
+            if (g_nptools >= MAX_REACH_TOOLS) die("observation has too many reach_tool rows");
+            if (strlen(n) >= sizeof g_ptools[0].name)
+                die("the observation carries a reach_tool name longer than %zu bytes",
+                    sizeof g_ptools[0].name - 1);
+            snprintf(g_ptools[g_nptools++].name, sizeof g_ptools[0].name, "%s", n);
+            g_obs_reach_known = 1;
+            continue;
+        }
+        if (strncmp(line, "reach_grant\t", 12) == 0) {
+            char *c = line + 12;
+            char *f4[4] = {0};
+            int nf4 = 0;
+            char *rsave = NULL;
+            for (char *tok = strtok_r(c, "\t", &rsave); tok && nf4 < 4; tok = strtok_r(NULL, "\t", &rsave))
+                f4[nf4++] = tok;
+            if (nf4 < 4) die("bad reach_grant row in observation: %s", line);
+            if (g_npgrants >= MAX_REACH_GRANTS) die("observation has too many reach_grant rows");
+            reachgrant_t *G = &g_pgrants[g_npgrants++];
+            snprintf(G->dim, sizeof G->dim, "%.*s", (int)sizeof G->dim - 1, f4[0]);
+            snprintf(G->pattern, sizeof G->pattern, "%s", f4[1]);
+            snprintf(G->cls, sizeof G->cls, "%.*s", (int)sizeof G->cls - 1, f4[2]);
+            f4[3][strcspn(f4[3], "\r\n")] = 0;
+            G->prot = !strcmp(f4[3], "yes");
+            g_obs_reach_known = 1;
+            continue;
+        }
         if (sscanf(line, "artifact %255s", v1) == 1) {
             g_obs_artifacts = realloc(g_obs_artifacts, (g_nobs_artifacts + 1) * sizeof *g_obs_artifacts);
             if (!g_obs_artifacts) die("out of memory");
@@ -1046,6 +1410,185 @@ static void obs_read(void) {
     }
     fclose(f);
     die("observation '%s' has no end marker (torn write?)", path);
+}
+
+/* ── S4: the proxy's one log as a KNOWN RECORD (its own check) ──────────── */
+
+/* Read the log as BYTES — this seat never parses the proxy's rows (the
+ * REPORTER owns that grammar); what it needs is the record's identity, so a
+ * truncation or an in-place rewrite can be caught on the next observation,
+ * exactly as .bootlog's and .recovery's are. */
+static void read_proxy_log_record(void) {
+    if (!g_plog) return;
+    g_plog_given = 1;
+    size_t len = 0; int absent = 0;
+    g_plog_bytes = read_file(g_plog, &len, &absent);
+    g_plog_len = len;
+    g_plog_absent = absent;
+}
+
+/* The log is APPEND-ONLY by construction (the proxy re-renders its rows and
+ * writes them once), so the previous observation's prefix must still hash the
+ * same.  A failure direction worth naming: treating a vanished log as "no
+ * calls" would let a host log be deleted to hide what ran — this seat says
+ * the RECORD was removed, and says which byte count it had. */
+static void check_proxy_log(void) {
+    if (!g_plog_given) {
+        info("proxy log: no --proxy-log given — the host's own account of what it ran is NOT-KNOWN to this audit (NOT 'the host ran nothing')");
+        return;
+    }
+    if (g_plog_absent) {
+        if (g_obs_plog_known && !g_obs_plog_absent)
+            add_finding("record-vanished",
+                        "the host proxy's one log ('%s') was present (%zu byte(s) at the previous "
+                        "observation) and is now ABSENT — the host's own account of what it ran "
+                        "was REMOVED between audits (deleting the record is not the same as "
+                        "nothing having happened)", g_plog, g_obs_plog_bytes);
+        else
+            info("proxy log: '%s' does not exist — NO host record was produced for this span, so the log class is NOT-KNOWN here (never 'no call was made')", g_plog);
+        return;
+    }
+    if (!g_have_obs || !g_obs_plog_known) {
+        info("proxy log: %zu byte(s) recorded as a KNOWN record%s — the append accounting starts on the next observation", g_plog_len,
+             g_have_obs ? " (the baseline predates the proxy-log record: no comparison is possible for it)" : " (first observation of this store)");
+        return;
+    }
+    if (g_obs_plog_absent) {
+        info("transition: the proxy log was absent at the previous observation and holds %zu byte(s) now", g_plog_len);
+        return;
+    }
+    if (g_plog_len < g_obs_plog_bytes) {
+        add_finding("disagreement-proxy-log-rewritten",
+                    "the host proxy's one log was %zu byte(s) at the previous observation and is %zu now — TRUNCATED (the proxy only ever appends: a shorter log is a record that was CUT, not one that shrank)",
+                    g_obs_plog_bytes, g_plog_len);
+        return;
+    }
+    {
+        char sha[65];
+        sha256_hex(g_plog_bytes ? g_plog_bytes : "", g_obs_plog_bytes, sha);
+        if (strcmp(sha, g_obs_plog_sha) != 0)
+            add_finding("disagreement-proxy-log-rewritten",
+                        "the proxy log's previously observed first %zu byte(s) no longer hash the "
+                        "same (was %s, now %s..%s) — the record was REWRITTEN in place; the "
+                        "appended tail is %zu byte(s)", g_obs_plog_bytes, g_obs_plog_sha, sha,
+                        sha + 56, g_plog_len - g_obs_plog_bytes);
+        else if (g_plog_len > g_obs_plog_bytes)
+            info("proxy log grew by %zu byte(s) (append-only respected)", g_plog_len - g_obs_plog_bytes);
+    }
+}
+
+/* ── S4: the REACH comparison (its own check) ───────────────────────────── */
+
+/* The delta against the previous observation, named row by row, and then ONE
+ * classification: a widening whose tables still hash to their PIN is an
+ * operator RELEASE (named, not a finding — a re-pin release is how reach is
+ * supposed to change); a widening whose tables do NOT is the incoherence
+ * `reach-widened-unreleased`, the covert capability change §7.1a is about.
+ * An unverifiable release (no PINS, or one not naming the tables) takes the
+ * LOUD side. */
+static void check_reach(void) {
+    if (!g_proxy && !g_opsdir) {
+        info("reach: NOT ARMED (no --proxy / --ops-policy-dir) — this audit cannot say what the host could run, so it can name no capability change (§7.1a's blindness, named rather than left to be discovered)");
+        return;
+    }
+    g_reach_pins_state = reach_verify_pins();
+    if (g_reach_pins_state == 1)
+        info("reach: the pinned class tables hash to their PIN (%s) — this declaration is a RELEASE", g_reach_pins_detail);
+    else if (g_reach_pins_state == 0)
+        info("reach: the class tables do NOT hash to PINS (%s) — an edit NOBODY RELEASED (a widening found under this state is a finding, not a release)", g_reach_pins_detail);
+    else
+        info("reach: the release CANNOT be verified (%s) — a widening found under this state takes the loud side", g_reach_pins_detail);
+
+    if (!g_have_obs || !g_obs_reach_known) {
+        info("reach: %zu host tool(s) and %zu pinned class row(s) recorded as the reach baseline%s — the delta starts on the next observation",
+             g_nrtools, g_ngrants,
+             g_have_obs ? " (the baseline predates the reach record: it cannot be compared)" : " (first observation of this store)");
+        return;
+    }
+
+    unsigned n_widen = 0, n_narrow = 0, n_change = 0;
+    /* The finding's one-line summary of the widenings is CAPPED, and the cap
+     * is MARKED rather than silent: every widening already has its own
+     * reach-delta row above, so a cut list loses nothing a reader cannot
+     * recover — but an unmarked cut would read as "that was all of them". */
+    char wide[LINE_MAX_]; wide[0] = 0;
+    int wide_cut = 0;
+#define WIDE_ADD(...) do { \
+        size_t _l = strlen(wide); \
+        int _w = snprintf(wide + _l, sizeof wide - _l, __VA_ARGS__); \
+        if (_w < 0 || (size_t)_w >= sizeof wide - _l) { wide_cut = 1; wide[sizeof wide - 1] = 0; } \
+    } while (0)
+
+    for (size_t i = 0; i < g_nrtools; i++) {
+        int seen = 0;
+        for (size_t j = 0; j < g_nptools; j++)
+            if (!strcmp(g_rtools[i].name, g_ptools[j].name)) { seen = 1; break; }
+        if (seen) continue;
+        printf("reach-delta\ttool\t%s\tWIDENED\tDERIVED\tthe registry holds a host tool the previous observation did not — a NEW HOST-EXECUTABLE CAPABILITY\n", g_rtools[i].name);
+        WIDE_ADD("host tool '%s'; ", g_rtools[i].name);
+        n_widen++;
+    }
+    for (size_t j = 0; j < g_nptools; j++) {
+        int seen = 0;
+        for (size_t i = 0; i < g_nrtools; i++)
+            if (!strcmp(g_rtools[i].name, g_ptools[j].name)) { seen = 1; break; }
+        if (!seen) {
+            printf("reach-delta\ttool\t%s\tNARROWED\tDERIVED\tthe previous observation held this host tool and the registry does not — a capability WITHDRAWN\n", g_ptools[j].name);
+            n_narrow++;
+        }
+    }
+    for (size_t i = 0; i < g_ngrants; i++) {
+        reachgrant_t *C = &g_rgrants[i], *P = NULL;
+        for (size_t j = 0; j < g_npgrants; j++)
+            if (!strcmp(g_pgrants[j].dim, C->dim) && !strcmp(g_pgrants[j].pattern, C->pattern)) { P = &g_pgrants[j]; break; }
+        if (!P) {
+            printf("reach-delta\tgrant\t%s:%s\tWIDENED\tDERIVED\tthe pinned table holds a class row the previous observation did not (class %s, protected=%s) — a NEW GRANT\n",
+                   C->dim, C->pattern, C->cls, C->prot ? "yes" : "no");
+            WIDE_ADD("new %s grant %s (class %s); ", C->dim, C->pattern, C->cls);
+            n_widen++;
+        } else if (P->prot && !C->prot) {
+            printf("reach-delta\tgrant\t%s:%s\tWIDENED\tDERIVED\tthe row's protected flag flipped yes->no (class %s): what a policy DENIED, it now permits\n",
+                   C->dim, C->pattern, C->cls);
+            WIDE_ADD("protection REMOVED from %s grant %s (class %s); ", C->dim, C->pattern, C->cls);
+            n_widen++;
+        } else if (!P->prot && C->prot) {
+            printf("reach-delta\tgrant\t%s:%s\tNARROWED\tDERIVED\tthe row's protected flag flipped no->yes (class %s): what a policy permitted, it now denies\n",
+                   C->dim, C->pattern, C->cls);
+            n_narrow++;
+        } else if (strcmp(P->cls, C->cls) != 0) {
+            printf("reach-delta\tgrant\t%s:%s\tCHANGED\tDERIVED\tthe row is bound to class %s where it was %s — neither direction is stated (the two classes' own protection decides, and this seat will not guess it into a widening)\n",
+                   C->dim, C->pattern, C->cls, P->cls);
+            n_change++;
+        }
+    }
+    for (size_t j = 0; j < g_npgrants; j++) {
+        reachgrant_t *P = &g_pgrants[j];
+        int seen = 0;
+        for (size_t i = 0; i < g_ngrants; i++)
+            if (!strcmp(g_rgrants[i].dim, P->dim) && !strcmp(g_rgrants[i].pattern, P->pattern)) { seen = 1; break; }
+        if (seen) continue;
+        printf("reach-delta\tgrant\t%s:%s\tNARROWED\tDERIVED\tthe previous observation held this pinned class row and the table does not (class %s) — a grant WITHDRAWN\n",
+               P->dim, P->pattern, P->cls);
+        n_narrow++;
+    }
+#undef WIDE_ADD
+
+    if (!n_widen && !n_narrow && !n_change)
+        printf("reach-delta\t-\t-\tNONE\tDERIVED\tthe previous observation and this one carry the SAME host tools and the SAME pinned class rows — no capability change BETWEEN THESE TWO OBSERVATIONS\n");
+    if (n_widen && g_reach_pins_state == 1)
+        info("reach: %u WIDENING(s) between the observations, and the class tables hash to their PIN — a RELEASED declaration (named, NOT a finding: a re-pin release is how reach is supposed to change).  The widenings: %s", n_widen, wide);
+    else if (n_widen)
+        add_finding("reach-widened-unreleased",
+                    "%u WIDENING(s) of what this host can reach between the previous observation "
+                    "and this one, and the declaration behind them was NOT RELEASED (%s) — a "
+                    "capability change nothing pinned: %s%s(the check is PINS, because a "
+                    "RELEASED widening is an operator act with a record, and an unreleased one "
+                    "is the covert direction §7.1a names)",
+                    n_widen, g_reach_pins_detail, wide,
+                    wide_cut ? "[the list above was CUT at this message's bound — every "
+                               "widening is named on its own reach-delta row] " : "");
+    else if (n_narrow || n_change)
+        info("reach: %u narrowings and %u changed row(s) between the observations (no widening) — recorded, not findings: a narrowing is not the direction this check exists for", n_narrow, n_change);
 }
 
 /* ── the checks (each its own assertion with its own message) ──────────── */
@@ -2088,6 +2631,7 @@ static void usage(FILE *f) {
         "fx-audit — the AUDIT seat (host-side coherence detector + rollback trigger)\n"
         "usage: fx-audit --store DIR --boots N [--nonces FILE] [--rootfs DIR]\n"
         "                 [--obs-dir DIR] [--obs-file PATH] [--fxstore BIN]\n"
+        "                 [--proxy-log FILE] [--proxy BIN] [--ops-policy-dir DIR]\n"
         "                 [--re-enroll] [--rollback [V]]\n"
         "  --store DIR     the store to audit (as the host sees it)\n"
         "  --boots N       REQUIRED, host truth: how many boots the HOST has EVER\n"
@@ -2112,6 +2656,21 @@ static void usage(FILE *f) {
         "                  reserves that token as its no-nonce placeholder, so\n"
         "                  the host can never have issued it.\n"
         "  --rootfs DIR    a host view of the guest rootfs (runs `fxstore verify`)\n"
+        "  --proxy-log FILE  the host proxy's ONE LOG, taken as a KNOWN record: its\n"
+        "                   bytes are recorded in the observation and the previously\n"
+        "                   observed prefix must still hash the same (the append-only\n"
+        "                   discipline .bootlog and .recovery get): a truncated or\n"
+        "                   rewritten host log is a TAMPER finding, and a VANISHED one\n"
+        "                   is a record removed, never 'no call was made'\n"
+        "  --proxy BIN     the host proxy whose COMPILED-IN registry is the reach\n"
+        "                   observation's tool half (--print-host-tools); a proxy that\n"
+        "                   will not answer is a LOUD failure, never 'no host tools'\n"
+        "  --ops-policy-dir DIR  the operator's PINNED class tables: the reach\n"
+        "                   observation's grant half.  Each observation records the\n"
+        "                   reach BESIDE the boot it ran after and names the delta\n"
+        "                   against the previous one; a WIDENING whose tables still\n"
+        "                   hash to PINS is a RELEASE (named, not a finding) and one\n"
+        "                   whose tables do NOT is `reach-widened-unreleased`\n"
         "  --obs-dir DIR   observation store dir (default $FX_AUDIT_OBS_DIR, else\n"
         "                  the sibling dir <store>.fx-audit-obs).  MUST NOT be\n"
         "                  inside the store — the observation is host memory.\n"
@@ -2137,6 +2696,19 @@ int main(int argc, char **argv) {
         else if (!strncmp(argv[i], "--obs-file=", 11)) g_obsfile = argv[i] + 11;
         else if (!strcmp(argv[i], "--fxstore") && i + 1 < argc) g_fxstore = argv[++i];
         else if (!strncmp(argv[i], "--fxstore=", 10)) g_fxstore = argv[i] + 10;
+        else if (!strcmp(argv[i], "--proxy-log") && i + 1 < argc) g_plog = argv[++i];
+        else if (!strncmp(argv[i], "--proxy-log=", 12)) g_plog = argv[i] + 12;
+        else if (!strcmp(argv[i], "--proxy") && i + 1 < argc) {
+            g_proxy = argv[++i];
+            check_safe_path(g_proxy, "--proxy");
+        }
+        else if (!strncmp(argv[i], "--proxy=", 8)) {
+            if (!argv[i][8]) die("--proxy= needs the host proxy binary path");
+            g_proxy = argv[i] + 8;
+            check_safe_path(g_proxy, "--proxy");
+        }
+        else if (!strcmp(argv[i], "--ops-policy-dir") && i + 1 < argc) g_opsdir = argv[++i];
+        else if (!strncmp(argv[i], "--ops-policy-dir=", 17)) g_opsdir = argv[i] + 17;
         else if (!strcmp(argv[i], "--re-enroll")) g_reenroll = 1;
         else if (!strcmp(argv[i], "--nonces") && i + 1 < argc) {
             g_nonces_path = argv[++i];
@@ -2339,6 +2911,14 @@ int main(int argc, char **argv) {
     /* ── the previous observation (read BEFORE the checks so the compare
      * has it; written only at the end) ── */
     obs_read();
+    /* S4: the proxy's one log as a KNOWN RECORD, and the DECLARED REACH this
+     * observation measures — read BEFORE the checks (they only judge what is
+     * loaded) and AFTER obs_read (the comparison needs the baseline). */
+    read_proxy_log_record();
+    reach_read_proxy();
+    reach_read_tables();
+    reach_anchor_boot();
+    emit_reach_rows();
     /* the host's nonce ledger is loaded AFTER obs_read (its window is
      * defined by the observation's boot count) and BEFORE the checks */
     load_nonces();
@@ -2353,6 +2933,8 @@ int main(int argc, char **argv) {
     run_check("src-of-artifact", check_src_of_artifact);
     run_check("records-damaged", check_records_damaged);
     run_check("boot-accounting", check_boot_accounting);
+    run_check("proxy-log-record", check_proxy_log);
+    run_check("egress-reach", check_reach);
     run_check("previous-observation", observation_compare);
 
     size_t pass = 0, skip = 0, fail = 0;
@@ -2372,6 +2954,7 @@ int main(int argc, char **argv) {
     if (g_bl_torn) info(".bootlog has a torn tail (%zu unterminated line(s)) — a crash mid-write, not a verdict", g_bl_torn);
     printf("checks: %zu pass, %zu failed; findings: %zu\n", pass, fail, g_nfindings);
     printf("bound: this seat sees REWRITES and TRUNCATIONS of records it previously observed, cross-record INCOHERENCE, and — anchored on --boots and the per-boot nonce ledger (--nonces) — APPENDED .bootlog/.recovery growth the host cannot account for. IN THE NONCE REGIME (the host issues fx.bootnonce= per boot and every window boot is covered) the forged line-PAIR in a silent boot's slack is CLOSED: every ADDED line must wear a nonce the host issued for a boot in this window, the per-nonce IN-PROGRESS budget is the boot's OWN line plus one activate RE-ARM per version the store FIRST PUBLISHED in this window (each naming a version newer than the one its boot booted — init.zig:3724), the re-arm ip budget being ONE per first-published VERSION per WINDOW (a publish allocates a version number exactly once) AND naming a version NOT ALREADY BOOTED in the window (a re-arm names the version the activate JUST published, max+1, which has never been booted — this is what refuses the roll-forward REPUBLISH forge), shutdown / .recovery rows hold at one per boot, and the VERDICT accounting is per VERSION — one verdict per in-progress line the window added for that version, plus ONE more ONLY for a first-published version carrying NO re-arm ip of its own (the OLD-writer re-arm shape, init.zig:3797-3800). THE RE-ARM LINE'S OWN DELTA: that legitimate line RE-OPENS the forged-PAIR shape for a version that is first-published in the window AND newer than the boot's own, on ANY real window boot's nonce (the closure there is per VERSION, not per nonce — ONE re-arm in-progress per first-published version per window, so a forged pair cannot ride a second window nonce to buy a second verdict, whether the version was activated or republished — the republish shape is refused by the not-already-booted clause — and the legitimate line grants no verdict slot the +1 did not already grant). RESIDUAL, named: a forged pair for a version first published WITHOUT an activation and NOT YET BOOTED in the window (the operator `rollback` during a live boot, before the next boot boots it) still reads as a legitimate re-arm and lands the version's FIRST verdict — indistinguishable from a real activation without the .operator journal this seat does not read; the automatic roll-forward has no such window (the republish and the boot are one PID1 start), and the moment the version IS booted the not-already-booted clause refuses the same forge. What a forger still cannot mint is an in-progress for a version the store did not publish in this window, or one NOT newer than that nonce's own first line (the per-nonce rule fires on both) — and an unclaimed nonce is REPORTED as a silent boot. What this seat CANNOT see, stated as its bound: a verdict SUBSTITUTED inside a LIVE boot — the agent is root in the guest and can read its own /proc/cmdline nonce, so it can append the verdict itself in the writer's exact shape wearing the live nonce and suppress fx-init's own (a panic before grace expiry); that leaves ONE verdict for one (nonce, version) with every anchor satisfied, and the line's authorship inside the boot that owns the nonce is NOT distinguishable from the host — auditing, not proofing (the defence against substitution is the rollback machinery plus the observation hashes, not this reader); window boots the ledger does not cover (a mixed/manual regime — nonce-less lines are named and counted, but a forged pair in an UNCOVERED boot's slack still passes the arithmetic); boots started off the counting host, or a miscounted / moved --obs-file reuse (the count and the ledger are only as true as the host's own bookkeeping); a coherent tamper on a store first seen at enrollment (the enrollment gap — first run trusts, loudly). That is the honest bound of auditing, not proofing (§6b), printed on every run so the tool never implies more than it knows.\n");
+    printf("bound (S4): the host proxy's ONE LOG is a KNOWN record only from the bytes it has NOW onward — this seat records them and re-hashes the prefix, so a TAMPER AFTER an observation is caught and a tamper BEFORE the first one is not (the same enrollment bound as every other record here); a log the caller does not name is NOT-KNOWN, never 'no call was made'.  The DECLARED REACH is measured WHEN THE OBSERVATION IS TAKEN (the proxy's registry as it prints now, the operator's tables as they hash now) and attributed to the LAST boot in .bootlog — it is NOT a reconstruction of what any EARLIER boot's generation could reach, and this seat does not claim one.  'Released' means the two class tables hash to their PINS (an operator act with a record); a widening under an UNVERIFIABLE release (no PINS) takes the loud side by construction, which can be a FALSE POSITIVE on a host with no pinned table set — named here rather than discovered.\n");
     printf("evidence: the store's own records only — attempts.jsonl (the harness self-report) is never opened.\n");
 
     if (g_nfindings > 0) {

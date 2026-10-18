@@ -97,14 +97,42 @@
  *                  it did not materialize.
  *   5. ELIGIBLE    IN the candidate set AND viable AND (coherent, if it is
  *                  CURRENT).  `not-live` is not a disqualifier; drift is.
- *   6. WINNER      the eligible candidate with the GREATEST share.  A TIE
+ *   6. REACH       THE REACH-DELTA TERM (§7.1a's residual: "every oracle in
+ *                  the family must be able to SEE capability changes,
+ *                  because an egress grant is a capability increase, and a
+ *                  code-only oracle is blind to it").  TWO OBSERVATIONS of
+ *                  DECLARED REACH are compared and every difference is
+ *                  NAMED: the CURRENT one — the host proxy's compiled-in
+ *                  registry (`--proxy` -> --print-host-tools) plus the
+ *                  operator's PINNED class tables (`--ops-policy-dir`) —
+ *                  against the PREVIOUS one (`--reach-prev`, the shared
+ *                  reach-tool/reach-grant grammar this seat prints and the
+ *                  audit records per boot).  A host tool that did not exist,
+ *                  a class row that did not exist, and a `protected yes->no`
+ *                  flip are WIDENINGS, one named row each plus the loud
+ *                  `egress-reach-widened` row; the mirror cases are
+ *                  NARROWINGS; a row bound to another class is CHANGED and
+ *                  is never dressed as a widening.
+ *                  THE CONSEQUENCE IS DELIBERATELY OPEN AND REVERSIBLE
+ *                  (the plan's own choice, and a decision this seat does not
+ *                  bake): step 6 does NOT change eligibility, does NOT
+ *                  change the winner and does NOT change the exit code — v1
+ *                  makes a widening LOUD.  Whether a widening should
+ *                  DISQUALIFY a generation is the operator's call; what is
+ *                  NOT open is that the widening is SEEN and NAMED rather
+ *                  than invisible to the seat that judges generations.
+ *                  Absence, once per side: no --reach-prev is NOT-KNOWN
+ *                  (never "no widening"); no --proxy/--ops-policy-dir is
+ *                  NOT-KNOWN for that half; a named proxy that cannot be run
+ *                  is a TOOL ERROR, never "no host tools".
+ *   7. WINNER      the eligible candidate with the GREATEST share.  A TIE
  *                  GOES TO THE INCUMBENT — a tie NEVER causes a revert.
  *                  (This replaces "the highest version", whose only
  *                  remaining effect in the two-snapshot shape was to prefer
  *                  the half-published intermediate over the generation it
  *                  duplicates; under rule 1 there is no such candidate any
  *                  more, and the rule the gate pins is now the incumbent.)
- *   7. DECISION    `keep <CURRENT>` if the winner is CURRENT, else
+ *   8. DECISION    `keep <CURRENT>` if the winner is CURRENT, else
  *                  `revert-to <winner>` — and a state the seat would
  *                  REFUSE TO ACT ON is never printed as `revert-to`: it is
  *                  its own frozen NON-ACTIONABLE decision, `withhold
@@ -120,7 +148,7 @@
  *                  BOTH the printed record and `--apply` read it: the plain
  *                  run and the trigger agree BY CONSTRUCTION, not by two
  *                  matching ifs.
- *   8. EXCLUDED    a candidate the oracle refuses is excluded and NAMED,
+ *   9. EXCLUDED    a candidate the oracle refuses is excluded and NAMED,
  *                  and the count prints as its own caveat line.  An
  *                  excluded CHALLENGER cannot win and blocks nothing (the
  *                  incumbent stays the only eligible candidate); an
@@ -263,6 +291,80 @@ static const char *g_oracle = NULL;              /* --oracle / $FX_OSIER_SHARE_B
 static const char *g_pkgset = NULL;              /* --package-set, passed through to the oracle */
 static int g_apply = 0;                          /* --apply: the thin trigger */
 
+/* ── S4: THE REACH TERM (order step 6) ────────────────────────────────────
+ * §7.1a's residual, verbatim: "every oracle in the family must be able to SEE
+ * capability changes, because an egress grant is a capability increase, and a
+ * code-only oracle is blind to it".  This seat judges GENERATIONS, so a
+ * widening of what the system can reach must not be invisible to it.
+ *
+ * WHAT IT COMPARES — two OBSERVATIONS of DECLARED REACH, never a re-derived
+ * one:
+ *   the CURRENT observation: the host proxy's own compiled-in registry
+ *     (`--proxy BIN` -> `--print-host-tools`, the closed list of names the
+ *     host executes) plus the operator's PINNED CLASS TABLES
+ *     (`--ops-policy-dir DIR` -> ops-aliases.tsv + ops-hosts.tsv, each row a
+ *     GRANT with its protected flag);
+ *   the PREVIOUS observation: `--reach-prev FILE`, a file in the SHARED
+ *     observation grammar this seat prints and the AUDIT seat records per
+ *     boot (`reach-tool <name>` / `reach-grant <dim> <pattern> <class>
+ *     <protected>`) — so the delta can be the incumbent's boot against the
+ *     live host, and it is always TWO RECORDS, never one number.
+ *
+ * WHAT IT NAMES: a host tool present now and absent before, a class row
+ * present now and absent before, and a row whose protected flag flipped
+ * yes->no, are all WIDENINGS and are named one by one (`reach-delta ...
+ * WIDENED`, plus the loud `egress-reach-widened` row).  The mirror cases are
+ * NARROWINGS, and a row whose CLASS changed is CHANGED — neither direction
+ * can be stated without the class's own protection, so it is named as
+ * changed and never dressed as a widening.
+ *
+ * THE CONSEQUENCE IS DELIBERATELY OPEN (a reversible choice, stated at the
+ * site AND in the order table): v1 makes a widening LOUD, it does NOT bake
+ * policy — the step does not change eligibility, does not change the winner,
+ * and does NOT change the exit code.  Whether a generation that widens reach
+ * should be DISQUALIFIED is a decision for the operator, and it stays open
+ * on purpose; what is NOT open is that the widening is seen and named.
+ *
+ * TWO DIRECTIONS OF ABSENCE, once per side: no `--reach-prev` means there is
+ * no previous observation and the delta is NOT-KNOWN (never "no widening");
+ * no `--proxy`/`--ops-policy-dir` means the CURRENT observation is
+ * NOT-KNOWN for that half.  A named proxy that cannot be run is a TOOL
+ * ERROR (exit 2), never "no host tools" — the oracle's own rule.
+ *
+ * WHAT THIS SEAT DOES NOT CHECK: the pinned tables' shas.  Verifying that an
+ * artifact is the bytes PINS froze is the PROXY's startup pin check and
+ * fx-report's `pin-drift` finding; this seat reads the tables as DECLARED and
+ * says so, rather than growing a second sha implementation. */
+
+#define MAX_REACH_TOOLS 256
+#define MAX_REACH_GRANTS 4096
+
+typedef struct {
+    char name[128];
+} reachtool_t;
+
+typedef struct {
+    char dim[16];        /* "path" (ops-aliases.tsv) | "authority" (ops-hosts.tsv) */
+    char pattern[1024];  /* the row's pattern, VERBATIM */
+    char cls[128];       /* the class the seat injects */
+    int  prot;           /* protected: yes=1, no=0 */
+} reachgrant_t;
+
+static const char *g_proxy;      /* --proxy: the host proxy binary (the registry) */
+static const char *g_opsdir;     /* --ops-policy-dir: the pinned class tables */
+static const char *g_reach_prev; /* --reach-prev: the PREVIOUS observation file */
+static reachtool_t g_rtools[MAX_REACH_TOOLS];
+static unsigned g_nrtools;
+static int g_rtools_known;       /* the registry was actually read */
+static reachgrant_t g_rgrants[MAX_REACH_GRANTS];
+static unsigned g_ngrants;
+static int g_grants_known;       /* at least one class table was actually read */
+static reachtool_t g_ptools[MAX_REACH_TOOLS];
+static unsigned g_nptools;
+static reachgrant_t g_pgrants[MAX_REACH_GRANTS];
+static unsigned g_npgrants;
+static int g_prev_known;         /* --reach-prev was given AND read */
+
 /* exit codes, stated in the header and the usage text */
 #define EX_DECISION    0
 #define EX_NO_ELIGIBLE 1
@@ -327,11 +429,13 @@ static const struct {
    "exit 0 = no drift = coherent; judged FOR CURRENT ONLY, because the live rootfs corresponds to the CURRENT generation alone - every other candidate is not-live (NON-disqualifying) and this seat never claims to have verified a generation it did not materialize" },
  { 5, "eligibility", "IN the candidate set AND viable AND (coherent if CURRENT)",
    "a candidate that is not in the bounded set, not viable, or is CURRENT with drift, can NEVER win, whatever its share - the order is ENFORCED, not printed and hoped for" },
- { 6, "winner", "greatest share among ELIGIBLE candidates",
+ { 6, "reach", "--proxy BIN (the compiled-in host-tool registry: --print-host-tools) + --ops-policy-dir DIR (the operator's PINNED class tables + PINS) against --reach-prev FILE (the PREVIOUS observation, the shared reach-tool/reach-grant grammar the audit records per boot)",
+   "THE REACH-DELTA TERM (§7.1a's residual: an egress grant is a CAPABILITY INCREASE and a code-only oracle is blind to it). The seat compares TWO OBSERVATIONS of DECLARED REACH and NAMES each difference: a host tool absent before and present now, a pinned class row absent before and present now, and a row whose protected flag flipped yes->no are WIDENINGS (one named reach-delta row each, plus the loud egress-reach-widened row); the mirror cases are NARROWINGS; a row whose CLASS changed is CHANGED, never dressed as a widening. THE CONSEQUENCE IS DELIBERATELY OPEN AND REVERSIBLE: this step does NOT change eligibility, does NOT change the winner and does NOT change the exit code — v1 makes a widening LOUD and does not bake policy, so whether widening DISQUALIFIES a generation stays the operator's decision. What is NOT open is that a widening is SEEN and NAMED. Absence: no --reach-prev = NOT-KNOWN (never 'no widening'); no --proxy/--ops-policy-dir = the current half is NOT-KNOWN; a named proxy that cannot be run is a TOOL ERROR, never 'no host tools'. This seat never verifies the tables' shas: that is the proxy's startup pin check and fx-report's pin-drift finding" },
+ { 7, "winner", "greatest share among ELIGIBLE candidates",
    "A TIE GOES TO THE INCUMBENT: a tie NEVER causes a revert. This replaces tie -> highest version, whose only remaining effect under step 1 was to prefer the half-published intermediate over the generations it duplicates; the tie rule is gated by its own mutant" },
- { 7, "decision", "keep <CURRENT> | revert-to <winner> | withhold <state> | no-eligible-candidate",
+ { 8, "decision", "keep <CURRENT> | revert-to <winner> | withhold <state> | no-eligible-candidate",
    "ONE predicate decides both the printed value and what --apply does, so the plain run and the trigger agree BY CONSTRUCTION. WITHHOLD (exit 3) is the state the seat has a verdict for but will NOT act on, printed as itself and never as revert-to: the incumbent's share could not be measured (current-unmeasured); its verdict is unknown - mid-boot in-progress, a torn tail, or a damaged line naming it (current-verdict-unknown:<state>); or it has never been judged at all (current-not-judged). The last one is MEASURED, not a matter of taste: a soft rollback republishes the chosen content under a NEW version, so the next run's incumbent has silence for a record, and treating that silence as not-viable made the seat revert back to the generation --apply had just left. A CANDIDATE's silence is still rule 2's not-viable - the withholding states are about the incumbent, which is the side the trigger acts against. NO eligible candidate -> a NAMED refusal and exit 1: never a silent pick, never keep-by-default" },
- { 8, "apply", "--apply -> fxstore rollback <winner> --store <store> (SOFT: no --hard)",
+ { 9, "apply", "--apply -> fxstore rollback <winner> --store <store> (SOFT: no --hard)",
    "SOFT because the content returns and the VERSION NUMBER GOES UP - the substrate's own roll-forward semantics, keeping the timeline append-only and the boot history honest; --hard is recovery-only (repoints CURRENT with no new version and renumbers away the versions in between). Acts on revert-to ONLY, and mutates nothing for keep (refused, exit 0: a no-op is not an action), withhold (exit 3) or no-eligible-candidate (exit 1)" },
 };
 
@@ -963,6 +1067,308 @@ static void compute_bound(void) {
     }
 }
 
+/* ── S4: the reach term's readers and the delta ────────────────────────── */
+
+/* Read a whole file (NUL-terminated).  ABSENT and UNREADABLE are different
+ * states and a read error is never an absence — this seat's discipline
+ * everywhere (the bootlog reader included). */
+static char *reach_slurp(const char *path, int *present) {
+    *present = 0;
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        if (errno == ENOENT) return NULL;
+        die("cannot open %s: %s (a read error is not an absence)", path, strerror(errno));
+    }
+    *present = 1;
+    size_t cap = 4096, len = 0;
+    char *b = xmalloc(cap);
+    size_t got;
+    while ((got = fread(b + len, 1, cap - len - 1, f)) > 0) {
+        len += got;
+        if (len + 1 >= cap) { cap *= 2; b = realloc(b, cap); if (!b) die("out of memory"); }
+    }
+    if (ferror(f)) die("read error on %s: %s", path, strerror(errno));
+    fclose(f);
+    b[len] = 0;
+    return b;
+}
+
+/* THE CURRENT HALF, part 1: the proxy's compiled-in registry, PRINTED BY THE
+ * PROXY (`--print-host-tools`) — one name per line, the same closed list its
+ * startup collision check and its dispatch lookup read.  A named proxy that
+ * cannot be run is a TOOL ERROR (the oracle's rule: a seat that read a
+ * missing probe as "no host tools" would report the NARROWEST possible reach,
+ * the one direction a widening detector must never fail in). */
+static void reach_read_proxy(void) {
+    if (!g_proxy) return;
+    check_safe_path(g_proxy, "--proxy");
+    char cmd[PATH_MAX_ * 2];
+    snprintf(cmd, sizeof cmd, "'%s' --print-host-tools 2>/dev/null", g_proxy);
+    int rc = -1;
+    char *out = run_capture(cmd, &rc);
+    if (!out || rc != 0) {
+        free(out);
+        die("the host proxy '%s' did not answer --print-host-tools (exit %d): the DECLARED "
+            "reach of the running host cannot be read, and reading that as 'no host tools' "
+            "would report the narrowest possible reach — a TOOL ERROR, never an empty "
+            "registry", g_proxy, rc);
+    }
+    char *save = NULL;
+    for (char *line = strtok_r(out, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
+        while (*line == ' ' || *line == '\t') line++;
+        size_t ll = strlen(line);
+        while (ll && (line[ll - 1] == '\r' || line[ll - 1] == ' ')) line[--ll] = 0;
+        if (!ll) continue;
+        if (g_nrtools >= MAX_REACH_TOOLS) die("the proxy printed more than %u host tools", (unsigned)MAX_REACH_TOOLS);
+        snprintf(g_rtools[g_nrtools++].name, sizeof g_rtools[0].name, "%s", line);
+    }
+    free(out);
+    g_rtools_known = 1;
+}
+
+/* THE CURRENT HALF, part 2: the operator's pinned class tables, each row a
+ * GRANT.  Parsed exactly as fx-report parses them (its readers are the
+ * report's own; the pin-time validator, eval_ops.py, owns the grammar), and a
+ * row this seat cannot read is LOUD — a skipped row is a grant that vanishes
+ * from the delta. */
+static void reach_read_tables(void) {
+    static const struct { const char *file, *dim; int aliases; } T[] = {
+        { "ops-aliases.tsv", "path", 1 },
+        { "ops-hosts.tsv",   "authority", 0 },
+    };
+    if (!g_opsdir) return;
+    for (size_t t = 0; t < sizeof T / sizeof *T; t++) {
+        char path[PATH_MAX_];
+        snprintf(path, sizeof path, "%s/%s", g_opsdir, T[t].file);
+        int present = 0;
+        char *b = reach_slurp(path, &present);
+        if (!b) continue;
+        g_grants_known = 1;
+        char *save = NULL;
+        unsigned ln = 0;
+        for (char *line = strtok_r(b, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
+            ln++;
+            size_t ll = strlen(line);
+            if (ll && line[ll - 1] == '\r') line[--ll] = 0;
+            if (!ll || line[0] == '#') continue;
+            char *f[4] = {0};
+            int nf = 0;
+            char *lsave = NULL;
+            for (char *tok = strtok_r(line, "\t", &lsave); tok && nf < 4;
+                 tok = strtok_r(NULL, "\t", &lsave))
+                f[nf++] = tok;
+            const char *pattern, *cls, *prot;
+            if (T[t].aliases) {
+                if (nf != 4)
+                    die("%s:%u: a path-class row is alias<TAB>pathclass<TAB>protected<TAB>pattern "
+                        "(eval_ops.py --check-aliases validates it; this seat will not skip a "
+                        "row it cannot read): \"%s\"", path, ln, line);
+                pattern = f[3]; cls = f[1]; prot = f[2];
+            } else {
+                if (nf != 3)
+                    die("%s:%u: a host row is pattern<TAB>argclass<TAB>protected "
+                        "(eval_ops.py --check-hosts validates it; this seat will not skip a row "
+                        "it cannot read): \"%s\"", path, ln, line);
+                pattern = f[0]; cls = f[1]; prot = f[2];
+            }
+            if (strlen(pattern) >= sizeof g_rgrants[0].pattern)
+                die("%s:%u: the pattern exceeds this seat's %zu-byte cap — raise it rather "
+                    "than truncate a grant", path, ln, sizeof g_rgrants[0].pattern);
+            if (g_ngrants >= MAX_REACH_GRANTS) die("%s: more than %u class rows", path, (unsigned)MAX_REACH_GRANTS);
+            reachgrant_t *G = &g_rgrants[g_ngrants++];
+            snprintf(G->dim, sizeof G->dim, "%s", T[t].dim);
+            snprintf(G->pattern, sizeof G->pattern, "%s", pattern);
+            snprintf(G->cls, sizeof G->cls, "%s", cls);
+            G->prot = !strcmp(prot, "yes");
+        }
+        free(b);
+    }
+}
+
+/* THE PREVIOUS HALF: a file in the SHARED observation grammar.  Lines this
+ * seat does not own are IGNORED on purpose — the file may be a full audit
+ * run, and the delta reads exactly its two tags.  A file given and NOT THERE
+ * is NOT-KNOWN (the previous observation was not supplied), never an empty
+ * one: an empty previous reading would make every current row a widening. */
+static void reach_read_prev(void) {
+    if (!g_reach_prev) return;
+    int present = 0;
+    char *b = reach_slurp(g_reach_prev, &present);
+    if (!b) return;
+    char *save = NULL;
+    for (char *line = strtok_r(b, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
+        if (!strncmp(line, "reach-tool\t", 11)) {
+            const char *n = line + 11;
+            size_t ll = strcspn(n, "\t\r");
+            if (!ll || ll >= sizeof g_ptools[0].name) continue;
+            if (g_nptools >= MAX_REACH_TOOLS) die("%s: more than %u previous host tools", g_reach_prev, (unsigned)MAX_REACH_TOOLS);
+            memcpy(g_ptools[g_nptools].name, n, ll);
+            g_ptools[g_nptools].name[ll] = 0;
+            g_nptools++;
+            g_prev_known = 1;
+        } else if (!strncmp(line, "reach-grant\t", 12)) {
+            char *c = line + 12;
+            char *f[4] = {0};
+            int nf = 0;
+            char *lsave = NULL;
+            for (char *tok = strtok_r(c, "\t", &lsave); tok && nf < 4; tok = strtok_r(NULL, "\t", &lsave))
+                f[nf++] = tok;
+            if (nf < 4) die("%s: a reach-grant row is reach-grant<TAB>dimension<TAB>pattern<TAB>"
+                            "class<TAB>protected: \"%s\"", g_reach_prev, line);
+            if (strlen(f[1]) >= sizeof g_pgrants[0].pattern)
+                die("%s: a previous pattern exceeds the %zu-byte cap", g_reach_prev, sizeof g_pgrants[0].pattern);
+            if (g_npgrants >= MAX_REACH_GRANTS) die("%s: more than %u previous class rows", g_reach_prev, (unsigned)MAX_REACH_GRANTS);
+            reachgrant_t *G = &g_pgrants[g_npgrants++];
+            snprintf(G->dim, sizeof G->dim, "%.*s", (int)sizeof G->dim - 1, f[0]);
+            snprintf(G->pattern, sizeof G->pattern, "%s", f[1]);
+            snprintf(G->cls, sizeof G->cls, "%.*s", (int)sizeof G->cls - 1, f[2]);
+            G->prot = !strcmp(f[3], "yes");
+            g_prev_known = 1;
+        }
+    }
+    free(b);
+}
+
+/* Emit the two observations (so the record carries WHAT was compared, not
+ * only the verdict on it), then the delta. */
+static void emit_reach(void) {
+    /* the CURRENT observation, in the SHARED grammar — this is the form
+     * --reach-prev consumes, so one run's output is the next run's baseline */
+    for (unsigned i = 0; i < g_nrtools; i++)
+        printf("reach-tool\t%s\n", g_rtools[i].name);
+    for (unsigned i = 0; i < g_ngrants; i++)
+        printf("reach-grant\t%s\t%s\t%s\t%s\n", g_rgrants[i].dim, g_rgrants[i].pattern,
+               g_rgrants[i].cls, g_rgrants[i].prot ? "yes" : "no");
+    if (!g_proxy)
+        printf("reach-absence\tregistry\tnot-given-no---proxy-so-the-host-tool-HALF-of-the-"
+               "current-reach-observation-is-NOT-KNOWN (NOT 'the host runs nothing')\tABSENT\n");
+    if (!g_opsdir)
+        printf("reach-absence\tclass-tables\tnot-given-no---ops-policy-dir-so-the-grant-HALF-"
+               "of-the-current-reach-observation-is-NOT-KNOWN (NOT 'nothing is granted')\tABSENT\n");
+
+    if (!g_proxy && !g_opsdir) {
+        printf("reach-delta\t-\t-\tNOT-KNOWN\tABSENT\tneither half of the CURRENT observation was "
+               "given: this seat cannot say what the host can reach now, so it says nothing "
+               "about whether that changed\n");
+        return;
+    }
+    if (!g_reach_prev) {
+        printf("reach-delta\t-\t-\tNOT-KNOWN\tABSENT\tno---reach-prev-was-given-so-there-is-no-"
+               "PREVIOUS-observation-to-compare-against: 'no widening' is NOT derivable from "
+               "one reading, and this seat will not print it\n");
+        return;
+    }
+    if (!g_prev_known) {
+        printf("reach-delta\t-\t-\tNOT-KNOWN\tABSENT\t%s was given and holds NO reach-tool/"
+               "reach-grant line: an unreadable-or-empty previous observation is NOT a baseline "
+               "that says every current row is new (which would make every row a widening)\n",
+               g_reach_prev);
+        return;
+    }
+
+    unsigned n_widen = 0, n_narrow = 0, n_change = 0;
+    /* tools: the registry's closed list */
+    for (unsigned i = 0; i < g_nrtools; i++) {
+        int seen = 0;
+        for (unsigned j = 0; j < g_nptools; j++)
+            if (!strcmp(g_rtools[i].name, g_ptools[j].name)) { seen = 1; break; }
+        if (seen) continue;
+        printf("reach-delta\ttool\t%s\tWIDENED\tDERIVED\tthe host-executed registry holds a tool "
+               "the previous observation did not: a NEW HOST-EXECUTABLE CAPABILITY (the closed "
+               "list the proxy's dispatch lookup reads is wider, so the agent can reach "
+               "somewhere it could not)\n", g_rtools[i].name);
+        n_widen++;
+    }
+    for (unsigned j = 0; j < g_nptools; j++) {
+        int seen = 0;
+        for (unsigned i = 0; i < g_nrtools; i++)
+            if (!strcmp(g_rtools[i].name, g_ptools[j].name)) { seen = 1; break; }
+        if (!seen) {
+            printf("reach-delta\ttool\t%s\tNARROWED\tDERIVED\tthe previous observation held this "
+                   "host tool and the registry does not (a capability WITHDRAWN — the mirror "
+                   "direction, named so a reader can tell a narrowing from a widening)\n",
+                   g_ptools[j].name);
+            n_narrow++;
+        }
+    }
+    /* grants: the pinned class rows */
+    for (unsigned i = 0; i < g_ngrants; i++) {
+        reachgrant_t *C = &g_rgrants[i];
+        reachgrant_t *P = NULL;
+        for (unsigned j = 0; j < g_npgrants; j++)
+            if (!strcmp(g_pgrants[j].dim, C->dim) && !strcmp(g_pgrants[j].pattern, C->pattern)) {
+                P = &g_pgrants[j];
+                break;
+            }
+        if (!P) {
+            printf("reach-delta\tgrant\t%s:%s\tWIDENED\tDERIVED\tthe pinned class table holds a "
+                   "row the previous observation did not: a NEW GRANT (class %s, protected=%s) "
+                   "— the operator declared reach that did not exist before%s\n",
+                   C->dim, C->pattern, C->cls, C->prot ? "yes" : "no",
+                   C->prot ? " (it is PROTECTED, so its own consequence is a denial — but the "
+                             "ROW still exists where none did, and a row this seat cannot see "
+                             "is not a row the operator can revoke)" : "");
+            n_widen++;
+            continue;
+        }
+        if (P->prot && !C->prot) {
+            printf("reach-delta\tgrant\t%s:%s\tWIDENED\tDERIVED\tthe row's protected flag "
+                   "flipped yes->no (class %s): what a policy DENIED, it now permits — the "
+                   "same row, a wider reach\n", C->dim, C->pattern, C->cls);
+            n_widen++;
+        } else if (!P->prot && C->prot) {
+            printf("reach-delta\tgrant\t%s:%s\tNARROWED\tDERIVED\tthe row's protected flag "
+                   "flipped no->yes (class %s): what a policy permitted, it now denies\n",
+                   C->dim, C->pattern, C->cls);
+            n_narrow++;
+        } else if (strcmp(P->cls, C->cls) != 0) {
+            printf("reach-delta\tgrant\t%s:%s\tCHANGED\tDERIVED\tthe row is bound to class %s "
+                   "where it was %s — NEITHER direction is stated: the two classes' own "
+                   "protection decides what this means, and this seat will not guess it into "
+                   "a widening\n", C->dim, C->pattern, C->cls, P->cls);
+            n_change++;
+        }
+    }
+    for (unsigned j = 0; j < g_npgrants; j++) {
+        reachgrant_t *P = &g_pgrants[j];
+        int seen = 0;
+        for (unsigned i = 0; i < g_ngrants; i++)
+            if (!strcmp(g_rgrants[i].dim, P->dim) && !strcmp(g_rgrants[i].pattern, P->pattern)) {
+                seen = 1;
+                break;
+            }
+        if (seen) continue;
+        printf("reach-delta\tgrant\t%s:%s\tNARROWED\tDERIVED\tthe previous observation held this "
+               "pinned class row and the table does not (class %s, protected=%s): a grant "
+               "WITHDRAWN\n", P->dim, P->pattern, P->cls, P->prot ? "yes" : "no");
+        n_narrow++;
+    }
+
+    if (!n_widen && !n_narrow && !n_change)
+        printf("reach-delta\t-\t-\tNONE\tDERIVED\tthe two observations carry the SAME host tools "
+               "and the SAME pinned class rows (pattern, class and protected flag): no widening "
+               "and no narrowing WITHIN THESE TWO OBSERVATIONS — a measurement about the two "
+               "records, never a claim about the whole fleet\n");
+    if (n_widen)
+        printf("egress-reach-widened\t%u\tDERIVED\tEGRESS REACH WIDENED: %u named widening(s) "
+               "above (host tool(s) and/or pinned class row(s) that did not exist, or a "
+               "protection removed).  THE CONSEQUENCE IS DELIBERATELY OPEN (order step 6): this "
+               "row does NOT change eligibility, does NOT change the winner and does NOT change "
+               "this seat's exit code — v1 makes a widening LOUD and does not bake policy; "
+               "whether it should DISQUALIFY a generation is the operator's decision, and it "
+               "stays reversible\n", n_widen, n_widen);
+    h("REACH (§7.1a's residual, order step 6): %u host tool(s) and %u pinned class row(s) in "
+      "the current observation; the delta against %s names %u WIDENING(s), %u narrowing(s), "
+      "%u changed row(s).", g_nrtools, g_ngrants,
+      g_reach_prev ? g_reach_prev : "(no previous observation)", n_widen, n_narrow, n_change);
+    if (n_widen)
+        h("  a widening is NAMED and it does NOT decide anything: the disqualification "
+          "consequence is left OPEN on purpose (the plan's reversible choice) — what is not "
+          "open is that the widening is invisible to a seat that judges generations.");
+    if (!g_prev_known)
+        h("  no previous observation: the delta is NOT-KNOWN — never 'no widening'.");
+}
+
 /* ── the sweep, the frozen records, the order ENFORCED ─────────────────── */
 
 static void usage(FILE *f) {
@@ -970,6 +1376,7 @@ static void usage(FILE *f) {
         "fx-select — THE SELECTION STEP (host-side; READ-ONLY unless --apply)\n"
         "usage: fx-select --store DIR [--rootfs DIR] [--fxstore BIN] [--oracle BIN]\n"
         "                  [--package-set PATH] [--apply]\n"
+        "                  [--proxy BIN] [--ops-policy-dir DIR] [--reach-prev FILE]\n"
         "  --store DIR      the store to select over (REQUIRED; a seat that guesses\n"
         "                   which store it is deciding about is guessing the decision)\n"
         "  --rootfs DIR     a host view of the LIVE rootfs, judged against CURRENT\n"
@@ -981,6 +1388,17 @@ static void usage(FILE *f) {
         "                   TOOL ERROR (exit 2), never a 0%%\n"
         "  --package-set P  passed through to the oracle when its store artifacts\n"
         "                   cannot attribute a component's source\n"
+        "  --proxy BIN      the host proxy whose COMPILED-IN host-tool registry is\n"
+        "                   the 'declared reach' half (read via its own\n"
+        "                   --print-host-tools; a proxy that cannot be run is a TOOL\n"
+        "                   ERROR, never 'no host tools')\n"
+        "  --ops-policy-dir DIR  the operator's PINNED class tables (ops-aliases.tsv,\n"
+        "                   ops-hosts.tsv): the 'declared grants' half\n"
+        "  --reach-prev FILE  the PREVIOUS reach observation (the shared reach-tool/\n"
+        "                   reach-grant grammar this seat prints and the audit records\n"
+        "                   per boot).  Without it the DELTA IS NOT-KNOWN — never\n"
+        "                   'no widening'.  A named delta does NOT change the decision:\n"
+        "                   whether widening DISQUALIFIES stays OPEN (step 6)\n"
         "  --apply          THE THIN TRIGGER: on `revert-to <v>` ONLY, drive the\n"
         "                   EXISTING `fxstore rollback <v>` (SOFT — content returns\n"
         "                   and the VERSION NUMBER GOES UP; --hard is recovery-only\n"
@@ -1151,6 +1569,12 @@ int main(int argc, char **argv) {
         else if (!strncmp(argv[i], "--oracle=", 9)) g_oracle = argv[i] + 9;
         else if (!strcmp(argv[i], "--package-set") && i + 1 < argc) g_pkgset = argv[++i];
         else if (!strncmp(argv[i], "--package-set=", 14)) g_pkgset = argv[i] + 14;
+        else if (!strcmp(argv[i], "--proxy") && i + 1 < argc) g_proxy = argv[++i];
+        else if (!strncmp(argv[i], "--proxy=", 8)) g_proxy = argv[i] + 8;
+        else if (!strcmp(argv[i], "--ops-policy-dir") && i + 1 < argc) g_opsdir = argv[++i];
+        else if (!strncmp(argv[i], "--ops-policy-dir=", 17)) g_opsdir = argv[i] + 17;
+        else if (!strcmp(argv[i], "--reach-prev") && i + 1 < argc) g_reach_prev = argv[++i];
+        else if (!strncmp(argv[i], "--reach-prev=", 13)) g_reach_prev = argv[i] + 13;
         else if (!strcmp(argv[i], "--apply")) g_apply = 1;
         else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) { usage(stdout); return EX_DECISION; }
         else { fprintf(stderr, "fx-select: unknown arg '%s'\n", argv[i]); usage(stderr); return EX_TOOL_ERROR; }
@@ -1299,6 +1723,18 @@ int main(int argc, char **argv) {
                n_excluded, n_excluded, g_ncand);
     if (g_coh.state == COH_DRIFT)
         printf("drift\t%u\t%u\t%s\tMEASURED\n", g_current, g_coh.n_drift, g_coh.reason);
+
+    /* ── S4: THE REACH TERM (order step 6) — the declared reach of the host
+     * NOW against the PREVIOUS observation, with every difference NAMED.
+     * It runs BEFORE the decision and it does NOT touch it: the widening
+     * consequence is deliberately OPEN (see the step's rule text and the
+     * block comment on the state it reads), so `best`, the eligibility
+     * flags and the exit code are exactly what they would be without it. ── */
+    h("");
+    reach_read_proxy();
+    reach_read_tables();
+    reach_read_prev();
+    emit_reach();
 
     /* ── the decision (ONE predicate; --apply below reads the same value) ── */
     h("");

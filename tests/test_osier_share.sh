@@ -338,6 +338,35 @@ grep -qx "service shsvc /bin/sh NONSTORE-UNATTRIBUTED" "$WORK/out.E" \
 grep -q '^osier_extensions \.elm$' "$WORK/out.E" \
     || fail "the oracle does not print its frozen extension set"
 
+# ── S4: THE BLINDNESS IS STATED, AND IT DOES NOT ENTER THE NUMBER ───────
+# §7.1a's residual: "every oracle in the family must be able to SEE capability
+# changes ... otherwise the agent satisfies the oracle while quietly widening
+# what it can reach."  THIS seat cannot, and it says so on every run instead of
+# leaving the reader to discover it.  TWO assertions, and the second is the one
+# that matters: the statement is a STATEMENT — no factor, no penalty, no
+# second term — so the share printed on the same run is exactly the share the
+# arms above already pinned (E: 0/0 -> 0.000000).
+grep -q '^capability_blindness egress-reach CANNOT-SEE-IT' "$WORK/out.E" \
+    || fail "S4: the oracle does not state that it cannot see a capability change"
+grep -q 'a share of SOURCE BYTES' "$WORK/out.E" \
+    || fail "S4: the blindness is not given its REASON (the metric is a share of source bytes)"
+grep -q 'moves this fraction by EXACTLY ZERO' "$WORK/out.E" \
+    || fail "S4: the statement does not say a widening is exactly invisible to this number"
+grep -q 'NOTHING IS PATCHED IN TO COMPENSATE' "$WORK/out.E" \
+    || fail "S4: the statement does not refuse a compensating factor (a second metric under this one's name)"
+grep -q 'fx-select.s reach-delta' "$WORK/out.E" \
+    || fail "S4: the statement does not name where the sight DOES live (the family's division of labour)"
+grep -q 'run_set_share_fraction 0.000000' "$WORK/out.E" \
+    || fail "S4: the baseline share moved — the blindness statement must not enter the metric"
+# the control, in THIS file's idiom (the stale-binary marker greps): the
+# statement has no behavioural branch to mutate — it is a constant row — so the
+# load-bearing property is that the binary answering for the seat was built
+# from THIS source and carries the row, which is exactly what a mutant would
+# otherwise be needed to prove.
+grep -aq 'capability_blindness egress-reach' "$OSIER" \
+    || fail "S4: $OSIER does not contain this source's blindness statement — the artifact answering for the seat was not built from tools/fx-osier-share.c"
+echo "test_osier_share: S4 the blindness is STATED (§7.1a), it names where the sight lives, and it does not enter the share"
+
 # ── v_A: the Osier component RUNS (pass-after arm of assertion 1) ───────
 V_A=$(activate "$WORK/A.dhall"); [ -n "$V_A" ] || fail "no version from A activation"
 # materialize ONE clean-source artifact (origin "store"); c-svc stays on the
@@ -836,6 +865,7 @@ echo "test_osier_share: corrupted artifact: fixed REFUSES; $PRE_ORACLE_REV talli
 fi
 
 echo "test_osier_share: PASS — the oracle discriminates (moves on Osier-run," \
+     "STATES its §7.1a capability blindness without letting it enter the number," \
      "invariant on dead code, non-raising on non-Osier-run, attributes install" \
      "targets run absolutely, refuses srcstore ambiguity and unverified/corrupted" \
      "artifacts, and counts the ACTIVE closure, not store history)"

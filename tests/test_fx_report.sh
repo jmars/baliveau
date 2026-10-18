@@ -215,6 +215,30 @@
 #              into the seat's own vocabulary) and MUT-CALL-SCOPE (allow_scope
 #              RE-DERIVED instead of carried) each blind exactly the arm that
 #              refuses their error.
+#   S4-EXEC     WHICH SIDE RAN THE CALL, both ways: a REAL host_time call
+#              through the real proxy makes the log row carry exec:"host" and
+#              the report distinguishes it MEASURED, while a guest call on
+#              the same class reads guest DERIVED from the writer's stated
+#              grammar (§7.1a: an egress grant is a capability increase, so a
+#              report that cannot tell the two apart is blind to it).
+#              MUT-EXEC ignores the carried field and the host call reads
+#              guest — the blindness, caught.
+#   S4-REACH    the WEAKENED declared-vs-observed audit, its own rows: (a)
+#              every pinned artifact MATCHes its PINS and the class rows no
+#              observed call exercised are STALE GRANTS (each its own
+#              stale-class-row FINDING, stating the weakening in the row
+#              itself); (b) the exercised direction reads YES for a consumed
+#              row through the MIRRORED canonicalizer while the untouched row
+#              still reads STALE — both directions on ONE fixture, the
+#              observed side a DECLARED COPY of the real log (stated in
+#              block); (c) BOTH directions of absence (no log, no policy dir,
+#              a dir with no PINS or tables, no --class-arg) are NOT-KNOWN
+#              and NEVER stale, each with its own absence record; (d)
+#              pin-drift is its own FINDING carrying BOTH pins and does not
+#              smear onto the untouched tables.  MUT-REACH disables the
+#              stale-grant row and MUT-PINDRIFT joins on the DRIFTED PIN (the
+#              mandated blind: the reach-pin row still READS drift and no
+#              finding follows — the quiet widening).
 #   PINS        nothing depends on the position of HEAD: the citations in
 #              the tool's frozen retention table are pinned to FIXED
 #              revisions (fx-init ca9cb06, fxstore 0341650 — the trees the
@@ -651,7 +675,11 @@ grep -q "NO growth policy exists" "$WORK/out-s1" \
 # drops that row on BOTH sides (its text was amended in S2), so the row's
 # complete loss or an id change would otherwise pass the pin silently.
 NBOUNDROWS=$(grep -c "^bound${TAB}" "$WORK/out-s1")
-[ "$NBOUNDROWS" = "14" ] || fail "POLICY: expected the seat's 14 bound rows on every run, got $NBOUNDROWS (a row was silently dropped; 14 = the 8 pre-S2 rows + S2's 4 claim bounds + P9's 2 call bounds)"
+[ "$NBOUNDROWS" = "16" ] || fail "POLICY: expected the seat's 16 bound rows on every run, got $NBOUNDROWS (a row was silently dropped; 16 = the 8 pre-S2 rows + S2's 4 claim bounds + P9's 2 call bounds + S4's 2 reach bounds)"
+grep -q "^bound${TAB}reach-audit-is-the-weakened-one${TAB}.*JUDGED ARGUMENTS rather than typed" "$WORK/out-s1" \
+    || fail "POLICY: the S4 bound that says the reach audit is the WEAKENED one must print on every run (a report that reads stronger than it is, is the failure this project keeps finding)"
+grep -q "^bound${TAB}reach-attribution-mirrors-the-seat${TAB}" "$WORK/out-s1" \
+    || fail "POLICY: the S4 bound naming the MIRRORED matcher (the attribution risk) must print on every run"
 grep -q "^bound${TAB}same-store-only${TAB}.*the ONE in-domain exception" "$WORK/out-s1" \
     || fail "POLICY: the amended same-store-only row must print on every run — the pin drops it on BOTH sides, so its loss or an id change is caught only here"
 grep -q "^bound${TAB}call-auditing-not-proofing${TAB}.*NO LANE STOP BY DEFAULT" "$WORK/out-s1" \
@@ -1222,6 +1250,9 @@ OPHDR
             /^taxonomy\tcall\t/ { next }
             /^taxonomy\tcall-telemetry\t/ { next }
             /^bound\tcall-/ { next }
+            /^taxonomy\tcall-exec\t/ { next }
+            /^taxonomy\treach\t/ { next }
+            /^bound\treach-/ { next }
             /^bound\tsame-store-only\t/ { next }
             { print }
         ' "$1" > "$2"
@@ -1347,10 +1378,12 @@ DHALLEOF
             fail "CALL: the proxy (pid $1) did not exit within 40s — a hung proxy is a FAIL, never a hang"
         fi
     }
-    # call_run DENYNAME LOGFILE DATADIR — ONE real proxy run (--turns 2, the
-    # two-turn shape whose call the guest records), TIME-BOUNDED.
-    call_run() { # DENYNAME LOGFILE DATADIR
-        "$REPO/build/fx-hostgate" --upstream "$WORK/call-up.sse" \
+    # call_run DENYNAME LOGFILE DATADIR [FIXTURE] — ONE real proxy run
+    # (--turns 2, the two-turn shape whose call the guest records),
+    # TIME-BOUNDED.  FIXTURE defaults to the justified fixture; the S4 exec
+    # arm passes the host_time stream (a REAL host-executed call).
+    call_run() { # DENYNAME LOGFILE DATADIR [FIXTURE]
+        "$REPO/build/fx-hostgate" --upstream "${4:-$WORK/call-up.sse}" \
             --slave-file "$WORK/call-slave" --log "$2" --deny "$1" --turns 2 \
             2> "$WORK/call-proxy.err" &
         _pid=$!
@@ -1556,11 +1589,190 @@ PYEOF
         || fail "MUT-CALL-SCOPE: the mutant did not reproduce the re-derivation the arm refuses"
 fi
 
+    # ══ S4: THE EXEC DIMENSION — who RAN the call ═════════════════════════
+    # §7.1a: an egress grant is a CAPABILITY INCREASE, so a report that cannot
+    # tell a host-executed call from a guest one is blind to exactly that.
+    # The arm drives a REAL host_time call (the proxy's own S1 host tool, no
+    # arguments) through the same harness: the host executes, the guest sees
+    # the call and its sentinel, and the log row carries `exec`:"host".
+    cp "$REPO/tests/fixtures/responses_host_time.sse" "$WORK/call-host.sse" \
+        || fail "EXEC: cannot copy the host_time fixture"
+    call_run fx_write "$WORK/call-log-host.jsonl" "$WORK/call-data-host" "$WORK/call-host.sse"
+    TR_HOST="$(ls "$WORK"/call-data-host/sessions/*/messages.jsonl 2>/dev/null)"
+    [ -f "$TR_HOST" ] || fail "EXEC: no guest transcript for the host-executed run"
+    grep -q '"exec":"host"' "$WORK/call-log-host.jsonl" \
+        || fail "EXEC: the proxy did not write the exec field — this is not the host-executed shape"
+    FXSTORE_BIN="$FXSTORE" "$REPORT" --store "$WORK/s1" \
+        --proxy-log "$WORK/call-log-host.jsonl" --transcript "$TR_HOST" \
+        > "$WORK/out-call-host" 2>"$WORK/out-call-host.err"
+    [ $? -eq 0 ] || fail "EXEC: the host-executed run must report cleanly, got $? ($(head -3 "$WORK/out-call-host.err"))"
+    grep -q "^call-exec${TAB}$CALLID${TAB}exec${TAB}host${TAB}MEASURED" "$WORK/out-call-host" \
+        || fail "EXEC: a HOST-executed call is not distinguishable in the report"
+    grep -q "^call-exec${TAB}$CALLID${TAB}exec${TAB}guest${TAB}DERIVED" "$WORK/out-call-deny" \
+        || fail "EXEC: a GUEST-executed call is not identified as such (the dimension must read both ways)"
+    grep -q "^call-exec${TAB}$CALLID${TAB}exec${TAB}host" "$WORK/out-call-deny" \
+        && fail "EXEC: a guest call was reported as host-executed — the shape is being inferred, not read"
+    echo "test_fx_report: S4-EXEC the executed side is in the report, both ways (host MEASURED from the row's own field, guest DERIVED from the writer's grammar)"
+
+    # ══ S4: THE REACH CLASS — the WEAKENED declared-vs-observed audit ═════
+    # DECLARED = the operator's PINNED class tables + PINS; OBSERVED = the one
+    # log's rows.  The two findings are its own rows with their own meanings:
+    # stale-class-row (a STALE GRANT) and pin-drift (the table judged against
+    # is not the table pinned).  NOT the type-enforced audit — the rows, the
+    # bound and the taxonomy say so, and this gate reads that statement back.
+    RPOL="$WORK/reach-pol"
+    cp -r "$REPO/policy/ops" "$RPOL" || fail "REACH: cannot copy the pinned tables"
+    report_reach() { # report_reach OUT POLICYDIR [args...] -> rc on stdout
+        _o="$1"; _p="$2"; shift 2
+        FXSTORE_BIN="$FXSTORE" "$REPORT" --store "$WORK/s1" --policy-dir "$_p" "$@" \
+            > "$_o" 2>"$_o.err"
+        echo $?
+    }
+
+    # (a) DECLARED == PINNED: every artifact MATCHes its pin, so there is NO
+    # pin-drift; the log's calls consume no class row (get_weather is not a
+    # tool the tables judge and host_time declares no classed argument), so
+    # every row is a STALE GRANT and each one is its own FINDING.
+    rc=$(report_reach "$WORK/out-reach-a" "$RPOL" \
+            --proxy-log "$WORK/call-log-host.jsonl" \
+            --class-arg path:host_cat=path --class-arg authority:http_get=url)
+    [ "$rc" = "1" ] || fail "REACH(a): stale grants are FINDINGS — expected exit 1, got $rc"
+    for _f in ops-policy.dl ops-aliases.tsv ops-hosts.tsv ops-lexicon.ini; do
+        grep -q "^reach-pin${TAB}$_f${TAB}sha${TAB}[0-9a-f]*${TAB}pinned${TAB}[0-9a-f]*${TAB}MATCH${TAB}MEASURED" "$WORK/out-reach-a" \
+            || fail "REACH(a): $_f is not reported as matching its PIN"
+    done
+    grep -q "^pin-drift${TAB}" "$WORK/out-reach-a" \
+        && fail "REACH(a): a pin-drift was FABRICATED on tables that hash to their PINS"
+    grep -q "^stale-class-row${TAB}ops-aliases.tsv${TAB}line${TAB}[0-9]*${TAB}dimension${TAB}path" "$WORK/out-reach-a" \
+        || fail "REACH(a): a pinned path class no observed call exercised is not a stale-class-row FINDING"
+    grep -q "^reach-row${TAB}ops-hosts.tsv${TAB}line${TAB}[0-9]*${TAB}dimension${TAB}authority${TAB}pattern${TAB}example.com${TAB}class${TAB}Blockedhost${TAB}protected${TAB}yes${TAB}exercised${TAB}NO${TAB}DERIVED" "$WORK/out-reach-a" \
+        || fail "REACH(a): the authority row's exercised direction is not surfaced per row"
+    grep -q 'a STALE GRANT' "$WORK/out-reach-a" || fail "REACH(a): the finding does not state what it means"
+    grep -q 'WEAKENED AUDIT, stated' "$WORK/out-reach-a" \
+        || fail "REACH(a): the finding does not state that this is the WEAKENED audit (not the type-enforced one)"
+    grep -q "^bound${TAB}reach-audit-is-the-weakened-one" "$WORK/out-reach-a" \
+        || fail "REACH(a): the bound that names the weakening is not printed"
+    echo "test_fx_report: S4-REACH(a) every pinned artifact MATCHes, the class rows no call exercised are STALE GRANTS, and each row states the weakening"
+
+    # (b) THE EXERCISED DIRECTION (the other side of the same rows).  A real
+    # host_cat call would need the ops seat armed end-to-end (test_hostgate
+    # owns that); here the OBSERVED side is a DECLARED COPY of the real log
+    # with one row's name and args replaced by a pinned path — the writer's
+    # exact row shape, one field pair changed, and stated as such.
+    python3 - "$WORK/call-log-host.jsonl" "$WORK/call-log-exercised.jsonl" <<'PYCOPY'
+import json, sys
+src, dst = sys.argv[1], sys.argv[2]
+n = 0
+with open(src) as f, open(dst, "w") as o:
+    for line in f:
+        line = line.strip()
+        if not line:
+            continue
+        r = json.loads(line)
+        if n == 0 and "call_id" in r and "type" not in r:
+            r["true_name"] = "host_cat"
+            r["args"] = json.dumps({"path": "/fx/disk//agent-config.dhall",
+                                    "justification": "the declared-copy arm"})
+            n += 1
+        o.write(json.dumps(r) + "\n")
+sys.exit(0 if n else 1)
+PYCOPY
+    [ $? -eq 0 ] || fail "REACH(b) SETUP: the log copy carries no call row to rewrite"
+    rc=$(report_reach "$WORK/out-reach-b" "$RPOL" \
+            --proxy-log "$WORK/call-log-exercised.jsonl" \
+            --class-arg path:host_cat=path --class-arg authority:http_get=url)
+    grep -q "^reach-row${TAB}ops-aliases.tsv${TAB}line${TAB}[0-9]*${TAB}dimension${TAB}path${TAB}pattern${TAB}/fx/disk/agent-config.dhall${TAB}class${TAB}Configpath${TAB}protected${TAB}yes${TAB}exercised${TAB}YES${TAB}DERIVED" "$WORK/out-reach-b" \
+        || fail "REACH(b): the exercised row does not read YES (the //-spelling must canonicalize, as the seat's own matcher does)"
+    grep -q "^stale-class-row${TAB}ops-aliases.tsv${TAB}line${TAB}[0-9]*${TAB}dimension${TAB}path${TAB}pattern${TAB}/fx/disk/agent-data" "$WORK/out-reach-b" \
+        || fail "REACH(b): the OTHER row went stale-quiet — the exercised direction is reading every row as used"
+    echo "test_fx_report: S4-REACH(b) the exercised direction reads YES for a consumed row and the untouched row still reads STALE"
+
+    # (c) THE TWO DIRECTIONS OF ABSENCE — nothing is ever read as 'none'.
+    rc=$(report_reach "$WORK/out-reach-c" "$RPOL")
+    [ "$rc" = "0" ] || fail "REACH(c): with NO observed side there is no finding to raise — got exit $rc"
+    grep -q "^reach-row${TAB}.*${TAB}exercised${TAB}NOT-KNOWN${TAB}ABSENT" "$WORK/out-reach-c" \
+        || fail "REACH(c): with no log the rows are not NOT-KNOWN"
+    grep -q "^stale-class-row" "$WORK/out-reach-c" \
+        && fail "REACH(c): a stale grant was reported with NO observed side — a missing log read as 'nothing was called'"
+    rc=$(report_reach "$WORK/out-reach-c2" "$WORK/no-such-policy" --proxy-log "$WORK/call-log-host.jsonl")
+    grep -q "^absence${TAB}reach-pins" "$WORK/out-reach-c2" \
+        || fail "REACH(c): a --policy-dir with no PINS in it does not say the pin direction is NOT-KNOWN"
+    grep -q "^absence${TAB}reach-tables" "$WORK/out-reach-c2" \
+        || fail "REACH(c): a --policy-dir with no class tables in it reads as 'no class is granted'"
+    grep -q "^reach-row${TAB}" "$WORK/out-reach-c2" \
+        && fail "REACH(c): class rows were reported with NO declared side"
+    grep -q "^pin-drift${TAB}" "$WORK/out-reach-c2" \
+        && fail "REACH(c): a pin-drift was reported with NO PINS file — an unreadable release is not a drift either"
+    rc=$(FXSTORE_BIN="$FXSTORE" "$REPORT" --store "$WORK/s1" --proxy-log "$WORK/call-log-host.jsonl" \
+            > "$WORK/out-reach-c4" 2>/dev/null; echo $?)
+    grep -q "^absence${TAB}reach-declared" "$WORK/out-reach-c4" \
+        || fail "REACH(c): no --policy-dir at all is not its own absence record (the DECLARED side is NOT-KNOWN, never 'nothing is granted')"
+    rc=$(report_reach "$WORK/out-reach-c3" "$RPOL" --proxy-log "$WORK/call-log-host.jsonl")
+    grep -q "^absence${TAB}reach-class-arg" "$WORK/out-reach-c3" \
+        || fail "REACH(c): no --class-arg is not named as an absence (an unmapped dimension is NOT 'no classed argument')"
+    grep -q "^stale-class-row" "$WORK/out-reach-c3" \
+        && fail "REACH(c): rows went STALE with no mapping declared — an unattributable dimension is NOT-KNOWN"
+    echo "test_fx_report: S4-REACH(c) BOTH absence directions are NOT-KNOWN and each is its own absence record (no log, no policy dir, no --class-arg)"
+
+    # (d) PIN-DRIFT IS ITS OWN FINDING: an edit nobody re-pinned.  Built in a
+    # COPY (the shared policy/ops is never touched).
+    cp -r "$RPOL" "$WORK/reach-pol-drift"
+    printf 'evil.example.com\tEvil\tno\n' >> "$WORK/reach-pol-drift/ops-hosts.tsv"
+    rc=$(report_reach "$WORK/out-reach-d" "$WORK/reach-pol-drift" \
+            --proxy-log "$WORK/call-log-host.jsonl" \
+            --class-arg path:host_cat=path --class-arg authority:http_get=url)
+    [ "$rc" = "1" ] || fail "REACH(d): pin-drift is a FINDING — expected exit 1, got $rc"
+    grep -q "^reach-pin${TAB}ops-hosts.tsv${TAB}sha${TAB}[0-9a-f]*${TAB}pinned${TAB}[0-9a-f]*${TAB}DRIFT" "$WORK/out-reach-d" \
+        || fail "REACH(d): the drifted artifact does not read DRIFT in its own reach-pin row"
+    grep -q "^pin-drift${TAB}ops-hosts.tsv${TAB}sha${TAB}[0-9a-f]*${TAB}pinned${TAB}[0-9a-f]*${TAB}FINDING" "$WORK/out-reach-d" \
+        || fail "REACH(d): the drifted artifact is not a pin-drift FINDING"
+    grep -q "^reach-pin${TAB}ops-aliases.tsv${TAB}sha${TAB}[0-9a-f]*${TAB}pinned${TAB}[0-9a-f]*${TAB}MATCH" "$WORK/out-reach-d" \
+        || fail "REACH(d): the UNTOUCHED artifact stopped matching — the drift is being reported for everything"
+    echo "test_fx_report: S4-REACH(d) an edit nobody re-pinned is pin-drift, with BOTH pins, and it does not smear onto the untouched tables"
+
+    # (e) THE MUTANTS — one per new property, each from the SAME source.
+    # MUT-EXEC: the carried exec field is ignored, so a host call reads guest
+    # (the §7.1a blindness: the report cannot see the grant).
+    mutbuild exec 's/H->exec = ex ? xstrdup(ex) : NULL;/H->exec = NULL; (void)ex;/'
+    FXSTORE_BIN="$FXSTORE" "$REPO/build/fx-report-exec" --store "$WORK/s1" \
+        --proxy-log "$WORK/call-log-host.jsonl" --transcript "$TR_HOST" > "$WORK/out-mutexec" 2>/dev/null
+    grep -q "^call-exec${TAB}$CALLID${TAB}exec${TAB}host" "$WORK/out-mutexec" \
+        && fail "MUT-EXEC: the host call still reads host with the exec field ignored — the arm is not load-bearing"
+    grep -q "^call-exec${TAB}$CALLID${TAB}exec${TAB}guest" "$WORK/out-mutexec" \
+        || fail "MUT-EXEC: the mutant did not reproduce the blindness the arm refuses"
+
+    # MUT-REACH: the stale-class-row emission is renamed, so a stale GRANT
+    # stops being a finding.
+    mutbuild reach 's/printf("stale-class-row\\t%s\\tline/printf("disabled-stale-class-row\\t%s\\tline/'
+    FXSTORE_BIN="$FXSTORE" "$REPO/build/fx-report-reach" --store "$WORK/s1" --policy-dir "$RPOL" \
+        --proxy-log "$WORK/call-log-host.jsonl" --class-arg path:host_cat=path \
+        --class-arg authority:http_get=url > "$WORK/out-mutreach" 2>/dev/null
+    grep -q "^stale-class-row${TAB}" "$WORK/out-mutreach" \
+        && fail "MUT-REACH: the stale-grant arm still passes with its row disabled — the finding is decoration"
+
+    # MUT-PINDRIFT (THE MANDATED BLIND): the seat joins on the DRIFTED pin —
+    # it compares the value on disk with itself instead of with PINS, so the
+    # drift VANISHES.  An instrument that cannot see a table nobody released is
+    # the quiet widening this whole slice exists to prevent.
+    mutbuild pindrift 's/} else if (strcmp(P->got, P->want) != 0) {/} else if (strcmp(P->got, P->got) != 0) {/'
+    FXSTORE_BIN="$FXSTORE" "$REPO/build/fx-report-pindrift" --store "$WORK/s1" --policy-dir "$WORK/reach-pol-drift" \
+        --proxy-log "$WORK/call-log-host.jsonl" --class-arg path:host_cat=path \
+        --class-arg authority:http_get=url > "$WORK/out-mutpindrift" 2>/dev/null
+    grep -q "^pin-drift${TAB}" "$WORK/out-mutpindrift" \
+        && fail "MUT-PINDRIFT: the join-on-the-drifted-pin build STILL reports the drift — the arm is not load-bearing"
+    # the READING survives the mutant and the JUDGEMENT does not, which is the
+    # exact failure: the reach-pin row still says DRIFT while no finding is
+    # raised from it — a reader who trusts the findings is now blind.
+    grep -q "^reach-pin${TAB}ops-hosts.tsv${TAB}sha${TAB}[0-9a-f]*${TAB}pinned${TAB}[0-9a-f]*${TAB}DRIFT" "$WORK/out-mutpindrift" \
+        || fail "MUT-PINDRIFT: the mutant lost the pin READING too — this control is meant to blind the FINDING only, so the two must be independent"
+    echo "test_fx_report: S4-MUTANTS each new property blinds its own arm: the exec field ignored (host reads guest), the stale-grant row disabled, and the pin joined on the DRIFTED value (the reach-pin row still reads DRIFT and NO finding follows — the quiet widening)"
+
 # the mutants are gate artifacts, not seats — remove them so no stale
 # binary can later answer for the seat
 rm -f "$REPO/build/fx-report-class" "$REPO/build/fx-report-attrib" "$REPO/build/fx-report-finding" \
     "$REPO/build/fx-report-ops" "$REPO/build/fx-report-refuse" \
     "$REPO/build/fx-report-claim" "$REPO/build/fx-report-enroll" "$REPO/build/fx-report-loudlong" \
-    "$REPO/build/fx-report-calljoin" "$REPO/build/fx-report-callclassify" "$REPO/build/fx-report-callscope"
+    "$REPO/build/fx-report-calljoin" "$REPO/build/fx-report-callclassify" "$REPO/build/fx-report-callscope" \
+    "$REPO/build/fx-report-exec" "$REPO/build/fx-report-reach" "$REPO/build/fx-report-pindrift"
 
 echo "test_fx_report: PASS — the reconstruction is answerable from the report alone (both inputs readable, the diff, the generation each produced), the taxonomy separates none-occurred from not-durably-recorded (a never-booted store says so; refusals cannot be counted), the operator class is MEASURED from the .operator journal where the journal exists and DERIVED only where it does not (the .recovery row, or the missing file) with the derivation RETAINED beside the journal for its own blind spots (and the mutations blind exactly their own arms), the gc retention carve-out is re-measured every run (a surviving snapshot's dir is retained, a pruned one's is reaped), the retention policy is the user's DECISION (UNBOUNDED, 2026-10-12) pinned where it prints — every row, its named cost, and the old 'NO policy exists' claim asserted ABSENT, and the output is byte-deterministic and independent of any self-report."

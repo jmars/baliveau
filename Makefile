@@ -240,7 +240,10 @@ $(BIN_AUDIT): tools/fx-audit.c src/vendor/dhall-c/sha256.c src/vendor/dhall-c/dh
 #   activate_paths + the real host-side fx-activate; nothing boots).
 BIN_SELECT := build/fx-select
 
-test-select: $(BIN_SELECT) $(BIN_OSIER)
+# S4's reach term shells the proxy's OWN --print-host-tools (the declared
+# reach of the host is read from the seat that holds it, never re-spelled),
+# so the gate needs the real proxy binary.
+test-select: $(BIN_SELECT) $(BIN_OSIER) $(BIN_HOSTGATE)
 	bash tests/test_fx_select.sh
 
 $(BIN_SELECT): tools/fx-select.c
@@ -812,7 +815,9 @@ BIN_REPORT := build/fx-report
 # P9: the call class reads the host proxy's one log and the guest transcript,
 # so the gate drives a REAL proxy run — the seat depends on the proxy and the
 # host-built agent (the same artifacts `make test-hostgate` builds).
-test-report: $(BIN_REPORT) $(BIN_HOSTGATE) $(BIN)
+# S4's exec arm drives a REAL host-executed call, so the gate needs the host
+# tool the proxy spawns beside itself (build/fx-host-time).
+test-report: $(BIN_REPORT) $(BIN_HOSTGATE) $(BIN_HOST_TIME) $(BIN)
 	bash tests/test_fx_report.sh
 
 $(BIN_REPORT): tools/fx-report.c src/vendor/dhall-c/sha256.c src/vendor/dhall-c/dhall.h $(YYJSON_SRC)

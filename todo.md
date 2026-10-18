@@ -1295,6 +1295,36 @@ argument matching no operator class row is REFUSED BY NAME — rather than by a 
       palisade"*): the spawn is the one place a future sandbox attaches, one comment, no speculative hook.
       *Guest code unchanged this round;* the only guest-facing edit is 3 lines of STAGING so the pinned set
       includes `ops-hosts.tsv`.
+- [x] **S4 — THE RECORD AND THE ORACLES** (**UNCOMMITTED**; `coder`). The slice that answers §7.1a's own
+      residual: *"every oracle in the family must be able to SEE capability changes … otherwise the agent
+      satisfies the oracle while quietly widening what it can reach."* Egress now ships a real
+      host-executed capability, so S4 makes it visible to the seats that judge generations.
+      **`fx-report`**: a `call-exec` row on every judged call (host rows MEASURED from the log's own
+      `exec` field — a row carries its own reading, never re-derived from today's registry), plus the
+      **WEAKENED difference audit** as its own rows: `reach-pin` per PINS artifact, **`pin-drift`** (a
+      finding carrying BOTH pins), `reach-row` per pinned class row with `exercised YES|NO|NOT-KNOWN`, and
+      **`stale-class-row`** — a stale GRANT, i.e. a revocation question. A missing log, policy dir, PINS or
+      mapping is **NOT-KNOWN, never "none", never "stale"**. Its exercised attribution *mirrors* the
+      proxy's canonicalizer rather than sharing it — and that mirroring is a PRINTED BOUND, not a
+      footnote.
+      **`fx-select`**: REACH-DELTA becomes order step 6, naming `reach-delta` rows and a loud
+      `egress-reach-widened`. **The disqualification consequence is left OPEN and PROVEN open** — the
+      decision, the table and the exit code are byte-identical with and without it, and the row says so in
+      its own bytes. That is the reversible choice the plan asked for, made visible instead of implied.
+      **`fx-audit`**: `proxy-log-record` (the host log as a KNOWN RECORD — bytes+sha, prefix re-hashed, so
+      truncated/rewritten/vanished are findings) and `egress-reach` (reach recorded beside the boot the
+      audit ran after; a released widening is *named*, an unreleased one is `reach-widened-unreleased`).
+      **`fx-osier-share`**: **STATES its §7.1a blindness** as its own output line, names where the sight
+      lives, and does **not** let it enter the share — the honest resolution the plan chose, with nothing
+      patched in.
+      **DO NOT OVERCLAIM — carried into the rows themselves:** this is the **WEAKENED** audit (pinned
+      tables + registry as "declared"), not the type-enforced one round 1 would have given.
+      *Orchestrator-verified:* all suites rc=0; the report's mutants blind their own arms (the exec field
+      ignored → host reads as guest; the stale-grant row disabled; the mandated **join on the drifted
+      pin**); `fx-select`'s S4-reach/S4-reach-mutant pass in the enforced order; and the osier arm proves
+      the blindness is stated WITHOUT entering the number.
+      **Declared scope extension:** +30 lines in `tests/test_osier_share.sh` (that tool's only gate) so the
+      blindness statement is asserted rather than merely printed.
 
 - [ ] **THE OLD DESIGN ITEMS BELOW ARE NOW LARGELY SUPERSEDED** (kept for the reasoning they carry):
       **A closed, host-owned catalog of network PRIMITIVES** (`http.get`/`http.post` + allowed hosts,
