@@ -222,6 +222,20 @@
  * in its bound (bound/reach-audit-is-the-weakened-one), and it keeps the
  * §1a gap-3 discipline on every side: a missing log, policy dir, PINS file
  * or --class-arg mapping is NOT-KNOWN, never "none" and never "stale".
+ *
+ * THE SANDBOX CLASS (S4, palisade): the same §7.1a question, one layer
+ * deeper — since S3 the sandbox wraps EVERY host spawn, so the composed spec
+ * per tool (the executor's baseline + the tool's sidecar, read from the
+ * proxy's OWN --print-sandbox) is itself a CAPABILITY DECLARATION.  The class
+ * carries the row's `sandbox` field as a COLUMN of the existing call rows,
+ * then compares the DECLARED composition against the specs the log RECORDED
+ * each host call applying, and pins the one pinned half (ops-sandbox.tsv).
+ * A widening is a finding (nothing pins the baseline or the sidecar, so no
+ * release can license one); the mirror direction is NAMED and not judged,
+ * because an operator tightening row produces exactly that shape.  It is the
+ * WEAKENED audit (two specs compared as text), stated in the taxonomy, the
+ * bounds and the rows — and a sandbox change being VISIBLE is not the same
+ * as the sandbox being STRONG.
  */
 
 #define _POSIX_C_SOURCE 200809L
@@ -429,6 +443,9 @@ typedef struct {
     char *justification;  /* the CLAIM, from the call's args */
     char *exec;           /* S4: WHICH SIDE RAN IT — the row's own `exec`
                            * field, present ONLY on a host-executed call */
+    char *sandbox;        /* S4 (palisade): the row's own `sandbox` field —
+                           * the spec the spawn APPLIED, present only on a
+                           * host-executed row and carried VERBATIM */
     int pending;
     char *outcome;        /* the OUTCOME: the replayed function_call_output */
     char *verdict;
@@ -1250,6 +1267,9 @@ static const struct { const char *cls, *record, *absence; } TAXONOMY[] = {
     { "reach",
       "MEASURED/DERIVED — the WEAKENED declared-vs-observed audit, and it is named as weakened on every run (bound/reach-audit-is-the-weakened-one): DECLARED = the operator's pinned class tables (--policy-dir: ops-aliases.tsv's path classes, ops-hosts.tsv's authority classes, each row a GRANT with its protected flag) plus PINS that freezes them; OBSERVED = the one log's own call rows, attributed by the classed argument the CALLER declares (--class-arg DIM:TOOL=KEY).  Rows: reach-pin (each pinned artifact, sha on disk vs the pinned sha), reach-row (each class row and whether an observed call exercised it), reach-class-arg (the declared mappings the attribution rested on)",
       "TWO DIRECTIONS, once per side, and no absence is ever read as 'none': no --policy-dir = the DECLARED side is NOT-KNOWN (never 'nothing is granted'); no --proxy-log, or a log that does not exist, = the OBSERVED side is NOT-KNOWN (never 'nothing was called' — and NEVER 'every row is stale'); no PINS = the pin-drift direction is NOT-KNOWN (never 'no drift'); no --class-arg for a dimension = that dimension cannot be attributed, so its rows read NOT-KNOWN (never stale).  The two FINDINGS are stale-class-row (a pinned grant no observed call consumed — a REVOCATION question) and pin-drift (the artifact on disk is not the artifact PINS froze, reported with BOTH pins)" },
+    { "sandbox",
+      "MEASURED/DERIVED — the SANDBOX the executor applied, and it is a second WEAKENED audit (bound/sandbox-audit-is-the-weakened-one).  Since S3 (palisade) EVERY host spawn is wrapped: the executor owns a BASELINE (stdio rpath exec prot_exec + loader:rx + libc:r), a tool may declare MORE via a sidecar beside its binary, and the operator's ops-sandbox.tsv row may only TIGHTEN.  DECLARED NOW = the proxy's OWN composition (--proxy BIN --print-sandbox: name<TAB>promises<TAB>static-landlock per tool); RECORDED THEN = the log's per-call `sandbox` field (the spec the spawn APPLIED, carried verbatim and also surfaced as a COLUMN of every call-exec row); PINNED = policy/ops/PINS over ops-sandbox.tsv ONLY.  Rows: sandbox-composed (the declaration, per tool), sandbox-recorded (the applied spec, per tool, with the call count), sandbox-pin (the one pinned half) and sandbox-delta (the difference, direction NAMED).  A widening is its own FINDING, sandbox-widened-since-record: the operator table can only TIGHTEN the applied spec and does not touch --print-sandbox, so an ADDITION comes from the executor baseline or a tool's SIDECAR — and neither is pinned, so no release can license it.  The mirror direction is NAMED and is NOT a finding (an operator tightening row produces exactly that shape)",
+      "TWO DIRECTIONS, once per side, and no absence is ever read as 'unchanged': no --proxy = the DECLARED composition is NOT-KNOWN (never 'the sandbox did not change'); no --proxy-log, or a log that does not exist, = the RECORDED specs are NOT-KNOWN (never 'nothing ran widened'); no --policy-dir, no PINS, or a PINS that does not name ops-sandbox.tsv = the PIN direction is NOT-KNOWN (never 'the table is the released one'); a host row with NO `sandbox` field = that call's applied spec is NOT-KNOWN (never 'unsandboxed', never 'the baseline').  WEAKENED, stated: two specs compared as text, never type-enforced — and VISIBLE is not STRONG (promises are coarse, `inet` is any destination; the confinement is per-process, not per-call; there is no uid drop)" },
 };
 #define NTAX (sizeof TAXONOMY / sizeof TAXONOMY[0])
 
@@ -1326,6 +1346,10 @@ static const struct { const char *id, *text; } BOUNDS[] = {
       "the host proxy's ONE LOG (tools/fx-hostgate.c --log) and the guest's TRANSCRIPT (messages.jsonl) are named by the CALLER (--proxy-log / --transcript); neither has a store-sibling default, so the call class is UNARMED unless a side is named.  The reporter only READS both — byte-identical in, byte-identical out — and never re-renders or rewrites either.  The two sides are CHECKABLE against each other by call_id (the join key, never rewritten on either leg), NOT authoritative over each other: the log records what the MODEL said and what the host judged, the transcript records what CROSSED the gate (the rewritten name + a generic sentinel for a denial)" },
     { "call-auditing-not-proofing",
       "the call class is AUDITING, not PROOFING (design record §6b): the guest's transcript records the REWRITTEN name (the reserved fx_host_denied) and a generic sentinel for a denied call — it NEVER learns the true verb — so a denial is AUDITABLE only by joining the guest's view to the host's log by call_id, and this seat makes that join QUERYABLE rather than implicit.  This seat derives NOTHING about the judgement: it surfaces the verdict, the author and the refusal name VERBATIM and never classifies a word it does not own.  The echo telemetry records (unjoined-output, echo-anomaly, unresolved-substitution) are RECORDS, NOT TRIGGERS — NO LANE STOP BY DEFAULT (the deliberate demotion of round-1 G7's fail-closed tripwire): under H2 the teeth are STRUCTURAL (the true name never crossed), so a mismatch is a disagreement instrument, not an enforcement hole, and a hard stop would make the gate brittle against innocent sentinel changes" },
+    { "sandbox-audit-is-the-weakened-one",
+      "STATEMENT, not a bound to discover later: the sandbox class is the WEAKENED audit, exactly as the reach class is.  It compares TWO TEXTS — the composition the proxy would apply now and the spec each recorded host call applied — plus ONE pin (ops-sandbox.tsv).  It is NOT type-enforced: nothing forces a tool to declare what it uses, the sidecar is UNPINNED (any process that can write beside the tool binary can declare more, and that edit is invisible to PINS by construction), and the executor's baseline is a compile-time constant pinned by nothing but the binary it lives in.  The asymmetry is the audit's whole shape and it is stated rather than smoothed: because an operator row can only TIGHTEN, an ADDITION to the declaration can only come from the baseline or a sidecar, so a widening takes the loud side ALWAYS — a legitimate, deliberately-released sidecar widening is therefore a false positive this seat cannot distinguish, and saying so is cheaper than pretending the pin covers it.  What survives honestly: the difference is NAMED with its direction and its tokens, the operator table's pin is checked separately, and a missing side is NOT-KNOWN on every side" },
+    { "sandbox-visible-is-not-strong",
+      "a sandbox change being VISIBLE does not make the sandbox STRONG, and this report claims only the visibility.  The promises are COARSE: `inet` is ANY destination — the sandbox decides WHETHER sockets exist, never where they point, and the destination control is the operator's class tables (a different mechanism, with its own weakened audit).  The confinement is PER-PROCESS, not per-call: the spec is applied once, around the whole program, and the per-call data ceiling remains the deadline and the output cap.  There is no uid drop — stage3 keeps the host user.  And the spec reaching a wider set is not a claim about what the program DOES with it: the record shows what was declared and applied, never the syscalls a call made, which nothing in this family records" },
 };
 #define NBOUND (sizeof BOUNDS / sizeof BOUNDS[0])
 
@@ -1457,6 +1481,13 @@ static void read_proxy_log(void) {
              * P6-fix R5 lesson). */
             const char *ex = jstr(o, "exec");
             H->exec = ex ? xstrdup(ex) : NULL;
+            /* S4 (palisade): THE SANDBOX THE SPAWN APPLIED, carried VERBATIM.
+             * It rides `exec` (the writer's rule: a sandbox reading only
+             * exists on a row the host executed), so its absence on a host
+             * row is NOT-KNOWN rather than "unsandboxed" — a pre-S3 proxy
+             * wrote no spec, and this seat will not invent one for it. */
+            const char *sbx = jstr(o, "sandbox");
+            H->sandbox = sbx ? xstrdup(sbx) : NULL;
             yyjson_val *pv = yyjson_obj_get(o, "pending");
             H->pending = (pv && yyjson_is_bool(pv)) ? yyjson_get_bool(pv) : 0;
             const char *oc = jstr(o, "outcome");
@@ -1588,7 +1619,8 @@ static void read_transcript(void) {
 
 /* The call class's counters (the human summary reads them). */
 static unsigned g_c_denied, g_c_allowed, g_c_nov, g_c_joined, g_c_hostonly,
-    g_c_tranonly, g_c_disagree, g_c_tele, g_c_hostexec, g_c_guesexec;
+    g_c_tranonly, g_c_disagree, g_c_tele, g_c_hostexec, g_c_guesexec,
+    g_c_sbknown, g_c_sbunk;
 
 static void emit_turn(long t, int set) {
     if (set) printf("%ld", t); else putchar('-');
@@ -1639,20 +1671,41 @@ static void emit_calls(void) {
             emit_text(H->call_id);
             fputs("\texec\t", stdout);
             emit_text(H->exec);
+            /* S4 (palisade): THE SANDBOX IS A CAPABILITY, so it is a COLUMN
+             * of the existing call row, not a second class (§7.1a: a spec IS
+             * a capability declaration).  Three states, never conflated:
+             *   the field  -> MEASURED, carried VERBATIM (what the spawn
+             *                 ACTUALLY applied: promises + the effective
+             *                 landlock, operator tightening included);
+             *   no field   -> NOT-KNOWN (a host row from a pre-S3 proxy:
+             *                 NOT "unsandboxed" and NOT "the baseline");
+             *   no exec    -> - (a guest row: the writer renders a sandbox
+             *                 spec only beside `exec`, so a guest row has
+             *                 none BY CONSTRUCTION, not by omission). */
+            fputs("\tsandbox\t", stdout);
+            if (H->sandbox) emit_text(H->sandbox);
+            else putchar('-');
             fputs("\tMEASURED\tthe row's OWN `exec` field: the HOST ran this call — a "
                   "declared program from the operator's pinned registry executed it on the "
                   "host and its bounded result was substituted over the guest's sentinel "
                   "(the capability the log exists to make visible, carried VERBATIM, never "
-                  "re-derived from today's registry)\n", stdout);
+                  "re-derived from today's registry)", stdout);
+            if (!H->sandbox)
+                fputs("; the `sandbox` column is NOT-KNOWN for this row: the host ran it and "
+                      "the row carries NO spec (a pre-S3 proxy wrote none) — never "
+                      "'unsandboxed' and never 'the baseline'", stdout);
             g_c_hostexec++;
+            if (H->sandbox) g_c_sbknown++; else g_c_sbunk++;
         } else {
             fputs("call-exec\t", stdout);
             emit_text(H->call_id);
-            fputs("\texec\tguest\tDERIVED\tthe row carries NO `exec` field, and the writer's "
-                  "own grammar says it renders ONLY where the host ran the call — so the "
-                  "GUEST executed this one (DERIVED from the record's shape, not from a "
+            fputs("\texec\tguest\tsandbox\t-\tDERIVED\tthe row carries NO `exec` field, and the "
+                  "writer's own grammar says it renders ONLY where the host ran the call — so "
+                  "the GUEST executed this one (DERIVED from the record's shape, not from a "
                   "default; a row carried verbatim from a pre-S1 log is a guest row by "
-                  "construction, because host execution did not exist then)\n", stdout);
+                  "construction, because host execution did not exist then); a sandbox spec "
+                  "rides `exec`, so a GUEST row has none BY CONSTRUCTION — not a missing "
+                  "reading\n", stdout);
             g_c_guesexec++;
         }
 
@@ -2247,6 +2300,585 @@ static void emit_reach(void) {
     (void)g_reach_tables_read;
 }
 
+/* ── S4 (PALISADE): THE SANDBOX CLASS — a spec IS a capability declaration ──
+ *
+ * §7.1a, in this tree's own words: "every oracle in the family must be able
+ * to SEE capability changes ... otherwise the agent satisfies the oracle
+ * while quietly widening what it can reach."  Since S3 the sandbox is
+ * STRUCTURAL to the host executor: every spawn is wrapped, the BASELINE
+ * belongs to the executor, a tool may declare MORE via a sidecar beside its
+ * binary, and the operator's ops-sandbox.tsv row may only TIGHTEN.  So the
+ * composed spec per tool is a capability declaration, and a change to any of
+ * its parts is a CAPABILITY CHANGE that this seat must name.
+ *
+ * WHAT THIS SEAT CAN ACTUALLY COMPARE (and it is the WEAKENED shape, said
+ * out loud rather than discovered later):
+ *
+ *   DECLARED NOW   the proxy's OWN composition: `--proxy BIN --print-sandbox`
+ *                  prints name<TAB>promises<TAB>static-landlock per tool —
+ *                  the executor's baseline + the tool's sidecar, rendered by
+ *                  the same code the spawn uses.  This is the only way to
+ *                  read the sidecar half WITHOUT respelling the C baseline.
+ *   RECORDED THEN  the log's own per-call `sandbox` field: the spec the
+ *                  spawn APPLIED, including the operator row's tightening
+ *                  and the per-call judged path.  Never re-derived.
+ *   PINNED         policy/ops/PINS over ops-sandbox.tsv — the OPERATOR half
+ *                  only.  Nothing pins the sidecar and nothing pins the
+ *                  executor's baseline, and that asymmetry is the whole
+ *                  reason the RECORD comparison exists.
+ *
+ * THE DIRECTION THAT IS A FINDING IS NOT SYMMETRIC, and the asymmetry is
+ * MEASURED, not assumed: --print-sandbox renders the DECLARATION (baseline +
+ * sidecar) and is not touched by the operator table at all, while the
+ * operator row can only tighten what the spawn applies.  So a promise/path
+ * present in today's DECLARATION and absent from the RECORD is a change to
+ * the baseline or the sidecar — and NEITHER OF THOSE HAS A PIN, so no
+ * release can license it: that is `sandbox-widened-since-record`, a FINDING.
+ * The mirror direction (the record carried something today's declaration
+ * does not) is NAMED and is NOT a finding: an operator tightening produces
+ * exactly that shape without any capability change.
+ *
+ * TWO DIRECTIONS OF ABSENCE, once per side, and no absence is ever read as
+ * "unchanged": no --proxy = the DECLARED side is NOT-KNOWN (never "the
+ * sandbox did not change"); no --proxy-log = the RECORDED side is NOT-KNOWN
+ * (never "nothing ran under a wider spec"); no --policy-dir / no PINS / a
+ * PINS that does not name ops-sandbox.tsv = the PIN direction is NOT-KNOWN
+ * (never "the operator table is the released one").
+ *
+ * DO NOT OVERCLAIM: this audit is WEAKENED (pinned operator table + two
+ * specs compared as TEXT), it is not type-enforced; and a sandbox change
+ * being VISIBLE does not make the sandbox STRONG — the promises are COARSE
+ * (`inet` is any destination), the confinement is PER-PROCESS and not
+ * per-call, and there is no uid drop. */
+#define MAX_SB_TOOLS 32
+#define MAX_SB_OBS 128
+#define MAX_SB_ENTRIES 64
+#define SB_ARTIFACT "ops-sandbox.tsv"
+
+typedef struct {
+    char  name[128];
+    char *promises;   /* the executor's baseline + the tool's sidecar */
+    char *landlock;   /* the STATIC landlock (baseline loader+libc+sidecar) */
+} sbtool_t;
+
+typedef struct {
+    char  tool[128];
+    char *promises;   /* the recorded spec's promise tokens */
+    char *landlock;   /* the recorded landlock, VERBATIM */
+} sbobs_t;
+
+static const char *g_proxy;      /* --proxy: the host proxy (--print-sandbox) */
+static sbtool_t g_sbt[MAX_SB_TOOLS];
+static unsigned g_nsbt;
+static int g_sbt_known;          /* --print-sandbox answered */
+static sbobs_t g_sbo[MAX_SB_OBS];
+static unsigned g_nsbo;
+
+/* Is `tok` in the space-separated `set`? */
+static int sb_has_token(const char *set, const char *tok) {
+    if (!set) return 0;
+    size_t tl = strlen(tok);
+    const char *p = set;
+    for (;;) {
+        while (*p == ' ' || *p == '\t') p++;
+        if (!*p) return 0;
+        const char *e = p;
+        while (*e && *e != ' ' && *e != '\t') e++;
+        if ((size_t)(e - p) == tl && !strncmp(p, tok, tl)) return 1;
+        p = e;
+    }
+}
+
+/* Split a spec "promises<space>landlock" into its two parts.  The promise
+ * vocabulary is space-joined ALPHA tokens; the landlock is a `;`-joined list
+ * of ABSOLUTE paths, so the first token containing '/' starts it.  Returns
+ * malloc'd strings (either may be empty). */
+static void sb_split_spec(const char *spec, char **promises, char **landlock) {
+    const char *s = spec ? spec : "";
+    const char *p = s;
+    const char *cut = NULL;
+    for (;;) {
+        while (*p == ' ' || *p == '\t') p++;
+        if (!*p) break;
+        const char *e = p;
+        while (*e && *e != ' ' && *e != '\t') e++;
+        char tok[1024];
+        size_t tl = (size_t)(e - p);
+        if (tl >= sizeof tok) tl = sizeof tok - 1;
+        memcpy(tok, p, tl);
+        tok[tl] = 0;
+        if (strchr(tok, '/')) { cut = p; break; }
+        p = e;
+    }
+    if (cut) {
+        size_t pl = (size_t)(cut - s);
+        while (pl && (s[pl - 1] == ' ' || s[pl - 1] == '\t')) pl--;
+        char *pr = xmalloc(pl + 1);
+        memcpy(pr, s, pl); pr[pl] = 0;
+        *promises = pr;
+        *landlock = xstrdup(cut);
+    } else {
+        *promises = xstrdup(s);
+        *landlock = xstrdup("");
+    }
+}
+
+/* Run the proxy's own --print-sandbox.  A proxy that cannot answer is a LOUD
+ * failure (exit 2), never "no tools" and never "no sandbox": reading a
+ * failed probe as the narrower state is the one direction a capability
+ * oracle must never fail in (the reach class's own rule). */
+static void sb_read_composed(void) {
+    if (!g_proxy) return;
+    check_safe_path(g_proxy, "--proxy");
+    char cmd[8192];
+    snprintf(cmd, sizeof cmd, "'%s' --print-sandbox 2>/dev/null", g_proxy);
+    FILE *p = popen(cmd, "r");
+    if (!p) die("cannot run '%s --print-sandbox' (%s)", g_proxy, strerror(errno));
+    char line[8192];
+    int any = 0;
+    while (fgets(line, sizeof line, p)) {
+        line[strcspn(line, "\r\n")] = 0;
+        if (!line[0]) continue;
+        char *f[3] = {0};
+        int nf = 0;
+        char *save = NULL;
+        for (char *tok = strtok_r(line, "\t", &save); tok && nf < 3;
+             tok = strtok_r(NULL, "\t", &save))
+            f[nf++] = tok;
+        any = 1;
+        if (nf < 2)
+            die("'%s --print-sandbox' printed a row that is not name<TAB>promises<TAB>landlock: "
+                "\"%s\" — a spec this seat cannot read is refused, never skipped", g_proxy, line);
+        if (g_nsbt >= MAX_SB_TOOLS)
+            die("'%s --print-sandbox' printed more than %u tools — raise MAX_SB_TOOLS",
+                g_proxy, (unsigned)MAX_SB_TOOLS);
+        sbtool_t *T = &g_sbt[g_nsbt++];
+        snprintf(T->name, sizeof T->name, "%s", f[0]);
+        T->promises = xstrdup(f[1]);
+        T->landlock = xstrdup(nf > 2 ? f[2] : "");
+    }
+    int rc = pclose(p);
+    if (rc != 0)
+        die("'%s --print-sandbox' exited %d: the composed sandbox of the running host cannot "
+            "be read, and reading a failed probe as 'no sandbox' would report the narrowest "
+            "possible capability — a TOOL ERROR, never an empty composition", g_proxy, rc);
+    if (!any)
+        die("'%s --print-sandbox' printed NO tool: the proxy's closed registry cannot be "
+            "empty, so this is a tool error, not a sandbox with nothing in it", g_proxy);
+    g_sbt_known = 1;
+}
+
+/* THE RECORDED SIDE: each host-executed call's own spec, deduped by
+ * (tool, spec) with a call count.  A host row with NO spec is kept as its
+ * own state (NOT-KNOWN), never dropped and never read as "baseline only". */
+static void sb_collect_recorded(void) {
+    for (unsigned i = 0; i < g_nhcalls; i++) {
+        hostcall_t *H = &g_hcalls[i];
+        if (!H->exec) continue;                      /* a guest row has none */
+        char *pr = NULL, *lk = NULL;
+        if (H->sandbox) sb_split_spec(H->sandbox, &pr, &lk);
+        unsigned seen = 0;
+        for (unsigned j = 0; j < g_nsbo; j++)
+            if (!strcmp(g_sbo[j].tool, H->true_name) &&
+                !strcmp(g_sbo[j].promises ? g_sbo[j].promises : "-", pr ? pr : "-") &&
+                !strcmp(g_sbo[j].landlock ? g_sbo[j].landlock : "-", lk ? lk : "-")) {
+                seen = 1;
+                break;
+            }
+        if (seen) { free(pr); free(lk); continue; }
+        if (g_nsbo >= MAX_SB_OBS)
+            die("more than %u distinct recorded sandbox specs — raise MAX_SB_OBS",
+                (unsigned)MAX_SB_OBS);
+        sbobs_t *O = &g_sbo[g_nsbo++];
+        snprintf(O->tool, sizeof O->tool, "%s", H->true_name);
+        O->promises = pr ? pr : xstrdup("-");
+        O->landlock = lk ? lk : xstrdup("-");
+    }
+}
+
+/* Count the recorded calls carrying one (tool, spec) pair. */
+static unsigned sb_recorded_calls(const sbobs_t *O) {
+    unsigned n = 0;
+    for (unsigned i = 0; i < g_nhcalls; i++) {
+        hostcall_t *H = &g_hcalls[i];
+        if (!H->exec || strcmp(H->true_name, O->tool)) continue;
+        char *pr = NULL, *lk = NULL;
+        if (H->sandbox) sb_split_spec(H->sandbox, &pr, &lk);
+        if (!strcmp(O->promises, pr ? pr : "-") &&
+            !strcmp(O->landlock, lk ? lk : "-")) n++;
+        free(pr); free(lk);
+    }
+    return n;
+}
+
+/* The entries of a `;`-joined list, as a set-membership test. */
+static int sb_has_entry(const char *list, const char *e) {
+    if (!list) return 0;
+    size_t el = strlen(e);
+    const char *p = list;
+    for (;;) {
+        const char *q = strchr(p, ';');
+        size_t l = q ? (size_t)(q - p) : strlen(p);
+        if (l == el && !strncmp(p, e, el)) return 1;
+        if (!q) return 0;
+        p = q + 1;
+    }
+}
+
+/* THE DECOMPOSITION — and the SEAM it rests on, stated because a seam that
+ * is guessed silently is how an audit goes blind.  The spawn renders the
+ * effective landlock as "<resolved program>:rx;<static>;<judged path>:r",
+ * where <static> is EXACTLY what --print-sandbox prints and the judged entry
+ * exists only for a PATH tool whose call named a representable, existing path
+ * the operator's row allows.  So the record can carry ONE trailing entry that
+ * the declaration does not — and the baseline's own last entry (`libc:r`)
+ * ENDS IN `:r` too, which is exactly the shape that made a naive "drop the
+ * trailing :r" rule report a FALSE widening on an unchanged sandbox (MEASURED
+ * in this unit's own first gate run).
+ *
+ * The rule here is therefore two-hypothesis and safe BY CONSTRUCTION for the
+ * direction that matters: the record's entries are never silently KEPT out of
+ * the comparison, only the record's own trailing entry may be EXCLUDED, and an
+ * ADDITION is always an entry of the DECLARED side — so excluding a record
+ * entry can create a false difference but can never HIDE one.  Between the two
+ * hypotheses (with or without a trailing judged entry) the one with fewer
+ * differences wins, and a tie keeps the entry.  Returns 0 when the record does
+ * not even START with a "<abs program>:rx" entry: that is not the shape the
+ * spawn renders, and it is named as such rather than re-read as "unchanged". */
+static int sb_landlock_static(const char *recorded, const char *declared,
+                              char **out_static) {
+    char *buf = xstrdup(recorded ? recorded : "");
+    char *ent[MAX_SB_ENTRIES];
+    int n = 0;
+    char *save = NULL;
+    for (char *t = strtok_r(buf, ";", &save); t && n < MAX_SB_ENTRIES;
+         t = strtok_r(NULL, ";", &save))
+        ent[n++] = t;
+    *out_static = NULL;
+    if (n < 1) { free(buf); return 0; }
+    size_t l0 = strlen(ent[0]);
+    if (ent[0][0] != '/' || l0 < 4 || strcmp(ent[0] + l0 - 3, ":rx") != 0) {
+        free(buf);
+        return 0;
+    }
+    int last = n - 1;                       /* the candidate judged entry */
+    size_t ll = strlen(ent[last]);
+    int last_judged_shape = (n >= 2 && ent[last][0] == '/' && ll >= 3 &&
+                             !strcmp(ent[last] + ll - 2, ":r"));
+    /* diff count for the entries [1..upto) against the declared side */
+    int best_upto = n, best = -1;
+    for (int attempt = 0; attempt < 2; attempt++) {
+        int upto = n;
+        if (attempt == 1) {
+            if (!last_judged_shape) break;
+            upto = last;
+        }
+        int d = 0;
+        for (int i = 1; i < upto; i++)
+            if (!sb_has_entry(declared, ent[i])) d++;
+        /* the declared side's entries the record does not carry */
+        {
+            char *dup = xstrdup(declared ? declared : ""), *sv = NULL;
+            for (char *t = strtok_r(dup, ";", &sv); t; t = strtok_r(NULL, ";", &sv)) {
+                int found = 0;
+                for (int i = 1; i < upto; i++)
+                    if (!strcmp(ent[i], t)) { found = 1; break; }
+                if (!found) d++;
+            }
+            free(dup);
+        }
+        if (best < 0 || d < best) { best = d; best_upto = upto; }
+    }
+    struct tbuf { char *p; size_t len, cap; } t = {0};
+    for (int i = 1; i < best_upto; i++) {
+        size_t li = strlen(ent[i]);
+        size_t need = t.len + li + 2;
+        if (need > t.cap) {
+            t.cap = need * 2;
+            t.p = xrealloc(t.p, t.cap);
+        }
+        if (t.len) t.p[t.len++] = ';';
+        memcpy(t.p + t.len, ent[i], li);
+        t.len += li;
+        t.p[t.len] = 0;
+    }
+    free(buf);
+    if (!t.p) { *out_static = xstrdup(""); return 1; }
+    *out_static = t.p;
+    return 1;
+}
+
+/* Emit the sandbox class.  Armed only when at least one sandbox input is
+ * present (the reach class's rule), so a run that never mentioned the
+ * sandbox stays byte-identical. */
+static void emit_sandbox(void) {
+    if (!g_proxy && !g_sbt_known && !g_proxy_log && !g_policy_dir) return;
+
+    sb_read_composed();
+    sb_collect_recorded();
+
+    /* (1) THE DECLARED SIDE, tool by tool — the proxy's own composition. */
+    if (!g_proxy) {
+        printf("absence\tsandbox-composed\tnot-given-no---proxy-so-the-DECLARED-composition-"
+               "(baseline+sidecar,--print-sandbox)-was-not-read: the sandbox can be neither "
+               "compared nor declared UNCHANGED (NOT 'the sandbox did not change' and NOT "
+               "'nothing is declared')\tABSENT\n");
+    } else {
+        for (unsigned i = 0; i < g_nsbt; i++) {
+            printf("sandbox-composed\t%s\tpromises\t", g_sbt[i].name);
+            emit_text(g_sbt[i].promises);
+            fputs("\tlandlock\t", stdout);
+            emit_text(g_sbt[i].landlock);
+            printf("\tMEASURED\tthe proxy's OWN composition (%s --print-sandbox): the "
+                   "executor's baseline + this tool's sidecar, rendered by the same code "
+                   "the spawn uses — the DECLARATION, before any operator tightening\n",
+                   g_proxy);
+        }
+    }
+
+    /* (2) THE RECORDED SIDE — what the log says each host call actually got. */
+    if (!g_proxy_log || !g_plog_present) {
+        printf("absence\tsandbox-recorded\tnot-given-no---proxy-log-(or-a-log-that-does-not-"
+               "exist)-so-what-each-host-call-ACTUALLY-applied-is-NOT-KNOWN (NOT 'nothing "
+               "ran under a wider spec' and NOT 'the sandbox did not change')\tABSENT\n");
+    } else {
+        int any = 0;
+        for (unsigned i = 0; i < g_nsbo; i++) {
+            sbobs_t *O = &g_sbo[i];
+            any = 1;
+            if (!strcmp(O->promises, "-")) {
+                printf("sandbox-recorded\t%s\tcalls\t%u\tpromises\t-\tlandlock\t-\tNOT-KNOWN\t"
+                       "bound\tthe host ran this call and the row carries NO `sandbox` field "
+                       "(a pre-S3 proxy wrote none): the spec it applied is NOT-KNOWN here — "
+                       "never 'unsandboxed' and never 'the baseline'\n",
+                       O->tool, sb_recorded_calls(O));
+                continue;
+            }
+            printf("sandbox-recorded\t%s\tcalls\t%u\tpromises\t", O->tool, sb_recorded_calls(O));
+            emit_text(O->promises);
+            fputs("\tlandlock\t", stdout);
+            emit_text(O->landlock);
+            fputs("\tMEASURED\tthe log's own `sandbox` field, carried VERBATIM: the spec the "
+                  "spawn APPLIED (operator tightening and the per-call judged path included)\n",
+                  stdout);
+        }
+        if (!any)
+            printf("sandbox-recorded\t-\tcalls\t0\tnone\t-\tABSENT\tno-host-executed-call-in-this-"
+                   "log-so-no-applied-spec-is-recorded-here (a MEASUREMENT of the log: NOT "
+                   "'the sandbox was not applied' — every spawn is wrapped)\n");
+    }
+
+    /* (3) THE OPERATOR ARTIFACT'S PIN — the one pinned half. */
+    {
+        int pinned_line = 0;
+        pinrow_t *P = NULL;
+        for (unsigned i = 0; i < g_npins; i++)
+            if (!strcmp(g_pins[i].name, SB_ARTIFACT)) { P = &g_pins[i]; pinned_line = 1; break; }
+        if (!g_policy_dir) {
+            printf("absence\tsandbox-pin\tnot-given-no---policy-dir-so-%s-and-PINS-were-not-"
+                   "read: whether the operator's sandbox table is the RELEASED one is "
+                   "NOT-KNOWN (never 'it is unchanged')\tABSENT\n", SB_ARTIFACT);
+        } else if (!g_pins_present) {
+            printf("absence\tsandbox-pin\tnot-durably-recorded-%s/PINS-does-not-exist-so-nothing-"
+                   "pins-the-operator's-sandbox-table (the pin direction is NOT-KNOWN, never "
+                   "'no edit')\tABSENT\n", g_policy_dir);
+        } else if (!pinned_line) {
+            printf("absence\tsandbox-pin\tnot-durably-recorded-%s/PINS-does-not-name-%s — this "
+                   "release pins no operator sandbox table at all, so an edit to it is "
+                   "invisible to the pin direction (NOT 'no edit')\tABSENT\n",
+                   g_policy_dir, SB_ARTIFACT);
+        } else {
+            int sb_drift = P->present && strcmp(P->got, P->want) != 0;
+            const char *state = !P->present ? "MISSING" : (sb_drift ? "DRIFT" : "MATCH");
+            printf("sandbox-pin\t%s\tsha\t%s\tpin\t%s\t%s\t%s\n", SB_ARTIFACT,
+                   P->present ? P->got : "-", P->want, state,
+                   P->present ? "MEASURED" : "DERIVED");
+            if (!P->present) {
+                printf("sandbox-pin-drift\t%s\tsha\t-\tpin\t%s\tFINDING\tDERIVED\tthe operator "
+                       "artifact PINS names is NOT THERE: the table that may TIGHTEN every "
+                       "host tool's sandbox is gone, so the tightening the release froze "
+                       "cannot be read (and a release is artifact + PINS in the SAME commit, "
+                       "so this cannot be a licensed state)\n", SB_ARTIFACT, P->want);
+                g_findings++;
+            } else if (sb_drift) {
+                printf("sandbox-pin-drift\t%s\tsha\t%s\tpin\t%s\tFINDING\tMEASURED\tthe operator "
+                       "sandbox table hashes to %s but PINS pins %s — the tightening table "
+                       "this run reads is NOT the one the release froze (reported with BOTH "
+                       "pins; never silently joined)\n",
+                       SB_ARTIFACT, P->got, P->want, P->got, P->want);
+                g_findings++;
+            }
+        }
+    }
+
+    /* (4) THE DIFFERENCE — declared NOW against recorded THEN, one row per
+     * tool, with the direction NAMED and only the widening direction a
+     * FINDING (see the block comment: the operator table can only tighten). */
+    if (!g_sbt_known || !g_proxy_log || !g_plog_present) {
+        printf("sandbox-delta\t-\tNOT-KNOWN\tABSENT\t%s: a delta needs BOTH the DECLARED "
+               "composition and the RECORDED specs, and 'no change' is NOT derivable from one "
+               "reading\n",
+               !g_sbt_known && g_proxy ? "the DECLARED side failed to be read"
+               : (!g_proxy ? "the DECLARED side was not given (no --proxy)"
+                           : "the RECORDED side was not given (no --proxy-log)"));
+    } else {
+        unsigned n_wide = 0, n_narr = 0, n_change = 0, n_shape = 0, n_none = 0;
+        for (unsigned i = 0; i < g_nsbo; i++) {
+            sbobs_t *O = &g_sbo[i];
+            if (!strcmp(O->promises, "-")) continue;      /* NOT-KNOWN, named above */
+            sbtool_t *T = NULL;
+            for (unsigned j = 0; j < g_nsbt; j++)
+                if (!strcmp(g_sbt[j].name, O->tool)) { T = &g_sbt[j]; break; }
+            if (!T) {
+                printf("sandbox-delta\t%s\tSHAPE\tDERIVED\tthe record shows an APPLIED spec for "
+                       "a tool the current proxy's composition does not declare at all — the "
+                       "registry or the composition changed; this seat names the difference "
+                       "and does not guess which side moved\n", O->tool);
+                n_shape++;
+                continue;
+            }
+            /* promises: the token set difference, BOTH directions named */
+            char added_tok[1024] = "", removed_tok[1024] = "";
+            {
+                char *dup = xstrdup(T->promises ? T->promises : "");
+                char *sv = NULL;
+                for (char *t = strtok_r(dup, " \t", &sv); t; t = strtok_r(NULL, " \t", &sv))
+                    if (!sb_has_token(O->promises, t)) {
+                        size_t l = strlen(added_tok);
+                        snprintf(added_tok + l, sizeof added_tok - l, "%s%s", l ? " " : "", t);
+                    }
+                free(dup);
+                dup = xstrdup(O->promises ? O->promises : "");
+                sv = NULL;
+                for (char *t = strtok_r(dup, " \t", &sv); t; t = strtok_r(NULL, " \t", &sv))
+                    if (!sb_has_token(T->promises, t)) {
+                        size_t l = strlen(removed_tok);
+                        snprintf(removed_tok + l, sizeof removed_tok - l, "%s%s", l ? " " : "", t);
+                    }
+                free(dup);
+            }
+            /* landlock: the recorded static part against the declared one */
+            char *rec_static = NULL;
+            int shape_ok = sb_landlock_static(O->landlock, T->landlock, &rec_static);
+            char added_lk[4096] = "", removed_lk[4096] = "";
+            if (shape_ok) {
+                char *dup = xstrdup(T->landlock ? T->landlock : "");
+                char *sv = NULL;
+                for (char *t = strtok_r(dup, ";", &sv); t; t = strtok_r(NULL, ";", &sv))
+                    if (!sb_has_entry(rec_static, t)) {
+                        size_t l = strlen(added_lk);
+                        snprintf(added_lk + l, sizeof added_lk - l, "%s%s", l ? ";" : "", t);
+                    }
+                free(dup);
+                dup = xstrdup(rec_static);
+                sv = NULL;
+                for (char *t = strtok_r(dup, ";", &sv); t; t = strtok_r(NULL, ";", &sv))
+                    if (!sb_has_entry(T->landlock, t)) {
+                        size_t l = strlen(removed_lk);
+                        snprintf(removed_lk + l, sizeof removed_lk - l, "%s%s", l ? ";" : "", t);
+                    }
+                free(dup);
+            }
+            int has_add = added_tok[0] || added_lk[0];
+            int has_rem = removed_tok[0] || removed_lk[0];
+            if (!shape_ok) {
+                printf("sandbox-delta\t%s\tSHAPE\tDERIVED\tthe recorded landlock does not START "
+                       "with a \"<absolute program>:rx\" entry, so it is not the spec the "
+                       "spawn renders: the recorded \"", O->tool);
+                emit_text(O->landlock);
+                printf("\" cannot be decomposed against today's declaration \"");
+                emit_text(T->landlock);
+                printf("\" — named as a shape difference, never re-read as 'unchanged'\n");
+                n_shape++;
+            } else if (!has_add && !has_rem) {
+                n_none++;
+            } else if (has_add && !has_rem) {
+                printf("sandbox-delta\t%s\tWIDER\tDERIVED\tthe current DECLARATION grants what "
+                       "the RECORD did not", O->tool);
+                if (added_tok[0]) printf("; promise(s) added \"%s\"", added_tok);
+                if (added_lk[0])  printf("; landlock entr(y/ies) added \"%s\"", added_lk);
+                printf(".  The operator table can only TIGHTEN the applied spec and does not "
+                       "touch --print-sandbox, so an addition here is a change to the "
+                       "EXECUTOR BASELINE or to a tool's SIDECAR — and NEITHER has a pin: no "
+                       "release can license it\n");
+                printf("sandbox-widened-since-record\t%s\tFINDING\tDERIVED\tthe sandbox this host "
+                       "would apply to %s is WIDER than the spec the log recorded it applying "
+                       "(%s); the composed spec is a CAPABILITY DECLARATION and its baseline "
+                       "and sidecar are UNPINNED, so this is a capability change nothing "
+                       "released.  WEAKENED AUDIT, stated: two specs compared as text, never "
+                       "the type-enforced shape\n",
+                       O->tool, O->tool, g_proxy_log);
+                g_findings++;
+                n_wide++;
+            } else if (!has_add && has_rem) {
+                printf("sandbox-delta\t%s\tNARROWER\tDERIVED\tthe RECORD carried what the "
+                       "current DECLARATION does not", O->tool);
+                if (removed_tok[0]) printf("; promise(s) \"%s\"", removed_tok);
+                if (removed_lk[0])  printf("; landlock entr(y/ies) \"%s\"", removed_lk);
+                printf(".  NOT a finding, and the ambiguity is NAMED rather than adjudicated: "
+                       "an operator %s row (DENY-MORE-ONLY) produces exactly this shape at "
+                       "spawn time without any capability change, and so does a revocation "
+                       "since the call — this seat reports the direction and does not pretend "
+                       "to know which\n", SB_ARTIFACT);
+                n_narr++;
+            } else {
+                printf("sandbox-delta\t%s\tCHANGED\tDERIVED\tthe declaration and the record differ "
+                       "BOTH ways", O->tool);
+                if (added_tok[0] || added_lk[0])
+                    printf("; added now \"%s%s%s\"", added_tok,
+                           added_tok[0] && added_lk[0] ? " " : "", added_lk);
+                if (removed_tok[0] || removed_lk[0])
+                    printf("; gone now \"%s%s%s\"", removed_tok,
+                           removed_tok[0] && removed_lk[0] ? " " : "", removed_lk);
+                printf(" — the addition is the widening half and is raised as a finding; the "
+                       "removal is named and is not\n");
+                printf("sandbox-widened-since-record\t%s\tFINDING\tDERIVED\tthe sandbox this host "
+                       "would apply to %s ADDS capability the log's recorded spec did not carry "
+                       "(%s)%s\n", O->tool, O->tool, g_proxy_log,
+                       added_tok[0] || added_lk[0] ? "" : " — no addition survived decomposition, "
+                                                          "so no widening is claimed");
+                if (added_tok[0] || added_lk[0]) g_findings++;
+                n_change++;
+            }
+            free(rec_static);
+        }
+        /* THE PER-TOOL BLIND, named rather than left to be found: a tool the
+         * proxy declares but the log never recorded has NOTHING to compare
+         * against, so its spec change cannot be named HERE (fx-audit's
+         * per-boot record does cover it: it reads the composition every
+         * run).  NOT-KNOWN, never "unchanged". */
+        for (unsigned j = 0; j < g_nsbt; j++) {
+            int recorded = 0;
+            for (unsigned i = 0; i < g_nsbo; i++)
+                if (!strcmp(g_sbo[i].tool, g_sbt[j].name) && strcmp(g_sbo[i].promises, "-"))
+                    recorded = 1;
+            if (recorded) continue;
+            printf("sandbox-delta\t%s\tNOT-KNOWN\tABSENT\tthe composition declares this tool and "
+                   "NO host-executed call in the log carries an applied spec for it: its sandbox "
+                   "cannot be compared here (never 'unchanged') — a per-CALL record can only "
+                   "speak about the tools the calls exercised, which is why fx-audit records the "
+                   "whole composition per boot\n", g_sbt[j].name);
+        }
+        if (!g_nsbo)
+            printf("sandbox-delta\t-\tNOT-KNOWN\tABSENT\tno host-executed call in the log carries "
+                   "an applied spec, so there is nothing to compare the declaration against — "
+                   "NOT 'the sandbox did not change'\n");
+        else if (!n_wide && !n_narr && !n_change && !n_shape)
+            printf("sandbox-delta\t-\tNONE\tDERIVED\tthe composed declaration and EVERY recorded "
+                   "applied spec agree token-for-token and entry-for-entry (promises and the "
+                   "static landlock, with the per-call program :rx and judged :r entries "
+                   "excluded): no sandbox change BETWEEN THIS DECLARATION AND THIS RECORD — a "
+                   "measurement about the two readings, never a claim about the whole fleet\n");
+        if (n_wide || n_change || n_shape)
+            printf("sandbox-change-note\twider\t%u\tnarrower\t%u\tchanged\t%u\tshape\t%u\tDERIVED\t"
+                   "a sandbox change is a CAPABILITY change (§7.1a) and it is NAMED here; the "
+                   "sandbox is still not STRONG: promises are COARSE (`inet` is any "
+                   "destination), the confinement is PER-PROCESS and not per-call, and there "
+                   "is no uid drop\n", n_wide, n_narr, n_change, n_shape);
+        (void)n_none;
+    }
+}
+
 /* --class-arg DIM:TOOL=KEY — the declared bridge from a call's tool to the
  * argument the registry classes.  LOUD on any shape it does not know: a
  * dimension this seat cannot judge must not be silently dropped (a dropped
@@ -2317,16 +2949,24 @@ int main(int argc, char **argv) {
         else if (!strncmp(argv[i], "--policy-dir=", 13)) g_policy_dir = argv[i] + 13;
         else if (!strcmp(argv[i], "--class-arg") && i + 1 < argc) add_classarg(argv[++i]);
         else if (!strncmp(argv[i], "--class-arg=", 12)) add_classarg(argv[i] + 12);
+        else if (!strcmp(argv[i], "--proxy") && i + 1 < argc) g_proxy = argv[++i];
+        else if (!strncmp(argv[i], "--proxy=", 8)) g_proxy = argv[i] + 8;
         else if (!strcmp(argv[i], "--help")) {
             printf("usage: fx-report [--store DIR] [--fxstore BIN] [--max-config-lines N]"
                    " [--proxy-log FILE] [--transcript FILE]\n"
-                   "                  [--policy-dir DIR] [--class-arg DIM:TOOL=KEY]...\n"
+                   "                  [--policy-dir DIR] [--class-arg DIM:TOOL=KEY]..."
+                   " [--proxy BIN]\n"
                    "  --policy-dir DIR   the operator's PINNED class tables (ops-aliases.tsv,\n"
-                   "                     ops-hosts.tsv) + PINS: the reach class's DECLARED side\n"
+                   "                     ops-hosts.tsv, ops-sandbox.tsv) + PINS: the DECLARED\n"
+                   "                     side of the reach AND sandbox classes\n"
                    "  --class-arg D:TOOL=KEY  declare that TOOL's classed argument is KEY in\n"
                    "                     dimension D (path|authority) — the registry's arg_key\n"
                    "                     is C and this seat will not respell it; an undeclared\n"
-                   "                     dimension reads NOT-KNOWN, never 'no classed argument'\n");
+                   "                     dimension reads NOT-KNOWN, never 'no classed argument'\n"
+                   "  --proxy BIN        the host proxy whose OWN --print-sandbox is the\n"
+                   "                     composed sandbox declaration (the executor baseline +\n"
+                   "                     each tool's sidecar); a proxy that cannot be run is a\n"
+                   "                     TOOL ERROR (exit 2), never 'no sandbox'\n");
             return 0;
         } else {
             fprintf(stderr, "fx-report: unknown argument '%s'\n", argv[i]);
@@ -2649,6 +3289,14 @@ int main(int argc, char **argv) {
      * pinned).  Armed only when a side is named (the call class's rule). ── */
     emit_reach();
 
+    /* ── THE SANDBOX CLASS (S4, palisade): a spec IS a capability
+     * declaration, so the composed spec per tool (the proxy's own
+     * --print-sandbox) is compared against the spec the log RECORDED each
+     * host call applying, with the operator artifact's pin as the one
+     * pinned half.  A widening is a FINDING; the mirror direction is named
+     * and not judged.  Two directions of absence, once per side. ──────── */
+    emit_sandbox();
+
     /* ── the reconstruction: adjacent pairs, both inputs, the diff ────── */
     for (unsigned i = 1; i < g_nvers; i++) {
         version_t *A = &g_vers[i - 1], *B = &g_vers[i];
@@ -2781,6 +3429,23 @@ int main(int argc, char **argv) {
           "reach-audit-is-the-weakened-one).  What it can see — and what §7.1a demands an "
           "oracle see — is a grant that is WIDER than the traffic, and a table that is not "
           "the table the release pinned.");
+    }
+    if (g_proxy || g_proxy_log || g_policy_dir) {
+        unsigned n_composed = g_nsbt, n_recorded = g_nsbo;
+        h("sandbox (a spec IS a capability declaration, named as the WEAKENED audit it is): "
+          "%u tool composition(s) DECLARED now, %u distinct applied spec(s) RECORDED in the "
+          "log, %u host call(s) whose spec is NOT-KNOWN (a pre-S3 row) — "
+          "bound/sandbox-audit-is-the-weakened-one and bound/sandbox-visible-is-not-strong "
+          "are the two halves of what this cannot say.", n_composed, n_recorded, g_c_sbunk);
+        if (!g_proxy)
+            h("  the DECLARED composition was NOT given (no --proxy): the sandbox cannot be "
+              "compared and is NOT-KNOWN — never 'unchanged'.");
+        if (!g_proxy_log)
+            h("  the RECORDED specs were NOT given (no --proxy-log): what each host call "
+              "applied is NOT-KNOWN — never 'nothing ran widened'.");
+        if (!g_policy_dir)
+            h("  the OPERATOR table's pin was NOT given (no --policy-dir): whether the "
+              "tightening table is the released one is NOT-KNOWN — never 'no edit'.");
     }
     h("the reconstruction question — 'what changed between N and N+1, and from");
     h("which input?' — is answered by the config/config-line/config-diff records");

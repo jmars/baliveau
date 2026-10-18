@@ -125,19 +125,36 @@
  *                  (never "no widening"); no --proxy/--ops-policy-dir is
  *                  NOT-KNOWN for that half; a named proxy that cannot be run
  *                  is a TOOL ERROR, never "no host tools".
- *   7. WINNER      the eligible candidate with the GREATEST share.  A TIE
+ *   7. REACH-SANDBOX  THE SANDBOX TERM, ADDITIVE TO STEP 6 (§7.1a at the
+ *                  layer S3 made structural: a SANDBOX SPEC IS A CAPABILITY
+ *                  DECLARATION — the executor's baseline + a tool's sidecar,
+ *                  read from the proxy's own `--print-sandbox`).  The composed
+ *                  spec per tool NOW is compared against the previous
+ *                  observation's `reach-sandbox` rows and each difference is
+ *                  NAMED: an added promise or an added static landlock entry,
+ *                  or a tool whose composed sandbox did not exist, is a
+ *                  WIDENING (one named `sandbox-delta` row each, plus the loud
+ *                  `sandbox-reach-widened`); removed entries are NARROWINGS.
+ *                  THE CONSEQUENCE IS DELIBERATELY OPEN, exactly as step 6's:
+ *                  the term changes no eligibility, no winner and no exit code.
+ *                  THE BOUND IS NAMED, not implied: `--print-sandbox` prints
+ *                  the DECLARATION, a sidecar is pinned by NOTHING, and this
+ *                  seat never reads PINS — so it names a difference and does
+ *                  not claim the change was unlicensed (bound/
+ *                  sandbox-visible-is-not-strong).
+ *   8. WINNER      the eligible candidate with the GREATEST share.  A TIE
  *                  GOES TO THE INCUMBENT — a tie NEVER causes a revert.
  *                  (This replaces "the highest version", whose only
  *                  remaining effect in the two-snapshot shape was to prefer
  *                  the half-published intermediate over the generation it
  *                  duplicates; under rule 1 there is no such candidate any
  *                  more, and the rule the gate pins is now the incumbent.)
- *   8. DECISION    `keep <CURRENT>` if the winner is CURRENT, else
+ *   9. DECISION    `keep <CURRENT>` if the winner is CURRENT, else
  *                  `revert-to <winner>` — and a state the seat would
  *                  REFUSE TO ACT ON is never printed as `revert-to`: it is
  *                  its own frozen NON-ACTIONABLE decision, `withhold
  *                  <state>` (exit 3), with `--apply` reading the SAME
- *                  decision value.  Upheld states (rule 7b below): the
+ *                  decision value.  Upheld states (the WITHHOLD list below): the
  *                  incumbent's share could not be measured, and the
  *                  incumbent's verdict is unknown (mid-boot `in-progress`,
  *                  torn, or a damaged line naming it) — a booting system is
@@ -148,11 +165,11 @@
  *                  BOTH the printed record and `--apply` read it: the plain
  *                  run and the trigger agree BY CONSTRUCTION, not by two
  *                  matching ifs.
- *   9. EXCLUDED    a candidate the oracle refuses is excluded and NAMED,
+ *   9b. EXCLUDED   a candidate the oracle refuses is excluded and NAMED,
  *                  and the count prints as its own caveat line.  An
  *                  excluded CHALLENGER cannot win and blocks nothing (the
  *                  incumbent stays the only eligible candidate); an
- *                  excluded INCUMBENT is rule 7's withhold, because then
+ *                  excluded INCUMBENT is the DECISION rule's withhold, because then
  *                  the comparison the revert would rest on was never made.
  *
  * ── WHAT IT READS, and nothing else ────────────────────────────────────
@@ -353,6 +370,18 @@ typedef struct {
 static const char *g_proxy;      /* --proxy: the host proxy binary (the registry) */
 static const char *g_opsdir;     /* --ops-policy-dir: the pinned class tables */
 static const char *g_reach_prev; /* --reach-prev: the PREVIOUS observation file */
+/* S4b (palisade): the SANDBOX half — the composed spec per tool.  The proxy
+ * prints it (--print-sandbox: name<TAB>promises<TAB>static-landlock), so this
+ * seat reads the composition from the binary that owns it instead of
+ * respelling the executor's C baseline.  Promises + the static landlock are
+ * the DECLARATION; the per-call program :rx and judged :r entries never
+ * appear here because --print-sandbox prints the static part only. */
+typedef struct {
+    char name[128];
+    char promises[1024];   /* the pledge tokens (space-joined) */
+    char landlock[2048];   /* the static landlock (; -joined) */
+} reachsandbox_t;
+
 static reachtool_t g_rtools[MAX_REACH_TOOLS];
 static unsigned g_nrtools;
 static int g_rtools_known;       /* the registry was actually read */
@@ -364,6 +393,12 @@ static unsigned g_nptools;
 static reachgrant_t g_pgrants[MAX_REACH_GRANTS];
 static unsigned g_npgrants;
 static int g_prev_known;         /* --reach-prev was given AND read */
+static reachsandbox_t g_sbt[MAX_REACH_TOOLS];
+static unsigned g_nsbt;
+static int g_sbt_known;          /* --print-sandbox answered */
+static reachsandbox_t g_psbt[MAX_REACH_TOOLS];
+static unsigned g_npsbt;
+static int g_prev_sandbox_known; /* the previous file carried reach-sandbox rows */
 
 /* exit codes, stated in the header and the usage text */
 #define EX_DECISION    0
@@ -431,11 +466,13 @@ static const struct {
    "a candidate that is not in the bounded set, not viable, or is CURRENT with drift, can NEVER win, whatever its share - the order is ENFORCED, not printed and hoped for" },
  { 6, "reach", "--proxy BIN (the compiled-in host-tool registry: --print-host-tools) + --ops-policy-dir DIR (the operator's PINNED class tables + PINS) against --reach-prev FILE (the PREVIOUS observation, the shared reach-tool/reach-grant grammar the audit records per boot)",
    "THE REACH-DELTA TERM (§7.1a's residual: an egress grant is a CAPABILITY INCREASE and a code-only oracle is blind to it). The seat compares TWO OBSERVATIONS of DECLARED REACH and NAMES each difference: a host tool absent before and present now, a pinned class row absent before and present now, and a row whose protected flag flipped yes->no are WIDENINGS (one named reach-delta row each, plus the loud egress-reach-widened row); the mirror cases are NARROWINGS; a row whose CLASS changed is CHANGED, never dressed as a widening. THE CONSEQUENCE IS DELIBERATELY OPEN AND REVERSIBLE: this step does NOT change eligibility, does NOT change the winner and does NOT change the exit code — v1 makes a widening LOUD and does not bake policy, so whether widening DISQUALIFIES a generation stays the operator's decision. What is NOT open is that a widening is SEEN and NAMED. Absence: no --reach-prev = NOT-KNOWN (never 'no widening'); no --proxy/--ops-policy-dir = the current half is NOT-KNOWN; a named proxy that cannot be run is a TOOL ERROR, never 'no host tools'. This seat never verifies the tables' shas: that is the proxy's startup pin check and fx-report's pin-drift finding" },
- { 7, "winner", "greatest share among ELIGIBLE candidates",
+ { 7, "reach-sandbox", "--proxy BIN (the composed sandbox per tool: the executor baseline + each tool's sidecar, read via --print-sandbox) against --reach-prev FILE (the previous observation, whose shared reach-sandbox rows the audit records per boot)",
+   "THE SANDBOX TERM, ADDITIVE TO STEP 6 (§7.1a at the layer S3 made structural: a SANDBOX SPEC IS A CAPABILITY DECLARATION, so a generation judged on a host whose composed spec WIDENED must be seen to have changed). The seat compares the composed spec per tool NOW against the previous observation's reach-sandbox rows and NAMES each difference: a promise token or a static landlock entry ADDED, and a tool whose composed sandbox did not exist before, are WIDENINGS (one named sandbox-delta row each plus the loud sandbox-reach-widened row); REMOVED entries and a vanished tool are NARROWINGS.  THE CONSEQUENCE IS DELIBERATELY OPEN, exactly as step 6's: this term does NOT change eligibility, does NOT change the winner and does NOT change the exit code.  THE BOUNDS ARE NAMED, not implied: --print-sandbox prints the DECLARATION (baseline + sidecar), a SIDECAR is pinned by nothing, and this seat never reads PINS — so it NAMES a difference and does not claim the change was unlicensed (the pin judgement is fx-report's pin-drift and fx-audit's release classification).  Absence, once per side: no --proxy = NOT-KNOWN; no --reach-prev = NOT-KNOWN; a previous file with no reach-sandbox row = NOT-KNOWN (never 'every spec is new')" },
+ { 8, "winner", "greatest share among ELIGIBLE candidates",
    "A TIE GOES TO THE INCUMBENT: a tie NEVER causes a revert. This replaces tie -> highest version, whose only remaining effect under step 1 was to prefer the half-published intermediate over the generations it duplicates; the tie rule is gated by its own mutant" },
- { 8, "decision", "keep <CURRENT> | revert-to <winner> | withhold <state> | no-eligible-candidate",
+ { 9, "decision", "keep <CURRENT> | revert-to <winner> | withhold <state> | no-eligible-candidate",
    "ONE predicate decides both the printed value and what --apply does, so the plain run and the trigger agree BY CONSTRUCTION. WITHHOLD (exit 3) is the state the seat has a verdict for but will NOT act on, printed as itself and never as revert-to: the incumbent's share could not be measured (current-unmeasured); its verdict is unknown - mid-boot in-progress, a torn tail, or a damaged line naming it (current-verdict-unknown:<state>); or it has never been judged at all (current-not-judged). The last one is MEASURED, not a matter of taste: a soft rollback republishes the chosen content under a NEW version, so the next run's incumbent has silence for a record, and treating that silence as not-viable made the seat revert back to the generation --apply had just left. A CANDIDATE's silence is still rule 2's not-viable - the withholding states are about the incumbent, which is the side the trigger acts against. NO eligible candidate -> a NAMED refusal and exit 1: never a silent pick, never keep-by-default" },
- { 9, "apply", "--apply -> fxstore rollback <winner> --store <store> (SOFT: no --hard)",
+ { 10, "apply", "--apply -> fxstore rollback <winner> --store <store> (SOFT: no --hard)",
    "SOFT because the content returns and the VERSION NUMBER GOES UP - the substrate's own roll-forward semantics, keeping the timeline append-only and the boot history honest; --hard is recovery-only (repoints CURRENT with no new version and renumbers away the versions in between). Acts on revert-to ONLY, and mutates nothing for keep (refused, exit 0: a no-op is not an action), withhold (exit 3) or no-eligible-candidate (exit 1)" },
 };
 
@@ -446,6 +483,8 @@ static const struct { const char *id, *text; } BOUNDS[] = {
    "the candidate walk runs over the versions the store LISTS. A predecessor reaped by `fxstore gc --retain N` is therefore crossed with NO record that a version was ever there, and the version this seat names as 'the generation CURRENT replaced' can then be OLDER than the one CURRENT actually replaced - a revert can rest on that. Retention is unpoliced (design record 1a gap 4), and this seat STATES the bound rather than policing it, which is why the gap is worth naming: version numbers are assigned SEQUENTIALLY by the publisher, so a missing number between the incumbent's and the predecessor's is a REAPED version (a number that was never published cannot be missing), and the printed per-version table therefore lets a reader see the gap even though nothing here ACTS on it" },
  { "predecessor-content-not-compared",
    "the walk reads a generation fact only where it must: for each version it crosses, and for the duplicate test on the one below. Versions BELOW the predecessor are labelled from the genhash only when the walk happened to read them; otherwise their label says so and their genhash column reads not-read. The alternative - reading every listed version's generation fact so the whole table carries content identity - was MEASURED at ~22ms per fxstore call on the gate's fixture (20 calls in 0.44s), i.e. one call per historical version for a label NO RULE ACTS ON, so the deliberate choice is the lazy walk plus this stated limit rather than an O(history) subprocess pass" },
+ { "sandbox-visible-is-not-strong",
+   "the sandbox term makes a capability change VISIBLE and claims only that.  --print-sandbox prints the DECLARATION (the executor's baseline + the tool's sidecar) and the per-call applied spec is recorded only in the proxy's log (fx-report's column and fx-audit's per-boot record read THAT, not this seat); a sidecar is pinned by nothing, so a widening named here cannot be classified as released or unreleased by this seat, and it does not try.  And the sandbox itself is not strong: the promises are COARSE (`inet` is any destination, so the destination control is the operator's class tables, a different mechanism), the confinement is PER-PROCESS and not per-call, and there is no uid drop" },
  { "candidate-set-is-a-pair",
    "the bound is CURRENT + the ONE generation it replaced. A better generation OLDER than that predecessor is not a candidate and this seat cannot select it: the bound trades that reach for the property that makes the metric a tie-breaker rather than a permanent objective (rule 1). The full version table is still printed, so the reader can see what the bound excludes and why" },
  { "share-of-a-partial-snapshot",
@@ -1126,6 +1165,56 @@ static void reach_read_proxy(void) {
     g_rtools_known = 1;
 }
 
+/* THE SANDBOX HALF (S4b, palisade): the composed spec per tool, printed by
+ * the proxy ITSELF (`--print-sandbox`: name<TAB>promises<TAB>static-
+ * landlock — the executor's baseline + the tool's sidecar, rendered by the
+ * same code the spawn uses).  A sandbox spec IS a capability declaration
+ * (§7.1a), so a generation judged on a host whose composed spec WIDENED must
+ * be seen to have changed.  Reading it from the binary is the only way to do
+ * this without respelling the C baseline in a second place — a mirror that
+ * drifts is how an instrument goes quietly blind (fx-report's own bound). */
+static void reach_read_sandbox(void) {
+    if (!g_proxy) return;
+    char cmd[PATH_MAX_ * 2];
+    snprintf(cmd, sizeof cmd, "'%s' --print-sandbox 2>/dev/null", g_proxy);
+    int rc = -1;
+    char *out = run_capture(cmd, &rc);
+    if (!out || rc != 0) {
+        free(out);
+        die("the host proxy '%s' did not answer --print-sandbox (exit %d): the COMPOSED "
+            "sandbox of the running host cannot be read, and reading a failed probe as "
+            "'no sandbox' would report the narrowest possible capability — a TOOL ERROR, "
+            "never an empty composition", g_proxy, rc);
+    }
+    char *save = NULL;
+    for (char *line = strtok_r(out, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
+        size_t ll = strlen(line);
+        while (ll && (line[ll - 1] == '\r')) line[--ll] = 0;
+        if (!ll) continue;
+        char *f[3] = {0};
+        int nf = 0;
+        char *lsave = NULL;
+        for (char *tok = strtok_r(line, "\t", &lsave); tok && nf < 3;
+             tok = strtok_r(NULL, "\t", &lsave))
+            f[nf++] = tok;
+        if (nf < 2)
+            die("'%s --print-sandbox' printed a row that is not name<TAB>promises<TAB>"
+                "landlock: \"%s\" — a spec this seat cannot read is refused, never "
+                "skipped", g_proxy, line);
+        if (g_nsbt >= MAX_REACH_TOOLS)
+            die("the proxy printed more than %u composed sandbox specs", (unsigned)MAX_REACH_TOOLS);
+        reachsandbox_t *S = &g_sbt[g_nsbt++];
+        snprintf(S->name, sizeof S->name, "%s", f[0]);
+        snprintf(S->promises, sizeof S->promises, "%s", f[1]);
+        snprintf(S->landlock, sizeof S->landlock, "%s", nf > 2 ? f[2] : "");
+    }
+    free(out);
+    if (g_nsbt == 0)
+        die("'%s --print-sandbox' printed NO tool: the proxy's closed registry cannot be "
+            "empty, so this is a tool error, not a sandbox with nothing in it", g_proxy);
+    g_sbt_known = 1;
+}
+
 /* THE CURRENT HALF, part 2: the operator's pinned class tables, each row a
  * GRANT.  Parsed exactly as fx-report parses them (its readers are the
  * report's own; the pin-time validator, eval_ops.py, owns the grammar), and a
@@ -1206,6 +1295,24 @@ static void reach_read_prev(void) {
             g_ptools[g_nptools].name[ll] = 0;
             g_nptools++;
             g_prev_known = 1;
+        } else if (!strncmp(line, "reach-sandbox\t", 14)) {
+            char *c = line + 14;
+            char *f[3] = {0};
+            int nf = 0;
+            char *lsave = NULL;
+            for (char *tok = strtok_r(c, "\t", &lsave); tok && nf < 3;
+                 tok = strtok_r(NULL, "\t", &lsave))
+                f[nf++] = tok;
+            if (nf < 1 || !f[0][0])
+                die("%s: a reach-sandbox row is reach-sandbox<TAB>tool<TAB>promises<TAB>"
+                    "landlock: \"%s\"", g_reach_prev, line);
+            if (g_npsbt >= MAX_REACH_TOOLS) die("%s: more than %u previous sandbox specs",
+                                                g_reach_prev, (unsigned)MAX_REACH_TOOLS);
+            reachsandbox_t *S = &g_psbt[g_npsbt++];
+            snprintf(S->name, sizeof S->name, "%.*s", (int)sizeof S->name - 1, f[0]);
+            snprintf(S->promises, sizeof S->promises, "%s", nf > 1 ? f[1] : "");
+            snprintf(S->landlock, sizeof S->landlock, "%s", nf > 2 ? f[2] : "");
+            g_prev_sandbox_known = 1;
         } else if (!strncmp(line, "reach-grant\t", 12)) {
             char *c = line + 12;
             char *f[4] = {0};
@@ -1229,6 +1336,190 @@ static void reach_read_prev(void) {
     free(b);
 }
 
+/* Token-set difference helpers for the sandbox comparison: promises are
+ * space-joined, landlock entries `;`-joined, and BOTH are compared as SETS
+ * (order carries no meaning in either vocabulary). */
+static int sb_set_has(const char *set, char sep, const char *tok) {
+    if (!set) return 0;
+    size_t tl = strlen(tok);
+    const char *p = set;
+    for (;;) {
+        while (*p == sep) p++;
+        if (!*p) return 0;
+        const char *e = p;
+        while (*e && *e != sep) e++;
+        if ((size_t)(e - p) == tl && !strncmp(p, tok, tl)) return 1;
+        p = e;
+    }
+}
+
+/* THE SANDBOX DELTA (S4b): the composed spec per tool NOW against the
+ * previous observation's `reach-sandbox` rows, ADDITIVE to the reach-delta
+ * term above and with the SAME open consequence — this function touches no
+ * decision value, no eligibility flag and no exit code, and says so in the
+ * row's own bytes.  A tool whose promises/static landlock GAINED anything is
+ * a WIDENING (named, plus the loud `sandbox-reach-widened` row); anything
+ * REMOVED is a NARROWING (named, mirror direction); a tool present on one
+ * side only is WIDENED/NARROWED by the same rule, because a host tool with a
+ * composed sandbox IS a capability.
+ *
+ * WHY IT IS NOT NOISE-FREE, stated rather than discovered: --print-sandbox
+ * prints the DECLARATION (executor baseline + the tool's sidecar), so a tool's
+ * SIDECAR is the thing most likely to have moved — and nothing pins a
+ * sidecar.  That is exactly why a seat that judges generations must name the
+ * difference; it does NOT claim the change was unlicensed, because this file
+ * never reads PINS (fx-report's pin-drift and fx-audit's release
+ * classification own that judgement). */
+static void emit_sandbox_delta(void) {
+    for (unsigned i = 0; i < g_nsbt; i++)
+        printf("reach-sandbox\t%s\t%s\t%s\n", g_sbt[i].name, g_sbt[i].promises,
+               g_sbt[i].landlock);
+    if (!g_proxy)
+        printf("sandbox-absence\tcomposed\tnot-given-no---proxy-so-the-COMPOSED-sandbox-"
+               "(executor-baseline+sidecar)of-the-running-host-is-NOT-KNOWN (NOT 'the sandbox "
+               "did not change' and NOT 'nothing is declared')\tABSENT\n");
+
+    if (!g_sbt_known) {
+        printf("sandbox-delta\t-\tNOT-KNOWN\tABSENT\tthe composed sandbox was not read, so it "
+               "cannot be compared with any previous observation — 'no sandbox change' is NOT "
+               "derivable from nothing\n");
+        return;
+    }
+    if (!g_reach_prev) {
+        printf("sandbox-delta\t-\tNOT-KNOWN\tABSENT\tno---reach-prev-was-given-so-there-is-no-"
+               "PREVIOUS-composed-sandbox-to-compare-against: one reading cannot show a "
+               "change\n");
+        return;
+    }
+    if (!g_prev_sandbox_known) {
+        printf("sandbox-delta\t-\tNOT-KNOWN\tABSENT\t%s was given and holds NO reach-sandbox "
+               "row: a baseline taken before the sandbox was recorded is NOT a baseline that "
+               "says every current spec is new (which would make every tool a widening)\n",
+               g_reach_prev);
+        return;
+    }
+
+    unsigned n_wide = 0, n_narrow = 0, n_change = 0;
+    char wide[LINE_MAX_]; wide[0] = 0;
+    int wide_cut = 0;
+#define SB_WIDE_ADD(...) do { \
+        size_t _l = strlen(wide); \
+        int _w = snprintf(wide + _l, sizeof wide - _l, __VA_ARGS__); \
+        if (_w < 0 || (size_t)_w >= sizeof wide - _l) { wide_cut = 1; wide[sizeof wide - 1] = 0; } \
+    } while (0)
+
+    for (unsigned i = 0; i < g_nsbt; i++) {
+        reachsandbox_t *C = &g_sbt[i], *P = NULL;
+        for (unsigned j = 0; j < g_npsbt; j++)
+            if (!strcmp(g_psbt[j].name, C->name)) { P = &g_psbt[j]; break; }
+        if (!P) {
+            printf("sandbox-delta\t%s\tWIDER\tDERIVED\tthe composed sandbox declares a tool "
+                   "the previous observation did not (promises \"%s\") — a host capability "
+                   "whose SANDBOX was never recorded before, so nothing about it can be "
+                   "compared and the widening is named\n", C->name, C->promises);
+            SB_WIDE_ADD("tool '%s' newly carries a composed sandbox; ", C->name);
+            n_wide++;
+            continue;
+        }
+        /* promises: added tokens widen, removed tokens narrow */
+        char add_p[1024] = "", del_p[1024] = "";
+        {
+            char *dup = xstrdup(C->promises), *sv = NULL;
+            for (char *t = strtok_r(dup, " \t", &sv); t; t = strtok_r(NULL, " \t", &sv))
+                if (!sb_set_has(P->promises, ' ', t)) {
+                    size_t l = strlen(add_p);
+                    snprintf(add_p + l, sizeof add_p - l, "%s%s", l ? " " : "", t);
+                }
+            free(dup);
+            dup = xstrdup(P->promises); sv = NULL;
+            for (char *t = strtok_r(dup, " \t", &sv); t; t = strtok_r(NULL, " \t", &sv))
+                if (!sb_set_has(C->promises, ' ', t)) {
+                    size_t l = strlen(del_p);
+                    snprintf(del_p + l, sizeof del_p - l, "%s%s", l ? " " : "", t);
+                }
+            free(dup);
+        }
+        char add_l[2048] = "", del_l[2048] = "";
+        {
+            char *dup = xstrdup(C->landlock), *sv = NULL;
+            for (char *t = strtok_r(dup, ";", &sv); t; t = strtok_r(NULL, ";", &sv))
+                if (!sb_set_has(P->landlock, ';', t)) {
+                    size_t l = strlen(add_l);
+                    snprintf(add_l + l, sizeof add_l - l, "%s%s", l ? ";" : "", t);
+                }
+            free(dup);
+            dup = xstrdup(P->landlock); sv = NULL;
+            for (char *t = strtok_r(dup, ";", &sv); t; t = strtok_r(NULL, ";", &sv))
+                if (!sb_set_has(C->landlock, ';', t)) {
+                    size_t l = strlen(del_l);
+                    snprintf(del_l + l, sizeof del_l - l, "%s%s", l ? ";" : "", t);
+                }
+            free(dup);
+        }
+        int has_add = add_p[0] || add_l[0];
+        int has_del = del_p[0] || del_l[0];
+        if (!has_add && !has_del) continue;
+        if (has_add) {
+            printf("sandbox-delta\t%s\t%s\tDERIVED\tthe composed sandbox spec WIDENED", C->name,
+                   has_del ? "CHANGED" : "WIDER");
+            if (add_p[0]) printf("; promise(s) added \"%s\"", add_p);
+            if (add_l[0]) printf("; landlock entr(y/ies) added \"%s\"", add_l);
+            if (del_p[0]) printf("; promise(s) removed \"%s\"", del_p);
+            if (del_l[0]) printf("; landlock entr(y/ies) removed \"%s\"", del_l);
+            printf(" — a sandbox spec is a CAPABILITY DECLARATION, so an ADDITION here is a "
+                   "wider host capability between these two observations\n");
+            SB_WIDE_ADD("composed spec of '%s' (%s%s%s%s); ", C->name,
+                        add_p[0] ? "promises +" : "", add_p,
+                        add_l[0] ? " landlock +" : "", add_l);
+            n_wide++;
+            if (has_del) n_change++;
+        } else {
+            printf("sandbox-delta\t%s\tNARROWER\tDERIVED\tthe composed sandbox spec NARROWED",
+                   C->name);
+            if (del_p[0]) printf("; promise(s) removed \"%s\"", del_p);
+            if (del_l[0]) printf("; landlock entr(y/ies) removed \"%s\"", del_l);
+            printf(" — the mirror direction, named so a reader can tell a tightening from a "
+                   "widening (and NOT raised as a widening)\n");
+            n_narrow++;
+        }
+    }
+    for (unsigned j = 0; j < g_npsbt; j++) {
+        reachsandbox_t *P = &g_psbt[j];
+        int seen = 0;
+        for (unsigned i = 0; i < g_nsbt; i++)
+            if (!strcmp(g_sbt[i].name, P->name)) { seen = 1; break; }
+        if (seen) continue;
+        printf("sandbox-delta\t%s\tNARROWER\tDERIVED\tthe previous observation recorded a "
+               "composed sandbox for this tool and the current proxy declares none: the host "
+               "tool (or its declaration) is GONE — a capability withdrawn\n", P->name);
+        n_narrow++;
+    }
+#undef SB_WIDE_ADD
+
+    if (!n_wide && !n_narrow)
+        printf("sandbox-delta\t-\tNONE\tDERIVED\tthe previous observation and this one carry "
+               "the SAME composed sandbox spec for every tool (promises and static landlock, "
+               "compared as sets): no sandbox change BETWEEN THESE TWO OBSERVATIONS\n");
+    if (n_wide)
+        printf("sandbox-reach-widened\t%u\tDERIVED\tSANDBOX REACH WIDENED: %u named widening(s) "
+               "above.  THE CONSEQUENCE IS DELIBERATELY OPEN (order step 7), exactly as the "
+               "egress term's is: this row does NOT change eligibility, does NOT change the "
+               "winner and does NOT change this seat's exit code — v1 makes a sandbox change "
+               "LOUD and does not bake policy, and whether it should DISQUALIFY a generation "
+               "stays the operator's reversible decision.  What is NOT open is that a sandbox "
+               "change is invisible to the seat that judges generations\n", n_wide, n_wide);
+    h("SANDBOX (order step 7, additive to the reach term): %u composed spec(s) now; the delta "
+      "against %s names %u WIDENING(s), %u narrowing(s), %u changed row(s).", g_nsbt,
+      g_reach_prev ? g_reach_prev : "(no previous observation)", n_wide, n_narrow, n_change);
+    if (n_wide)
+        h("  a sandbox widening is NAMED and it does NOT decide anything (the consequence is "
+          "OPEN); it is NOT a claim that the sandbox is strong — promises stay coarse, the "
+          "confinement is per-process and there is no uid drop.");
+    if (wide_cut)
+        h("  (the widening list in the loud row was CUT at its bound — every widening is "
+          "named on its own sandbox-delta row.)");
+}
+
 /* Emit the two observations (so the record carries WHAT was compared, not
  * only the verdict on it), then the delta. */
 static void emit_reach(void) {
@@ -1245,6 +1536,12 @@ static void emit_reach(void) {
     if (!g_opsdir)
         printf("reach-absence\tclass-tables\tnot-given-no---ops-policy-dir-so-the-grant-HALF-"
                "of-the-current-reach-observation-is-NOT-KNOWN (NOT 'nothing is granted')\tABSENT\n");
+
+    /* S4b: the SANDBOX half is emitted from HERE, before the reach term's own
+     * early returns, so every path that arms the reach term also reports the
+     * sandbox (and every path that does not still says the sandbox is
+     * NOT-KNOWN rather than silent). */
+    emit_sandbox_delta();
 
     if (!g_proxy && !g_opsdir) {
         printf("reach-delta\t-\t-\tNOT-KNOWN\tABSENT\tneither half of the CURRENT observation was "
@@ -1388,17 +1685,22 @@ static void usage(FILE *f) {
         "                   TOOL ERROR (exit 2), never a 0%%\n"
         "  --package-set P  passed through to the oracle when its store artifacts\n"
         "                   cannot attribute a component's source\n"
-        "  --proxy BIN      the host proxy whose COMPILED-IN host-tool registry is\n"
-        "                   the 'declared reach' half (read via its own\n"
-        "                   --print-host-tools; a proxy that cannot be run is a TOOL\n"
-        "                   ERROR, never 'no host tools')\n"
-        "  --ops-policy-dir DIR  the operator's PINNED class tables (ops-aliases.tsv,\n"
-        "                   ops-hosts.tsv): the 'declared grants' half\n"
+        "  --proxy BIN      the host proxy: its COMPILED-IN host-tool registry is\n"
+        "                   the 'declared reach' half (via its own --print-host-tools)\n"
+        "                   AND its own --print-sandbox is the COMPOSED SANDBOX spec\n"
+        "                   per tool (executor baseline + sidecar).  A proxy that\n"
+        "                   cannot be run is a TOOL ERROR, never 'no host tools' and\n"
+        "                   never 'no sandbox'\n"
+        "  --ops-policy-dir DIR  the operator's PINNED tables (ops-aliases.tsv,\n"
+        "                   ops-hosts.tsv, ops-sandbox.tsv): the 'declared grants'\n"
+        "                   half (this seat does NOT verify their shas — the proxy's\n"
+        "                   startup pin check and fx-report's pin-drift do)\n"
         "  --reach-prev FILE  the PREVIOUS reach observation (the shared reach-tool/\n"
-        "                   reach-grant grammar this seat prints and the audit records\n"
-        "                   per boot).  Without it the DELTA IS NOT-KNOWN — never\n"
-        "                   'no widening'.  A named delta does NOT change the decision:\n"
-        "                   whether widening DISQUALIFIES stays OPEN (step 6)\n"
+        "                   reach-grant/reach-sandbox grammar this seat prints and the\n"
+        "                   audit records per boot).  Without it the DELTA IS NOT-KNOWN —\n"
+        "                   never 'no widening'.  A named delta does NOT change the\n"
+        "                   decision: whether widening DISQUALIFIES stays OPEN (step 6),\n"
+        "                   and so does the sandbox term's consequence (step 7)\n"
         "  --apply          THE THIN TRIGGER: on `revert-to <v>` ONLY, drive the\n"
         "                   EXISTING `fxstore rollback <v>` (SOFT — content returns\n"
         "                   and the VERSION NUMBER GOES UP; --hard is recovery-only\n"
@@ -1732,6 +2034,7 @@ int main(int argc, char **argv) {
      * flags and the exit code are exactly what they would be without it. ── */
     h("");
     reach_read_proxy();
+    reach_read_sandbox();
     reach_read_tables();
     reach_read_prev();
     emit_reach();

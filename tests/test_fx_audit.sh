@@ -2115,6 +2115,105 @@ grep -q 'was REMOVED between audits' "$WORK/out.s4-gone" \
     || fail "S4(g): a vanished log is not stated as a record removed (never 'no call was made')"
 echo "test_fx_audit: S4(f)/(g) a truncated host log and a DELETED one are findings — the record is tamper-evident in both directions"
 
+# ══ S4b: THE COMPOSED SANDBOX RECORDED PER BOOT ══════════════════════════
+# §7.1a at the layer S3 made structural: every host spawn is wrapped, the
+# executor owns the BASELINE, a tool may declare MORE via a sidecar, and the
+# operator's table may only TIGHTEN — so the composed spec per tool IS a
+# capability declaration.  It is recorded per boot (with a sha) and a change is
+# NAMED against THIS audit's own previous observation.  The widening is
+# CONSTRUCTED: a SIDECAR beside a COPY of the proxy (build/ is never touched).
+SBSB="$WORK/s4sb-pol"
+cp -r "$REPO/policy/ops" "$SBSB" || fail "S4b SETUP: cannot copy the pinned tables"
+SBOB="$WORK/s4sb.obs"; SBOB2="$WORK/s4sb-wide.obs"
+SBW="$WORK/s4sb-proxy"
+mkdir -p "$SBW" || fail "S4b SETUP: mkdir"
+cp "$REPO/build/fx-hostgate" "$SBW/fx-hostgate" || fail "S4b SETUP: cannot copy the proxy"
+printf 'inet\t' > "$SBW/fx-host-time.sidecar" || fail "S4b SETUP: cannot write the sidecar"
+"$SBW/fx-hostgate" --print-sandbox 2>/dev/null | grep -q '^host_time	stdio rpath exec prot_exec inet	' \
+    || fail "S4b SETUP: the widened copy does not declare the extra promise — the fixture is not a widening"
+SBWIDE="$SBW/fx-hostgate"; SBPOL="$SBSB"
+
+# (a) ENROL: the composition is recorded per boot, with a sha and the boot it
+# was taken around, and NOTHING is claimed about a change on the first run.
+rc=$(s4_run "$WORK/out.s4sb-enrol" "$SBOB" --proxy "$REPO/build/fx-hostgate" \
+        --ops-policy-dir "$SBPOL")
+[ "$rc" = "0" ] || fail "S4b(a): the enrolling run must be coherent, got $rc: $(grep INCOHERENT "$WORK/out.s4sb-enrol")"
+grep -q '^reach-sandbox	host_time	stdio rpath exec prot_exec	' "$WORK/out.s4sb-enrol" \
+    || fail "S4b(a): the composed spec is not recorded in the SHARED grammar (reach-sandbox)"
+grep -q '^reach-sandbox	host_cat	' "$WORK/out.s4sb-enrol" \
+    || fail "S4b(a): the composition is incomplete (host_cat missing)"
+grep -q '^sandbox-spec	host_time	promises	stdio rpath exec prot_exec	landlock	.*	sha	[0-9a-f]\{64\}	MEASURED' "$WORK/out.s4sb-enrol" \
+    || fail "S4b(a): the per-tool spec is not recorded with its sha"
+grep -q '^sandbox-composed-sha	[0-9a-f]\{64\}	MEASURED' "$WORK/out.s4sb-enrol" \
+    || fail "S4b(a): the one sha over the composed block is not printed"
+SBSBV=$(tail -1 "$STORE/.bootlog" | awk '{print $1}')
+SBSBN=$(tail -1 "$STORE/.bootlog" | awk '{print $4}')
+grep -q "^sandbox-boot	$SBSBV	nonce	$SBSBN	MEASURED" "$WORK/out.s4sb-enrol" \
+    || fail "S4b(a): the sandbox record is not anchored to the LAST .bootlog line (the boot it was taken around)"
+grep -q '^sandbox-pin	ops-sandbox.tsv	MATCH' "$WORK/out.s4sb-enrol" \
+    || fail "S4b(a): the one PINNED half (the operator table) is not reported"
+grep -q '^sandbox-delta' "$WORK/out.s4sb-enrol" \
+    && fail "S4b(a): a delta was computed against no baseline (the first observation must ENROL)"
+grep -aq 'bound (S4b)' "$WORK/out.s4sb-enrol" \
+    || fail "S4b(a): the bound that says what this record CANNOT see is not printed"
+echo "test_fx_audit: S4b(a) the composed sandbox is recorded per boot (per-tool rows, a sha, and the boot it was taken around), with the pin and the bound stated"
+
+# (b) NOTHING CHANGED -> NONE (the negative direction, on the enrolled baseline)
+rc=$(s4_run "$WORK/out.s4sb-same" "$SBOB" --proxy "$REPO/build/fx-hostgate" \
+        --ops-policy-dir "$SBPOL")
+expect_coh "$WORK/out.s4sb-same" "$rc" "S4b(b) unchanged sandbox"
+grep -q '^sandbox-delta	-	NONE	DERIVED' "$WORK/out.s4sb-same" \
+    || fail "S4b(b): the same composition on both sides did not read NONE: $(grep -m1 '^sandbox-delta' "$WORK/out.s4sb-same")"
+grep -q '^sandbox-delta	host_time	WIDER' "$WORK/out.s4sb-same" \
+    && fail "S4b(b): a sandbox widening was FABRICATED where nothing changed"
+echo "test_fx_audit: S4b(b) an unchanged composition reads NONE — the negative direction"
+
+# (c) A REAL WIDENING IS AN INCOHERENCE: the SAME baseline, then the proxy
+# copy whose SIDECAR declares `inet`.  No pin covers a sidecar, so the
+# widening takes the loud side ALWAYS — and the finding says why.
+rc=$(s4_run "$WORK/out.s4sb-wide" "$SBOB" --proxy "$SBWIDE" --ops-policy-dir "$SBPOL")
+expect_incoh "$WORK/out.s4sb-wide" "$rc" "S4b(c) sidecar widening" sandbox-widened-unreleased
+grep -q '^sandbox-delta	host_time	WIDER	DERIVED.*promise(s) added "inet"' "$WORK/out.s4sb-wide" \
+    || fail "S4b(c): the added promise is not NAMED as a widening: $(grep -m1 '^sandbox-delta' "$WORK/out.s4sb-wide")"
+grep -q 'NEITHER is pinned' "$WORK/out.s4sb-wide" \
+    || fail "S4b(c): the finding does not say WHY no release can license it (the sidecar and the baseline are unpinned)"
+grep -q 'CAPABILITY DECLARATION' "$WORK/out.s4sb-wide" \
+    || fail "S4b(c): the finding does not say what a sandbox spec IS (§7.1a)"
+echo "test_fx_audit: S4b(c) a sidecar-declared capability between two observations is INCOHERENT (sandbox-widened-unreleased), named row by row"
+
+# (d) THE MIRROR (and what it is NOT): the SAME two proxies in the OTHER
+# order record a NARROWING — named, NOT a finding — and the row refuses to
+# call it an operator release, because the operator table cannot narrow
+# --print-sandbox either.
+rc=$(s4_run "$WORK/out.s4sb-wenrol" "$SBOB2" --proxy "$SBWIDE" --ops-policy-dir "$SBPOL")
+expect_coh "$WORK/out.s4sb-wenrol" "$rc" "S4b(d) widened enrolment"
+rc=$(s4_run "$WORK/out.s4sb-narrow" "$SBOB2" --proxy "$REPO/build/fx-hostgate" \
+        --ops-policy-dir "$SBPOL")
+expect_coh "$WORK/out.s4sb-narrow" "$rc" "S4b(d) narrowing"
+grep -q '^sandbox-delta	host_time	NARROWER	DERIVED.*promise(s) removed "inet"' "$WORK/out.s4sb-narrow" \
+    || fail "S4b(d): the mirror direction is not NAMED: $(grep -m1 '^sandbox-delta' "$WORK/out.s4sb-narrow")"
+grep -q 'THIS IS NOT: an operator RELEASE' "$WORK/out.s4sb-narrow" \
+    || fail "S4b(d): the narrowing row claims more than the mechanism supports (the operator table cannot narrow the composition)"
+grep -q '^sandbox-widened-unreleased' "$WORK/out.s4sb-narrow" \
+    && fail "S4b(d): a NARROWING was raised as a widening finding"
+echo "test_fx_audit: S4b(d) the mirror direction is NAMED and is not a finding — and it is not dressed as an operator release either"
+
+# (e) THE ONE PINNED HALF: an operator sandbox table edited without a re-pin
+# is reported DRIFT (in a COPY; the shared policy/ops is only ever READ), and
+# it is NOT a widening: the table is deny-more-only and cannot widen the
+# composition at all.
+cp -r "$SBPOL" "$WORK/s4sb-drift" || fail "S4b(e) SETUP: cp"
+printf '# an edit nobody re-pinned\n' >> "$WORK/s4sb-drift/ops-sandbox.tsv" \
+    || fail "S4b(e) SETUP: cannot append"
+rc=$(s4_run "$WORK/out.s4sb-drift" "$SBOB" --proxy "$REPO/build/fx-hostgate" \
+        --ops-policy-dir "$WORK/s4sb-drift")
+expect_coh "$WORK/out.s4sb-drift" "$rc" "S4b(e) operator-table drift alone"
+grep -q '^sandbox-pin	ops-sandbox.tsv	DRIFT	MEASURED.*tightening nobody released' "$WORK/out.s4sb-drift" \
+    || fail "S4b(e): an unreleased operator sandbox table is not reported as DRIFT: $(grep -m1 '^sandbox-pin' "$WORK/out.s4sb-drift")"
+grep -q '^sandbox-delta	host_time	WIDER' "$WORK/out.s4sb-drift" \
+    && fail "S4b(e): an operator-table edit was reported as a SPEC widening — the two are different questions"
+echo "test_fx_audit: S4b(e) the operator table's own release state is reported (DRIFT) and is kept distinct from a spec widening"
+
 # ══ THE MUTATION CONTROL (positive control, per check) ══════════════════
 # a detector with exactly one check's registration deleted must go COHERENT
 # on that check's fixture (and the blind seat goes coherent on the COHERENT
@@ -2172,6 +2271,32 @@ expect_coh "$WORK/out.m-s4reach" "$rc" "MUTANT egress-reach (an UNRELEASED widen
 grep -q '^reach-delta	grant	authority:evil.example.com	WIDENED' "$WORK/out.m-s4reach" \
     && fail "MUTANT egress-reach: the blind check still NAMED the widening (the check, not another line, must have carried it)"
 echo "test_fx_audit: S4 MUTANTS the two new checks are load-bearing: without proxy-log-record a TRUNCATED host log is coherent, and without egress-reach an UNRELEASED widening is"
+# S4b: the SANDBOX check is load-bearing, on ITS OWN fixture (the sidecar
+# widening), and the WIDENING BRANCH itself is proven: a build where an
+# addition is re-derived (has_add := 0) reports NONE while the spec widened.
+mutate sandbox-record            "$WORK/mut-s4sb"
+rc=$(FXSTORE_BIN="$FXSTORE" "$WORK/mut-s4sb" --store "$STORE" --rootfs "$ROOT" --boots 4 \
+        --nonces "$WORK/nonces-main.led" --obs-file "$WORK/s4sb.obs" \
+        --proxy "$WORK/s4sb-proxy/fx-hostgate" --ops-policy-dir "$WORK/s4sb-pol" > "$WORK/out.m-s4sb" 2>&1; echo $?)
+expect_coh "$WORK/out.m-s4sb" "$rc" "MUTANT sandbox-record (a WIDENED composed sandbox goes coherent — the sight is gone)"
+sed 's/int has_add = add_p\[0\] || add_l\[0\];/int has_add = 0; (void)add_p; (void)add_l;/' \
+    "$REPO/tools/fx-audit.c" > "$WORK/mut-s4sb-blind.c" || fail "cannot write the sandbox-blind mutant"
+cmp -s "$WORK/mut-s4sb-blind.c" "$REPO/tools/fx-audit.c" \
+    && fail "the sandbox-blind mutation changed nothing (the sed matched no line)"
+cc -std=c11 -O2 -Wall -Wextra -I"$REPO/src/vendor/dhall-c" \
+   -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
+   -o "$WORK/mut-s4sb-blind" "$WORK/mut-s4sb-blind.c" "$REPO/src/vendor/dhall-c/sha256.c" \
+    || fail "cannot build the sandbox-blind mutant"
+rc=$(FXSTORE_BIN="$FXSTORE" "$WORK/mut-s4sb-blind" --store "$STORE" --rootfs "$ROOT" --boots 4 \
+        --nonces "$WORK/nonces-main.led" --obs-file "$WORK/s4sb.obs" \
+        --proxy "$WORK/s4sb-proxy/fx-hostgate" --ops-policy-dir "$WORK/s4sb-pol" > "$WORK/out.m-s4sbblind" 2>&1; echo $?)
+expect_coh "$WORK/out.m-s4sbblind" "$rc" "MUTANT sandbox-blind (the addition re-derived: a WIDENED spec reads NONE)"
+grep -q '^sandbox-delta	host_time	WIDER' "$WORK/out.m-s4sbblind" \
+    && fail "MUTANT sandbox-blind: the blind build STILL names the widening — the arm is not load-bearing"
+grep -q '^sandbox-delta	-	NONE' "$WORK/out.m-s4sbblind" \
+    || fail "MUTANT sandbox-blind: the mutant did not reproduce the dangerous shape the arm refuses (NONE while the spec widened)"
+echo "test_fx_audit: S4b MUTANTS the sandbox check is load-bearing: without sandbox-record a WIDENED composition is coherent, and with the addition re-derived it reads NONE while a sidecar declared inet"
+
 mutate previous-observation      "$WORK/mut-previous-observation"
 mut_run "$WORK/mut-previous-observation" coh > "$WORK/out.m-prevobs" 2>&1
 expect_coh "$WORK/out.m-prevobs" $? "MUTANT previous-observation (THE BOUND: the coherent tamper goes coherent without host memory)"

@@ -271,8 +271,18 @@ $(BIN_OSIER): tools/fx-osier-share.c $(DHALL_SRC) $(YYJSON_SRC)
 #   --hard`, and the verdict is pinned independent of attempts.jsonl (a
 #   self-report is never evidence).
 BIN_AUDIT := build/fx-audit
+# THE HOST PROXY — defined HERE, before the first prerequisite list that uses
+# it.  GNU make expands a rule's prerequisites at READ-IN time, so a :=
+# definition placed after its first use expands EMPTY and silently drops the
+# dependency (the S3 lesson: the test-hostgate list referenced BIN_ECHO_*/etc
+# defined further down, and a clean rebuild then found the binaries missing and
+# died at phase 0).  tests/test_fx_{audit,select}.sh BOTH drive
+# build/fx-hostgate (the reach registry, the composed sandbox, the operator
+# pin), so a gate that "passes" because a stale binary happened to be there is
+# exactly the failure this ordering prevents.
+BIN_HOSTGATE := build/fx-hostgate
 
-test-audit: $(BIN_AUDIT)
+test-audit: $(BIN_AUDIT) $(BIN_HOSTGATE)
 	bash tests/test_fx_audit.sh
 
 $(BIN_AUDIT): tools/fx-audit.c src/vendor/dhall-c/sha256.c src/vendor/dhall-c/dhall.h
@@ -347,7 +357,6 @@ $(BIN_SELECT): tools/fx-select.c
 # every free-text field verbatim — unbounded model-controlled text in an
 # append-only host log — and the gate's bound phase must flip on it by
 # content too.
-BIN_HOSTGATE := build/fx-hostgate
 # S3 (THE DECLARED PROGRAMS): the host-tool programs the registry names, each
 # a STANDALONE binary the spawn execs with a scrubbed env — the proxy carries
 # NO http and NO compiled-in per-tool executor.  fx-host-cat-noplainfile is

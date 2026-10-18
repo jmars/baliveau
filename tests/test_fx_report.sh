@@ -675,7 +675,7 @@ grep -q "NO growth policy exists" "$WORK/out-s1" \
 # drops that row on BOTH sides (its text was amended in S2), so the row's
 # complete loss or an id change would otherwise pass the pin silently.
 NBOUNDROWS=$(grep -c "^bound${TAB}" "$WORK/out-s1")
-[ "$NBOUNDROWS" = "16" ] || fail "POLICY: expected the seat's 16 bound rows on every run, got $NBOUNDROWS (a row was silently dropped; 16 = the 8 pre-S2 rows + S2's 4 claim bounds + P9's 2 call bounds + S4's 2 reach bounds)"
+[ "$NBOUNDROWS" = "18" ] || fail "POLICY: expected the seat's 18 bound rows on every run, got $NBOUNDROWS (a row was silently dropped; 18 = the 8 pre-S2 rows + S2's 4 claim bounds + P9's 2 call bounds + S4's 2 reach bounds + S4-palisade's 2 sandbox bounds)"
 grep -q "^bound${TAB}reach-audit-is-the-weakened-one${TAB}.*JUDGED ARGUMENTS rather than typed" "$WORK/out-s1" \
     || fail "POLICY: the S4 bound that says the reach audit is the WEAKENED one must print on every run (a report that reads stronger than it is, is the failure this project keeps finding)"
 grep -q "^bound${TAB}reach-attribution-mirrors-the-seat${TAB}" "$WORK/out-s1" \
@@ -684,6 +684,14 @@ grep -q "^bound${TAB}same-store-only${TAB}.*the ONE in-domain exception" "$WORK/
     || fail "POLICY: the amended same-store-only row must print on every run — the pin drops it on BOTH sides, so its loss or an id change is caught only here"
 grep -q "^bound${TAB}call-auditing-not-proofing${TAB}.*NO LANE STOP BY DEFAULT" "$WORK/out-s1" \
     || fail "POLICY: the call class's auditing-not-proofing bound (the G7 demotion stated) must print on every run"
+# S4 (palisade): the two bounds that say what the sandbox class CANNOT see print
+# on every run — a report that reads stronger than it is, is the failure this
+# project keeps finding, and "the sandbox change is VISIBLE" is exactly the
+# claim that must not grow into "the sandbox is STRONG".
+grep -q "^bound${TAB}sandbox-audit-is-the-weakened-one${TAB}.*the sidecar is UNPINNED" "$WORK/out-s1" \
+    || fail "POLICY: the S4 bound that says the sandbox audit is the WEAKENED one must print on every run"
+grep -q "^bound${TAB}sandbox-visible-is-not-strong${TAB}.*no uid drop" "$WORK/out-s1" \
+    || fail "POLICY: the S4 bound that says a visible sandbox change is not a STRONG one must print on every run"
 
 # ══ OPERATOR: the derived class on the unattributed store ═══════════════
 report "$WORK/s2" "$WORK/out-s2"
@@ -1253,6 +1261,8 @@ OPHDR
             /^taxonomy\tcall-exec\t/ { next }
             /^taxonomy\treach\t/ { next }
             /^bound\treach-/ { next }
+            /^taxonomy\tsandbox\t/ { next }
+            /^bound\tsandbox-/ { next }
             /^bound\tsame-store-only\t/ { next }
             { print }
         ' "$1" > "$2"
@@ -1606,9 +1616,14 @@ fi
         --proxy-log "$WORK/call-log-host.jsonl" --transcript "$TR_HOST" \
         > "$WORK/out-call-host" 2>"$WORK/out-call-host.err"
     [ $? -eq 0 ] || fail "EXEC: the host-executed run must report cleanly, got $? ($(head -3 "$WORK/out-call-host.err"))"
-    grep -q "^call-exec${TAB}$CALLID${TAB}exec${TAB}host${TAB}MEASURED" "$WORK/out-call-host" \
+    grep -q "^call-exec${TAB}$CALLID${TAB}exec${TAB}host${TAB}sandbox${TAB}.*MEASURED" "$WORK/out-call-host" \
         || fail "EXEC: a HOST-executed call is not distinguishable in the report"
-    grep -q "^call-exec${TAB}$CALLID${TAB}exec${TAB}guest${TAB}DERIVED" "$WORK/out-call-deny" \
+    # S4 (palisade): THE SANDBOX IS A COLUMN of the same row ($7.1a: a spec IS
+    # a capability declaration), and it is the spec the spawn APPLIED —
+    # promises plus the effective landlock, carried VERBATIM from the log.
+    grep -q "^call-exec${TAB}$CALLID${TAB}exec${TAB}host${TAB}sandbox${TAB}stdio rpath exec prot_exec .*fx-host-time:rx" "$WORK/out-call-host" \
+        || fail "SANDBOX: the applied sandbox spec is not a column of the call-exec row: $(grep -m1 '^call-exec' "$WORK/out-call-host")"
+    grep -q "^call-exec${TAB}$CALLID${TAB}exec${TAB}guest${TAB}sandbox${TAB}-${TAB}DERIVED" "$WORK/out-call-deny" \
         || fail "EXEC: a GUEST-executed call is not identified as such (the dimension must read both ways)"
     grep -q "^call-exec${TAB}$CALLID${TAB}exec${TAB}host" "$WORK/out-call-deny" \
         && fail "EXEC: a guest call was reported as host-executed — the shape is being inferred, not read"
@@ -1771,12 +1786,148 @@ PYCOPY
         || fail "MUT-PINDRIFT: the mutant lost the pin READING too — this control is meant to blind the FINDING only, so the two must be independent"
     echo "test_fx_report: S4-MUTANTS each new property blinds its own arm: the exec field ignored (host reads guest), the stale-grant row disabled, and the pin joined on the DRIFTED value (the reach-pin row still reads DRIFT and NO finding follows — the quiet widening)"
 
+    # ══ S4 (PALISADE): THE SANDBOX CLASS — a spec IS a capability change ══
+    # §7.1a at the layer S3 made structural: every host spawn is wrapped, the
+    # executor owns the BASELINE, a tool may declare MORE via a sidecar, and
+    # the operator table may only TIGHTEN.  The class carries the applied spec
+    # as a COLUMN of the call rows, then compares the DECLARED composition
+    # (--proxy --print-sandbox) against the RECORDED specs (the log) and pins
+    # the one pinned half.  A real widening is constructed in a COPY of the
+    # proxy (a sidecar) and each seat must NAME it.
+    sb_report() { # sb_report OUT [args...] -> rc on stdout
+        _o="$1"; shift
+        FXSTORE_BIN="$FXSTORE" "$REPORT" --store "$WORK/s1" "$@" > "$_o" 2>"$_o.err"
+        echo $?
+    }
+    # (a) THE AGREED STATE: the composition the proxy declares now IS the spec
+    # the recorded call applied (same build, no sidecar), so the delta reads
+    # NONE — the negative direction, and it is what makes (c) mean anything.
+    rc=$(sb_report "$WORK/out-sb-a" --proxy "$REPO/build/fx-hostgate" \
+            --proxy-log "$WORK/call-log-host.jsonl" --policy-dir "$RPOL")
+    [ "$rc" = "0" ] || fail "S4-SANDBOX(a): the agreeing state must report cleanly, got $rc ($(grep -m2 'sandbox-' "$WORK/out-sb-a"))"
+    grep -q "^sandbox-composed${TAB}host_time${TAB}promises${TAB}stdio rpath exec prot_exec${TAB}landlock${TAB}" "$WORK/out-sb-a" \
+        || fail "S4-SANDBOX(a): the composed spec per tool is not declared in the report"
+    grep -q "^sandbox-recorded${TAB}host_time${TAB}calls${TAB}1${TAB}promises${TAB}stdio rpath exec prot_exec${TAB}" "$WORK/out-sb-a" \
+        || fail "S4-SANDBOX(a): the spec the recorded call APPLIED is not surfaced"
+    grep -q "^sandbox-pin${TAB}ops-sandbox.tsv${TAB}sha${TAB}[0-9a-f]*${TAB}pin${TAB}[0-9a-f]*${TAB}MATCH${TAB}MEASURED" "$WORK/out-sb-a" \
+        || fail "S4-SANDBOX(a): the operator sandbox table is not reported against its PIN"
+    grep -q "^sandbox-delta${TAB}-${TAB}NONE${TAB}DERIVED" "$WORK/out-sb-a" \
+        || fail "S4-SANDBOX(a): the agreeing state did not read NONE: $(grep -m1 '^sandbox-delta' "$WORK/out-sb-a")"
+    grep -q "^sandbox-widened-since-record" "$WORK/out-sb-a" \
+        && fail "S4-SANDBOX(a): a sandbox widening was FABRICATED where nothing changed"
+    # the PER-TOOL blind is NAMED, not left to be discovered: host_cat is
+    # declared and the log recorded no call for it, so it cannot be compared
+    # HERE (fx-audit's per-boot record covers it).
+    grep -q "^sandbox-delta${TAB}host_cat${TAB}NOT-KNOWN${TAB}ABSENT" "$WORK/out-sb-a" \
+        || fail "S4-SANDBOX(a): a declared tool with no recorded call is not named as NOT-KNOWN"
+    grep -q "^bound${TAB}sandbox-audit-is-the-weakened-one" "$WORK/out-sb-a" \
+        || fail "S4-SANDBOX(a): the bound naming the sandbox audit as WEAKENED is not printed"
+    echo "test_fx_report: S4-SANDBOX(a) the composed spec, the recorded spec and the operator pin are all surfaced, and the agreeing state reads NONE (both directions)"
+
+    # (b) THE TWO DIRECTIONS OF ABSENCE — nothing is ever read as 'unchanged'.
+    rc=$(sb_report "$WORK/out-sb-b1" --proxy-log "$WORK/call-log-host.jsonl")
+    grep -q "^absence${TAB}sandbox-composed" "$WORK/out-sb-b1" \
+        || fail "S4-SANDBOX(b): no --proxy is not its own absence record (the DECLARED side is NOT-KNOWN, never 'unchanged')"
+    grep -q "^absence${TAB}sandbox-pin" "$WORK/out-sb-b1" \
+        || fail "S4-SANDBOX(b): no --policy-dir is not its own absence record for the pin"
+    rc=$(sb_report "$WORK/out-sb-b2" --proxy "$REPO/build/fx-hostgate" --policy-dir "$RPOL")
+    grep -q "^absence${TAB}sandbox-recorded" "$WORK/out-sb-b2" \
+        || fail "S4-SANDBOX(b): no --proxy-log is not its own absence record (the RECORDED side is NOT-KNOWN)"
+    grep -q "^sandbox-delta${TAB}-${TAB}NOT-KNOWN" "$WORK/out-sb-b2" \
+        || fail "S4-SANDBOX(b): a delta was computed with NO recorded side"
+    grep -q "^sandbox-delta${TAB}host_time${TAB}WIDER" "$WORK/out-sb-b2" \
+        && fail "S4-SANDBOX(b): a widening was reported with NO recorded side"
+    mkdir -p "$WORK/sb-nopins"
+    cp "$RPOL/ops-sandbox.tsv" "$WORK/sb-nopins/" || fail "S4-SANDBOX(b) SETUP: cp"
+    rc=$(sb_report "$WORK/out-sb-b3" --proxy "$REPO/build/fx-hostgate" \
+            --proxy-log "$WORK/call-log-host.jsonl" --policy-dir "$WORK/sb-nopins")
+    grep -q "^absence${TAB}sandbox-pin${TAB}not-durably-recorded" "$WORK/out-sb-b3" \
+        || fail "S4-SANDBOX(b): a --policy-dir with no PINS does not say the pin direction is NOT-KNOWN"
+    echo "test_fx_report: S4-SANDBOX(b) each missing side is its own absence record: no proxy, no log, no PINS — never 'unchanged'"
+
+    # (c) A REAL SANDBOX WIDENING, CONSTRUCTED AND NAMED.  The widening is a
+    # SIDECAR beside a COPY of the proxy (the shared build/ is never touched):
+    # fx-host-time gains `inet` and one landlock entry.  The proxy is the real
+    # binary, the composition is the real composition, and the record is the
+    # real log from the exec arm above.
+    mkdir -p "$WORK/sbproxy" || fail "S4-SANDBOX(c) SETUP: mkdir"
+    cp "$REPO/build/fx-hostgate" "$WORK/sbproxy/fx-hostgate" || fail "S4-SANDBOX(c) SETUP: cp proxy"
+    printf 'inet\t/tmp/sb-extra:r' > "$WORK/sbproxy/fx-host-time.sidecar" \
+        || fail "S4-SANDBOX(c) SETUP: cannot write the sidecar"
+    "$WORK/sbproxy/fx-hostgate" --print-sandbox 2>/dev/null | grep -q "^host_time${TAB}stdio rpath exec prot_exec inet${TAB}" \
+        || fail "S4-SANDBOX(c) SETUP: the widened copy does not declare the extra promise — the fixture is not a widening"
+    rc=$(sb_report "$WORK/out-sb-c" --proxy "$WORK/sbproxy/fx-hostgate" \
+            --proxy-log "$WORK/call-log-host.jsonl" --policy-dir "$RPOL")
+    [ "$rc" = "1" ] || fail "S4-SANDBOX(c): a sandbox WIDENING is a FINDING — expected exit 1, got $rc"
+    grep -q "^sandbox-delta${TAB}host_time${TAB}WIDER${TAB}DERIVED.*promise(s) added \"inet\"" "$WORK/out-sb-c" \
+        || fail "S4-SANDBOX(c): the added promise is not NAMED on a WIDER sandbox-delta row"
+    grep -q "^sandbox-delta${TAB}host_time${TAB}WIDER${TAB}DERIVED.*landlock entr(y/ies) added \"/tmp/sb-extra:r\"" "$WORK/out-sb-c" \
+        || fail "S4-SANDBOX(c): the added landlock entry is not NAMED on the widening row"
+    grep -q "^sandbox-widened-since-record${TAB}host_time${TAB}FINDING" "$WORK/out-sb-c" \
+        || fail "S4-SANDBOX(c): the widening is not its own FINDING"
+    grep -q "UNPINNED" "$WORK/out-sb-c" \
+        || fail "S4-SANDBOX(c): the finding does not say WHY no release can license it (the sidecar/baseline are unpinned)"
+    grep -q "^sandbox-change-note" "$WORK/out-sb-c" \
+        || fail "S4-SANDBOX(c): the change is not tallied"
+    echo "test_fx_report: S4-SANDBOX(c) a constructed sidecar widening (inet + a landlock entry) is NAMED row by row and is a FINDING"
+
+    # (d) THE OPERATOR TABLE'S PIN IS ITS OWN FINDING, in a COPY (the shared
+    # policy/ops is only ever READ).
+    cp -r "$RPOL" "$WORK/sb-pol-drift" || fail "S4-SANDBOX(d) SETUP: cp"
+    printf '# an edit nobody re-pinned\n' >> "$WORK/sb-pol-drift/ops-sandbox.tsv" \
+        || fail "S4-SANDBOX(d) SETUP: cannot append"
+    rc=$(sb_report "$WORK/out-sb-d" --proxy "$REPO/build/fx-hostgate" \
+            --proxy-log "$WORK/call-log-host.jsonl" --policy-dir "$WORK/sb-pol-drift")
+    [ "$rc" = "1" ] || fail "S4-SANDBOX(d): an unreleased operator sandbox table is a FINDING — got $rc"
+    grep -q "^sandbox-pin${TAB}ops-sandbox.tsv${TAB}sha${TAB}[0-9a-f]*${TAB}pin${TAB}[0-9a-f]*${TAB}DRIFT" "$WORK/out-sb-d" \
+        || fail "S4-SANDBOX(d): the drifted operator table does not read DRIFT in its own row"
+    grep -q "^sandbox-pin-drift${TAB}ops-sandbox.tsv${TAB}.*FINDING" "$WORK/out-sb-d" \
+        || fail "S4-SANDBOX(d): the drifted operator table is not its own FINDING with both pins"
+    grep -q "^sandbox-delta${TAB}-${TAB}NONE" "$WORK/out-sb-d" \
+        || fail "S4-SANDBOX(d): the operator drift smeared onto the SPEC comparison (the two are different questions)"
+    echo "test_fx_report: S4-SANDBOX(d) the operator sandbox table against PINS is its own DRIFT finding, and it does not smear onto the spec comparison"
+
+    # (e) THE MUTANTS, each from the SAME source, each proven to make a PASSING
+    # arm go blind.  MUT-SB-SPEC is THE MANDATED ONE: the comparison is made
+    # against TODAY'S PROXY instead of the RECORDED spec (the addition is
+    # re-derived from the live composition, so there is nothing to compare) —
+    # the widening VANISHES and the gate must catch it.
+    mutbuild sbspec 's/int has_add = added_tok\[0\] || added_lk\[0\];/int has_add = 0; (void)added_tok; (void)added_lk;/'
+    grep -q "int has_add = 0;" "$WORK/mut-sbspec.c" \
+        || fail "MUT-SB-SPEC: the sed did not land (check the source text)"
+    FXSTORE_BIN="$FXSTORE" "$REPO/build/fx-report-sbspec" --store "$WORK/s1" \
+        --proxy "$WORK/sbproxy/fx-hostgate" --proxy-log "$WORK/call-log-host.jsonl" \
+        --policy-dir "$RPOL" > "$WORK/out-mutsbspec" 2>/dev/null
+    grep -q "^sandbox-delta${TAB}host_time${TAB}WIDER" "$WORK/out-mutsbspec" \
+        && fail "MUT-SB-SPEC: the blind build STILL names the widening — the arm is not load-bearing"
+    grep -q "^sandbox-widened-since-record" "$WORK/out-mutsbspec" \
+        && fail "MUT-SB-SPEC: the blind build still raises the finding"
+    grep -q "^sandbox-delta${TAB}-${TAB}NONE" "$WORK/out-mutsbspec" \
+        || fail "MUT-SB-SPEC: the mutant did not reproduce the dangerous shape the arm refuses (a seat reading NONE while the sandbox widened)"
+    echo "test_fx_report: S4-SANDBOX-MUTANT the widening-blind build (the addition re-derived from today's proxy) reads NONE while a sidecar declared inet — §7.1a's failure, caught"
+
+    # MUT-SB-PIN (THE SECOND MANDATED BLIND): the sandbox pin is JOINED ON THE
+    # DRIFTED VALUE — the comparison is short-circuited to equal, so the
+    # operator table's drift vanishes from the sandbox class entirely.
+    mutbuild sbpin 's/int sb_drift = P->present && strcmp(P->got, P->want) != 0;/int sb_drift = 0; (void)P->want;/'
+    grep -q "int sb_drift = 0;" "$WORK/mut-sbpin.c" \
+        || fail "MUT-SB-PIN: the sed did not land (check the source text)"
+    FXSTORE_BIN="$FXSTORE" "$REPO/build/fx-report-sbpin" --store "$WORK/s1" \
+        --proxy "$REPO/build/fx-hostgate" --proxy-log "$WORK/call-log-host.jsonl" \
+        --policy-dir "$WORK/sb-pol-drift" > "$WORK/out-mutsbpin" 2>/dev/null
+    grep -q "^sandbox-pin-drift" "$WORK/out-mutsbpin" \
+        && fail "MUT-SB-PIN: the join-on-the-drifted-pin build STILL reports the drift — the arm is not load-bearing"
+    grep -q "^sandbox-pin${TAB}ops-sandbox.tsv${TAB}sha.*${TAB}MATCH" "$WORK/out-mutsbpin" \
+        || fail "MUT-SB-PIN: the mutant did not reproduce the blindness (the table reads MATCH while it drifted)"
+    echo "test_fx_report: S4-SANDBOX-MUTANT the join-on-the-drifted-pin build reports the operator sandbox table as MATCH while it drifted — the quiet release, caught"
+
 # the mutants are gate artifacts, not seats — remove them so no stale
 # binary can later answer for the seat
 rm -f "$REPO/build/fx-report-class" "$REPO/build/fx-report-attrib" "$REPO/build/fx-report-finding" \
     "$REPO/build/fx-report-ops" "$REPO/build/fx-report-refuse" \
     "$REPO/build/fx-report-claim" "$REPO/build/fx-report-enroll" "$REPO/build/fx-report-loudlong" \
     "$REPO/build/fx-report-calljoin" "$REPO/build/fx-report-callclassify" "$REPO/build/fx-report-callscope" \
-    "$REPO/build/fx-report-exec" "$REPO/build/fx-report-reach" "$REPO/build/fx-report-pindrift"
+    "$REPO/build/fx-report-exec" "$REPO/build/fx-report-reach" "$REPO/build/fx-report-pindrift" \
+    "$REPO/build/fx-report-sbspec" "$REPO/build/fx-report-sbpin"
 
 echo "test_fx_report: PASS — the reconstruction is answerable from the report alone (both inputs readable, the diff, the generation each produced), the taxonomy separates none-occurred from not-durably-recorded (a never-booted store says so; refusals cannot be counted), the operator class is MEASURED from the .operator journal where the journal exists and DERIVED only where it does not (the .recovery row, or the missing file) with the derivation RETAINED beside the journal for its own blind spots (and the mutations blind exactly their own arms), the gc retention carve-out is re-measured every run (a surviving snapshot's dir is retained, a pruned one's is reaped), the retention policy is the user's DECISION (UNBOUNDED, 2026-10-12) pinned where it prints — every row, its named cost, and the old 'NO policy exists' claim asserted ABSENT, and the output is byte-deterministic and independent of any self-report."

@@ -522,11 +522,11 @@ write_bootlog "$S1"
 h_before=$(store_hash "$S1"); rt_before=$(rootfs_hash "$F1/rootfs")
 rc=$(run_select "$F1/o.s9" $SEL)
 [ "$rc" = "0" ] || fail "S9: expected exit 0, got $rc: $(sed -n 1,6p "$F1/o.s9")"
-for _n in 1 2 3 4 5 6 7 8 9; do
+for _n in 1 2 3 4 5 6 7 8 9 10; do
     grep -q "^order	$_n	" "$F1/o.s9" || fail "S9: order step $_n missing"
 done
 grep -q '^order	1	candidates	' "$F1/o.s9" || fail "S9: the frozen order table is not in the output"
-grep -q '^order	9	apply	' "$F1/o.s9" || fail "S9: the apply step of the order is not printed"
+grep -q '^order	10	apply	' "$F1/o.s9" || fail "S9: the apply step of the order is not printed"
 # S4: the REACH term is a step of the order, and it says the disqualification
 # consequence is OPEN — a rule that is not printed cannot be audited.
 grep -q '^order	6	reach	' "$F1/o.s9" || fail "S4: the reach term is not a step of the frozen order"
@@ -534,13 +534,20 @@ grep -q 'THE CONSEQUENCE IS DELIBERATELY OPEN' "$F1/o.s9" \
     || fail "S4: the reach step does not say its consequence is OPEN (a printed rule or nothing)"
 grep -q 'does NOT change eligibility, does NOT change the winner' "$F1/o.s9" \
     || fail "S4: the reach step does not state that it leaves the decision alone"
+# S4b (palisade): the SANDBOX term is its own step, ADDITIVE to the reach term,
+# and it says the same thing about its consequence.
+grep -q '^order	7	reach-sandbox	' "$F1/o.s9" || fail "S4b: the sandbox term is not a step of the frozen order"
+grep -q 'THE CONSEQUENCE IS DELIBERATELY OPEN, exactly as step 6' "$F1/o.s9" \
+    || fail "S4b: the sandbox step does not say its consequence is OPEN"
+grep -q '^bound	sandbox-visible-is-not-strong	' "$F1/o.s9" \
+    || fail "S4b: the bound that keeps a VISIBLE sandbox change from reading as a STRONG one is not printed"
 grep -q '^bound	candidate-set-is-a-pair	' "$F1/o.s9" || fail "S9: no bound states what the candidate bound cannot see"
 grep -q '^bound	predecessor-gap-after-gc	' "$F1/o.s9" \
     || fail "S9: the gc-pruned-predecessor bound is not printed"
 grep -q '^bound	predecessor-content-not-compared	' "$F1/o.s9" \
     || fail "S9: the content-identity bound is not printed"
 grep -q '^bound	share-of-a-partial-snapshot	' "$F1/o.s9" || fail "S9: the bounds table is not printed"
-echo "test_fx_select: S9 the order table (9 steps, incl. the S4 reach term with its OPEN consequence) + bounds print on every run"
+echo "test_fx_select: S9 the order table (10 steps, incl. the S4 reach and S4b sandbox terms with their OPEN consequences) + bounds print on every run"
 
 # ═══ S4-REACH — the reach-delta term (order step 6) ══════════════════════
 # §7.1a's residual: an egress grant is a CAPABILITY INCREASE, so the seat that
@@ -555,6 +562,15 @@ GATE_BIN="$REPO/build/fx-hostgate"
 RPOL="$F1/reach-pol"; ROBS="$F1/reach-pol2"
 cp -r "$REPO/policy/ops" "$RPOL" || fail "S4-reach: cannot copy the pinned tables"
 cp -r "$REPO/policy/ops" "$ROBS" || fail "S4-reach: cannot copy the pinned tables"
+# S3 (REVISED) left the AUTHORITY table EMPTY on disk (http_get was dropped and
+# ops-hosts.tsv ships header-only), so this arm's fixture row is PLANTED IN THE
+# COPIES — the pinned table under policy/ops is only ever READ.  Both copies get
+# the same row so the two observations start EQUAL (arm (a) needs that), and the
+# flip below then edits $ROBS alone.
+printf 'example.com\tBlockedhost\tyes\n' >> "$RPOL/ops-hosts.tsv" \
+    || fail "S4-reach SETUP: cannot plant the authority fixture row"
+printf 'example.com\tBlockedhost\tyes\n' >> "$ROBS/ops-hosts.tsv" \
+    || fail "S4-reach SETUP: cannot plant the authority fixture row"
 # the PREVIOUS observation: the real registry + the pristine tables, printed
 # in the shared grammar (the audit writes the same two tags per boot)
 { "$GATE_BIN" --print-host-tools | sed 's/^/reach-tool\t/'
@@ -912,6 +928,100 @@ grep -q "^candidate	$post_current	1	viability	ok	" "$F1/o.s8d" || fail "S8d: the
 grep -q '^apply	refused	current-already-the-winner' "$F1/o.s8d" || fail "S8d: the second --apply did not refuse"
 [ "$h_before" = "$(store_hash "$S1")" ] || fail "S8d: the second --apply mutated the store"
 echo "test_fx_select: S8c/S8d the rollback is NOT undone (v$post_current un-judged -> withhold exit 3); once a boot judges it -> keep, second --apply refuses, store unchanged"
+
+# ═══ S4-SANDBOX — the composed-sandbox term (order step 7) ═══════════════
+# §7.1a at the layer S3 made structural: a SANDBOX SPEC IS A CAPABILITY
+# DECLARATION, so a generation judged on a host whose composed spec WIDENED
+# must be seen to have changed.  The widening is CONSTRUCTED — a SIDECAR beside
+# a COPY of the proxy (build/ is never touched) — and the term must NAME it
+# while leaving the decision alone (the same OPEN consequence as step 6).
+SBW="$F1/sbproxy"
+mkdir -p "$SBW" || fail "S4-SANDBOX SETUP: mkdir"
+cp "$GATE_BIN" "$SBW/fx-hostgate" || fail "S4-SANDBOX SETUP: cannot copy the proxy"
+printf 'inet\t' > "$SBW/fx-host-time.sidecar" || fail "S4-SANDBOX SETUP: cannot write the sidecar"
+"$SBW/fx-hostgate" --print-sandbox 2>/dev/null | grep -q '^host_time	stdio rpath exec prot_exec inet	' \
+    || fail "S4-SANDBOX SETUP: the widened copy does not declare the extra promise — the fixture is not a widening"
+SB_WIDE="$SBW/fx-hostgate"
+SB_PREV="$F1/o.reach-none"   # the seat's OWN earlier output: the shared grammar
+grep -q '^reach-sandbox	host_time	' "$SB_PREV" \
+    || fail "S4-SANDBOX SETUP: the seat's own output carries no reach-sandbox row (the grammar is not shared)"
+
+# ── (a) NO WIDENING WHERE NONE EXISTS (the negative direction) ───────────
+rc=$(run_select "$F1/o.sb-none" $REACH --ops-policy-dir "$RPOL" --reach-prev "$SB_PREV")
+grep -q '^sandbox-delta	-	NONE	DERIVED' "$F1/o.sb-none" \
+    || fail "S4-SANDBOX(a): the same composition on both sides did not read NONE: $(grep -m1 '^sandbox-delta' "$F1/o.sb-none")"
+grep -q '^sandbox-reach-widened' "$F1/o.sb-none" \
+    && fail "S4-SANDBOX(a): a sandbox widening was FABRICATED where the two observations agree"
+SB_NONE_RC="$rc"; SB_NONE_DEC="$(decision_kind "$F1/o.sb-none") $(decision_version "$F1/o.sb-none")"
+# the seat's own output is a valid baseline for ITSELF (one grammar, two runs)
+rc=$(run_select "$F1/o.sb-self" $REACH --ops-policy-dir "$RPOL" --reach-prev "$F1/o.sb-none")
+grep -q '^sandbox-delta	-	NONE	DERIVED' "$F1/o.sb-self" \
+    || fail "S4-SANDBOX(a): the seat's own output is not a valid sandbox baseline: $(grep -m1 '^sandbox-delta' "$F1/o.sb-self")"
+echo "test_fx_select: S4-SANDBOX(a) the same composed sandbox on both sides reads NONE, and the seat's own output is a valid baseline"
+
+# ── (b) A WIDENING IS NAMED (the positive direction) ────────────────────
+rc=$(run_select "$F1/o.sb-wide" --store "$S1" --rootfs "$F1/rootfs" --fxstore "$FXSTORE" \
+        --oracle "$OSIER" --package-set "$P1" --proxy "$SB_WIDE" \
+        --ops-policy-dir "$RPOL" --reach-prev "$SB_PREV")
+grep -q '^sandbox-delta	host_time	WIDER	DERIVED.*promise(s) added "inet"' "$F1/o.sb-wide" \
+    || fail "S4-SANDBOX(b): the added promise is NOT named as a sandbox widening: $(grep -m1 '^sandbox-delta' "$F1/o.sb-wide")"
+grep -q '^sandbox-reach-widened	1	DERIVED' "$F1/o.sb-wide" \
+    || fail "S4-SANDBOX(b): the loud sandbox-reach-widened row does not count the widening"
+grep -q 'THE CONSEQUENCE IS DELIBERATELY OPEN (order step 7)' "$F1/o.sb-wide" \
+    || fail "S4-SANDBOX(b): the widening row does not say its consequence is OPEN"
+echo "test_fx_select: S4-SANDBOX(b) a sidecar-declared capability is NAMED as a sandbox widening, with the loud row and the OPEN consequence stated"
+
+# ── (c) THE CONSEQUENCE IS OPEN — decision, table and exit do not move ──
+[ "$rc" = "$SB_NONE_RC" ] \
+    || fail "S4-SANDBOX(c): the exit code CHANGED under a sandbox widening ($rc vs $SB_NONE_RC)"
+SB_WIDE_DEC="$(decision_kind "$F1/o.sb-wide") $(decision_version "$F1/o.sb-wide")"
+[ "$SB_WIDE_DEC" = "$SB_NONE_DEC" ] \
+    || fail "S4-SANDBOX(c): the DECISION changed under a sandbox widening ($SB_WIDE_DEC vs $SB_NONE_DEC)"
+sed -n 's/^candidate	\([0-9]*\).*/\1/p' "$F1/o.sb-none" > "$F1/cands-sbnone.txt"
+sed -n 's/^candidate	\([0-9]*\).*/\1/p' "$F1/o.sb-wide" > "$F1/cands-sbwide.txt"
+cmp -s "$F1/cands-sbnone.txt" "$F1/cands-sbwide.txt" \
+    || fail "S4-SANDBOX(c): the candidate TABLE changed under a sandbox widening"
+cmp -s "$F1/o.sb-none" "$F1/o.sb-wide" && fail "S4-SANDBOX(c): the two runs are byte-identical — the term reported nothing at all"
+echo "test_fx_select: S4-SANDBOX(c) the widening leaves the decision, the table and the exit code untouched ($SB_WIDE_DEC, exit $rc) — OPEN by construction"
+
+# ── (d) NOT-KNOWN in every absence direction ────────────────────────────
+run_select "$F1/o.sb-noprev" $REACH --ops-policy-dir "$RPOL" > /dev/null
+grep -q '^sandbox-delta	-	NOT-KNOWN' "$F1/o.sb-noprev" \
+    || fail "S4-SANDBOX(d): without --reach-prev the sandbox delta is not NOT-KNOWN"
+grep -q '^sandbox-delta	host_time' "$F1/o.sb-noprev" \
+    && fail "S4-SANDBOX(d): a sandbox delta was computed against NO previous observation"
+run_select "$F1/o.sb-nosbrow" $REACH --ops-policy-dir "$RPOL" --reach-prev "$F1/reach-prev.txt" > /dev/null
+grep -q 'holds NO reach-sandbox row' "$F1/o.sb-nosbrow" \
+    || fail "S4-SANDBOX(d): a baseline with NO reach-sandbox row is not named as such (an old baseline is not 'every spec is new')"
+run_select "$F1/o.sb-noproxy" --store "$S1" --rootfs "$F1/rootfs" --fxstore "$FXSTORE" \
+    --oracle "$OSIER" --package-set "$P1" --reach-prev "$SB_PREV" > /dev/null
+grep -q '^sandbox-absence	composed' "$F1/o.sb-noproxy" \
+    || fail "S4-SANDBOX(d): no --proxy is not its own absence row"
+grep -q '^sandbox-delta	-	NOT-KNOWN' "$F1/o.sb-noproxy" \
+    || fail "S4-SANDBOX(d): with NO composed side the sandbox delta is not NOT-KNOWN"
+echo "test_fx_select: S4-SANDBOX(d) every missing half is its own absence row and the delta is NOT-KNOWN — never 'no sandbox change'"
+
+# ── (e) THE MUTANT: the addition branch emptied — the seat reads NONE while
+# a sidecar declared a capability.  §7.1a's failure made concrete: the oracle
+# satisfies its own report while quietly widening what the host can reach.
+sed 's/int has_add = add_p\[0\] || add_l\[0\];/int has_add = 0; (void)add_p; (void)add_l;/' \
+    "$REPO/tools/fx-select.c" > "$WORK/fx-select-sbblind.c" || fail "S4-SANDBOX(e): cannot write the mutant source"
+cmp -s "$WORK/fx-select-sbblind.c" "$REPO/tools/fx-select.c" \
+    && fail "S4-SANDBOX(e): the mutant source is IDENTICAL to the seat — the sed matched nothing"
+grep -q 'int has_add = 0;' "$WORK/fx-select-sbblind.c" \
+    || fail "S4-SANDBOX(e): the sed did not land the widening blind (check the source text)"
+cc -std=c11 -O2 -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE -o "$WORK/fx-select-sbblind" \
+    "$WORK/fx-select-sbblind.c" || fail "S4-SANDBOX(e): the mutant does not compile"
+FXSTORE_BIN="$FXSTORE" "$WORK/fx-select-sbblind" --store "$S1" --rootfs "$F1/rootfs" \
+    --fxstore "$FXSTORE" --oracle "$OSIER" --package-set "$P1" --proxy "$SB_WIDE" \
+    --ops-policy-dir "$RPOL" --reach-prev "$SB_PREV" > "$F1/o.sb-mut" 2>&1
+grep -q '^sandbox-delta	host_time	WIDER' "$F1/o.sb-mut" \
+    && fail "S4-SANDBOX(e): the blind mutant STILL names the widening — the arm is not load-bearing"
+grep -q '^sandbox-reach-widened' "$F1/o.sb-mut" \
+    && fail "S4-SANDBOX(e): the blind mutant still raises the loud widening row"
+grep -q '^sandbox-delta	-	NONE	DERIVED' "$F1/o.sb-mut" \
+    || fail "S4-SANDBOX(e): the mutant did not reproduce the dangerous shape the arm refuses (a seat reading NONE while the sandbox widened)"
+echo "test_fx_select: S4-SANDBOX(e) MUTANT (the addition branch emptied) reports NONE while a sidecar declared inet — an oracle blind to a capability change, caught"
 
 # ═══ fix2 — order E OC O: CURRENT has the top share and DRIFTS ═════════
 build_fixture fix2 "E OC O"

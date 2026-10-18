@@ -44,6 +44,17 @@
  *                                     tables still hash to PINS is a RELEASE
  *                                     (named), one whose tables do not is the
  *                                     incoherence `reach-widened-unreleased`
+ *   --proxy BIN (also)                the COMPOSED SANDBOX of this host (the
+ *   + --ops-policy-dir DIR            proxy's own `--print-sandbox`: the
+ *                                     executor baseline + each tool's sidecar),
+ *                                     recorded per boot with a sha and compared
+ *                                     with the previous observation: any ADDITION
+ *                                     is `sandbox-widened-unreleased` — the
+ *                                     operator table is DENY-MORE-ONLY and cannot
+ *                                     widen the composition, and the baseline and
+ *                                     the sidecar are pinned by NOTHING, so no
+ *                                     release can license one.  A narrowing is
+ *                                     named and is not a finding
  *   `fxstore verify <rootfs>`         fxstore: rootfs vs the install facts, exit 1 on drift
  *                                     (REUSED, never reimplemented)
  *
@@ -596,6 +607,46 @@ static char g_reach_pins_detail[512];
 /* the boot this observation is anchored to: the LAST line in .bootlog */
 static unsigned long g_reach_boot_v = 0; static int g_reach_boot_known = 0;
 static char g_reach_boot_nonce[80] = "none";
+
+/* ── S4b (PALISADE): the COMPOSED SANDBOX, recorded per boot ──────────────
+ * §7.1a at the layer S3 made structural: every host spawn is wrapped, the
+ * executor owns a BASELINE, a tool may declare MORE via a sidecar beside its
+ * binary, and the operator's ops-sandbox.tsv row may only TIGHTEN.  So the
+ * composed spec per tool IS a capability declaration, and this seat's own
+ * discipline — record it, then name any change against the audit's OWN
+ * previous observation — applies to it exactly as it applies to .bootlog,
+ * .recovery, the host's one log and the declared reach.
+ *
+ * The composition is read from THE PROXY (`--print-sandbox`: name<TAB>
+ * promises<TAB>static-landlock — the baseline + the tool's sidecar, rendered
+ * by the same code the spawn uses), never re-spelled here: a second spelling
+ * of the C baseline is a mirror that can drift, and a drifting mirror is how
+ * an instrument goes quietly blind.
+ *
+ * THE RELEASE QUESTION, answered honestly rather than in the egress term's
+ * SHAPE alone: the operator half (ops-sandbox.tsv) is PINNED, but the two
+ * halves that can actually WIDEN a declaration — the sidecar and the
+ * executor baseline — are pinned by NOTHING, and the operator table is
+ * DENY-MORE-ONLY, so it can never be the source of a widening.  Therefore a
+ * WIDENING of the composed spec is, by construction, a capability change no
+ * pin covers: it is ALWAYS `sandbox-widened-unreleased` (the loud side), and
+ * the operator table's own pin state is reported BESIDE it so the reader can
+ * tell an unreleased operator edit from an unpinned sidecar.  A NARROWING is
+ * the mirror direction and is NAMED — and when the operator table still
+ * hashes to PINS that is a RELEASED tightening, which is how a sandbox is
+ * supposed to narrow.  Both directions are measured, and the asymmetry is
+ * stated in the check's own output rather than left to be discovered. */
+#define MAX_SB_TOOLS 32
+typedef struct { char name[128]; char promises[1024]; char landlock[2048]; } sandbox_t;
+static sandbox_t g_sbt[MAX_SB_TOOLS];  static size_t g_nsbt = 0;
+static sandbox_t g_psbt[MAX_SB_TOOLS]; static size_t g_npsbt = 0;
+static int g_sbt_known = 0;           /* --print-sandbox answered */
+static int g_obs_sandbox_known = 0;   /* the previous observation recorded one */
+static char g_obs_sb_sha[65];         /* the sha that observation recorded */
+static char g_sb_sha[65];             /* sha256 over the composed spec block */
+static int g_sb_pins_state = -1;      /* 1 = ops-sandbox.tsv hashes to PINS, 0 = drift,
+                                       * -1 = unverifiable (loud side) */
+static char g_sb_pins_detail[512];
 
 /* previous observation's halves */
 static int g_obs_plog_known = 0;
@@ -1188,6 +1239,127 @@ static int reach_verify_pins(void) {
     return state;
 }
 
+/* ── S4b: the composed sandbox reader and its own pin check ─────────────── */
+
+/* Read the composition from the proxy ITSELF.  A proxy that cannot answer is
+ * LOUD (never "no sandbox"): a capability instrument that read a failed probe
+ * as the narrowest possible declaration would fail in exactly the direction
+ * it exists to catch. */
+static void sandbox_read_composed(void) {
+    if (!g_proxy) return;
+    char cmd[8192];
+    snprintf(cmd, sizeof cmd, "'%s' --print-sandbox 2>/dev/null", g_proxy);
+    FILE *p = popen(cmd, "r");
+    if (!p) die("cannot popen '%s --print-sandbox' (the composed sandbox probe)", g_proxy);
+    char line[LINE_MAX_];
+    while (fgets(line, sizeof line, p)) {
+        line[strcspn(line, "\r\n")] = 0;
+        if (!line[0]) continue;
+        char *f[3] = {0};
+        int nf = 0;
+        char *save = NULL;
+        for (char *tok = strtok_r(line, "\t", &save); tok && nf < 3;
+             tok = strtok_r(NULL, "\t", &save))
+            f[nf++] = tok;
+        if (nf < 2)
+            die("'%s --print-sandbox' printed a row that is not name<TAB>promises<TAB>"
+                "landlock: \"%s\" — a spec this seat cannot read is refused, never "
+                "skipped", g_proxy, line);
+        if (g_nsbt >= MAX_SB_TOOLS)
+            die("'%s --print-sandbox' printed more than %u composed specs",
+                g_proxy, (unsigned)MAX_SB_TOOLS);
+        sandbox_t *S = &g_sbt[g_nsbt++];
+        snprintf(S->name, sizeof S->name, "%s", f[0]);
+        snprintf(S->promises, sizeof S->promises, "%s", f[1]);
+        snprintf(S->landlock, sizeof S->landlock, "%s", nf > 2 ? f[2] : "");
+    }
+    int st = pclose(p);
+    int rc = WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+    if (rc != 0)
+        die("the host proxy '%s' did not answer --print-sandbox (exit %d): the COMPOSED "
+            "sandbox of the running host cannot be read, and an unreadable composition is "
+            "NOT an empty one", g_proxy, rc);
+    if (g_nsbt == 0)
+        die("'%s --print-sandbox' printed NO tool: the proxy's closed registry cannot be "
+            "empty, so this is a tool error, not a sandbox with nothing in it", g_proxy);
+    /* ONE sha over the whole block, so a reader can compare two observations
+     * at a glance while the per-tool rows remain the evidence */
+    struct tbuf_sha { char *p; size_t len, cap; } t = {0};
+    for (size_t i = 0; i < g_nsbt; i++) {
+        char row[4096];
+        int n = snprintf(row, sizeof row, "%.127s\t%.1023s\t%.2047s\n", g_sbt[i].name,
+                         g_sbt[i].promises, g_sbt[i].landlock);
+        if (n < 0) continue;
+        size_t l = (size_t)n;
+        if (t.len + l + 1 > t.cap) {
+            t.cap = (t.len + l + 1) * 2;
+            t.p = realloc(t.p, t.cap);
+            if (!t.p) die("out of memory");
+        }
+        memcpy(t.p + t.len, row, l);
+        t.len += l;
+        t.p[t.len] = 0;
+    }
+    sha256_hex(t.p ? t.p : "", t.len, g_sb_sha);
+    free(t.p);
+    g_sbt_known = 1;
+}
+
+/* THE OPERATOR HALF'S PIN — ops-sandbox.tsv against PINS.  This is the ONLY
+ * pinned part of the composition, and it is reported so a reader can tell an
+ * unreleased OPERATOR edit from an unpinned SIDECAR edit; it can never
+ * LICENSE a widening (the table is deny-more-only, enforced at the seat). */
+static int sandbox_verify_pins(void) {
+    if (!g_opsdir) { snprintf(g_sb_pins_detail, sizeof g_sb_pins_detail, "no --ops-policy-dir"); return -1; }
+    char path[4096];
+    snprintf(path, sizeof path, "%s/PINS", g_opsdir);
+    size_t len = 0; int absent = 0;
+    char *b = read_file(path, &len, &absent);
+    if (absent) {
+        snprintf(g_sb_pins_detail, sizeof g_sb_pins_detail, "%.400s does not exist", path);
+        return -1;
+    }
+    int state = -1;
+    char *save = NULL;
+    for (char *line = strtok_r(b, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
+        size_t ll = strlen(line);
+        if (ll && line[ll - 1] == '\r') line[--ll] = 0;
+        if (!ll || line[0] == '#') continue;
+        char *tab = strchr(line, '\t');
+        if (!tab) die("%s: a PINS row is <artifact><TAB><sha256>: \"%s\"", path, line);
+        *tab = 0;
+        if (strcmp(line, "ops-sandbox.tsv")) continue;
+        char apath[4096];
+        snprintf(apath, sizeof apath, "%s/%s", g_opsdir, line);
+        size_t alen = 0; int aabsent = 0;
+        char *ab = read_file(apath, &alen, &aabsent);
+        if (aabsent) {
+            state = 0;
+            snprintf(g_sb_pins_detail, sizeof g_sb_pins_detail,
+                     "%.200s is named by PINS and is NOT THERE", line);
+            break;
+        }
+        char sha[65];
+        sha256_hex(ab, alen, sha);
+        free(ab);
+        if (strcmp(sha, tab + 1) != 0) {
+            state = 0;
+            snprintf(g_sb_pins_detail, sizeof g_sb_pins_detail,
+                     "%.200s hashes to %s but PINS pins %s", line, sha, tab + 1);
+        } else {
+            state = 1;
+            snprintf(g_sb_pins_detail, sizeof g_sb_pins_detail,
+                     "%.200s hashes to its PIN", line);
+        }
+        break;
+    }
+    free(b);
+    if (state == -1)
+        snprintf(g_sb_pins_detail, sizeof g_sb_pins_detail,
+                 "%.400s/PINS does not name ops-sandbox.tsv", g_opsdir);
+    return state;
+}
+
 /* The boot this observation is anchored to: the LAST line .bootlog holds.
  * The reach measured NOW belongs to the boot the audit ran after — the seat
  * says exactly that and never attributes today's registry to an earlier
@@ -1224,6 +1396,40 @@ static void emit_reach_rows(void) {
     if (!g_opsdir)
         printf("reach-absence\tclass-tables\tnot-given-no---ops-policy-dir-so-the-grant-half-"
                "of-the-reach-observation-is-NOT-KNOWN (NOT 'nothing is granted')\tABSENT\n");
+}
+
+/* Emit the composed sandbox in the SHARED grammar (the tag fx-select prints
+ * and consumes via --reach-prev: `reach-sandbox <tool> <promises> <landlock>`),
+ * per tool, BESIDE the boot it was taken around.  Nothing here is a verdict:
+ * the delta is the check's job, and a reader must be able to reconstruct
+ * WHAT was compared from the record alone. */
+static void emit_sandbox_rows(void) {
+    if (!g_proxy) return;
+    for (size_t i = 0; i < g_nsbt; i++) {
+        printf("reach-sandbox\t%s\t%s\t%s\n", g_sbt[i].name, g_sbt[i].promises,
+               g_sbt[i].landlock);
+        printf("sandbox-spec\t%s\tpromises\t%s\tlandlock\t%s\tsha\t", g_sbt[i].name,
+               g_sbt[i].promises, g_sbt[i].landlock);
+        char row[4096], sha[65];
+        snprintf(row, sizeof row, "%.127s\t%.1023s\t%.2047s\n", g_sbt[i].name,
+                 g_sbt[i].promises, g_sbt[i].landlock);
+        sha256_hex(row, strlen(row), sha);
+        printf("%s\tMEASURED\tthe composed spec this host would apply to %s (the executor's "
+               "baseline + the tool's sidecar, read from the proxy itself)\n", sha,
+               g_sbt[i].name);
+    }
+    printf("sandbox-composed-sha\t%s\tMEASURED\tone sha over the whole composed spec block: "
+           "two observations can be compared at a glance, and the per-tool rows above remain "
+           "the evidence\n", g_sb_sha);
+    if (g_reach_boot_known)
+        printf("sandbox-boot\t%lu\tnonce\t%s\tMEASURED\tthe composed sandbox recorded around "
+               "this boot (the LAST .bootlog line): a sandbox read at observation time, never "
+               "a reconstruction of what an earlier boot's sandbox was\n",
+               g_reach_boot_v, g_reach_boot_nonce);
+    else
+        printf("sandbox-boot\t-\tnonce\t-\tABSENT\tthis store has no .bootlog line, so the "
+               "sandbox record is NOT attributed to any boot (it is still measured — the "
+               "composition is read now)\n");
 }
 
 /* ── the observation store ─────────────────────────────────────────────── */
@@ -1300,6 +1506,16 @@ static void obs_write(void) {
             fprintf(f, "reach_grant\t%s\t%s\t%s\t%s\n", g_rgrants[i].dim,
                     g_rgrants[i].pattern, g_rgrants[i].cls, g_rgrants[i].prot ? "yes" : "no");
     }
+    /* S4b: the COMPOSED SANDBOX, per tool, plus one sha over the block.  Written
+     * only when the proxy answered: a baseline that carries no sandbox_ line is
+     * NOT-KNOWN for this dimension (never "the sandbox was empty"), exactly the
+     * discipline the proxy-log and reach records above follow. */
+    if (g_sbt_known) {
+        fprintf(f, "sandbox_sha256 %s\n", g_sb_sha);
+        for (size_t i = 0; i < g_nsbt; i++)
+            fprintf(f, "sandbox_tool\t%s\t%s\t%s\n", g_sbt[i].name, g_sbt[i].promises,
+                    g_sbt[i].landlock);
+    }
     fprintf(f, "end\n");
     fflush(f);
     if (ferror(f)) die("cannot write observation '%s'", tmp);
@@ -1368,6 +1584,36 @@ static void obs_read(void) {
             continue;
         }
         if (strncmp(line, "proxy_log_absent", 16) == 0) { g_obs_plog_absent = 1; g_obs_plog_known = 1; continue; }
+        if (strncmp(line, "sandbox_sha256 ", 15) == 0) {
+            if (sscanf(line + 15, "%64s", g_obs_sb_sha) != 1) die("bad obs line: %s", line);
+            g_obs_sandbox_known = 1;
+            continue;
+        }
+        if (strncmp(line, "sandbox_tool\t", 13) == 0) {
+            char *c = line + 13;
+            char *f3[3] = {0};
+            int nf3 = 0;
+            char *ssave = NULL;
+            for (char *tok = strtok_r(c, "\t", &ssave); tok && nf3 < 3;
+                 tok = strtok_r(NULL, "\t", &ssave))
+                f3[nf3++] = tok;
+            if (nf3 < 1 || !f3[0][0]) die("bad sandbox_tool row in observation: %s", line);
+            if (g_npsbt >= MAX_SB_TOOLS) die("observation has too many sandbox_tool rows");
+            sandbox_t *S = &g_psbt[g_npsbt++];
+            snprintf(S->name, sizeof S->name, "%.*s", (int)sizeof S->name - 1, f3[0]);
+            snprintf(S->promises, sizeof S->promises, "%s", nf3 > 1 ? f3[1] : "");
+            snprintf(S->landlock, sizeof S->landlock, "%s", nf3 > 2 ? f3[2] : "");
+            /* the LAST field still carries the record's line terminator: a
+             * comparison that kept it would report the baseline's own last
+             * landlock entry as an ADDITION on every run (MEASURED: the first
+             * run of this check fired on an unchanged composition for exactly
+             * that reason) */
+            S->name[strcspn(S->name, "\r\n")] = 0;
+            S->promises[strcspn(S->promises, "\r\n")] = 0;
+            S->landlock[strcspn(S->landlock, "\r\n")] = 0;
+            g_obs_sandbox_known = 1;
+            continue;
+        }
         if (strncmp(line, "reach_tool\t", 11) == 0) {
             char *n = line + 11;
             n[strcspn(n, "\r\n")] = 0;
@@ -1589,6 +1835,200 @@ static void check_reach(void) {
                                "widening is named on its own reach-delta row] " : "");
     else if (n_narrow || n_change)
         info("reach: %u narrowings and %u changed row(s) between the observations (no widening) — recorded, not findings: a narrowing is not the direction this check exists for", n_narrow, n_change);
+}
+
+/* ── S4b: the SANDBOX record (its own check) ────────────────────────────── */
+
+/* Token-set membership over a separated list. */
+static int sb_set_has(const char *set, char sep, const char *tok) {
+    if (!set) return 0;
+    size_t tl = strlen(tok);
+    const char *p = set;
+    for (;;) {
+        while (*p == sep) p++;
+        if (!*p) return 0;
+        const char *e = p;
+        while (*e && *e != sep) e++;
+        if ((size_t)(e - p) == tl && !strncmp(p, tok, tl)) return 1;
+        p = e;
+    }
+}
+
+/* THE CHECK.  The composed sandbox per tool is compared against the audit's
+ * OWN previous observation, row by row, and the classification is the ONE
+ * asymmetry the mechanism actually has:
+ *
+ *   WIDENING   a promise token or a static landlock entry ADDED, or a tool
+ *              whose composed sandbox did not exist before.  Because the
+ *              operator table can only TIGHTEN (and does not touch
+ *              --print-sandbox at all), an addition can only come from the
+ *              EXECUTOR BASELINE or a tool's SIDECAR — and NEITHER is
+ *              pinned.  So a widening is ALWAYS `sandbox-widened-unreleased`,
+ *              with the operator table's own pin state reported beside it so
+ *              a reader can tell an unreleased operator EDIT from an unpinned
+ *              sidecar.  A RELEASED widening does not exist in this shape,
+ *              and the check says so rather than implying a pin covers it.
+ *   NARROWING  anything removed, or a tool that vanished.  NAMED, not a
+ *              finding — and when the operator table still hashes to PINS a
+ *              tightening IS a RELEASED operator act, which is the direction
+ *              this mechanism is supposed to move.
+ *   ABSENCE    no --proxy now = NOT-KNOWN (never "unchanged"); a baseline with
+ *              no sandbox_tool row = NOT-KNOWN (never "every spec is new"). */
+static void check_sandbox(void) {
+    if (!g_proxy) {
+        info("sandbox: NOT ARMED (no --proxy) — the COMPOSED sandbox of the running host is "
+             "NOT-KNOWN to this audit, so it can name no sandbox change (§7.1a's blindness at "
+             "this layer, named rather than left to be discovered)");
+        return;
+    }
+    g_sb_pins_state = sandbox_verify_pins();
+    if (g_sb_pins_state == 1)
+        printf("sandbox-pin\tops-sandbox.tsv\tMATCH\tMEASURED\t%s\tthe operator's tightening "
+               "table is the released one — and it can only ever TIGHTEN, so it is never the "
+               "source of a widening\n", g_sb_pins_detail);
+    else if (g_sb_pins_state == 0)
+        printf("sandbox-pin\tops-sandbox.tsv\tDRIFT\tMEASURED\t%s\tthe operator's sandbox "
+               "table is NOT the bytes the release froze: a tightening nobody released, and a "
+               "widening found under this state carries that attribution\n", g_sb_pins_detail);
+    else
+        printf("sandbox-pin\tops-sandbox.tsv\tNOT-KNOWN\tABSENT\t%s\tthe release of the "
+               "operator's sandbox table CANNOT be verified (never 'no edit'): a width finding "
+               "under this state cannot be attributed to the operator or the sidecar\n",
+               g_sb_pins_detail);
+
+    if (!g_have_obs || !g_obs_sandbox_known) {
+        info("sandbox: %zu composed spec(s) recorded as the sandbox baseline (sha %s)%s — the "
+             "delta starts on the next observation", g_nsbt, g_sb_sha,
+             g_have_obs ? " (the baseline predates the sandbox record: it cannot be compared)"
+                        : " (first observation of this store)");
+        return;
+    }
+    if (g_obs_sb_sha[0] && !strcmp(g_obs_sb_sha, g_sb_sha))
+        info("sandbox: the composed spec block hashes to the SAME sha as the previous "
+             "observation (%s) — the per-tool delta below is the evidence", g_sb_sha);
+
+    unsigned n_wide = 0, n_narrow = 0, n_change = 0;
+    char wide[LINE_MAX_]; wide[0] = 0;
+    int wide_cut = 0;
+#define SB_WIDE_ADD(...) do { \
+        size_t _l = strlen(wide); \
+        int _w = snprintf(wide + _l, sizeof wide - _l, __VA_ARGS__); \
+        if (_w < 0 || (size_t)_w >= sizeof wide - _l) { wide_cut = 1; wide[sizeof wide - 1] = 0; } \
+    } while (0)
+
+    for (size_t i = 0; i < g_nsbt; i++) {
+        sandbox_t *C = &g_sbt[i], *P = NULL;
+        for (size_t j = 0; j < g_npsbt; j++)
+            if (!strcmp(g_psbt[j].name, C->name)) { P = &g_psbt[j]; break; }
+        if (!P) {
+            printf("sandbox-delta\t%s\tWIDER\tDERIVED\tthe previous observation recorded no "
+                   "composed sandbox for this tool and the proxy declares one now (promises "
+                   "\"%s\") — a host capability whose SANDBOX was never recorded, so a "
+                   "widening rather than a difference\n", C->name, C->promises);
+            SB_WIDE_ADD("tool '%s' newly carries a composed sandbox; ", C->name);
+            n_wide++;
+            continue;
+        }
+        char add_p[1024] = "", del_p[1024] = "", add_l[2048] = "", del_l[2048] = "";
+        {
+            char *dup = xstrdup(C->promises), *sv = NULL;
+            for (char *t = strtok_r(dup, " \t", &sv); t; t = strtok_r(NULL, " \t", &sv))
+                if (!sb_set_has(P->promises, ' ', t)) {
+                    size_t l = strlen(add_p);
+                    snprintf(add_p + l, sizeof add_p - l, "%s%s", l ? " " : "", t);
+                }
+            free(dup);
+            dup = xstrdup(P->promises); sv = NULL;
+            for (char *t = strtok_r(dup, " \t", &sv); t; t = strtok_r(NULL, " \t", &sv))
+                if (!sb_set_has(C->promises, ' ', t)) {
+                    size_t l = strlen(del_p);
+                    snprintf(del_p + l, sizeof del_p - l, "%s%s", l ? " " : "", t);
+                }
+            free(dup);
+            dup = xstrdup(C->landlock); sv = NULL;
+            for (char *t = strtok_r(dup, ";", &sv); t; t = strtok_r(NULL, ";", &sv))
+                if (!sb_set_has(P->landlock, ';', t)) {
+                    size_t l = strlen(add_l);
+                    snprintf(add_l + l, sizeof add_l - l, "%s%s", l ? ";" : "", t);
+                }
+            free(dup);
+            dup = xstrdup(P->landlock); sv = NULL;
+            for (char *t = strtok_r(dup, ";", &sv); t; t = strtok_r(NULL, ";", &sv))
+                if (!sb_set_has(C->landlock, ';', t)) {
+                    size_t l = strlen(del_l);
+                    snprintf(del_l + l, sizeof del_l - l, "%s%s", l ? ";" : "", t);
+                }
+            free(dup);
+        }
+        int has_add = add_p[0] || add_l[0];
+        int has_del = del_p[0] || del_l[0];
+        if (!has_add && !has_del) continue;
+        if (has_add) {
+            printf("sandbox-delta\t%s\t%s\tDERIVED\tthe composed sandbox spec WIDENED", C->name,
+                   has_del ? "CHANGED" : "WIDER");
+            if (add_p[0]) printf("; promise(s) added \"%s\"", add_p);
+            if (add_l[0]) printf("; landlock entr(y/ies) added \"%s\"", add_l);
+            if (del_p[0]) printf("; promise(s) removed \"%s\"", del_p);
+            if (del_l[0]) printf("; landlock entr(y/ies) removed \"%s\"", del_l);
+            printf(" — a sandbox spec is a CAPABILITY DECLARATION, so an ADDITION is a wider "
+                   "host capability than the previous observation recorded\n");
+            SB_WIDE_ADD("composed spec of '%s' (%s%s%s%s); ", C->name,
+                        add_p[0] ? "promises +" : "", add_p,
+                        add_l[0] ? " landlock +" : "", add_l);
+            n_wide++;
+            if (has_del) n_change++;
+        } else {
+            printf("sandbox-delta\t%s\tNARROWER\tDERIVED\tthe composed sandbox spec NARROWED",
+                   C->name);
+            if (del_p[0]) printf("; promise(s) removed \"%s\"", del_p);
+            if (del_l[0]) printf("; landlock entr(y/ies) removed \"%s\"", del_l);
+            printf(" — the mirror direction, named so a reader can tell a tightening from a "
+                   "widening, and NOT raised as a finding: a narrowing needs no release.  WHAT "
+                   "THIS IS NOT: an operator RELEASE.  The operator's table is DENY-MORE-ONLY "
+                   "and narrows only what the spawn APPLIES, so it cannot narrow "
+                   "--print-sandbox either — the composition narrowed because the EXECUTOR "
+                   "BASELINE or a SIDECAR did, exactly the halves that no pin covers, and the "
+                   "operator table's own state above explains neither%s\n",
+                   g_sb_pins_state == 1 ? " (it is intact, so the edit was NOT the operator's)"
+                                        : " (and it is NOT the bytes PINS froze, so an "
+                                          "unreleased operator edit is ALSO on the record)");
+            n_narrow++;
+        }
+    }
+    for (size_t j = 0; j < g_npsbt; j++) {
+        sandbox_t *P = &g_psbt[j];
+        int seen = 0;
+        for (size_t i = 0; i < g_nsbt; i++)
+            if (!strcmp(g_sbt[i].name, P->name)) { seen = 1; break; }
+        if (seen) continue;
+        printf("sandbox-delta\t%s\tNARROWER\tDERIVED\tthe previous observation recorded a "
+               "composed sandbox for this tool and the proxy declares none now: the host tool "
+               "(or its declaration) is GONE — a capability withdrawn\n", P->name);
+        n_narrow++;
+    }
+#undef SB_WIDE_ADD
+
+    if (!n_wide && !n_narrow && !n_change)
+        printf("sandbox-delta\t-\tNONE\tDERIVED\tthe previous observation and this one carry "
+               "the SAME composed sandbox spec for every tool — no sandbox change BETWEEN THESE "
+               "TWO OBSERVATIONS\n");
+    if (n_wide)
+        add_finding("sandbox-widened-unreleased",
+                    "%u WIDENING(s) of the COMPOSED SANDBOX between the previous observation and "
+                    "this one: %s%s.  The operator's table is DENY-MORE-ONLY and does not touch "
+                    "--print-sandbox, so an addition can only come from the EXECUTOR BASELINE or "
+                    "a tool's SIDECAR — and NEITHER is pinned (the operator half's own state: "
+                    "%s).  A sandbox spec is a CAPABILITY DECLARATION, so this is a capability "
+                    "change nothing released: the covert direction §7.1a names, at the layer S3 "
+                    "made structural",
+                    n_wide, wide,
+                    wide_cut ? "[the list above was CUT at this message's bound — every widening "
+                               "is named on its own sandbox-delta row] " : "",
+                    g_sb_pins_detail);
+    else if (n_narrow || n_change)
+        info("sandbox: %u narrowing(s) and %u changed row(s) between the observations (no "
+             "widening) — recorded, not findings: a tightening is the direction this mechanism "
+             "exists for", n_narrow, n_change);
 }
 
 /* ── the checks (each its own assertion with its own message) ──────────── */
@@ -2662,15 +3102,23 @@ static void usage(FILE *f) {
         "                   discipline .bootlog and .recovery get): a truncated or\n"
         "                   rewritten host log is a TAMPER finding, and a VANISHED one\n"
         "                   is a record removed, never 'no call was made'\n"
-        "  --proxy BIN     the host proxy whose COMPILED-IN registry is the reach\n"
-        "                   observation's tool half (--print-host-tools); a proxy that\n"
+        "  --proxy BIN     the host proxy: its COMPILED-IN registry is the reach\n"
+        "                   observation's tool half (--print-host-tools) and its own\n"
+        "                   --print-sandbox is the COMPOSED SANDBOX recorded per boot\n"
+        "                   (executor baseline + each tool's sidecar); a proxy that\n"
         "                   will not answer is a LOUD failure, never 'no host tools'\n"
-        "  --ops-policy-dir DIR  the operator's PINNED class tables: the reach\n"
-        "                   observation's grant half.  Each observation records the\n"
-        "                   reach BESIDE the boot it ran after and names the delta\n"
-        "                   against the previous one; a WIDENING whose tables still\n"
-        "                   hash to PINS is a RELEASE (named, not a finding) and one\n"
-        "                   whose tables do NOT is `reach-widened-unreleased`\n"
+        "                   and never 'no sandbox'\n"
+        "  --ops-policy-dir DIR  the operator's PINNED tables: the reach observation's\n"
+        "                   grant half AND ops-sandbox.tsv, the one pinned half of the\n"
+        "                   sandbox.  Each observation records the reach and the\n"
+        "                   composed sandbox BESIDE the boot it ran after and names\n"
+        "                   the delta against the previous one; a reach WIDENING whose\n"
+        "                   tables still hash to PINS is a RELEASE (named, not a\n"
+        "                   finding) and one whose tables do NOT is\n"
+        "                   `reach-widened-unreleased`.  A sandbox widening is ALWAYS\n"
+        "                   `sandbox-widened-unreleased`: the operator table can only\n"
+        "                   tighten the APPLIED spec, so it can never widen the\n"
+        "                   composition, and nothing pins the baseline or a sidecar\n"
         "  --obs-dir DIR   observation store dir (default $FX_AUDIT_OBS_DIR, else\n"
         "                  the sibling dir <store>.fx-audit-obs).  MUST NOT be\n"
         "                  inside the store — the observation is host memory.\n"
@@ -2916,9 +3364,11 @@ int main(int argc, char **argv) {
      * loaded) and AFTER obs_read (the comparison needs the baseline). */
     read_proxy_log_record();
     reach_read_proxy();
+    sandbox_read_composed();
     reach_read_tables();
     reach_anchor_boot();
     emit_reach_rows();
+    emit_sandbox_rows();
     /* the host's nonce ledger is loaded AFTER obs_read (its window is
      * defined by the observation's boot count) and BEFORE the checks */
     load_nonces();
@@ -2935,6 +3385,7 @@ int main(int argc, char **argv) {
     run_check("boot-accounting", check_boot_accounting);
     run_check("proxy-log-record", check_proxy_log);
     run_check("egress-reach", check_reach);
+    run_check("sandbox-record", check_sandbox);
     run_check("previous-observation", observation_compare);
 
     size_t pass = 0, skip = 0, fail = 0;
@@ -2955,6 +3406,7 @@ int main(int argc, char **argv) {
     printf("checks: %zu pass, %zu failed; findings: %zu\n", pass, fail, g_nfindings);
     printf("bound: this seat sees REWRITES and TRUNCATIONS of records it previously observed, cross-record INCOHERENCE, and — anchored on --boots and the per-boot nonce ledger (--nonces) — APPENDED .bootlog/.recovery growth the host cannot account for. IN THE NONCE REGIME (the host issues fx.bootnonce= per boot and every window boot is covered) the forged line-PAIR in a silent boot's slack is CLOSED: every ADDED line must wear a nonce the host issued for a boot in this window, the per-nonce IN-PROGRESS budget is the boot's OWN line plus one activate RE-ARM per version the store FIRST PUBLISHED in this window (each naming a version newer than the one its boot booted — init.zig:3724), the re-arm ip budget being ONE per first-published VERSION per WINDOW (a publish allocates a version number exactly once) AND naming a version NOT ALREADY BOOTED in the window (a re-arm names the version the activate JUST published, max+1, which has never been booted — this is what refuses the roll-forward REPUBLISH forge), shutdown / .recovery rows hold at one per boot, and the VERDICT accounting is per VERSION — one verdict per in-progress line the window added for that version, plus ONE more ONLY for a first-published version carrying NO re-arm ip of its own (the OLD-writer re-arm shape, init.zig:3797-3800). THE RE-ARM LINE'S OWN DELTA: that legitimate line RE-OPENS the forged-PAIR shape for a version that is first-published in the window AND newer than the boot's own, on ANY real window boot's nonce (the closure there is per VERSION, not per nonce — ONE re-arm in-progress per first-published version per window, so a forged pair cannot ride a second window nonce to buy a second verdict, whether the version was activated or republished — the republish shape is refused by the not-already-booted clause — and the legitimate line grants no verdict slot the +1 did not already grant). RESIDUAL, named: a forged pair for a version first published WITHOUT an activation and NOT YET BOOTED in the window (the operator `rollback` during a live boot, before the next boot boots it) still reads as a legitimate re-arm and lands the version's FIRST verdict — indistinguishable from a real activation without the .operator journal this seat does not read; the automatic roll-forward has no such window (the republish and the boot are one PID1 start), and the moment the version IS booted the not-already-booted clause refuses the same forge. What a forger still cannot mint is an in-progress for a version the store did not publish in this window, or one NOT newer than that nonce's own first line (the per-nonce rule fires on both) — and an unclaimed nonce is REPORTED as a silent boot. What this seat CANNOT see, stated as its bound: a verdict SUBSTITUTED inside a LIVE boot — the agent is root in the guest and can read its own /proc/cmdline nonce, so it can append the verdict itself in the writer's exact shape wearing the live nonce and suppress fx-init's own (a panic before grace expiry); that leaves ONE verdict for one (nonce, version) with every anchor satisfied, and the line's authorship inside the boot that owns the nonce is NOT distinguishable from the host — auditing, not proofing (the defence against substitution is the rollback machinery plus the observation hashes, not this reader); window boots the ledger does not cover (a mixed/manual regime — nonce-less lines are named and counted, but a forged pair in an UNCOVERED boot's slack still passes the arithmetic); boots started off the counting host, or a miscounted / moved --obs-file reuse (the count and the ledger are only as true as the host's own bookkeeping); a coherent tamper on a store first seen at enrollment (the enrollment gap — first run trusts, loudly). That is the honest bound of auditing, not proofing (§6b), printed on every run so the tool never implies more than it knows.\n");
     printf("bound (S4): the host proxy's ONE LOG is a KNOWN record only from the bytes it has NOW onward — this seat records them and re-hashes the prefix, so a TAMPER AFTER an observation is caught and a tamper BEFORE the first one is not (the same enrollment bound as every other record here); a log the caller does not name is NOT-KNOWN, never 'no call was made'.  The DECLARED REACH is measured WHEN THE OBSERVATION IS TAKEN (the proxy's registry as it prints now, the operator's tables as they hash now) and attributed to the LAST boot in .bootlog — it is NOT a reconstruction of what any EARLIER boot's generation could reach, and this seat does not claim one.  'Released' means the two class tables hash to their PINS (an operator act with a record); a widening under an UNVERIFIABLE release (no PINS) takes the loud side by construction, which can be a FALSE POSITIVE on a host with no pinned table set — named here rather than discovered.\n");
+    printf("bound (S4b): the COMPOSED SANDBOX is recorded per boot (the proxy's own --print-sandbox: the executor baseline + each tool's sidecar, plus one sha over the block) and a change is NAMED against THIS audit's previous observation.  What that can and cannot see, said rather than left to be discovered: the operator's ops-sandbox.tsv is the ONLY pinned half, it is DENY-MORE-ONLY and it narrows only what the spawn APPLIES — so it cannot WIDEN --print-sandbox, and therefore a widening of the composition can only come from the executor BASELINE or a SIDECAR, NEITHER of which any pin covers.  There is no released-widening path in v1: every widening takes the loud side (sandbox-widened-unreleased), and a deliberately, legitimately widened sidecar is a false positive this seat cannot distinguish — the pin's reach is the bound.  A NARROWING needs no release and is named.  And VISIBLE IS NOT STRONG: the promises are coarse (`inet` is any destination), the confinement is per-process and not per-call, there is no uid drop, and this record says what was DECLARED and APPLIED, never which syscalls a call made.\n");
     printf("evidence: the store's own records only — attempts.jsonl (the harness self-report) is never opened.\n");
 
     if (g_nfindings > 0) {

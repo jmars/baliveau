@@ -1397,12 +1397,36 @@ argument matching no operator class row is REFUSED BY NAME — rather than by a 
       mutant binaries were never built on a clean rebuild — the gate died at phase 0 and I diagnosed it
       before resuming); and the S2 judged-path unveil dying on a `;`-containing non-existent path in the
       echo-contract probe (now skips non-existent / spec-delimiter paths, fail-closed).
-- [ ] **STILL OWED (S4 of the palisade plan):** the `sandbox` column in `fx-report`'s call class (the row
-      field has existed since S1), `--print-sandbox` consumed by `fx-select`/`fx-audit`, and reach-sandbox
-      rows in the shared grammar.- [ ] **S3** — `http_get` under `inet`+`dns`, with the write-escape probe (a mutant that opens O_WRONLY →
-      EPERM, since `wpath` is absent from every floor). **S4** — the `sandbox` column in `fx-report`'s call
-      class (**OWED from S1**: the row field exists, the reporter column does not), `--print-sandbox`
-      consumed by `fx-select`/`fx-audit`, and the reach-sandbox rows in the shared grammar.
+- [x] **S4 — THE RECORD SIDE: A SANDBOX CHANGE IS A CAPABILITY CHANGE, AND THE ORACLES SEE IT**
+      (**UNCOMMITTED**). Closes §7.1a's rule for the sandbox: *a change to the wrap, the baseline, a tool's
+      sidecar or the operator's tightening row decides what a host tool may do, so it is a capability
+      change and must be visible to the seats that judge generations.*
+      **`fx-report`**: the row's `sandbox` field is now a **column of `call-exec`**, with three states kept
+      apart — host+field = MEASURED (what the spawn applied), host **without** the field = `NOT-KNOWN`
+      (pre-S3, never "unsandboxed"), guest = DERIVED. New rows: `sandbox-composed` (per tool, from the
+      proxy's own `--print-sandbox`), `sandbox-recorded`, `sandbox-pin` + a **`sandbox-pin-drift` FINDING**
+      (both shas), and `sandbox-delta` per tool with the direction NAMED — four absence records, so a
+      missing proxy / policy dir / pin is NOT-KNOWN and never "unchanged".
+      **`fx-select`**: `reach-sandbox` as ORDER **step 7** (additive to step 6), with
+      `sandbox-reach-widened` and **the consequence proved open** — winner, decision and exit code are
+      byte-identical with and without it.
+      **`fx-audit`**: a per-boot `sandbox-spec` / `sandbox-composed-sha` / `sandbox-boot` line and a new
+      `sandbox-record` check naming a change against the audit's OWN previous observation.
+      **THE MANDATED BLINDS, BOTH CAUGHT:** the **widening-blind** build (the addition re-derived from
+      today's proxy instead of the record) reads **NONE while a sidecar declared `inet`**; and the
+      **join-on-the-drifted-pin** build reports the operator sandbox table as **MATCH while it drifted** —
+      the quiet release, caught.
+      **NOT OVERCLAIMED:** the composed spec has **no released-widening path** (the operator table is
+      deny-more-only and cannot widen `--print-sandbox`, and neither the baseline nor a sidecar is pinned),
+      so every widening takes the loud side and a legitimate sidecar widening is a **stated false
+      positive**. And visible ≠ strong: promises are coarse, confinement is per-process, no uid drop —
+      printed as bounds in all three seats.
+      **THREE BUGS FOUND, MEASURED, FIXED**, one of them **pre-existing at HEAD**: `test_fx_select.sh` was
+      already broken because S3 emptied `ops-hosts.tsv`; plus the **same `:=`-definition-after-its-use**
+      defect S3 hit (prerequisites expanding empty), and two instrument bugs of its own (a decomposition
+      that dropped the baseline's trailing `libc:r` and produced a **false widening on an unchanged
+      sandbox**; and an observation reader keeping the line terminator, firing INCOHERENT on every
+      unchanged composition).
 
 - [ ] **THE OLD DESIGN ITEMS BELOW ARE NOW LARGELY SUPERSEDED** (kept for the reasoning they carry):
       **A closed, host-owned catalog of network PRIMITIVES** (`http.get`/`http.post` + allowed hosts,
