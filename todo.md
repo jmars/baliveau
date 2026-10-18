@@ -1326,6 +1326,55 @@ argument matching no operator class row is REFUSED BY NAME — rather than by a 
       **Declared scope extension:** +30 lines in `tests/test_osier_share.sh` (that tool's only gate) so the
       blindness statement is asserted rather than merely printed.
 
+- [ ] **PALISADE SANDBOXING** — the user's ask: *"do palisade - we should be able to configure the sandbox
+      via policies in datalog or dhall, vendor palisade so we can make changes to it if needed"*. Plan:
+      `handoff-palisade-plan`. **The "datalog or dhall" question is SETTLED and must not be re-opened:** the
+      **operator's datalog/ops policy owns the spec**, because the proxy is the only process at the spawn
+      and already evaluates that policy in-process, while a per-generation Dhall spec would be evaluated
+      guest-side and be **invisible to the per-boot record**. Dhall has no role in v1.
+- [x] **S0 — VENDORED + BUILT HERE** (`0f2174f`). `vendor/palisade/` holds the **source** (13 files,
+      `cmp`-identical to the fxstore copy) with `VENDOR.txt` recording the origin repo/commits and the
+      statement that this tree owns its copy. Built here via cosmocc into `build/stage3` and **pinned**
+      (`vendor/palisade/PINS`); `make palisade` refuses on drift, two clean builds agree — including across
+      a different absolute path. **The fxstore dependency is GONE and that was PROVEN:** with an empty
+      bind-mount over the fxstore checkout the build still succeeds at the same sha. `stage-guest.sh` now
+      stages this tree's build and keeps its LOUD refusal with NO fallback.
+- [x] **S1 — `host_time` IS SANDBOXED, AND THE GATE PROVES A SANDBOX IS REAL** (`6dc963f`). Per-tool
+      compiled-in floors; the spawn wraps `execve(stage3, [PROMISES, LANDLOCK, --, prog…])` keeping the
+      scrubbed env, deadline and cap; a `sandbox` row field rendered through the **same one-spelling
+      helper** the argv is built from, so row and argv cannot drift — *a grant you did not record is not
+      auditable*. **The floor is MEASURED and is the LEAST that works.** Both layers proven BOTH
+      directions against a pinned pre-S1 control: Landlock (`/etc/hostname` → EACCES inside, read through
+      the old proxy) and seccomp (`socket` → EPERM inside, created through the old proxy). **And the
+      mandated blind `FH_MUTANT_NO_STAGE3`:** the wrapper compiled out, the escape mutant reads the file
+      **through a call whose row claims a sandbox** — spec-loaded-but-NOT-applied, caught on the wire.
+      *Measured divergences:* the vendored pledge returns **EPERM, not SIGSYS** (the plan's assumption was
+      wrong; the SIGSYS branch is still built and proven wired), the loader needs `:rx` not `:r`, and
+      `/etc/hostname` is 0 bytes here so the proof is the open succeeding.
+- [x] **S2 — THE SANDBOX IS NOW CONFIGURABLE BY POLICY** (**COMMITTED**, `6dd6395`).
+      `policy/ops/ops-sandbox.tsv` (`tool<TAB>promises<TAB>landlock`) whose header states the author,
+      **SILENCE = THE FLOOR** (there is no "unsandboxed" state to fall into), **DENY-MORE-ONLY**, and that
+      rlimits are deliberately not here; it ships **EMPTY**, so every tool gets its floor.
+      `eval_ops.py --check-sandbox` is **grammar only** and both headers say so — the authority is the
+      seat's own **floor ∩ row** composition, so there is ONE spelling and the python check never
+      re-spells the registry. The per-call judged-path unveil threads `ops_judge`'s **canonicalized** path
+      to the spawn: the judge stays the ONE canonicalizer, no second spelling.
+      *Orchestrator-verified:* **tightening works** (a dropped landlock path is judged allowed, the open
+      then fails EACCES and the refusal is recorded), **loosening is refused** (a promise beyond the floor
+      is a STARTUP REFUSAL naming the row — "a row may only NARROW, never widen"), the
+      **`FH_MUTANT_NO_SANDBOX_TABLE` blind** is caught (row ignored, the forbidden path READ, the `sandbox`
+      field showing the floor), and the **sibling-path escape** is EACCES post-fix while the pinned pre-S2
+      control reads it.
+      **Stated divergence:** landlock unveils the **path**, not a symlink's target, so `O_NOFOLLOW` stays
+      load-bearing for symlinks while the sibling path *is* landlock-blocked — complementary defences, both
+      stated. Also: the spawn bounds the judged path to `FH_HOST_PATH_MAX` before unveiling, because an
+      over-long model path would overflow stage3's 512-byte `LANDLOCK_SPEC` before the executor's own
+      length refusal ran.
+- [ ] **S3** — `http_get` under `inet`+`dns`, with the write-escape probe (a mutant that opens O_WRONLY →
+      EPERM, since `wpath` is absent from every floor). **S4** — the `sandbox` column in `fx-report`'s call
+      class (**OWED from S1**: the row field exists, the reporter column does not), `--print-sandbox`
+      consumed by `fx-select`/`fx-audit`, and the reach-sandbox rows in the shared grammar.
+
 - [ ] **THE OLD DESIGN ITEMS BELOW ARE NOW LARGELY SUPERSEDED** (kept for the reasoning they carry):
       **A closed, host-owned catalog of network PRIMITIVES** (`http.get`/`http.post` + allowed hosts,
       methods, size caps) that Dhall declarations may only **instantiate, never invent** — modelled on
