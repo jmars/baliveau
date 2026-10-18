@@ -1104,7 +1104,7 @@ override** (`8d7d8b9`, MEASURED by the orchestrator).
    virtserialport,chardev=fxctl0,name=fxctl0`. Then: inspect → write a config → `fxctl activate` →
    reboot → verdict → `fxstore verify`.
 2. **THE FIRST SELF-MODIFICATION TASK**: the agent writes an **MCP server in Osier**, activates it as a
-   **service**, and the `osier-share` share moves **0% → non-zero** (§7.1c). Every piece exists.
+   **service**, and the `osier-share` share moves **0% → non-zero** (§7.1). Every piece exists.
    **AMENDED 2026-10-10 (§6a):** the change is carried by the **store**, not by building an image —
    the agent is already inside the machine, so the loop is *make changes → apply → activate a new
    generation*, with the agent declaring PACKAGES in its config and composing recipes from a

@@ -258,6 +258,7 @@
  *    view is exactly the silent pass this family refuses) ─────────────── */
 
 #define MAX_VERSIONS 512
+#define MAX_IDENTS MAX_VERSIONS /* distinct content identities <= versions */
 #define MAX_BOOTLOG_LINES 8192
 #define MAX_RECOVERY_ROWS 2048
 #define MAX_OPERATOR_ROWS 4096
@@ -1253,8 +1254,11 @@ static const struct { const char *cls, *record, *absence; } TAXONOMY[] = {
       "MEASURED — <store>.fx-claim-obs rows (the JUDGE SEAT's observation — fx-claim's format-1 record of the TRIPLE per generation: the claim that rode into the activation as the two extraEtc rows /etc/fx-claim.tsv + /etc/fx-claim.le, the VERDICT the frozen policy's evaluator reached, and the OUTCOME cross-check against the .operator row, content-joined): claim <genhash> version <N> verdict <cls> claim-sha <sha|-> op-from <v|-> (the observation's format header IS the definition — ONE writer).  The claim BYTES live in the retained generation dir (the claim-rows retention row); this seat reads the VERDICT record and recomputes nothing (bound/claim-check-is-a-lever)",
       "TWO DIRECTIONS, the §1a gap-3 discipline: (i) the observation PRESENT and a row's verdict claimless = NONE-OCCURRED for that generation — MEASURED by a judge that RAN, within the enrollment boundary the observation's existence sets; a LIVE generation the observation does NOT name is NOT 'none occurred' — the report emits claim-record ... NOT-RECORDED for it (the judge has not run since the publish, or its run disagreed — no-claim — and the observation kept its baseline); (ii) the observation ABSENT = NOT-DURABLY-RECORDED — no judge has ever run on this store (or the observation was removed): the report cannot say whether any claim rode in or any verdict was reached, and says so (absence/.fx-claim-obs) instead of printing a zero.  verdict-rewritten / claim-rewritten NEVER persist in the observation (the seat refuses to rewrite under them) — their audit is the judge's own next run, not this seat's" },
     { "content-recurrence",
-      "DERIVED: .recovery data rows whose trailing genhash is IDENTICAL (the .recovery header's own semantics: the same content re-failing)",
-      "no-repeated-genhash=no-recurrence-within-the-surviving-rows" },
+      "DERIVED: .recovery data rows whose trailing genhash is IDENTICAL (the .recovery header's own semantics: the same content re-failing).  THIS IS THE NARROWER CLASS and the difference is decisive: it reads ONE file, so it sees only the content an AUTOMATIC roll-forward RESTORED, and it CANNOT see a repeat that a RE-ACTIVATION produced (the agent, a shell or an operator re-issuing the same configuration) — which is the OSCILLATOR's actual driver.  The `progress` class below keys on the CHAIN's own genhash and sees both; the two are not spellings of one class, and a reader who takes this row for that question is the silent defect the distinction exists to prevent",
+      "no-repeated-genhash=no-recurrence-WITHIN-.recovery's-surviving-rows — and never 'no recurrence': a store whose repeats were all re-activations has no such row at all, so that question must be read from the `progress` class" },
+    { "progress",
+      "MEASURED — the CHAIN's own content identities: `fxstore timeline` (every published version) + `fxstore facts generation --as-of <v>` (the genhash — the SAME key fx-init's guard_stats_for uses) + <store>/.bootlog (the per-version verdict).  ONE progress-content row per DISTINCT genhash in first-published order: versions (the publisher) / runs (the system: MAXIMAL consecutive runs, which collapses the publish protocol's own pair) / failed / in-progress / ok / not-judged / other, its first and last version, whether it is the LIVE one, and its CLASSIFICATION (new | repeat-of-<vN> | benign-publish-pair | not-known).  ACTIVITY is those versions minus the publish pair and minus NOT-KNOWN; PROGRESS is the FIRST SIGHTING of an identity.  A repeat is zero progress BY DEFINITION (same content, new number)",
+      "TWO DIRECTIONS, and they are the load-bearing part: (i) NO `generation` facts as of a version = that version's content identity is NOT-KNOWN — its OWN count, in NEITHER activity nor progress, and never 'the same content as its neighbour' and never 'new content'; (ii) NO .bootlog, or one with no line, = EVERY verdict NOT-KNOWN, so `failed` reads 0 because NOTHING WAS JUDGED and not because nothing failed — the summary prints `verdicts NOT-KNOWN` with the not-judged count, and an absent log must NEVER become a zero; a status word outside the writer's set counts as neither ok nor failed (never as a pass).  NO .recovery changes NOTHING here (this class does not read it — that IS the difference from content-recurrence above).  A store predating .operator leaves the ATTRIBUTION of a repeat NOT-KNOWN, never 'unattributed'" },
     { "call",
       "MEASURED — the host proxy's ONE LOG (tools/fx-hostgate.c --log, one JSONL row per decoded tool call) joined, by call_id, to the guest's TRANSCRIPT (messages.jsonl).  A call row carries the TRIPLE: the CLAIM (the model's true_name and the args, the justification among them), the VERDICT (an allowed row's author + allow_scope; a denied row's author + refusal_name + reason) and the OUTCOME (the replayed function_call_output), plus terminal turn-stats/proxy-exit rows.  The guest records only what CROSSED the gate (the REWRITTEN name fx_host_denied + a generic sentinel), so this join is the ONLY place a denial's true name, verdict, author and reason are queryable together.  The seat READS the log — byte-identical in, byte-identical out; it never re-renders or rewrites it.",
       "TWO DIRECTIONS, the §1a gap-3 discipline, once per side: (i) BOTH records given and a call_id present in one and ABSENT from the other IS a MEASUREMENT — emitted as call-join ... FINDING (host-log-only: the host judged a call the transcript does not record; transcript-only: the guest recorded a call the host never judged) with its meaning stated, so a join that cannot fire FAILS OPEN IN THE RECORD (the P2 lesson); (ii) a side NOT GIVEN (no --proxy-log / no --transcript) is NOT-KNOWN — an absence row is emitted and its silence is NEVER read as 'no call'" },
@@ -1350,6 +1354,22 @@ static const struct { const char *id, *text; } BOUNDS[] = {
       "STATEMENT, not a bound to discover later: the sandbox class is the WEAKENED audit, exactly as the reach class is.  It compares TWO TEXTS — the composition the proxy would apply now and the spec each recorded host call applied — plus ONE pin (ops-sandbox.tsv).  It is NOT type-enforced: nothing forces a tool to declare what it uses, the sidecar is UNPINNED (any process that can write beside the tool binary can declare more, and that edit is invisible to PINS by construction), and the executor's baseline is a compile-time constant pinned by nothing but the binary it lives in.  The asymmetry is the audit's whole shape and it is stated rather than smoothed: because an operator row can only TIGHTEN, an ADDITION to the declaration can only come from the baseline or a sidecar, so a widening takes the loud side ALWAYS — a legitimate, deliberately-released sidecar widening is therefore a false positive this seat cannot distinguish, and saying so is cheaper than pretending the pin covers it.  What survives honestly: the difference is NAMED with its direction and its tokens, the operator table's pin is checked separately, and a missing side is NOT-KNOWN on every side" },
     { "sandbox-visible-is-not-strong",
       "a sandbox change being VISIBLE does not make the sandbox STRONG, and this report claims only the visibility.  The promises are COARSE: `inet` is ANY destination — the sandbox decides WHETHER sockets exist, never where they point, and the destination control is the operator's class tables (a different mechanism, with its own weakened audit).  The confinement is PER-PROCESS, not per-call: the spec is applied once, around the whole program, and the per-call data ceiling remains the deadline and the output cap.  There is no uid drop — stage3 keeps the host user.  And the spec reaching a wider set is not a claim about what the program DOES with it: the record shows what was declared and applied, never the syscalls a call made, which nothing in this family records" },
+    { "activity-without-progress-cannot-see-intent",
+      "THE MEASURE COUNTS COMMITS, NOT WORK, and it cannot know INTENT.  A repeated content identity may be a legitimate re-application of the same configuration after an unrelated repair (an operator repairing the disk and re-activating; an agent re-landing the config it already proved); a long, USEFUL task that published nothing at all looks perfectly FLAT here; and a single failure may be a typo already fixed.  So a FLAT reading is not a verdict on the agent's work, and a recurrence finding is not a verdict on its judgement: this seat says only 'new content was committed' or 'it was not'.  Whether the new content is BETTER is `osier-share`/the oracle (§7.1); whether it was INTENDED is the claim unit's judged record (§1a gap 2)" },
+    { "progress-identity-is-content-not-behaviour",
+      "the identity is the store's genhash, which CONTENT-ADDRESSES the config's PARSED fields plus the closure's store paths (fx-init zig/src/activate.zig:774-780, :1235) — it is NOT a behaviour hash.  Two configs that behave identically but move one parsed field produce DIFFERENT identities, and this seat calls the second PROGRESS; a comment-only edit does NOT move the key (activate.zig:1477-1490 keeps the genhash), which is the one thing it is trustworthy about and the reason an idempotent re-activation reads as a REPEAT rather than as work" },
+    { "progress-verdict-join-mirrors-the-select-seat",
+      "the per-version verdict (LAST non-`shutdown` .bootlog status in FILE ORDER, an UNRESOLVED `in-progress` tail counting as a failure) MIRRORS fx-select's viability term (tools/fx-select.c:755-768, the via_t last-non-shutdown rule) rather than sharing it — the same named risk the reach class carries as bound/reach-attribution-mirrors-the-seat — and the mirror is NOT EXACT, which is said here instead of being papered over: fx-select separates VIA_UNKNOWN / VIA_NEVER / VIA_TORN / VIA_DAMAGED and prefers the false stop on a line that is not the writer's field count, while this seat reads .bootlog through the report's ONE pre-existing parser (it REFUSES, exit 2, a line it cannot parse to three fields, but takes the status token of a parseable over-long line).  A drift between the two seats makes one call a version VIABLE while the other calls its content FAILED, and fx-init's guard_stats_for (zig/src/init.zig:1218) is the THIRD independent computation of the same quantity — which is why a divergence is a finding about the seats rather than a matter of taste" },
+    { "progress-is-not-a-policy",
+      "this class is a MEASUREMENT: it does not gate, deny, refuse, reorder or stop anything, and the report's own decision, candidate table and exit code are unchanged by a ratcheting store (the S4 precedent, egress-reach-widened/sandbox-reach-widened, proved that a loud row with a deliberately OPEN consequence is the house form).  Its recurrence threshold IS fx-init's RECOVERY_CONTENT_FAIL_MAX (zig/src/init.zig:1050, value 2) via guard_stats_for (:1218) — REUSED, NOT CHOSEN — because the boot guardrail ALREADY ACTS on exactly that count: a second actuator for one quantity would be a second policy with no owner, and the two could disagree silently.  The seat that GRADES must not be the seat that ACTS, and an instrument that can act has to be right, whereas a measurement may be incomplete provided it says so" },
+    { "progress-cannot-see-a-changing-content-loop",
+      "the recurrence finding fires on ONE identity failing again, and a loop that commits ALWAYS-NEW content and ALWAYS fails never reaches it: every identity fails exactly once, no count ever reaches the threshold, and the seat reports FULL PROGRESS over a wall of failures.  The boot guardrail misses that shape by construction too (its fail_n is per-genhash, so a fresh content always reads as transient).  The two numbers that describe it print beside the finding — `identities-never-ok` and `longest-failed-streak` — and NEITHER is a finding, deliberately: an honest debugging session (three configs tried, three failures, then the fix) produces exactly this shape, and a check that fires on the healthy path trains its reader to ignore it" },
+    { "progress-blind-to-the-self-report",
+      "the requirement's own 'or re-running the same task' half is UNMEASURABLE FROM THIS SEAT, and that is stated rather than approximated: a task re-run that published nothing left no store record, and the only record of it is the harness's attempts.jsonl — which this seat is FORBIDDEN to read (the file's header; pinned behaviourally by tests/test_fx_audit.sh's absent/planted/doctored byte-identity arm).  The moment a self-report can move this measure, an agent can talk the instrument out of a finding.  An INDEPENDENT record (the host's boot-nonce ledger is the candidate) is a SEPARATE unit, named here so the requirement's scope stays honest instead of appearing fully closed" },
+    { "progress-record-scope",
+      "the record is IN-GUEST WRITABLE: root inside the guest can forge or truncate <store>/.bootlog and edit the store's snapshots exactly as it can any other file, so this class inherits fx-select's bound `bootlog-is-in-guest-writable` BY CITATION (not restated).  Catching a forgery is fx-audit's job — it compares the record against its OWN previous observation — which is a different question, by design.  In the other direction, activity that reached neither the store nor .bootlog is invisible HERE: /run/fx/log.db is tmpfs (bound/rt-log-tmpfs), a nonce-less boot records nothing in .operator, and the three bypass paths bound/operator-bypass-paths names (a host-side `fxstore rollback`, `rollback --hard`, a hand-edited CURRENT) leave no attribution" },
+    { "progress-version-cap",
+      "MAX_VERSIONS (512) is hit exactly on this class's own subject — an oscillator ratchets versions forever — and the cap DIES LOUDLY (exit 2), which is correct and must NOT be softened into a partial measure.  The consequence is stated rather than hidden: in the very case this seat was built for, the measure becomes UNAVAILABLE and says so instead of reporting a truncated view.  Raising or streaming the cap is a separate decision with its own cost to measure (the precedent is bound/predecessor-content-not-compared, which records ~22 ms per `fxstore` call as the reason a whole-chain read was rejected there)" },
 };
 #define NBOUND (sizeof BOUNDS / sizeof BOUNDS[0])
 
@@ -2931,6 +2951,198 @@ static int recrow_names(unsigned v) {
     return 0;
 }
 
+/* ── THE PROGRESS CLASS — MEASURE ACTIVITY WITHOUT PROGRESS ──────────────
+ *    (§1's last owed seat; design record §1a's taxonomy, requirement
+ *    todo.md §1.)  A MEASUREMENT, never a policy: it gates, denies, refuses
+ *    and stops NOTHING.
+ *
+ * ACTIVITY = published versions split by CONTENT IDENTITY — the store's own
+ * `generation` genhash, read into version_t.genhash by read_facts (:672) —
+ * and NOT by the version number.  The version number is inflated by two
+ * things that must never be conflated with work: the publish PROTOCOL's own
+ * duplicate of the immediately-preceding generation (one per fx-activate run
+ * after the first — the same `republish-live` the activation event already
+ * classifies, :3104-3107) and an idempotent re-activation of identical bytes
+ * (fx-init KEEPS the genhash when a config edit does not move a parsed field,
+ * activate.zig:1477-1490, while fxstore's publish is unconditional).
+ *
+ * PROGRESS = the FIRST SIGHTING of a content identity.  A repeat is zero
+ * progress BY DEFINITION: same content, new number.
+ *
+ * The identity key is 64 hex bytes and a longer genhash is a LOUD die: a
+ * TRUNCATED key either merges two identities (hiding a repeat) or splits one
+ * (hiding the identity) — silently, in the same direction this class exists
+ * to refuse.  Nothing here reads attempts.jsonl or any harness self-report. */
+typedef struct {
+    char genhash[65];        /* the content identity; "-" = NOT-KNOWN */
+    unsigned versions;       /* published versions carrying it */
+    unsigned runs;           /* MAXIMAL consecutive runs of them */
+    unsigned repeats;        /* versions after the first carrying it */
+    unsigned benign_repeats; /* of those, the immediately-preceding version
+                              * (the publish protocol's own pair) */
+    unsigned failed;         /* last non-shutdown verdict `failed` */
+    unsigned inprog;         /* ... `in-progress` (an UNRESOLVED boot) */
+    unsigned ok;             /* ... `ok` */
+    unsigned ok_noncur;      /* ... `ok`, excluding the CURRENT version */
+    unsigned notjudged;      /* no non-shutdown .bootlog line at all */
+    unsigned other;          /* a status word outside the writer's set */
+    unsigned first_v, last_v;
+    int live;                /* its last version IS the CURRENT one */
+    int known;               /* 0 for the "-" identity */
+} ident_t;
+
+static ident_t g_idents[MAX_IDENTS];
+static unsigned g_nidents;
+
+/* THE VERDICT JOIN: per version, the LAST non-`shutdown` .bootlog status in
+ * FILE ORDER.  MEASURED rule, fx-init's own (init.zig:1087-1099, bootver_apply): raw entry
+ * counting false-positives — an `in-progress` later RESOLVED to `ok` must read
+ * ok — while an UNRESOLVED `in-progress` tail (a crash mid-boot) is exactly the
+ * evidence the recovery trigger reads as a stale failure.  `shutdown` is not a
+ * verdict.  NULL when the version has no non-shutdown line. */
+static const char *verdict_of(unsigned v) {
+    const char *st = NULL;
+    for (unsigned i = 0; i < g_nbl; i++)
+        if (g_bl[i].v == v && strcmp(g_bl[i].status, "shutdown") != 0) st = g_bl[i].status;
+    return st;
+}
+
+/* REUSED, NOT CHOSEN: the recurrence threshold IS fx-init's
+ * RECOVERY_CONTENT_FAIL_MAX (fixpoint-linux/fx-init zig/src/init.zig:1050,
+ * value 2 — "2, not 1: a single failure must still recover exactly as today;
+ * only the REPEAT is evidence of a persistent fault rather than a transient
+ * one").  The boot guardrail already ACTS on exactly this count through
+ * guard_stats_for (:1218: fail_n = distinct published versions carrying the
+ * genhash whose LAST non-shutdown .bootlog status is failed or in-progress),
+ * so this seat and the boot path compute the SAME quantity under the SAME
+ * threshold from the SAME records, INDEPENDENTLY — a divergence between them
+ * is a finding about the seats, not a matter of taste.  This seat only
+ * REPORTS it; it never refuses, denies or stops anything. */
+#define PROGRESS_CONTENT_FAIL_MAX 2
+
+static void build_identities(unsigned cur_v) {
+    for (unsigned i = 0; i < g_nvers; i++) {
+        version_t *V = &g_vers[i];
+        size_t gl = strlen(V->genhash);
+        if (gl >= sizeof g_idents[0].genhash)
+            die("version %u's genhash is %zu bytes — the content-identity key is %zu (64 hex); "
+                "a TRUNCATED key would MERGE or SPLIT identities, which is exactly the blindness "
+                "this class refuses", V->v, gl, sizeof g_idents[0].genhash - 1);
+        ident_t *I = NULL;
+        for (unsigned k = 0; k < g_nidents; k++)
+            if (!strcmp(g_idents[k].genhash, V->genhash)) { I = &g_idents[k]; break; }
+        if (!I) {
+            if (g_nidents >= MAX_IDENTS)
+                die("more than %u distinct content identities — raise MAX_IDENTS (a partial "
+                    "measure is a lie)", (unsigned)MAX_IDENTS);
+            I = &g_idents[g_nidents++];
+            memset(I, 0, sizeof *I);
+            snprintf(I->genhash, sizeof I->genhash, "%s", V->genhash);
+            I->first_v = V->v;
+            I->known = strcmp(V->genhash, "-") != 0;
+        } else {
+            I->repeats++;
+            if (i > 0 && !strcmp(g_vers[i - 1].genhash, V->genhash)) I->benign_repeats++;
+        }
+        I->versions++;
+        I->last_v = V->v;
+        I->live = (V->v == cur_v);
+        if (i == 0 || strcmp(g_vers[i - 1].genhash, V->genhash) != 0) I->runs++;
+        const char *st = verdict_of(V->v);
+        if (!st) I->notjudged++;
+        else if (!strcmp(st, "ok")) { I->ok++; if (V->v != cur_v) I->ok_noncur++; }
+        else if (!strcmp(st, "failed")) I->failed++;
+        else if (!strcmp(st, "in-progress")) I->inprog++;
+        else I->other++;
+    }
+}
+
+/* the identity row's own classification.  `benign-publish-pair` is its OWN
+ * word (never `repeat-of`): it says the only reason the version count
+ * exceeds the run count is the publish protocol. */
+static void ident_class(const ident_t *I, char *buf, size_t n) {
+    if (!I->known) snprintf(buf, n, "not-known");
+    else if (I->versions == 1) snprintf(buf, n, "new");
+    else if (I->repeats == I->benign_repeats) snprintf(buf, n, "benign-publish-pair");
+    else snprintf(buf, n, "repeat-of-%u", I->first_v);
+}
+
+static void emit_progress(void) {
+    for (unsigned k = 0; k < g_nidents; k++) {
+        ident_t *I = &g_idents[k];
+        char cls[64];
+        ident_class(I, cls, sizeof cls);
+        printf("progress-content\t%s\tversions\t%u\truns\t%u\tfailed\t%u\tin-progress\t%u"
+               "\tok\t%u\tnot-judged\t%u\tother\t%u\tfirst-version\t%u\tlast-version\t%u"
+               "\tlive\t%s\tclassification\t%s\tMEASURED\n",
+               I->genhash, I->versions, I->runs, I->failed, I->inprog, I->ok, I->notjudged,
+               I->other, I->first_v, I->last_v, I->live ? "yes" : "no", cls);
+    }
+    /* THE FINDING: the SAME content published and judged failed again.  It is
+     * a RECORD, not a verdict on intent — "THE SAME FAULT RETURNING, not proof
+     * of a live loop" (outcome.c:1106's wording, reused rather than re-coined),
+     * and the bound that says so travels INLINE on the row, where a reader
+     * meets the number. */
+    for (unsigned k = 0; k < g_nidents; k++) {
+        ident_t *I = &g_idents[k];
+        if (!I->known) continue; /* NOT-KNOWN is never a count of anything */
+        unsigned fail_v = I->failed + I->inprog;
+        if (fail_v < PROGRESS_CONTENT_FAIL_MAX) continue;
+        printf("progress-finding\tactivity-without-progress-recurrence\tgenhash\t%s"
+               "\tversions\t%u\tfailed\t%u\tfirst-version\t%u\tlast-version\t%u\tlive\t%s"
+               "\tbound\tactivity-without-progress-cannot-see-intent\tMEASURED\t"
+               "the same content has been published and judged failed %u time(s) — THE SAME "
+               "FAULT RETURNING, not proof of a live loop (this seat runs when it runs, so a "
+               "recurrence in the RECORD is not a live oscillation); `failed` here is "
+               "failed(%u)+in-progress(%u) last verdicts, i.e. EXACTLY fx-init's "
+               "guard_stats_for fail_n under RECOVERY_CONTENT_FAIL_MAX=2 "
+               "(zig/src/init.zig:1050,:1218) — REUSED, NOT CHOSEN; the boot guardrail ACTS on "
+               "it and this seat only REPORTS it (bound/progress-is-not-a-policy).  It cannot "
+               "know INTENT: this may be a deliberate re-application of the same configuration "
+               "after an unrelated repair\n",
+               I->genhash, I->versions, fail_v, I->first_v, I->last_v, I->live ? "yes" : "no",
+               fail_v, I->failed, I->inprog);
+        g_findings++;
+    }
+}
+
+/* AXIS 2 — the loop shape the recurrence finding above CANNOT see: every
+ * iteration commits NEW content and every one fails, so no identity ever
+ * reaches fail_n=2 and the seat would report FULL PROGRESS over a wall of
+ * failures.  Both numbers are READ, never judged, and neither is ever a
+ * finding: a normal debugging session (three configs, three failures, then
+ * the fix) has exactly this shape, and a check that fires on the honest path
+ * trains its reader to ignore it. */
+static unsigned identities_never_ok(void) {
+    unsigned n = 0;
+    for (unsigned k = 0; k < g_nidents; k++) {
+        ident_t *I = &g_idents[k];
+        if (!I->known) continue;
+        /* CURRENT is EXCLUDED and says so: a boot verdict arrives one boot
+         * LATER than the state it judges (fx-select's own `current-not-judged`
+         * withhold state), so a healthy store's newest identity has no verdict
+         * yet — counting it would fire on every healthy machine. */
+        if (I->versions - (I->live ? 1u : 0u) == 0) continue;
+        if (I->ok_noncur == 0) n++;
+    }
+    return n;
+}
+
+static unsigned longest_failed_streak(void) {
+    unsigned best = 0, run = 0;
+    for (unsigned i = 0; i < g_nvers; i++) {
+        version_t *V = &g_vers[i];
+        if (!strcmp(V->genhash, "-")) continue; /* NOT-KNOWN is not a commit */
+        if (i > 0 && !strcmp(g_vers[i - 1].genhash, V->genhash))
+            continue; /* the protocol's own pair is not a second commit */
+        const char *st = verdict_of(V->v);
+        if (st && (!strcmp(st, "failed") || !strcmp(st, "in-progress"))) {
+            if (++run > best) best = run;
+        } else run = 0;
+    }
+    return best;
+}
+
 int main(int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--store") && i + 1 < argc) g_store = argv[++i];
@@ -3007,6 +3219,9 @@ int main(int argc, char **argv) {
     unsigned cur_v = 0, newest = g_vers[g_nvers - 1].v;
     for (unsigned i = 0; i < g_nvers; i++)
         if (g_vers[i].cur) cur_v = g_vers[i].v;
+    /* the content-identity table the progress class and its summary read
+     * (built once: ACTIVITY by CONTENT, never by the version number) */
+    build_identities(cur_v);
     printf("report\tfx-report/1\tstore\t%s\tversions\t%u\n", g_store, g_nvers);
     printf("current\t%u\tMEASURED\tnewest\t%u\n", cur_v, newest);
 
@@ -3122,6 +3337,12 @@ int main(int argc, char **argv) {
         printf("event\tactivation\tMEASURED\tversion\t%u\tgenhash\t%s\tepoch\t%s\tkind\t%s\trepublish-of\t%s\n",
                V->v, V->genhash, V->epoch, kind, republish);
     }
+
+    /* progress: the COLLAPSE of those per-version classifications into one
+     * row per CONTENT IDENTITY, plus the per-version verdict join.  Placed
+     * here so it reads as what it is — the same chain, counted by content
+     * instead of by version number. */
+    emit_progress();
 
     /* boot verdicts, in the log's own order */
     for (unsigned i = 0; i < g_nbl; i++) {
@@ -3336,6 +3557,73 @@ int main(int argc, char **argv) {
     else
         h(".bootlog LINES (not boots: an in-guest activation appends its own in-progress line, so these can exceed the boot count): %u line(s) — %u ok, %u failed, %u in-progress, %u shutdown.",
           g_nbl, n_ok, n_fa, n_ip, n_sd);
+
+    /* ── ACTIVITY / PROGRESS: the headline is a READING, not a record, so it
+     *    prints in the `#` summary BESIDE the records, never instead of them.
+     *    Every line of both blocks is prefixed ACTIVITY or PROGRESS, which is
+     *    also what lets the gate's pre-fix pin drop them by one rule — and
+     *    what stops a reader mistaking a count for its source. ─────────── */
+    {
+        unsigned n_known = 0, n_benign = 0, n_ident = 0;
+        unsigned v_ok = 0, v_fa = 0, v_ip = 0, v_nj = 0, v_ot = 0;
+        for (unsigned k = 0; k < g_nidents; k++) {
+            ident_t *I = &g_idents[k];
+            v_ok += I->ok; v_fa += I->failed; v_ip += I->inprog;
+            v_nj += I->notjudged; v_ot += I->other;
+            if (!I->known) continue;
+            n_ident++;
+            n_known += I->versions;
+            n_benign += I->benign_repeats;
+        }
+        unsigned n_activity = n_known - n_benign; /* content-advancing publishes */
+        unsigned n_progress = n_ident;            /* the first sightings */
+        h("ACTIVITY (by CONTENT IDENTITY, never by the version number) — %u published "
+          "version(s) = %u with `generation` facts + %u NOT-KNOWN (no facts as of that "
+          "version: counted in NEITHER activity nor progress).", g_nvers, n_act, n_gh);
+        h("ACTIVITY = %u content-advancing publish(es) = %u first-sighting(s) + %u repeat(s) of "
+          "a known identity; the publish protocol's own pair contributes %u version(s) and is "
+          "NOT activity (MEASURED: every fx-activate run after the first leaves a BENIGN PAIR — "
+          "a duplicate of the previous generation, then the new one: fx-report.c:3104-3107).",
+          n_activity, n_progress, n_activity - n_progress, n_benign);
+        h("ACTIVITY blind to WHAT the content does: whether it WORKS or was USEFUL, and whether "
+          "it was INTENDED — a long USEFUL task that publishes nothing looks perfectly FLAT "
+          "here (this counts COMMITS, not work) and a repeat may be a legitimate re-application "
+          "of the same config after an unrelated repair "
+          "(bound/activity-without-progress-cannot-see-intent).  Also blind BY CONSTRUCTION to "
+          "activity that left NO store record — a task re-run that published nothing, which "
+          "only the harness's attempts.jsonl holds and this seat is FORBIDDEN to read "
+          "(bound/progress-blind-to-the-self-report).");
+        h("PROGRESS (a FIRST SIGHTING of a content identity) — %u distinct identit%s, %u "
+          "first-sighting(s), %u repeat(s), and a repeat is ZERO progress by definition (same "
+          "content, new number).  progress/activity = %u/%u, the denominator being the "
+          "content-advancing count so the publish pair does not deflate it: a READING, never a "
+          "grade — this seat does not say the new content is BETTER (that is `osier-share`, "
+          "§7.1).", n_progress, n_progress == 1 ? "y" : "ies", n_progress,
+          n_activity - n_progress, n_progress, n_activity);
+        if (!g_bl_present || g_bl_empty)
+            h("PROGRESS verdicts: NOT-KNOWN — %s, so EVERY version reads not-judged and "
+              "`failed` is 0 because NOTHING WAS JUDGED, never because nothing failed (an "
+              "absent log must not become a zero).",
+              g_bl_present ? "the log is present but empty" : "no .bootlog exists");
+        else
+            h("PROGRESS verdict join: the LAST non-`shutdown` .bootlog status per version, in "
+              "FILE ORDER (an in-progress later RESOLVED to ok reads ok; an UNRESOLVED "
+              "in-progress tail counts as failed — the same evidence the recovery trigger "
+              "reads as stale; fx-init init.zig:1087-1099, bootver_apply) — %u ok, %u failed, %u in-progress, "
+              "%u not-judged, %u status word(s) outside the writer's set.", v_ok, v_fa, v_ip,
+              v_nj, v_ot);
+        h("PROGRESS cannot see the OTHER loop shape: ALWAYS-NEW content, always failing — every "
+          "identity fails exactly once, no count ever reaches the recurrence threshold, and "
+          "this seat would report FULL PROGRESS over a wall of failures (the boot guardrail "
+          "misses it too: its fail_n is per-genhash).  It prints as two NUMBERS and is "
+          "deliberately NOT a finding (an honest debugging session looks identical): "
+          "identities-never-ok %u (zero ok verdicts among their NON-CURRENT versions — CURRENT "
+          "is EXCLUDED, because a boot verdict arrives one boot LATER than the state it "
+          "judges) and longest-failed-streak %u (consecutive content-advancing publishes "
+          "judged failed/in-progress).  The recurrence finding does NOT cover that shape "
+          "(bound/progress-cannot-see-a-changing-content-loop).",
+          identities_never_ok(), longest_failed_streak());
+    }
     h("automatic roll-forwards: %u row(s) in .recovery%s.", g_nrec,
       g_rec_present ? "" : " (no .recovery — none ever recorded)");
     {

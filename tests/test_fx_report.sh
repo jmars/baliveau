@@ -330,6 +330,8 @@ grep -aq "claim-evaluator-location" "$REPORT" \
 grep -aq "no-verdict-field-no-policy-ran-on-this-call" "$REPORT" \
     || fail "STALE BINARY: $REPORT does not contain this source's call-class no-fabricated-verdict marker"
 grep -aq "host-name" "$REPORT" || fail "STALE BINARY: $REPORT does not contain this source's call-disagreement row"
+grep -aq "activity-without-progress-cannot-see-intent" "$REPORT" \
+    || fail "STALE BINARY: $REPORT does not contain this source's progress-class bound (the content-identity seat)"
 
 TAB="$(printf '\t')"
 
@@ -582,6 +584,18 @@ report() { # report STORE OUTFILE -> exit code
     FXSTORE_BIN="$FXSTORE" "$REPORT" --store "$1" > "$2" 2>"$2.err"
 }
 
+# the mutant builder lives HERE, beside report(), because the PROGRESS class's
+# arms (which come before the MUTATIONS section) need it: a function defined
+# after its first use is a gate that silently runs nothing, the same class of
+# defect as a Makefile ':=' after its prerequisites.
+mutbuild() { # mutbuild NAME SED-EXPR -> builds build/fx-report-<name>
+    cp "$REPO/tools/fx-report.c" "$WORK/mut-$1.c"
+    sed "$2" "$WORK/mut-$1.c" > "$WORK/mut-$1.c.new" && mv "$WORK/mut-$1.c.new" "$WORK/mut-$1.c"
+    cc -std=c11 -O2 -g -Wall -Wextra -Isrc/vendor/dhall-c -Isrc/vendor/yyjson -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
+        -o "$REPO/build/fx-report-$1" "$WORK/mut-$1.c" src/vendor/dhall-c/sha256.c src/vendor/yyjson/yyjson.c \
+        || fail "MUTATION $1: the mutated source does not build"
+}
+
 # ══ RECON: the acceptance the Act asks for ══════════════════════════════
 report "$WORK/s1" "$WORK/out-s1"
 [ $? -eq 0 ] || fail "RECON: expected exit 0 on the attributed store, got $? ($(head -3 "$WORK/out-s1.err"))"
@@ -649,6 +663,194 @@ cmp -s "$WORK/out-sr0" "$WORK/out-sr3" || fail "SELFREPORT: output changed after
 report "$WORK/s1" "$WORK/out-s1b"
 cmp -s "$WORK/out-s1" "$WORK/out-s1b" || fail "DETERMINISM: two runs over the same store differ"
 
+# ══ PROGRESS: MEASURE ACTIVITY WITHOUT PROGRESS (§1's last owed seat) ═══
+# ACTIVITY is counted by CONTENT IDENTITY (the store's own genhash — the same
+# key fx-init's guard_stats_for uses), never by the version number: the number
+# is inflated by the publish protocol's own pair (one duplicate of the live
+# generation per fx-activate run after the first — v$VA/v$VDUPE and
+# v$VB/v$((VCUR-1)) here) which is NOT activity.  PROGRESS is the FIRST
+# SIGHTING of an identity, so a repeat is zero progress by definition.
+#
+# THE SILENT FAILURE IS 'REPORTS PROGRESS WHERE THERE IS NONE' and
+# MUT-IDENTITY below reproduces it from THIS source (keying on the version
+# number instead of the genhash).  The LOUD direction — 'a repeat where the
+# system progressed' — is pinned by the PRE-EXISTING exit-0/`verdict
+# documented` expectation above, which this slice must not move: on this very
+# store the seat reports repeats and raises NOTHING.
+#
+# ASYMMETRY (why the arms can fail): at the pinned pre-fix revision there is
+# no `progress-*` row at all, so every assertion below fails against a
+# pre-change binary — and the mutants prove the properties are load-bearing
+# from the SAME source, not from a hand-written expectation.
+act_in() { # act_in STORE CFGFILE -> the version fx-activate published
+    _o=$(LD_LIBRARY_PATH="$DL" "$ZB/fx-activate" --store "$1" --package-set "$PS" \
+        --config "$2" 2>&1) || fail "fx-activate (act_in) failed: $_o"
+    _v=$(echo "$_o" | sed -n 's/.*as version \([0-9][0-9]*\).*/\1/p' | head -1)
+    [ -n "$_v" ] || fail "act_in: no version from fx-activate: $_o"
+    echo "$_v"
+}
+
+# ── F2/F1 on the PRE-EXISTING chain: two content identities, one repeat, and
+# NO finding.  The repeat is the ROLLBACK's own restore of cfgA's content at
+# v$VCUR — a version number advanced and the content went back to an identity
+# it already had, which is exactly 'activity without progress'.
+grep -q "^progress-content${TAB}$GHA${TAB}versions${TAB}[0-9]*${TAB}.*first-version${TAB}$VA${TAB}last-version${TAB}$VCUR${TAB}live${TAB}yes${TAB}classification${TAB}repeat-of-${VA}${TAB}MEASURED" "$WORK/out-s1" \
+    || fail "PROGRESS(F2): the restored identity is not a repeat-of-$VA on the LIVE row: $(grep -m1 "^progress-content.*$GHA" "$WORK/out-s1")"
+grep -q "^progress-content${TAB}$GHB${TAB}versions${TAB}[0-9]*${TAB}runs${TAB}1${TAB}failed${TAB}1${TAB}.*first-version${TAB}$VB${TAB}.*classification${TAB}benign-publish-pair${TAB}MEASURED" "$WORK/out-s1" \
+    || fail "PROGRESS(F1): the publish-protocol pair is not its OWN classification (it must never read as a repeat-of): $(grep -m1 "^progress-content.*$GHB" "$WORK/out-s1")"
+grep -q "^progress-content${TAB}-.versions" "$WORK/out-s1" \
+    || fail "PROGRESS: the versions with NO generation facts are not printed as the NOT-KNOWN identity"
+grep -q "^progress-content${TAB}-.*classification${TAB}not-known${TAB}MEASURED" "$WORK/out-s1" \
+    || fail "PROGRESS: the NOT-KNOWN identity is not classified as such (it must be its own row, counted in NEITHER activity nor progress)"
+grep -q "^# ACTIVITY = 3 content-advancing publish(es) = 2 first-sighting(s) + 1 repeat(s)" "$WORK/out-s1" \
+    || fail "PROGRESS(F1): the summary does not say activity 3 = 2 first sighting(s) + 1 repeat: $(grep -m1 '^# ACTIVITY = ' "$WORK/out-s1")"
+grep -q "^# PROGRESS (a FIRST SIGHTING of a content identity) — 2 distinct identities, 2 first-sighting(s), 1 repeat(s)" "$WORK/out-s1" \
+    || fail "PROGRESS: the summary does not report the 2 distinct identities / 1 repeat"
+grep -q "progress/activity = 2/3" "$WORK/out-s1" \
+    || fail "PROGRESS: the ratio is not printed with its convention (progress/activity = 2/3)"
+grep -q "^progress-finding" "$WORK/out-s1" \
+    && fail "PROGRESS(F1): a finding fired on a store whose repeated identity failed ONCE — the arm cannot tell a repeat from a loop"
+# the limits print where a reader MEETS the number, not only in the record
+grep -q "^# ACTIVITY blind to WHAT the content does:.*INTENDED" "$WORK/out-s1" \
+    || fail "PROGRESS: the ACTIVITY block must say it cannot know INTENT and that a long useful task looks FLAT"
+grep -q "^# PROGRESS cannot see the OTHER loop shape:.*identities-never-ok [0-9]* .*longest-failed-streak [0-9]*" "$WORK/out-s1" \
+    || fail "PROGRESS: the axis-2 numbers (identities-never-ok, longest-failed-streak) are not printed as NUMBERS"
+echo "test_fx_report: PROGRESS(F1/F2) activity is counted by content identity (2 first sightings + 1 repeat on a chain of 3 content-advancing publishes), the publish pair is its own classification, and a repeat raises NO finding"
+
+# ── ABSENT-LOG DIRECTION (the third silent shape): a store with NO .bootlog
+# has no verdicts at all, so `failed` reads 0 because NOTHING WAS JUDGED.  The
+# summary must say NOT-KNOWN, never present a zero.
+report "$WORK/s3" "$WORK/out-progress-nolog"
+[ $? -eq 0 ] || fail "PROGRESS(nolog): a never-booted store must report cleanly, got $?"
+grep -q "^# PROGRESS verdicts: NOT-KNOWN" "$WORK/out-progress-nolog" \
+    || fail "PROGRESS(nolog): an absent .bootlog must print verdicts NOT-KNOWN — an absent log must never become a zero"
+grep -q "^progress-content${TAB}$GHB${TAB}versions${TAB}[0-9]*${TAB}runs${TAB}1${TAB}failed${TAB}0${TAB}in-progress${TAB}0${TAB}ok${TAB}0${TAB}not-judged" "$WORK/out-progress-nolog" \
+    || fail "PROGRESS(nolog): with no log every verdict is NOT-JUDGED (failed 0 for the right reason: nothing was judged)"
+echo "test_fx_report: PROGRESS(nolog) an absent .bootlog reads verdicts NOT-KNOWN with the not-judged count, never a bare zero"
+
+# ── F1 (SAID, NOT ESCALATED): the SAME config re-activated after the
+# rollback publishes a new version number whose content identity is one the
+# chain already had.  The seat must SAY it (repeat-of, activity < versions) and
+# must NOT escalate: exit 0, no finding.
+cp -a "$WORK/s1" "$WORK/p1" || fail "PROGRESS(F1) SETUP: cp"
+VREP=$(act_in "$WORK/p1" "$WORK/cfgB.dhall")
+[ "$VREP" -gt "$VCUR" ] || fail "PROGRESS(F1) SETUP: the re-activation published v$VREP, not above v$VCUR"
+report "$WORK/p1" "$WORK/out-p1"
+[ $? -eq 0 ] || fail "PROGRESS(F1): a REPEAT is not a finding — expected exit 0, got $? ($(grep -m1 '^progress-finding' "$WORK/out-p1"))"
+grep -q "^progress-content${TAB}$GHB${TAB}versions${TAB}3${TAB}runs${TAB}2${TAB}failed${TAB}1${TAB}.*first-version${TAB}$VB${TAB}last-version${TAB}$VREP${TAB}live${TAB}yes${TAB}classification${TAB}repeat-of-${VB}${TAB}MEASURED" "$WORK/out-p1" \
+    || fail "PROGRESS(F1): the re-activated identity is not 3 versions / 2 runs / repeat-of-$VB with one failure: $(grep -m1 "^progress-content.*$GHB" "$WORK/out-p1")"
+grep -q "^# ACTIVITY = 4 content-advancing publish(es) = 2 first-sighting(s) + 2 repeat(s)" "$WORK/out-p1" \
+    || fail "PROGRESS(F1): the summary does not say the second re-activation added activity and NO progress: $(grep -m1 '^# ACTIVITY = ' "$WORK/out-p1")"
+grep -q "progress/activity = 2/4" "$WORK/out-p1" \
+    || fail "PROGRESS(F1): the ratio did not move to 2/4"
+grep -q "^progress-finding" "$WORK/out-p1" \
+    && fail "PROGRESS(F1): the finding fired on a SINGLE failure — the loud direction (it must not cry loop on one failed verdict)"
+echo "test_fx_report: PROGRESS(F1) a re-activated identity is SAID (repeat-of-$VB, 3 versions / 2 runs, ratio 2/4) and NOT escalated (exit 0)"
+
+# ── F3: THE LOOP, on the same recorded state — the SAME identity judged failed
+# a SECOND time.  Now the count reaches fx-init's RECOVERY_CONTENT_FAIL_MAX and
+# the row is a FINDING, naming the threshold's LOCATION and the bound inline.
+cp -a "$WORK/p1" "$WORK/p3" || fail "PROGRESS(F3) SETUP: cp"
+printf '%s in-progress 400 gateboot04\n%s failed 401 gateboot04\n' "$VREP" "$VREP" >> "$WORK/p3/.bootlog"
+report "$WORK/p3" "$WORK/out-p3"
+[ $? -eq 1 ] || fail "PROGRESS(F3): a second failure of the SAME content is a FINDING — expected exit 1, got $?"
+grep -q "^progress-finding${TAB}activity-without-progress-recurrence${TAB}genhash${TAB}$GHB${TAB}versions${TAB}3${TAB}failed${TAB}2${TAB}first-version${TAB}$VB${TAB}last-version${TAB}$VREP${TAB}live${TAB}yes" "$WORK/out-p3" \
+    || fail "PROGRESS(F3): no recurrence finding for $GHB at 2 failed verdicts: $(grep -m1 '^progress-finding' "$WORK/out-p3")"
+grep -q "^progress-finding.*RECOVERY_CONTENT_FAIL_MAX=2" "$WORK/out-p3" \
+    || fail "PROGRESS(F3): the threshold is not cited BY NAME"
+grep -q "^progress-finding.*zig/src/init.zig:1050" "$WORK/out-p3" \
+    || fail "PROGRESS(F3): the threshold is not cited BY LOCATION (fx-init zig/src/init.zig:1050)"
+grep -q "^progress-finding.*bound${TAB}activity-without-progress-cannot-see-intent" "$WORK/out-p3" \
+    || fail "PROGRESS(F3): the finding row does not carry its bound INLINE"
+grep -q "^progress-finding.*cannot know INTENT" "$WORK/out-p3" \
+    || fail "PROGRESS(F3): the finding row does not state that it cannot know intent, where a reader meets the number"
+grep -q "^progress-finding.*THE SAME FAULT RETURNING, not proof of a live loop" "$WORK/out-p3" \
+    || fail "PROGRESS(F3): the row must not call a recurrence in the record a live loop"
+grep -q "^progress-content${TAB}$GHA${TAB}" "$WORK/out-p3" \
+    || fail "PROGRESS(F3): the finding suppressed the READING (the other identity's row is gone)"
+echo "test_fx_report: PROGRESS(F3) the same content failed twice is a FINDING naming RECOVERY_CONTENT_FAIL_MAX (zig/src/init.zig:1050) and its bound inline"
+
+# ── AXIS 2: THE LOOP THE RECURRENCE FINDING CANNOT SEE — always-NEW content,
+# always failing.  Two more configs, each activated once and judged failed, so
+# EVERY identity fails exactly once: the recurrence count never reaches 2, the
+# seat reports FULL progress over a wall of failures, and the shape is printed
+# as two NUMBERS that are deliberately NOT a finding (a normal debugging
+# session looks identical, so a threshold here would fire on every honest
+# afternoon).  This is the honest half of §1's requirement and it is an arm,
+# not a comment: the numbers must COUNT, and nothing may escalate on them.
+cp -a "$WORK/s1" "$WORK/p2" || fail "PROGRESS(axis2) SETUP: cp"
+cfg_write "$WORK/cfgC.dhall" repbox-c 60000
+cfg_write "$WORK/cfgD.dhall" repbox-d 75000
+VPC=$(act_in "$WORK/p2" "$WORK/cfgC.dhall")
+VPD=$(act_in "$WORK/p2" "$WORK/cfgD.dhall")
+GHC2=$(gh "$WORK/p2" "$VPC")
+GHD2=$(gh "$WORK/p2" "$VPD")
+[ "$GHC2" != "$GHA" ] && [ "$GHD2" != "$GHB" ] && [ "$GHC2" != "$GHD2" ] \
+    || fail "PROGRESS(axis2) SETUP: the two new configs did not produce two NEW identities"
+printf '%s in-progress 500 gateboot05\n%s failed 501 gateboot05\n' "$VPC" "$VPC" >> "$WORK/p2/.bootlog"
+printf '%s in-progress 600 gateboot06\n%s failed 601 gateboot06\n' "$VPD" "$VPD" >> "$WORK/p2/.bootlog"
+report "$WORK/p2" "$WORK/out-p2"
+[ $? -eq 0 ] || fail "PROGRESS(axis2): an always-new-content loop must raise NO finding (the numbers are the record) — got exit $? ($(grep -m1 '^progress-finding' "$WORK/out-p2"))"
+grep -q "^progress-finding" "$WORK/out-p2" \
+    && fail "PROGRESS(axis2): the recurrence finding fired on identities that each failed ONCE"
+# 2, and the number is exactly the point: cfgB's identity (failed once) and
+# cfgC's (failed once) have NO ok verdict among their non-CURRENT versions,
+# while the CURRENT one (cfgD's) is EXCLUDED — a verdict arrives one boot
+# LATER than the state it judges, so counting it would fire on every healthy
+# store.  MEASURED on this fixture, not assumed.
+grep -q "identities-never-ok 2 " "$WORK/out-p2" \
+    || fail "PROGRESS(axis2): identities-never-ok did not count the two identities with no ok verdict among their non-CURRENT versions (CURRENT excluded): $(grep -m1 '^# PROGRESS cannot' "$WORK/out-p2" | cut -c1-80)"
+grep -q "longest-failed-streak 2 " "$WORK/out-p2" \
+    || fail "PROGRESS(axis2): longest-failed-streak did not count the two consecutive content-advancing publishes judged failed: $(grep -m1 'longest-failed-streak' "$WORK/out-p2")"
+grep -q "^# PROGRESS cannot see the OTHER loop shape:.*deliberately NOT a finding" "$WORK/out-p2" \
+    || fail "PROGRESS(axis2): the summary does not say those numbers are NOT a finding"
+echo "test_fx_report: PROGRESS(axis2) the always-new-content loop prints identities-never-ok 2 (CURRENT excluded) and longest-failed-streak 2 and raises NO finding (progress over a wall of failures, said as numbers)"
+
+# ── MUT-IDENTITY (THE MANDATED BLIND, on exactly F1/F3): the identity map keys
+# on the VERSION NUMBER instead of the genhash, so every version is its own
+# identity — the repeat reads as a first sighting, the store reports FULL
+# progress, and the finding cannot fire.  THIS IS THE NAMED SILENT FAILURE: the
+# instrument reports healthy because it cannot see the thing.
+mutbuild identity 's/snprintf(I->genhash, sizeof I->genhash, "%s", V->genhash);/snprintf(I->genhash, sizeof I->genhash, "%u", V->v);/'
+grep -q 'snprintf(I->genhash, sizeof I->genhash, "%u", V->v);' "$WORK/mut-identity.c" \
+    || fail "MUT-IDENTITY: the sed did not land (check the source text)"
+FXSTORE_BIN="$FXSTORE" "$REPO/build/fx-report-identity" --store "$WORK/p1" > "$WORK/out-mutidentity" 2>/dev/null
+grep -q "^progress-content${TAB}$GHB${TAB}" "$WORK/out-mutidentity" \
+    && fail "MUT-IDENTITY: the version-keyed build STILL collapses $GHB into one identity — the arm is not load-bearing"
+grep -q "^progress-content" "$WORK/out-mutidentity" \
+    || fail "MUT-IDENTITY: the mutant is not a working reporter at all (no rows) — a broken control proves nothing"
+# the blindness, stated as the SHAPE it takes: one identity per VERSION, so
+# nothing repeats and the numerator equals the denominator
+grep -q "^progress-content.*versions${TAB}1${TAB}runs${TAB}1" "$WORK/out-mutidentity" \
+    || fail "MUT-IDENTITY: the mutant is not one-identity-per-version (its rows are not the blind shape)"
+grep -q "^progress-content.*classification${TAB}repeat-of-" "$WORK/out-mutidentity" \
+    && fail "MUT-IDENTITY: the version-keyed build STILL reads a repeat — the arm is not load-bearing"
+grep -q " 0 repeat(s)," "$WORK/out-mutidentity" \
+    || fail "MUT-IDENTITY: the mutant did not reproduce the blindness (a repeated identity reading as zero repeats)"
+MUT_RATIO=$(sed -n 's/.*progress\/activity = \([0-9]*\)\/\([0-9]*\),.*/\1 \2/p' "$WORK/out-mutidentity")
+[ "$(printf '%s\n' "$MUT_RATIO" | awk '{ print ($1 == $2) }')" = "1" ] \
+    || fail "MUT-IDENTITY: the mutant's ratio is not FULL progress (numerator == denominator), so it is not reading a flat store as healthy: '$MUT_RATIO'"
+[ "$(printf '%s\n' "$MUT_RATIO" | awk '{ print $1 }')" -gt 2 ] \
+    || fail "MUT-IDENTITY: the mutant claims no more identities than the real build's 2 — the identity map did not change"
+FXSTORE_BIN="$FXSTORE" "$REPO/build/fx-report-identity" --store "$WORK/p3" > "$WORK/out-mutidentity3" 2>/dev/null
+grep -q "^progress-finding" "$WORK/out-mutidentity3" \
+    && fail "MUT-IDENTITY: the version-keyed build STILL raises the recurrence finding — the finding is decoration"
+echo "test_fx_report: PROGRESS-MUTANT the version-keyed build reads a flat store as FULL PROGRESS and loses the finding — the named silent failure, caught"
+
+# ── MUT-VERDICT (the half-blind, on F3): the verdict join is deleted, so every
+# version reads not-judged.  The READING survives (versions/runs are correct)
+# and only the JUDGEMENT dies — the exact shape S4's MUT-PINDRIFT pinned: a
+# reader who trusts the findings is blind while the rows still look right.
+mutbuild verdict 's/const char \*st = verdict_of(V->v);/const char *st = NULL; (void)verdict_of;/'
+grep -q 'const char \*st = NULL; (void)verdict_of;' "$WORK/mut-verdict.c" \
+    || fail "MUT-VERDICT: the sed did not land (check the source text)"
+FXSTORE_BIN="$FXSTORE" "$REPO/build/fx-report-verdict" --store "$WORK/p3" > "$WORK/out-mutverdict" 2>/dev/null
+grep -q "^progress-finding" "$WORK/out-mutverdict" \
+    && fail "MUT-VERDICT: the joinless build STILL raises the finding — the arm is not load-bearing"
+grep -q "^progress-content${TAB}$GHB${TAB}versions${TAB}3${TAB}runs${TAB}2${TAB}failed${TAB}0${TAB}in-progress${TAB}0${TAB}ok${TAB}0${TAB}not-judged${TAB}3" "$WORK/out-mutverdict" \
+    || fail "MUT-VERDICT: the mutant lost the READING too — this control is meant to blind the JUDGEMENT only, so the two must be independent"
+echo "test_fx_report: PROGRESS-MUTANT the joinless build keeps the correct versions/runs/not-judged READING and loses only the FINDING"
+
 # POLICY: the retention policy is a DECISION now (UNBOUNDED, user,
 # 2026-10-12), and it prints — so it is PINNED where it prints, in the
 # seat's frozen retention table and its bound, on every run.  FAIL: the
@@ -675,7 +877,7 @@ grep -q "NO growth policy exists" "$WORK/out-s1" \
 # drops that row on BOTH sides (its text was amended in S2), so the row's
 # complete loss or an id change would otherwise pass the pin silently.
 NBOUNDROWS=$(grep -c "^bound${TAB}" "$WORK/out-s1")
-[ "$NBOUNDROWS" = "18" ] || fail "POLICY: expected the seat's 18 bound rows on every run, got $NBOUNDROWS (a row was silently dropped; 18 = the 8 pre-S2 rows + S2's 4 claim bounds + P9's 2 call bounds + S4's 2 reach bounds + S4-palisade's 2 sandbox bounds)"
+[ "$NBOUNDROWS" = "26" ] || fail "POLICY: expected the seat's 26 bound rows on every run, got $NBOUNDROWS (a row was silently dropped; 26 = the 8 pre-S2 rows + S2's 4 claim bounds + P9's 2 call bounds + S4's 2 reach bounds + S4-palisade's 2 sandbox bounds + progress's 8)"
 grep -q "^bound${TAB}reach-audit-is-the-weakened-one${TAB}.*JUDGED ARGUMENTS rather than typed" "$WORK/out-s1" \
     || fail "POLICY: the S4 bound that says the reach audit is the WEAKENED one must print on every run (a report that reads stronger than it is, is the failure this project keeps finding)"
 grep -q "^bound${TAB}reach-attribution-mirrors-the-seat${TAB}" "$WORK/out-s1" \
@@ -692,6 +894,28 @@ grep -q "^bound${TAB}sandbox-audit-is-the-weakened-one${TAB}.*the sidecar is UNP
     || fail "POLICY: the S4 bound that says the sandbox audit is the WEAKENED one must print on every run"
 grep -q "^bound${TAB}sandbox-visible-is-not-strong${TAB}.*no uid drop" "$WORK/out-s1" \
     || fail "POLICY: the S4 bound that says a visible sandbox change is not a STRONG one must print on every run"
+# the progress class's bounds: the count arm above cannot say WHICH row went
+# missing, so the ids are asserted as a list.  Each one is a limit a reader
+# needs WHERE THEY MEET THE NUMBER.
+for _b in activity-without-progress-cannot-see-intent progress-identity-is-content-not-behaviour \
+          progress-verdict-join-mirrors-the-select-seat progress-is-not-a-policy \
+          progress-cannot-see-a-changing-content-loop progress-blind-to-the-self-report \
+          progress-record-scope progress-version-cap; do
+    grep -q "^bound${TAB}$_b${TAB}" "$WORK/out-s1" \
+        || fail "POLICY: the progress bound '$_b' is not printed on every run (a measurement that hides its own blind spots is incomplete work)"
+done
+grep -q "^bound${TAB}progress-is-not-a-policy${TAB}.*does not gate, deny, refuse, reorder or stop anything" "$WORK/out-s1" \
+    || fail "POLICY: the bound that says the progress class is a MEASUREMENT and not a policy must print"
+grep -q "^bound${TAB}progress-cannot-see-a-changing-content-loop${TAB}.*identities-never-ok" "$WORK/out-s1" \
+    || fail "POLICY: the bound naming the loop the recurrence finding CANNOT see must print"
+# and the taxonomy carries both classes, with content-recurrence NAMED as the
+# narrower one — two look-alike entries without that IS the silent defect
+grep -q "^taxonomy${TAB}content-recurrence${TAB}.*THIS IS THE NARROWER CLASS" "$WORK/out-s1" \
+    || fail "POLICY: the content-recurrence taxonomy row must say it is the NARROWER class and why"
+grep -q "^taxonomy${TAB}progress${TAB}MEASURED.*progress-content" "$WORK/out-s1" \
+    || fail "POLICY: the progress taxonomy row is not printed (the class has no grammar)"
+grep -q "^taxonomy${TAB}progress${TAB}.*this class does not read it" "$WORK/out-s1" \
+    || fail "POLICY: the progress taxonomy row must state that it does not read .recovery — that IS the difference from content-recurrence"
 
 # ══ OPERATOR: the derived class on the unattributed store ═══════════════
 report "$WORK/s2" "$WORK/out-s2"
@@ -919,14 +1143,6 @@ chmod 644 "$WORK/loud4/.operator"
 
 # ══ MUTATIONS: disable one taxonomy piece at a time; the arm that asserts
 #    it must GO BLIND on the mutant, or the taxonomy is decoration ══════
-mutbuild() { # mutbuild NAME SED-EXPR -> builds build/fx-report-<name>
-    cp "$REPO/tools/fx-report.c" "$WORK/mut-$1.c"
-    sed "$2" "$WORK/mut-$1.c" > "$WORK/mut-$1.c.new" && mv "$WORK/mut-$1.c.new" "$WORK/mut-$1.c"
-    cc -std=c11 -O2 -g -Wall -Wextra -Isrc/vendor/dhall-c -Isrc/vendor/yyjson -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
-        -o "$REPO/build/fx-report-$1" "$WORK/mut-$1.c" src/vendor/dhall-c/sha256.c src/vendor/yyjson/yyjson.c \
-        || fail "MUTATION $1: the mutated source does not build"
-}
-
 # MUT-CLASS: the operator-intervention emission is disabled (its record tag
 # renamed) — the OPERATOR arm must go blind on exactly the S2 fixture.
 mutbuild class 's/event\\toperator-intervention\\tDERIVED\\tshape\\trestore/disabled\\toperator-intervention\\tDERIVED\\tshape\\trestore/'
@@ -1264,6 +1480,13 @@ OPHDR
             /^taxonomy\tsandbox\t/ { next }
             /^bound\tsandbox-/ { next }
             /^bound\tsame-store-only\t/ { next }
+            /^taxonomy\tcontent-recurrence\t/ { next }
+            /^taxonomy\tprogress\t/ { next }
+            /^bound\tprogress-/ { next }
+            /^bound\tactivity-without-progress-/ { next }
+            /^progress-content\t/ { next }
+            /^progress-finding\t/ { next }
+            /^# (ACTIVITY|PROGRESS)/ { next }
             { print }
         ' "$1" > "$2"
     }
@@ -1928,6 +2151,7 @@ rm -f "$REPO/build/fx-report-class" "$REPO/build/fx-report-attrib" "$REPO/build/
     "$REPO/build/fx-report-claim" "$REPO/build/fx-report-enroll" "$REPO/build/fx-report-loudlong" \
     "$REPO/build/fx-report-calljoin" "$REPO/build/fx-report-callclassify" "$REPO/build/fx-report-callscope" \
     "$REPO/build/fx-report-exec" "$REPO/build/fx-report-reach" "$REPO/build/fx-report-pindrift" \
-    "$REPO/build/fx-report-sbspec" "$REPO/build/fx-report-sbpin"
+    "$REPO/build/fx-report-sbspec" "$REPO/build/fx-report-sbpin" \
+    "$REPO/build/fx-report-identity" "$REPO/build/fx-report-verdict"
 
 echo "test_fx_report: PASS — the reconstruction is answerable from the report alone (both inputs readable, the diff, the generation each produced), the taxonomy separates none-occurred from not-durably-recorded (a never-booted store says so; refusals cannot be counted), the operator class is MEASURED from the .operator journal where the journal exists and DERIVED only where it does not (the .recovery row, or the missing file) with the derivation RETAINED beside the journal for its own blind spots (and the mutations blind exactly their own arms), the gc retention carve-out is re-measured every run (a surviving snapshot's dir is retained, a pruned one's is reaped), the retention policy is the user's DECISION (UNBOUNDED, 2026-10-12) pinned where it prints — every row, its named cost, and the old 'NO policy exists' claim asserted ABSENT, and the output is byte-deterministic and independent of any self-report."

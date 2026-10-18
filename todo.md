@@ -130,10 +130,35 @@ certifies coherence; neither says "improved".
       with the mandated blinds proving the instruments can fail (the widening-blind reads NONE while a
       sidecar declared `inet`; the drifted-pin join reports MATCH while it drifted). `fx-osier-share`
       STATES its blindness rather than being patched into seeing.
-      **⚠️ ACTIVITY WITHOUT PROGRESS — STILL OWED, and it has a NAME BUT NO DESIGN.** The oscillator
-      (an in-boot activation loop) is the measured instance, but no seat measures it, and the
-      `§7.1c` this entry cites **does not exist in the plan** — a dangling reference, so the
-      requirement has no design behind it. This is the last item §1 owes.
+      **ACTIVITY WITHOUT PROGRESS — NOW BUILT** (**UNCOMMITTED**), as a `progress` class in
+      `fx-report`, and the plan that designed it **REFUTED the assumption that it needed a new
+      subsystem**: three quarters already existed. `dup_targets` (`fx-report.c:2918`) already
+      classifies every version by CONTENT identity and already excludes the benign publish-pair;
+      `read_facts` loads the per-version genhash; and `fx-init` already computes `fail_n`/`ver_n` per
+      genhash and acts on `RECOVERY_CONTENT_FAIL_MAX`. So the work was the **collapse**, not a seat.
+      **ACTIVITY** = published versions split by content identity (new / repeat / duplicate /
+      NOT-KNOWN), excluding the protocol pair; **PROGRESS** = the FIRST SIGHTING of a content
+      identity. The plan's line is the reason: *counting rows measures the logger, version numbers
+      measure the publisher — only the genhash measures the system.*
+      **THE THRESHOLD IS REUSED, NOT CHOSEN** — `RECOVERY_CONTENT_FAIL_MAX` (2), `init.zig:1050`,
+      cited by name and location, with `guard_stats_for` (`:1218`) as the independent implementation,
+      so the two are **cross-checkable**. **THE NAMED SILENT FAILURE IS CAUGHT:** `MUT-IDENTITY` keys
+      the map on the version number instead of the genhash and **reads a flat store as FULL
+      PROGRESS, losing the finding** — an instrument reporting healthy because it cannot see the
+      thing, and the gate catches it. A second mutant keeps the correct READING and loses only the
+      FINDING (the half-blind). **The loop BOTH it and the existing guard miss is named, not papered
+      over** — always-new-content-always-failing — printed as `identities-never-ok` +
+      `longest-failed-streak` and **deliberately not a finding**. The existing `content-recurrence`
+      entry was **amended to say it is the NARROWER class** (`.recovery`-only, blind to a repeat a
+      RE-ACTIVATION produced), because two look-alike entries without that distinction IS the
+      silent-defect shape. The dangling `§7.1c` cite is corrected to `§7.1`.
+      **Limits where a reader meets the number:** it is a MEASUREMENT, not a policy — it gates
+      nothing — and it cannot know INTENT, so a long useful task can look flat. *Orchestrator-verified:*
+      `test-report` rc=0 with the two mutants above, and `test`/`test-select`/`test-audit`/`test-hostgate`
+      (207 OK, 0 FAIL) all green.
+      **One flake reported and NOT reproduced:** the implementer saw `test-hostgate` exit rc=2 once
+      ("proxy did not exit within 40s", phase 100) and rc=0 in isolation; my full run was clean. A
+      load-sensitive wait loop — recorded rather than reconciled, and worth watching.
 
 ## 1b. The second goal — observability sufficient for a third-party EU AI Act report
 
