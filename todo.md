@@ -160,6 +160,53 @@ certifies coherence; neither says "improved".
       ("proxy did not exit within 40s", phase 100) and rc=0 in isolation; my full run was clean. A
       load-sensitive wait loop — recorded rather than reconciled, and worth watching.
 
+## 1c. The ACL split — access control out of the agent's config
+
+**USER DIRECTIVE: "move the access control stuff out of the system config the agent is using to control
+fxstore generations, into a config the host controls."** Plan: `handoff-aclsplit-plan`, whose own diagnosis
+corrected the framing: it is not one file with two roles but a **CYCLE between two files** — the activation
+config the agent writes names, via `services[].env`, WHICH agent config its successor reads. So opening it
+would hand the agent its own constraints back, **unless the agent-config vocabulary can no longer EXPRESS
+access control**. That is what this arc built.
+
+- [x] **S1 — the operator's access table** (`3fad711`): `policy/access/access-verbs.tsv` (15 rows = the 13
+      catalog verbs **UNION** the 2 host tools) + `PINS`, and a startup loader with **the totality check
+      over BOTH vocabularies at once**, exact-name resolution, named refusals **before the slave path is
+      published**, and `--print-access`. **Its blind is the ALLOWING one** by design — the failure direction
+      is an unclassified verb silently ALLOWING, and a mutant that over-denied would prove nothing. S1
+      judged nothing and said so in its header AND its startup line.
+- [x] **S2 — the access AUTHOR** (`90f1bcc`): in position `denylist → ACCESS → ops → justification →
+      claim`, refusing **both a classified deny and a name with no row** (silence is not an allow). The gate
+      is **three-way on one fixture** — outside → denied + marker absent + `author=access`; the SAME fixture
+      on the mutant → crosses; inside → crosses on both — because a seat that denies everything and one that
+      allows everything BOTH print an armed startup line.
+- [x] **S3 — the schema split** (`e651067`): `enabled_tools`/`disabled_tools`/`mcp_servers`/`providers[]`/
+      `models[]` **gone** from the guest schema; `agent_main` builds an **empty ToolPolicy**; the lane file
+      is **derived** from `policy/access/`. The migration pass runs **BESIDE `config_load`, not inside its
+      fail-open path**, refusing a moved field **by name and by its new owner** — silence would leave an
+      agent running allow-all with nothing at rest recording it. *The pre-fix control proves the claim
+      rather than its absence:* on the old binary the same config is accepted AND its `enabled_tools` still
+      bites in the guest — access control left the config and did not stop being enforced.
+- [x] **S4 — THE COLLISION, and it had TWO teeth** (`976de14`): unprotecting the alias row
+      (`Agentconfig yes→no`, re-pinned) was **necessary but not sufficient** — **D2**
+      (`writable ∧ !boot_verdict(ok)`) independently denies, and the agent runs **entirely inside the grace
+      window** (recorded: agent marker at console 273, `boot-ok v9` at 306, **15 s apart**). So the ORDER
+      is the fix: `boot_verdict_wait()` in `agent_main.c` holds the write+activate until the verdict, using
+      outcome.c's **existing** bootlog reader (one reader, no drift). The new arm proves the order is
+      load-bearing in the way that matters: a payload writing **before** the verdict is refused with a
+      message naming **D2, NOT D1** — so a future reader "simplifying" the wait away gets a failure that
+      reads like a *timing* decision rather than a policy one. The named breakage was repaired **where it
+      actually appeared, which was more places than the plan listed** (verbs-smoke 4 arms, test_ops_policy 3
+      flag-keyed seds not 4, test_hostgate 6 phases + a new 85b, test_fx_report's hard-pinned `protected
+      yes`), with D1's proof moved to a sha-pinned fixture table.
+      **NOT OVERCLAIMED: the ORDER makes the loop work, not the unprotection** — and §6b stands (root can
+      write that file by hand; this governs the HARNESS path).
+- [ ] **S5 — STILL OWED: the oracle must SEE the access table.** `fx-select`'s reach term gains the access
+      table as a **third dimension** (allow→deny is a NARROWING; deny→allow is a **WIDENING** with a named
+      row and the loud `egress-reach-widened`), and `fx-audit`'s per-boot record carries the **armed-author
+      set** including `access`. The fail-before is a REPRODUCED BLINDNESS: today's `fx-select`, given two
+      observations differing only in one access row, sees nothing.
+
 ## 1b. The second goal — observability sufficient for a third-party EU AI Act report
 
 User, 2026-10-10: *"this system should provide enough observability for another tool to generate reports
