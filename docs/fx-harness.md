@@ -414,9 +414,17 @@ here.
    ramfs) they refuse with a message naming the path rather than reading a stale
    snapshot, exec'ing into a confusing downstream error, or guessing another
    store.
-5. **`ToolPolicy`** already exists (`tool_policy.c`) and is built from the
-   agent's `enabled_tools`/`disabled_tools` — the capability bound is a config
-   field the host controls, not something the agent writes.
+5. **The capability bound is NOT a config field any more** (SUPERSEDED — this
+   entry said `ToolPolicy` was "built from the agent's enabled_tools/disabled_tools
+   — the capability bound is a config field the host controls, not something the
+   agent writes", and that was wrong twice: the agent DID write that config, and
+   the bound therefore rode in the file the agent edits). `enabled_tools`,
+   `disabled_tools`, `mcp_servers`, `providers[]` and `models[]` have been REMOVED
+   from the guest schema; `agent_main` builds an EMPTY `ToolPolicy`; and the
+   vocabulary is decided by the host's `policy/access/access-verbs.tsv`, enforced
+   per call by the access author in the host proxy. A config that still carries a
+   moved field is REFUSED at load, by name — silence would leave an agent running
+   allow-all with nothing at rest recording it.
 6. **A run that dies leaves its runstore record at `status=running` forever.**
    The transcript is fine and resumable, but nothing sweeps the orphan
    (`RS_STATUS_ORPHANED`) or stamps `last_turn_at` per turn.  Follow-up, not part
