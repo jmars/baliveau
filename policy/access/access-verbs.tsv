@@ -35,25 +35,36 @@
 # or `deny`; a row is `verb<TAB>allow|deny` and nothing more.
 #
 # ─────────────────────────────────────────────────────────────────────────────
-# SLICE S1 STATUS — READ THIS BEFORE READING THE ROWS.
+# STATUS: THIS TABLE IS ENFORCED (slice S2).  Read this before reading the rows.
 #
-# THIS TABLE IS NOT CONSULTED YET.  S1 delivers the INERT writer: the table
-# exists, is pinned, is loaded and totality-checked at startup, and is
-# INSPECTABLE at rest (`build/fx-hostgate --access-dir policy/access
-# --print-access`).  NOTHING is judged by it: call_judge does not read it, so
-# EVERY call is judged exactly as before this file existed.  A table that is
-# loaded and validated but never consulted is INDISTINGUISHABLE — to a reader —
-# from one that is enforced, which is why the startup line says so out loud and
-# why this paragraph exists.  The enforcement seat is the NEXT slice; until it
-# lands, do not describe this file as a bound.
+# call_judge consults this table IN POSITION — denylist -> ACCESS -> ops ->
+# justification -> claim — so a verb classified `deny`, or named with NO row at
+# all, is REFUSED BY NAME (author=access, refusal_name=tool-not-allowed) on the
+# ordinary denial path: the true name never crosses, nothing executes, and the
+# refusal is the call's result.  A name with no row is a REFUSAL and never a
+# fall-through — "not in the table" is not "allowed", because a seat that let an
+# unclassified name through would be the silent allow-all this table exists to
+# prevent, one call at a time.
+#
+# WHAT THIS SEAT IS NOT, so its reach is not read wider than it is:
+#  - It does NOT move enabled_tools/mcp_servers out of the agent config.  The
+#    GUEST's own allowlist is STILL IN FORCE and STILL LIVES IN THE
+#    AGENT-WRITABLE CONFIG, so this seat is ADDITIVE to it, not a replacement.
+#    Removing that field from the guest schema is the NEXT slice; until then the
+#    effective vocabulary is (this table) INTERSECT (the lane config's list),
+#    and only the table half is host-owned.
+#  - It judges the CALL, not the WORLD: an agent acting outside a tool call is
+#    untouched (a root agent in the guest can still run what it can run).
+#  - It says NOTHING about the PATHS a permitted call may touch.  That is the
+#    ops seat's dimension (policy/ops) and the in-guest floor's.
 #
 # WHY EVERY ROW BELOW SAYS `allow`: this table classifies the CURRENT
 # vocabulary as it actually is — every catalog verb is callable by the guest
 # today, and both host tools are in the registry.  The rows are a
 # CLASSIFICATION, not yet a narrowing; the day a verb is set to `deny` is a
-# release that says so.  Starting from the true state means arming the seat
-# (the next slice) changes no existing behaviour, so any later change in reach
-# is visibly the table's doing rather than the arming's.
+# release that says so.  Arming the seat therefore changed no existing
+# behaviour, so any later change in reach is visibly the table's doing rather
+# than the arming's.
 #
 # Columns (TAB-separated; '#' starts a comment):
 #   verb        an EXACT name from ONE of the two closed vocabularies

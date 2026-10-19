@@ -213,6 +213,13 @@ GATEEXTRAUNCL="$ROOT/build/fx-hostgate-extrauncl"
 # has to be this direction: the failure is an unclassified verb silently
 # allowing, and an over-denying mutant would prove nothing about it.
 GATEACCESSBLIND="$ROOT/build/fx-hostgate-accessblind"
+# S2 (ACL SPLIT — THE ENFORCEMENT): THE PRE-FIX CONTROL — the access AUTHOR
+# compiled out of call_judge while the table still loads, pins and passes the
+# totality check.  DIRECTION: FAIL-OPEN (a verb the table DENIES crosses and
+# EXECUTES).  A mutant that refused EVERYTHING would pass the deny arm and
+# prove nothing about the seat, so the arms below also require a verb INSIDE
+# the table to cross on this same build-and-fixture pair.
+GATENOACCESS="$ROOT/build/fx-hostgate-noaccess"
 # S2 PALISADE (the policy table + host_cat's per-call judged path): the
 # mandated blind (FH_MUTANT_NO_SANDBOX_TABLE — the table loaded but NOT
 # applied) and the sibling-escape probe (the REAL proxy naming the MUTANT
@@ -6394,7 +6401,7 @@ n=$(s2_out_n "$S2_DUMP" "o.startswith('(denied by host policy:')")
 echo "   OK denylist: --deny host_cat is the ordinary denylist denial (same path, same row shape)"
 # (b) the operator's classing/totality on arg_key: a PROTECTED path is denied by
 # D3 (the SAME rule that denies a protected guest write path)
-s2_run "$GATE" protected "$OPS_DIR" "$S2_PROTECTED"
+s2_run "$GATE" protected-b "$OPS_DIR" "$S2_PROTECTED"
 [ "$S2_GUEST_RC" -eq 0 ] || { sed -n '1,10p' "$S2_ERR" >&2; fail "phase 100: the protected run's guest rc=$S2_GUEST_RC"; }
 [ "$S2_RC" -eq 0 ] || fail "phase 100: the protected run's proxy exited rc=$S2_RC"
 grep -q "host-execute call_id=" "$S2_ERR" \
@@ -6403,7 +6410,7 @@ n=$(pyq "$S2_LOG" "len([r for r in rows if r.get('call_id')=='$S2CALL' and r.get
 [ "$n" -eq 1 ] || { grep -F "$S2CALL" "$S2_LOG" >&2; fail "phase 100: no D3 denial row for the protected path"; }
 echo "   OK ops: a protected path is denied by the SAME D3 rule (author=ops, denied-by-ops, rule D3 named)"
 # (c) the totality check on arg_key: an UNCLASSED path is refused unclassed-arg
-s2_run "$GATE" unclassed "$OPS_DIR" "$S2_UNCLASSED"
+s2_run "$GATE" unclassed-b "$OPS_DIR" "$S2_UNCLASSED"
 [ "$S2_GUEST_RC" -eq 0 ] || { sed -n '1,10p' "$S2_ERR" >&2; fail "phase 100: the unclassed run's guest rc=$S2_GUEST_RC"; }
 [ "$S2_RC" -eq 0 ] || fail "phase 100: the unclassed run's proxy exited rc=$S2_RC"
 grep -q "host-execute call_id=" "$S2_ERR" \
@@ -6895,13 +6902,19 @@ else
 fi
 
 
-echo "== phase 114: S1 (ACL SPLIT) — the access table loads, is TOTALITY-CHECKED, and is inspectable at rest"
-# S1 IS AN INERT WRITER, and that is the first thing asserted: the operator's
-# table (policy/access/access-verbs.tsv) exists, is pinned, is loaded and
-# validated at startup, and can be read back at rest — and NOTHING is judged by
-# it (call_judge does not consult it).  The DIRECTION this slice exists for is
-# the one below in phase 115: an UNCLASSIFIED VERB SILENTLY ALLOWS, so the
-# refusals are the product here, and the mutation blind must be the ALLOWING
+echo "== phase 114: S2 (ACL SPLIT) — the access table loads, is TOTALITY-CHECKED, is inspectable at rest, and IS CONSULTED"
+# S1 SHIPPED THE TABLE INERT; S2 MAKES IT AN AUTHOR.  What this phase asserts is
+# the AT-REST half (the operator's table policy/access/access-verbs.tsv exists,
+# is pinned, is loaded and validated at startup, and can be read back at rest)
+# plus the one line that changed meaning: the startup line must now say the
+# ACCESS AUTHOR IS LIVE, because a table that is loaded and validated but never
+# consulted is INDISTINGUISHABLE to a reader from one that is enforced — and S1
+# said "S1 JUDGES NOTHING" here precisely for that reason.  The judgement itself
+# is phases 118-121, on one fixture, three ways.
+#
+# The DIRECTION phase 115 exists for is unchanged and is still the one that
+# matters at startup: an UNCLASSIFIED VERB SILENTLY ALLOWS, so the loader's
+# refusals are the product there and the mutation blind must be the ALLOWING
 # one.
 #
 # EVERY ARM HASH-PRINTS THE BINARY IT RAN, because `make` alone does NOT build
@@ -6911,7 +6924,7 @@ bin_id() { sha256sum "$1" | cut -d' ' -f1; }
 # the shipped table's sha, RESTATED here (the catalogue-pin discipline): an
 # edit to the table without a re-pin now fails in TWO places — the proxy
 # refuses to start, and this constant.
-ACCESS_SHA_EXPECTED="4082a6e1619ff8ce23193842012d9e8c2810d9388abfbecde8f198672b1ab4d1"
+ACCESS_SHA_EXPECTED="5652d729c6035e0e19d5096240ad3d7c29a5f13268f416eb516546db18213be9"
 [ "$GATE" -nt "$ROOT/tools/fx-hostgate.c" ] \
     || fail "phase 114: $GATE is OLDER than tools/fx-hostgate.c — make alone does not build the gate binaries, so the binary this arm ran is STALE"
 got=$(sha256sum "$ROOT/policy/access/access-verbs.tsv" | cut -d' ' -f1)
@@ -6934,27 +6947,38 @@ nvocab=$(wc -l < "$TMP/access-vocab.txt" | tr -d ' ')
 awk -F'\t' 'NF != 2 || ($2 != "allow" && $2 != "deny") { print; bad=1 } END { exit bad ? 1 : 0 }' \
     "$TMP/access-print.txt" \
     || fail "phase 114: a --print-access line is not verb<TAB>allow|deny — the table has a third state or an extra column"
-grep -q "S1 JUDGES NOTHING" "$TMP/access-print.err" \
-    || fail "phase 114: the seat's startup line does not say that S1 judges NOTHING — a table validated but never consulted is indistinguishable to a reader from one that is enforced, and the line must say so"
-echo "   OK access at rest: $(bin_id "$GATE" | cut -c1-12).. prints exactly the $nvocab-name closed vocabulary (allow|deny, no third state), pin-and-table agree at ${ACCESS_SHA_EXPECTED:0:12}.."
+grep -q "THE ACCESS AUTHOR IS LIVE" "$TMP/access-print.err" \
+    || fail "phase 114: the seat's startup line does not say the ACCESS AUTHOR IS LIVE — a table validated but never consulted is indistinguishable to a reader from one that is enforced, and after S2 the line must say WHICH it is"
+grep -q "denylist -> access -> ops -> justification -> claim" "$TMP/access-print.err" \
+    || fail "phase 114: the startup line does not name the POSITION the access author was inserted at (denylist -> access -> ops -> justification -> claim)"
+grep -q "tool-not-allowed" "$TMP/access-print.err" \
+    || fail "phase 114: the startup line does not name the refusal a denied/unclassified verb gets (tool-not-allowed)"
+echo "   OK access at rest: $(bin_id "$GATE" | cut -c1-12).. prints exactly the $nvocab-name closed vocabulary (allow|deny, no third state), pin-and-table agree at ${ACCESS_SHA_EXPECTED:0:12}.., and the seat says it is LIVE and where it sits"
 
-echo "== phase 114b: S1 THE STARTUP POSITION — the table is loaded and checked BEFORE the slave path is published, and NOTHING is judged"
-# A FULL served run with the shipped table armed: rc 0 both sides (S1 changes no
-# call's verdict), the startup line names the totality, and the RECORD carries no
-# access verdict — the assertion that this seat is inert, made on the record
-# rather than on the source.
+echo "== phase 114b: S2 THE SEAT'S RECORD — the shipped (all-allow) table changes no verdict, and an allowed row NAMES the access author"
+# THE FIRST HALF OF "DO NOT OVER-DENY", stated on the record rather than on the
+# source: with the SHIPPED table armed (15/15 allow) every call is judged
+# exactly as before — the same run is rc 0 both sides, NO row carries a
+# tool-not-allowed refusal, and the allowed row's `author` names the access
+# seat, because a seat that ran is a seat the record must name.  That last
+# clause is the one an "arming changes no behaviour" story must not be allowed
+# to hide: the VERDICT is unchanged, the READING is wider, and the reading is
+# what a later reader trusts.
 s1_run "$GATE" access-ok "$FIX/responses_host_time.sse" --deny fx_write --access-dir "$ROOT/policy/access"
-[ "$S1_GUEST_RC" -eq 0 ] || { sed -n '1,10p' "$S1_ERR" >&2; fail "phase 114b: the guest run rc=$S1_GUEST_RC with the access table armed — S1 must change no call's verdict"; }
+[ "$S1_GUEST_RC" -eq 0 ] || { sed -n '1,10p' "$S1_ERR" >&2; fail "phase 114b: the guest run rc=$S1_GUEST_RC with the access table armed — an all-allow table must change no call's verdict"; }
 [ "$S1_RC" -eq 0 ] || fail "phase 114b: the proxy exited rc=$S1_RC"
 grep -q "access: table LOADED AND TOTALITY-CHECKED at startup" "$S1_ERR" \
     || { sed -n '1,12p' "$S1_ERR" >&2; fail "phase 114b: the proxy never loaded the access table — --access-dir was accepted and ignored"; }
 grep -q "15 verb(s) classified" "$S1_ERR" || fail "phase 114b: the startup line does not name the 15 classified verbs"
 grep -q "the 13 pinned catalog verb(s) UNION the 2 host tool(s)" "$S1_ERR" \
     || fail "phase 114b: the startup line does not name BOTH vocabularies the table is total over"
-grep -q "S1 JUDGES NOTHING" "$S1_ERR" || fail "phase 114b: the startup line does not say S1 judges NOTHING"
-n=$(pyq "$S1_LOG" "len([r for r in rows if r.get('author')=='access' or r.get('refusal_name')=='tool-not-allowed'])")
-[ "$n" -eq 0 ] || fail "phase 114b: the log carries $n access verdict(s) — S1 must judge NOTHING (the seat has no consumer yet)"
-echo "   OK startup: the table is loaded, totality-checked and named at startup ($(bin_id "$GATE" | cut -c1-12)..), the run is rc 0 both sides, and NO row carries an access verdict"
+n=$(pyq "$S1_LOG" "len([r for r in rows if r.get('refusal_name')=='tool-not-allowed'])")
+[ "$n" -eq 0 ] || fail "phase 114b: the log carries $n tool-not-allowed refusal(s) on a table that allows every verb — the seat is over-denying"
+n=$(pyq "$S1_LOG" "len([r for r in rows if r.get('call_id')=='$S1CALL' and r.get('verdict')=='allowed' and 'access' in (r.get('author') or '').split('+')])")
+[ "$n" -eq 1 ] || { grep -F "$S1CALL" "$S1_LOG" >&2; fail "phase 114b: the allowed row does not name the access author — a seat that judged the call must be in authors_ran()"; }
+n=$(pyq "$S1_LOG" "len([r for r in rows if r.get('call_id')=='$S1CALL' and isinstance(r.get('allow_scope'),str) and 'no access refusal' in r.get('allow_scope') and 'no operator denial at this seat' in r.get('allow_scope')])")
+[ "$n" -eq 1 ] || { grep -F "$S1CALL" "$S1_LOG" >&2; fail "phase 114b: the allowed row's allow_scope does not name the access seat beside the wider reading it already carried"; }
+echo "   OK record: the all-allow table changes no verdict ($(bin_id "$GATE" | cut -c1-12).., rc 0 both sides, no tool-not-allowed row) and the allowed row names author=access with the scope saying so"
 
 echo "== phase 115: S1 THE TOTALITY CHECK REFUSES — a missing row (BOTH vocabularies), a name in NEITHER, a duplicate, a stale pin"
 # THE DIRECTION, stated once: the failure this check prevents is an UNCLASSIFIED
@@ -7111,5 +7135,383 @@ else
     echo "   OK asymmetry: the pinned pre-S1 proxy (${PRE_ACCESS_REV:0:12}, source sha256 ${PRE_ACCESS_SRC_SHA:0:12}.., binary $(bin_id "$PRE_ACCESS_GATE" | cut -c1-12)..) exits rc=$rc on --print-access and prints NO table — the table above is the S1 loader's doing, not the scenario's"
 fi
 
+echo "== phase 118: S2 ARM 1 — a verb the table does NOT allow is REFUSED AT THE SEAT (the guest dispatches NOTHING)"
+# THE GATE IS THREE-WAY ON ONE FIXTURE, and the STRUCTURE is the point: a seat
+# that denies EVERYTHING and a seat that allows EVERYTHING both print an armed
+# startup line, so no single arm proves the seat does anything.  Arm 1 (here) is
+# the refusal; arm 2 is the SAME fixture CROSSING on the pre-fix control; arm 3
+# is a verb INSIDE the table crossing on BOTH builds.
+#
+# THE FIXTURE: the SHIPPED table with EXACTLY ONE row flipped to deny (fx_write),
+# re-pinned, plus a model stream that calls that verb.  Exactly one row differs
+# from the release, and that is asserted: a fixture that quietly denied more
+# would pass arm 1 for the wrong reason (arm 3 is what catches a seat that
+# refuses everything).
+ACC_DENY="$TMP/acc-deny"
+access_fixture "$ACC_DENY"
+awk -F'\t' -v OFS='\t' '$1=="fx_write" && NF==2 { print $1, "deny"; next } { print }' \
+    "$ACC_DENY/access-verbs.tsv" > "$ACC_DENY/t" && mv "$ACC_DENY/t" "$ACC_DENY/access-verbs.tsv"
+access_pin "$ACC_DENY"
+got=$(awk -F'\t' '$1=="fx_write"{print $2}' "$ACC_DENY/access-verbs.tsv")
+[ "$got" = "deny" ] || fail "phase 118: the deny fixture's fx_write row reads '$got' — the mutation did not take"
+"$GATE" --access-dir "$ACC_DENY" --print-access > "$TMP/acc-deny.print" 2>/dev/null \
+    || fail "phase 118: the deny fixture table does not load — the arm would measure a startup refusal, not a verdict"
+n=$(awk -F'\t' 'NR==FNR{a[$1]=$2; next} ($1 in a) && a[$1]!=$2 {d++} END{print d+0}' \
+        "$TMP/access-print.txt" "$TMP/acc-deny.print")
+[ "$n" -eq 1 ] || { diff -u "$TMP/access-print.txt" "$TMP/acc-deny.print" >&2 || true; fail "phase 118: the deny fixture differs from the shipped table in $n row(s), want EXACTLY 1 (fx_write) — a fixture that denied more would pass this arm for the wrong reason"; }
+sed 's/host_time/fx_write/g' "$FIX/responses_host_time.sse" > "$TMP/acc-write.sse"
+grep -q 'host_time' "$TMP/acc-write.sse" \
+    && fail "phase 118: the call fixture still names host_time — the verb under test was not substituted"
+grep -q '"name":"fx_write"' "$TMP/acc-write.sse" \
+    || fail "phase 118: the call fixture does not name fx_write — the mutation did not take"
+
+# make_dispatch_stub <script> <marker> <raw> — the guest lane's MCP server for
+# the S2 arms: it answers -32602 for every name (the real verbs server's refusal
+# for a name that is no verb) and records each tools/call in TWO files:
+#   <raw>    every name the guest received, verbatim, one per line — the
+#            instrument, kept complete;
+#   <marker> a DISPATCH — a name OTHER than the reserved refusal carrier
+#            fx_host_denied.  The reserved name is not a dispatch: it IS the
+#            denial (P3's rewrite, the only way the guest is told a call was
+#            refused), so counting it here would make "the guest dispatched the
+#            call" true of a call that never happened.  The raw file keeps it
+#            visible either way.
+make_dispatch_stub() { # <script-path> <marker-path> <raw-path>
+    cat > "$1" <<PY
+#!/usr/bin/env python3
+import json, sys
+MARKER = "$2"
+RAW = "$3"
+RESERVED = "fx_host_denied"
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        req = json.loads(line)
+    except ValueError:
+        continue
+    m = req.get("method")
+    if m == "initialize":
+        print(json.dumps({"jsonrpc": "2.0", "id": req.get("id"), "result": {
+            "protocolVersion": req.get("params", {}).get("protocolVersion"),
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": "hostgate-dispatch-stub", "version": "0"}}}),
+            flush=True)
+    elif m == "tools/call":
+        name = (req.get("params") or {}).get("name") or ""
+        with open(RAW, "a") as f:
+            f.write("%s\n" % name)
+        if name != RESERVED:
+            with open(MARKER, "a") as f:
+                f.write("guest dispatched %s\n" % name)
+        print(json.dumps({"jsonrpc": "2.0", "id": req.get("id"),
+                          "error": {"code": -32602,
+                                    "message": "unknown tool: %s" % name}}),
+              flush=True)
+PY
+    chmod +x "$1"
+}
+
+# acc_run <gate> <tag> <fixture> [extra argv...] — ONE whole guest loop through a
+# bounded proxy over the fixture, with a FRESH FX_AGENT_DATA dir, a fresh config
+# and a fresh DISPATCH stub per probe (never a shared fixture, never a reused
+# char device).  The proxy is time-bounded by wait_for_proxy_exit and the guest
+# by timeout(1).  Exports ACC_RC, ACC_GUEST_RC, ACC_DIR, ACC_ERR, ACC_LOG,
+# ACC_DUMP, ACC_MARKER (real dispatches only), ACC_RAW (every name received).
+acc_run() {
+    local gate="$1" tag="$2" fixt="$3"
+    shift 3
+    local d="$TMP/acc-$tag"
+    mkdir -p "$d/data" "$d/cfg"
+    make_dispatch_stub "$d/stub.py" "$d/marker" "$d/raw"
+    cat > "$d/cfg/config.dhall" <<DHALL
+{ agents =
+  [ { name = "fx"
+    , agent_type = "agent"
+    , mcp_servers = [ { command = "$d/stub.py", args = [] : List Text } ]
+    }
+  ]
+}
+DHALL
+    "$gate" --upstream "$fixt" --slave-file "$d/slave" --log "$d/log.jsonl" \
+        --dump-requests "$d/dump.jsonl" "$@" --turns 2 2> "$d/proxy.err" &
+    local p=$!
+    PROXIES="$PROXIES $p"
+    wait_for_slave "$d/slave" "$p" "$d/proxy.err"
+    local dev
+    dev=$(cat "$d/slave")
+    FX_CHARDEV="$dev" FX_AGENT_CONFIG_DIR="$d/cfg" \
+    FX_AGENT_DATA="$d/data" HOME="$d" \
+        timeout 120 "$BIN" -p "s2 access probe" --agent fx --max-turns 2 --output text \
+        > "$d/guest.out" 2>&1
+    ACC_GUEST_RC=$?
+    wait_for_proxy_exit "$p" "$d/proxy.err"
+    wait "$p"
+    ACC_RC=$?
+    ACC_DIR="$d"; ACC_ERR="$d/proxy.err"; ACC_LOG="$d/log.jsonl"
+    ACC_DUMP="$d/dump.jsonl"; ACC_MARKER="$d/marker"; ACC_RAW="$d/raw"
+    ACC_DATA="$d/data"
+}
+
+# acc_out_n <dump> <predicate over `o`> <call_id> — count the function_call_output
+# entries in the DUMPED (model-facing) frames for that call_id matching the
+# predicate (the wire is where a denial must be VISIBLE, never only in the log).
+acc_out_n() {
+    python3 - "$1" "$2" "$3" <<'PY'
+import json, sys
+dump, pred, cid = sys.argv[1], sys.argv[2], sys.argv[3]
+n = 0
+for line in open(dump):
+    line = line.strip()
+    if not line:
+        continue
+    f = json.loads(line)
+    for it in f.get("input", []):
+        if it.get("type") == "function_call_output" and it.get("call_id") == cid:
+            o = it.get("output") or ""
+            if eval(pred):
+                n += 1
+print(n)
+PY
+}
+
+ACCCALL="$S1CALL"   # the same stream, one verb substituted
+acc_run "$GATE" arm1 "$TMP/acc-write.sse" --access-dir "$ACC_DENY"
+[ "$ACC_GUEST_RC" -eq 0 ] || { sed -n '1,10p' "$ACC_ERR" >&2; fail "phase 118: the guest run rc=$ACC_GUEST_RC — a refused call must end the turn normally, not kill the lane"; }
+[ "$ACC_RC" -eq 0 ] || fail "phase 118: the proxy exited rc=$ACC_RC"
+grep -q "THE ACCESS AUTHOR IS LIVE" "$ACC_ERR" \
+    || { sed -n '1,6p' "$ACC_ERR" >&2; fail "phase 118: the real build did not arm the access author"; }
+# (1) THE GUEST DISPATCHED NOTHING.  This is the assertion the whole slice is
+# about: the call was refused BEFORE it could execute, and a refusal recorded on
+# a call that still ran would be a record wider than the evidence.
+[ ! -s "$ACC_MARKER" ] || { cat "$ACC_MARKER" >&2; fail "phase 118: the guest DISPATCHED a call through a seat that refused it — the dispatch marker must be ABSENT"; }
+grep -qx 'fx_write' "$ACC_RAW" 2>/dev/null \
+    && fail "phase 118: the guest received the TRUE name fx_write — the denial did not take the P3 rewrite path"
+[ -s "$ACC_RAW" ] || fail "phase 118: NOTHING crossed to the guest — the run does not reproduce the denial path (the refusal must reach the guest as the reserved name)"
+n=$(grep -cvx 'fx_host_denied' "$ACC_RAW")
+[ "$n" -eq 0 ] || { cat "$ACC_RAW" >&2; fail "phase 118: $n name(s) other than the reserved fx_host_denied crossed to the guest — a denied call must be rewritten, not forwarded"; }
+grep -q "host-execute call_id=" "$ACC_ERR" \
+    && fail "phase 118: the HOST executed a call the access table refused"
+# (2) THE RECORD: author=access, refusal_name=tool-not-allowed, and the REASON
+# names the table's own reading (the `deny` row) rather than a paraphrase.
+n=$(pyq "$ACC_LOG" "len([r for r in rows if r.get('call_id')=='$ACCCALL' and r.get('verdict')=='denied' and r.get('author')=='access' and r.get('refusal_name')=='tool-not-allowed' and 'classifies this verb DENY' in (r.get('reason') or '') and (r.get('denial_text') or '').startswith('(denied by host policy:')])")
+[ "$n" -eq 1 ] || { grep -F "$ACCCALL" "$ACC_LOG" >&2; fail "phase 118: no row carries verdict=denied author=access refusal_name=tool-not-allowed with the table's reading in the reason"; }
+n=$(pyq "$ACC_LOG" "len([r for r in rows if r.get('call_id')=='$ACCCALL' and r.get('true_name')=='fx_write'])")
+[ "$n" -eq 1 ] || fail "phase 118: the record does not keep the TRUE name of the refused call (the host's record may know it; only the WIRE may not)"
+# (3) THE MODEL was told, by name, on the ordinary denial path.
+n=$(acc_out_n "$ACC_DUMP" "'tool-not-allowed' in o" "$ACCCALL")
+[ "$n" -ge 1 ] || { cat "$ACC_DUMP" >&2; fail "phase 118: the refusal did not reach the model — the denial text is the call's result"; }
+echo "   OK arm 1 (deny): $(bin_id "$GATE" | cut -c1-12).. refused fx_write at the seat — the guest dispatched NOTHING (only the reserved carrier crossed), row author=access/refusal_name=tool-not-allowed, and the refusal is the call's result"
+
+echo "== phase 118b: S2 THE POSITION — the access author refuses BEFORE the denylist's successors (ops, justification, claim)"
+# POSITION IS ASSERTED, not assumed.  Every later author is ARMED on this run,
+# and the call is one the justification check would refuse (it carries no
+# justification) if it ran first.  The row says author=access, so the operator's
+# table answered before any of them was consulted — which is what "a denied verb
+# is refused on the operator's authority BEFORE any other author" means in the
+# record, and the only way to see it is to arm the others and watch which one
+# gets the attribution.
+acc_run "$GATE" arm1b "$TMP/acc-write.sse" --access-dir "$ACC_DENY" \
+    --deny fx_status --ops-policy-dir "$OPS_DIR" --calls-policy-dir "$CALLS_DIR" \
+    --require-justification
+[ "$ACC_GUEST_RC" -eq 0 ] || { sed -n '1,10p' "$ACC_ERR" >&2; fail "phase 118b: the guest run rc=$ACC_GUEST_RC"; }
+[ "$ACC_RC" -eq 0 ] || fail "phase 118b: the proxy exited rc=$ACC_RC"
+grep -qF "authors armed = denylist+access+ops+claim+justification" "$ACC_ERR" \
+    || { sed -n '1,8p' "$ACC_ERR" >&2; fail "phase 118b: the honesty line does not name the FULL armed set in judge order — authors_ran() must carry the access term"; }
+[ ! -s "$ACC_MARKER" ] || { cat "$ACC_MARKER" >&2; fail "phase 118b: the guest dispatched through a seat whose FIRST author refused"; }
+n=$(pyq "$ACC_LOG" "len([r for r in rows if r.get('call_id')=='$ACCCALL' and r.get('verdict')=='denied' and r.get('author')=='access' and r.get('refusal_name')=='tool-not-allowed'])")
+[ "$n" -eq 1 ] || { grep -F "$ACCCALL" "$ACC_LOG" >&2; fail "phase 118b: with ops+justification+claim ALL armed, the refusal is not attributed to access — the seat is not in position (it ran after another author, or not at all)"; }
+n=$(pyq "$ACC_LOG" "len([r for r in rows if r.get('call_id')=='$ACCCALL' and r.get('author') in ('justification','claim','ops')])")
+[ "$n" -eq 0 ] || fail "phase 118b: a LATER author is attributed on the same call — two authors refusing one call means the later one ran after the seat already said no"
+# THE STRUCTURAL HALF, claimed as CONVENIENCE AND NOT AS THE BOUND: this run is
+# armed with --require-justification, so the tool catalog is injected into the
+# forwarded request — and the catalog must not OFFER a verb the table refuses,
+# while still offering the ones it allows.  Nothing here is safety (the bound is
+# the judge above, which denied a name that was never offered): it only spares
+# the model a call spent learning what the table could have said for free.
+read -r inj_seen inj_allowed inj_denied <<EOF
+$(python3 - "$ACC_DUMP" <<'PY'
+import json, sys
+seen = offered = bad = 0
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if not line:
+        continue
+    f = json.loads(line)
+    tools = f.get("tools")
+    if not isinstance(tools, list):
+        continue
+    seen += 1
+    names = [t.get("name") for t in tools if isinstance(t, dict)]
+    if "fx_ls" in names:
+        offered = 1
+    if "fx_write" in names:
+        bad += 1
+print(seen, offered, bad)
+PY
+)
+EOF
+[ "$inj_seen" -ge 1 ] || fail "phase 118b: no dumped request carries an injected tool catalog — the arm set --require-justification, so the injection should have fired"
+[ "$inj_allowed" -eq 1 ] || fail "phase 118b: the injected catalog omits an ALLOWED verb (fx_ls) — the filter is removing more than the table refuses"
+[ "$inj_denied" -eq 0 ] || fail "phase 118b: the injected catalog OFFERS fx_write, which the table classifies deny — the model is invited to spend a call on a verb the seat will refuse"
+echo "   OK position: with denylist+access+ops+claim+justification all armed, the refusal is author=access/tool-not-allowed and NO later author is attributed — the operator's table answered first; the injected catalog offers the allowed verbs and not the refused one (convenience, not the bound)"
+
+echo "== phase 118c: S2 ONE AUTHOR OVER BOTH VOCABULARIES — a DENIED host tool never executes"
+# The table is TOTAL over the catalog UNION the host tools, and the judge reads
+# it for BOTH — a host tool judged by a different rule would be a second gate.
+# Same fixture, same fixture TABLE with ONE row moved (host_time -> deny): the
+# host must NOT execute it, the guest must receive nothing, and the row is the
+# ordinary access refusal.
+ACC_DENYH="$TMP/acc-denyhost"
+access_fixture "$ACC_DENYH"
+awk -F'\t' -v OFS='\t' '$1=="host_time" && NF==2 { print $1, "deny"; next } { print }' \
+    "$ACC_DENYH/access-verbs.tsv" > "$ACC_DENYH/t" && mv "$ACC_DENYH/t" "$ACC_DENYH/access-verbs.tsv"
+access_pin "$ACC_DENYH"
+got=$(awk -F'\t' '$1=="host_time"{print $2}' "$ACC_DENYH/access-verbs.tsv")
+[ "$got" = "deny" ] || fail "phase 118c: the host-tool deny fixture reads '$got' — the mutation did not take"
+acc_run "$GATE" arm1c "$FIX/responses_host_time.sse" --access-dir "$ACC_DENYH"
+[ "$ACC_GUEST_RC" -eq 0 ] || { sed -n '1,10p' "$ACC_ERR" >&2; fail "phase 118c: the guest run rc=$ACC_GUEST_RC"; }
+[ "$ACC_RC" -eq 0 ] || fail "phase 118c: the proxy exited rc=$ACC_RC"
+grep -q "host-execute call_id=" "$ACC_ERR" \
+    && fail "phase 118c: the HOST EXECUTED host_time, which this table classifies DENY — the vocabulary bound is not read for host tools"
+[ ! -s "$ACC_MARKER" ] || { cat "$ACC_MARKER" >&2; fail "phase 118c: the guest dispatched a host tool the table refused"; }
+n=$(pyq "$ACC_LOG" "len([r for r in rows if r.get('call_id')=='$ACCCALL' and r.get('verdict')=='denied' and r.get('author')=='access' and r.get('refusal_name')=='tool-not-allowed' and 'classifies this verb DENY' in (r.get('reason') or '') and not r.get('exec')])")
+[ "$n" -eq 1 ] || { grep -F "$ACCCALL" "$ACC_LOG" >&2; fail "phase 118c: no author=access/tool-not-allowed row (and no exec) for the DENIED host tool"; }
+echo "   OK both vocabularies: host_time classified deny is refused by the SAME author on the SAME path — nothing executed, nothing crossed"
+
+echo "== phase 119: S2 ARM 2 — THE SAME fixture, SAME table, on the PRE-FIX CONTROL: the call CROSSES and the marker APPEARS"
+# THE DIRECTION, and it is the only one that proves the seat refuses: the mutant
+# is the ALLOWING one (the author compiled out of call_judge, the table still
+# loaded and totality-checked).  A build that refused everything would pass arm
+# 1; this arm is what such a build cannot pass.
+[ "$GATENOACCESS" -nt "$ROOT/tools/fx-hostgate.c" ] \
+    || fail "phase 119: $GATENOACCESS is OLDER than tools/fx-hostgate.c — make alone does not build these binaries, so this arm would measure a stale build"
+acc_run "$GATENOACCESS" arm2 "$TMP/acc-write.sse" --access-dir "$ACC_DENY"
+[ "$ACC_GUEST_RC" -eq 0 ] || { sed -n '1,10p' "$ACC_ERR" >&2; fail "phase 119: the blind's guest run rc=$ACC_GUEST_RC"; }
+[ "$ACC_RC" -eq 0 ] || fail "phase 119: the blind exited rc=$ACC_RC — it must START with the same table (that is the failure)"
+grep -q "ACCESS AUTHOR IS COMPILED OUT (FH_MUTANT_NO_ACCESS_SEAT)" "$ACC_ERR" \
+    || { sed -n '1,6p' "$ACC_ERR" >&2; fail "phase 119: the blind did not say the access author is compiled out — the mutant did not run"; }
+grep -q "table LOADED AND TOTALITY-CHECKED at startup" "$ACC_ERR" \
+    || fail "phase 119: the blind did not load the SAME table — then it is not the same fixture"
+grep -q "guest dispatched fx_write" "$ACC_MARKER" 2>/dev/null \
+    || { cat "$ACC_MARKER" >&2 2>/dev/null; fail "phase 119: the guest did not dispatch fx_write through the blind — the arm does not reproduce the silent allow"; }
+n=$(pyq "$ACC_LOG" "len([r for r in rows if r.get('refusal_name')=='tool-not-allowed'])")
+[ "$n" -eq 0 ] || fail "phase 119: the blind wrote $n tool-not-allowed row(s) — the author is supposed to be compiled out"
+echo "   OK arm 2 (the blind is the ALLOWING one): $(bin_id "$GATENOACCESS" | cut -c1-12).. started on the SAME deny table, and the SAME call CROSSED and the guest DISPATCHED it — the silent allow the seat closes"
+
+echo "== phase 120: S2 ARM 3 — a verb INSIDE the table crosses on BOTH builds (a seat that refused everything cannot pass)"
+# THIS ARM EXISTS TO CATCH OVER-DENYING, and it is the one the brief insists on:
+# arm 1 passing tells you a seat refuses SOMETHING; only a call the table ALLOWS
+# crossing tells you it does not refuse EVERYTHING.  Same fixture table, a verb
+# classified `allow` (host_time): it must cross and be dispatched on the REAL
+# build, and it must cross on the blind too (the blind's difference is the
+# author, not the vocabulary).
+acc_run "$GATE" arm3 "$FIX/responses_host_time.sse" --access-dir "$ACC_DENY"
+[ "$ACC_GUEST_RC" -eq 0 ] || { sed -n '1,10p' "$ACC_ERR" >&2; fail "phase 120: the guest run rc=$ACC_GUEST_RC for a verb the table ALLOWS"; }
+[ "$ACC_RC" -eq 0 ] || fail "phase 120: the proxy exited rc=$ACC_RC"
+grep -q "guest dispatched host_time" "$ACC_MARKER" 2>/dev/null \
+    || { cat "$ACC_MARKER" >&2 2>/dev/null; fail "phase 120: an ALLOWED verb did not cross to the guest — the seat is refusing calls the table permits"; }
+n=$(acc_out_n "$ACC_DUMP" "'(host_time:' in o" "$ACCCALL")
+[ "$n" -ge 1 ] || { cat "$ACC_DUMP" >&2; fail "phase 120: the allowed call's host result did not reach the model — the allowed path is degraded by the seat"; }
+n=$(pyq "$ACC_LOG" "len([r for r in rows if r.get('call_id')=='$ACCCALL' and r.get('verdict')=='allowed' and (r.get('author') or '')=='access' and isinstance(r.get('allow_scope'),str) and 'no access refusal' in r.get('allow_scope')])")
+[ "$n" -eq 1 ] || { grep -F "$ACCCALL" "$ACC_LOG" >&2; fail "phase 120: the allowed row does not read author=access with the access seat named in allow_scope — an allowed row must name the seat that let it through"; }
+acc_run "$GATENOACCESS" arm3b "$FIX/responses_host_time.sse" --access-dir "$ACC_DENY"
+[ "$ACC_GUEST_RC" -eq 0 ] || { sed -n '1,10p' "$ACC_ERR" >&2; fail "phase 120: the blind's guest run rc=$ACC_GUEST_RC"; }
+[ "$ACC_RC" -eq 0 ] || fail "phase 120: the blind exited rc=$ACC_RC"
+grep -q "guest dispatched host_time" "$ACC_MARKER" 2>/dev/null \
+    || { cat "$ACC_MARKER" >&2 2>/dev/null; fail "phase 120: the allowed verb did not cross on the BLIND either — arm 3 must hold on both builds, or the difference between them is not the access author"; }
+echo "   OK arm 3 (allow): host_time — classified allow, INSIDE the table — crossed and was dispatched on BOTH builds ($(bin_id "$GATE" | cut -c1-12).. and $(bin_id "$GATENOACCESS" | cut -c1-12)..), and the real build's row reads author=access with the scope naming it; the seat does not refuse everything"
+
+echo "== phase 120b: S2 EVERY SEAT ARMED — the ALLOWED row names access AND claim, and its scope carries BOTH clauses"
+# The one render the arms above cannot reach: an ALLOWED row with the CLAIM
+# seat live too (arm 1 denies, so no allowed row exists there; arm 3 has no
+# claim seat).  Both readings must be present and neither may REPLACE the other
+# — a wider seat set must widen the record, not reword it (the P6/P8 rule this
+# tree already paid for when a carried row was silently reworded).
+calls_stream "$TMP/calls-justified.sse" fx_write "$CALLS_FIX/good.le" call_CM_0001
+calls_guest_arm "$GATE" "$TMP/calls-justified.sse" accessclaim "$CALLS_DIR" \
+    --access-dir "$ROOT/policy/access"
+[ "$CC_RC" -eq 0 ] || { sed -n '1,10p' "$CC_ERR" >&2; fail "phase 120b: the run rc=$CC_RC with the access table armed beside the claim seat"; }
+grep -q "THE ACCESS AUTHOR IS LIVE" "$CC_ERR" \
+    || fail "phase 120b: the access author was not armed on this run — the arm measures nothing"
+n=$(pyq "$CC_LOG" "len([r for r in rows if r.get('call_id')=='call_CM_0001' and r.get('verdict')=='allowed' and 'access' in (r.get('author') or '').split('+') and 'claim' in (r.get('author') or '').split('+')])")
+[ "$n" -ge 1 ] || { sed -n '1,3p' "$CC_LOG" >&2; fail "phase 120b: the allowed row does not name BOTH seats that ran (access and claim) — authors_ran() is not additive"; }
+n=$(pyq "$CC_LOG" "len([r for r in rows if r.get('call_id')=='call_CM_0001' and 'no access refusal' in (r.get('allow_scope') or '') and 'no claim refusal' in (r.get('allow_scope') or '')])")
+[ "$n" -ge 1 ] || { sed -n '1,3p' "$CC_LOG" >&2; fail "phase 120b: the allowed row's allow_scope does not carry BOTH clauses — a wider seat set must widen the reading, never replace part of it"; }
+echo "   OK every seat armed: author names access+claim, allow_scope carries both clauses, and the call still crosses and executes"
+
+echo "== phase 121: S2 THE ASYMMETRY — the PINNED pre-S2 source crosses the SAME fixture (and cannot become the working source)"
+# The control is the source as it stood at HEAD 3fad711 (S1: the table loaded,
+# pinned, totality-checked — and consulted by nobody).  THE PIN IS THE POINT (the
+# "a gate that reads a MOVING REF" lesson this tree has already paid for): the
+# commit is named by its full sha AND the extracted source is sha256-pinned AND
+# cmp-guarded against the working tree, so the control cannot quietly become the
+# source it is supposed to be a control FOR.
+PRE_S2_REV=3fad711b28ca10b1fdc316b52a92d6c26410f20f
+PRE_S2_SRC_SHA=05e0276bd63bfe037537135623e64ddff76d412159cb6daeb256884f1b70fdf2
+build_pre_s2() { # <dir> — echoes the pinned pre-S2 proxy path, or empty
+    local d="$1"
+    PRE_S2_SKIP=""
+    mkdir -p "$d"
+    if ! git -C "$ROOT" cat-file -e "$PRE_S2_REV^{commit}" 2>/dev/null; then
+        PRE_S2_SKIP="pinned revision $PRE_S2_REV unavailable (shallow clone or rewritten history)"
+        return
+    fi
+    if ! git -C "$ROOT" show "$PRE_S2_REV:tools/fx-hostgate.c" > "$d/fx-hostgate.c" 2>/dev/null; then
+        PRE_S2_SKIP="cannot extract tools/fx-hostgate.c at $PRE_S2_REV"
+        return
+    fi
+    local gotsrc
+    gotsrc=$(sha256sum "$d/fx-hostgate.c" | cut -d' ' -f1)
+    if [ "$gotsrc" != "$PRE_S2_SRC_SHA" ]; then
+        PRE_S2_SKIP="the extracted source hashes to $gotsrc, not the pinned $PRE_S2_SRC_SHA — the ref moved (the MOVING REF this pin exists to catch)"
+        return
+    fi
+    if cmp -s "$d/fx-hostgate.c" "$ROOT/tools/fx-hostgate.c"; then
+        PRE_S2_SKIP="the pinned pre-fix source is IDENTICAL to the working tree — the asymmetry would compare the code to itself"
+        return
+    fi
+    local PREDL="${DATALOG_DIR:-}"
+    [ -z "$PREDL" ] && [ -e "$ROOT/../datalog-dafsa/zig-out/lib/libdatalog.so" ] && PREDL="$ROOT/../datalog-dafsa"
+    [ -z "$PREDL" ] && [ -e "$HOME/fixpoint-linux/datalog-dafsa/zig-out/lib/libdatalog.so" ] && PREDL="$HOME/fixpoint-linux/datalog-dafsa"
+    [ -n "$PREDL" ] || { PRE_S2_SKIP="no datalog sibling is resolvable, so the pinned proxy cannot be linked"; return; }
+    if ! cc -std=c11 -O2 -Wall -Wextra \
+        -I"$ROOT/src" -I"$ROOT/src/agent" -I"$ROOT/src/vendor/dhall-c" \
+        -I"$ROOT/src/vendor/yyjson" -I"$ROOT/build/include" \
+        -I"$ROOT/src/vendor/tomlc99" -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
+        -o "$d/fx-hostgate" "$d/fx-hostgate.c" \
+        "$ROOT/src/vendor/dhall-c/sha256.c" "$ROOT/src/vendor/yyjson/yyjson.c" \
+        -L"$PREDL/zig-out/lib" -Wl,-rpath,"$PREDL/zig-out/lib" -ldatalog \
+        2> "$d/cc.err"; then
+        PRE_S2_SKIP="the pinned pre-fix source does not compile ($(tail -1 "$d/cc.err"))"
+        return
+    fi
+    # the proxy resolves the sandbox binary BESIDE ITSELF (/proc/self/exe), and
+    # a missing stage3 is a startup refusal — so the pinned control gets the
+    # SAME pinned sandbox this build's own seat uses (a served run, unlike the
+    # phase-117 --print-access control, publishes the slave path).
+    if ! cp "$ROOT/build/stage3" "$d/stage3" 2>/dev/null; then
+        PRE_S2_SKIP="cannot place the sandbox binary beside the pinned proxy ($ROOT/build/stage3)"
+        return
+    fi
+    echo "$d/fx-hostgate"
+}
+PRE_S2_GATE=$(build_pre_s2 "$TMP/pre-s2")
+if [ -z "$PRE_S2_GATE" ]; then
+    echo "   SKIP phase 121 (pre-fix control): $PRE_S2_SKIP — the asymmetry half did not run"
+else
+    acc_run "$PRE_S2_GATE" pre-s2 "$TMP/acc-write.sse" --access-dir "$ACC_DENY"
+    [ "$ACC_GUEST_RC" -eq 0 ] || { sed -n '1,10p' "$ACC_ERR" >&2; fail "phase 121: the pre-fix guest run rc=$ACC_GUEST_RC"; }
+    [ "$ACC_RC" -eq 0 ] || fail "phase 121: the pre-fix proxy exited rc=$ACC_RC"
+    grep -qF "S1 JUDGES NOTHING" "$ACC_ERR" \
+        || { sed -n '1,6p' "$ACC_ERR" >&2; fail "phase 121: the control does not read as the pre-S2 source — it does not say it judges nothing, so it is not the pinned pre-fix build"; }
+    grep -q "guest dispatched fx_write" "$ACC_MARKER" 2>/dev/null \
+        || { cat "$ACC_MARKER" >&2 2>/dev/null; fail "phase 121: the SAME fixture did NOT cross through the pinned pre-S2 proxy — the refusal above is not the access seat's doing"; }
+    n=$(pyq "$ACC_LOG" "len([r for r in rows if r.get('refusal_name')=='tool-not-allowed'])")
+    [ "$n" -eq 0 ] || fail "phase 121: the pre-S2 proxy wrote an access verdict — it has no access author"
+    echo "   OK asymmetry: the SAME fixture crosses on the pinned pre-S2 source (${PRE_S2_REV:0:12}, source sha256 ${PRE_S2_SRC_SHA:0:12}.., binary $(bin_id "$PRE_S2_GATE" | cut -c1-12)..) — the refusal is this slice's doing, not the scenario's"
+fi
+
 # ── THE PASS ECHO, with the LIVE observation folded in (P10-fix 5) ────────
-echo "PASS hostgate: the transparent proxy is stream-transparent (arm == control) and a mangling proxy is caught; the per-turn open/close mechanics hold through one proxy process; the one log JOINS every answered call by call_id and REPORTS every call it could not join; a join compiled out flips the pass by content; every model-controlled free-text field arrives MARKED while the join key renders verbatim; the DECODE GATE holds the channel invariant for a denied call (the true name never crosses) in the presence of interleaves, duplicate/never-opened dones, open-at-completed items and over-cap streams, with a pinned pre-fix control for each; the RESERVED NAME is a CHECKED property (it passes the guest's charset, collides with no verb of a catalog pinned by sha256 and cross-checked against the verbs server's own table, and the proxy REFUSES TO START on a collision — while the same source with the check compiled out starts and DISPATCHES the colliding name: the silent allow); and the JUSTIFICATION is required in the injected tools schema, judged on the argument accumulator the guest actually dispatches (a done-args-only judge is pinned and caught), denied BY NAME through the existing substitution on the outbound leg, and REPORTED BY A DENIAL-RATE INSTRUMENT whose own compiled-out mutant leaves the dead-agent shape invisible; and THE OPERATOR IS A REAL AUTHOR AT THIS SEAT (P6: the pinned ops policy, its PINS check, its alias table with the TWO-FORM grammar re-run here, and its per-call fact injection with the path canonicalized before matching) with the D1/D2 split NAMED in the startup line — D1 evaluated here, D2 and the compiled-in FLOOR enforced IN-GUEST ONLY because this seat can see neither — the D2 bound ASSERTED in both directions, the ALLOWED row carrying its own seat-scoped allow_scope qualifier (so a durable record cannot read as a permission the seat never grants) with the LOADED-BUT-INERT branch pinned by its own D2-only arm, and the seat's three failure directions each pinned against a control of the SAME source (fail-open when the seat is compiled out, over-deny when it binds the floor it cannot see, silent allow when it matches the raw path); and THE CLAIM AUTHOR AT THIS SEAT (P7) pins the file that COMPUTES every verdict (a swapped always-derives eval_calls.py is REFUSED at startup, while the same source with the evaluator exempt from the pin arms and lets the forbidden call CROSS and EXECUTE), BOUNDS the per-call evaluator (a hung one becomes a RECORDED refusal with its row written, while the same source with no deadline HANGS and writes NOTHING — the dead-agent instrument's blind spot), and refuses a folded verb-SYMBOL mapped by TWO runtime verbs at both check sites (--check-verbs and the seat's loader), so no shared symbol can let one contention justify two runtime verbs; and the ONE LOG SURVIVES A KILL/RESTART (the load is a gate: a corrupt log refuses LOUDLY and is left untouched) with its second role as the JOIN STATE rebuilt from it — a pre-restart denial is restored and substituted on the frame the model sees — while the SAME source with the load compiled out WIPES the record and leaves the denial un-restored, the replay is IDEMPOTENT (same bytes twice, and load->flush reproduces the carried lines exactly), and a REAL RESUMED GUEST RUN gets the true name and the reason back on the outbound leg; and the FIVE SHOULD-FIXES THE P8 REVIEW FOUND ARE CLOSED, each against its own PRE-FIX CONTROL of the SAME source: a crafted-but-valid DENIED row can no longer drive the outbound leg unbounded (the loader applies the writer's bound at LOAD, so a 1 MB denial_text is restored as 512 MARKED bytes, while the control emits the reviewer's 1,048,576 and a call_id longer than the wire could carry is refused); the seat writes ONE ROW PER call_id (a re-serve is a repeat, not a second call — no phantom UNRESOLVED at any exit, phase 59's own log holding 1 row for its one guest-side call — the control inflating it and reporting the phantom), with the LOADER matching the writer by REFUSING a duplicate row; the LOAD is LINEAR rather than quadratic (100,000 rows in well under a 20 s bound where the pre-fix binary measured 89.7 s) and the over-cap refusal names a way out the gate RUNS — the DENIED-row compaction, whose rebuilt map still holds every denial; --log is REFUSED AT THE DOOR unless it is a regular file this seat owns (a FIFO that hung the pre-fix shape silently under a bounded control, a device node a flush would have renamed over, a symlink that would have split the record, a directory, all loud before anything is served or written); and a CARRIED row keeps the reading it was written with (its own allow_scope, byte-for-byte, where the control REWORDS it to claim a seat that judged nothing), while the turn field is validated as a whole non-negative number and the CRLF normalization is announced instead of silent; and the LIVE LANE'S LIVENESS SIGNALLING is closed (P10-fix), so the availability half of 'never a silent green' is enforced too: a REACHABLE-BUT-BROKEN response — no header block at all, an LF-only or non-HTTP status line, a Content-Length the socket does not honour, a chunked body with no well-formed zero chunk, or a body past the DOCUMENTED 32 MiB cap — is a LOUD NAMED failure (rc=1) where the pre-fix shape ended rc=0 with the bytes (or the whole header block) served to a guest that reads EOF as a FINISH, while a clean close-delimited 200 still passes; the HTTP HEADER BLOCK is never served as the body (the raw stream the guest reads begins with the BODY's own bytes, captured from the device); a credential embedded in the endpoint URL is never printed (userinfo refused by name and shown as <redacted>@, a query shown as ?<redacted>, and a CR/LF in the URL or the key refused before it could be sent); and the live arm's own observation rides in this echo, so an arm whose model made no call cannot read as an arm that proved something. $LIVE_STATUS; a HOST-TOOL call is an ORDINARY function_call (the SAME judge, the SAME denial path) and only the ALLOWED path dispatches it to the compiled-in host registry, whose result reaches the model through the EXISTING outbound substitution keyed on call_id (the pinned pre-S1 proxy crosses the SENTINEL instead); a host tool that collides with a guest verb is REFUSED at startup; and the executor compiled out is caught on the wire as SILENT DEGRADATION (S1 does NOT yet exercise argument judgement — host_time takes no arguments); the exec map is rebuilt across a restart and one call_id is executed at most ONCE; and an executed host call whose substitution never fires is REPORTED as an unresolved-substitution row; and a POLICY FLIP ACROSS A RESUME cannot break the record or lie to the model (S1-fix): a row refreshed to DENIED drops its execution reading and the exec-map key, so the seat still LOADS what its own two runs wrote, a carried DENIED verdict BINDS THE EXECUTOR rather than only the row, a crafted verdict-less exec row is REFUSED at startup, and ONE UNARMED arm witnesses the fail-closed gate instead of assuming it; and S2 THE JUDGED ARGUMENTS + THE TOTALITY CHECK: host_cat(path) is a BOUNDED host-file read (over-cap is REFUSED, never truncated), its path is judged by the operator's alias table through the hosttool(W) bridge (D3 denies a PROTECTED class while every guest-verb arm stays byte-identical), an UNCLASSED path is REFUSED BY NAME (unclassed-arg) with nothing executed, and the two mutation blinds flip exactly their arms — FH_MUTANT_OPS_NO_CLASS (the plan's risk #1 made concrete: the protected AND unclassed paths EXECUTE) and FH_MUTANT_OPS_NO_CANON now gating HOST paths (a ../-spelling reaches the executor and reads the protected file in the mutant, is denied on the canonical path in the real build) — proving the ONE normaliser (fh_canon_abs) is shared by the classifying and executing sides; S2-FIX: the totality check NO LONGER vanishes with the seat — a classed host call under a denylist-only OR loaded-but-inert seat is REFUSED BY NAME (unarmed-ops, where the seat-compiled-out control EXECUTES it and hands the model a protected file), the executor opens O_NOFOLLOW|O_NONBLOCK and refuses anything non-regular BY NAME (a data-classed symlink reads the protected target in the no-plainfile control; a FIFO no longer hangs the lane), NUL content is refused instead of silently cut, the judge extracts the registry's arg_key (the hardcoded-key control denies host_time where the real build allows it, and a table entry that reads with no classed key REFUSES TO START), and the model-chosen path is bounded so no result exceeds the record's cap; and the OPERATOR'S ACCESS TABLE (S1, INERT: policy/access loaded, pinned and TOTALITY-CHECKED over BOTH closed vocabularies at startup — a missing catalog verb, a missing host tool, a name in NEITHER vocabulary, a duplicate row and a stale pin each REFUSE by name before the slave path is published, and the ALLOWING blind (the totality check compiled out) ACCEPTS the same fixture — while nothing is judged by it yet)"
+echo "PASS hostgate: the transparent proxy is stream-transparent (arm == control) and a mangling proxy is caught; the per-turn open/close mechanics hold through one proxy process; the one log JOINS every answered call by call_id and REPORTS every call it could not join; a join compiled out flips the pass by content; every model-controlled free-text field arrives MARKED while the join key renders verbatim; the DECODE GATE holds the channel invariant for a denied call (the true name never crosses) in the presence of interleaves, duplicate/never-opened dones, open-at-completed items and over-cap streams, with a pinned pre-fix control for each; the RESERVED NAME is a CHECKED property (it passes the guest's charset, collides with no verb of a catalog pinned by sha256 and cross-checked against the verbs server's own table, and the proxy REFUSES TO START on a collision — while the same source with the check compiled out starts and DISPATCHES the colliding name: the silent allow); and the JUSTIFICATION is required in the injected tools schema, judged on the argument accumulator the guest actually dispatches (a done-args-only judge is pinned and caught), denied BY NAME through the existing substitution on the outbound leg, and REPORTED BY A DENIAL-RATE INSTRUMENT whose own compiled-out mutant leaves the dead-agent shape invisible; and THE OPERATOR IS A REAL AUTHOR AT THIS SEAT (P6: the pinned ops policy, its PINS check, its alias table with the TWO-FORM grammar re-run here, and its per-call fact injection with the path canonicalized before matching) with the D1/D2 split NAMED in the startup line — D1 evaluated here, D2 and the compiled-in FLOOR enforced IN-GUEST ONLY because this seat can see neither — the D2 bound ASSERTED in both directions, the ALLOWED row carrying its own seat-scoped allow_scope qualifier (so a durable record cannot read as a permission the seat never grants) with the LOADED-BUT-INERT branch pinned by its own D2-only arm, and the seat's three failure directions each pinned against a control of the SAME source (fail-open when the seat is compiled out, over-deny when it binds the floor it cannot see, silent allow when it matches the raw path); and THE CLAIM AUTHOR AT THIS SEAT (P7) pins the file that COMPUTES every verdict (a swapped always-derives eval_calls.py is REFUSED at startup, while the same source with the evaluator exempt from the pin arms and lets the forbidden call CROSS and EXECUTE), BOUNDS the per-call evaluator (a hung one becomes a RECORDED refusal with its row written, while the same source with no deadline HANGS and writes NOTHING — the dead-agent instrument's blind spot), and refuses a folded verb-SYMBOL mapped by TWO runtime verbs at both check sites (--check-verbs and the seat's loader), so no shared symbol can let one contention justify two runtime verbs; and the ONE LOG SURVIVES A KILL/RESTART (the load is a gate: a corrupt log refuses LOUDLY and is left untouched) with its second role as the JOIN STATE rebuilt from it — a pre-restart denial is restored and substituted on the frame the model sees — while the SAME source with the load compiled out WIPES the record and leaves the denial un-restored, the replay is IDEMPOTENT (same bytes twice, and load->flush reproduces the carried lines exactly), and a REAL RESUMED GUEST RUN gets the true name and the reason back on the outbound leg; and the FIVE SHOULD-FIXES THE P8 REVIEW FOUND ARE CLOSED, each against its own PRE-FIX CONTROL of the SAME source: a crafted-but-valid DENIED row can no longer drive the outbound leg unbounded (the loader applies the writer's bound at LOAD, so a 1 MB denial_text is restored as 512 MARKED bytes, while the control emits the reviewer's 1,048,576 and a call_id longer than the wire could carry is refused); the seat writes ONE ROW PER call_id (a re-serve is a repeat, not a second call — no phantom UNRESOLVED at any exit, phase 59's own log holding 1 row for its one guest-side call — the control inflating it and reporting the phantom), with the LOADER matching the writer by REFUSING a duplicate row; the LOAD is LINEAR rather than quadratic (100,000 rows in well under a 20 s bound where the pre-fix binary measured 89.7 s) and the over-cap refusal names a way out the gate RUNS — the DENIED-row compaction, whose rebuilt map still holds every denial; --log is REFUSED AT THE DOOR unless it is a regular file this seat owns (a FIFO that hung the pre-fix shape silently under a bounded control, a device node a flush would have renamed over, a symlink that would have split the record, a directory, all loud before anything is served or written); and a CARRIED row keeps the reading it was written with (its own allow_scope, byte-for-byte, where the control REWORDS it to claim a seat that judged nothing), while the turn field is validated as a whole non-negative number and the CRLF normalization is announced instead of silent; and the LIVE LANE'S LIVENESS SIGNALLING is closed (P10-fix), so the availability half of 'never a silent green' is enforced too: a REACHABLE-BUT-BROKEN response — no header block at all, an LF-only or non-HTTP status line, a Content-Length the socket does not honour, a chunked body with no well-formed zero chunk, or a body past the DOCUMENTED 32 MiB cap — is a LOUD NAMED failure (rc=1) where the pre-fix shape ended rc=0 with the bytes (or the whole header block) served to a guest that reads EOF as a FINISH, while a clean close-delimited 200 still passes; the HTTP HEADER BLOCK is never served as the body (the raw stream the guest reads begins with the BODY's own bytes, captured from the device); a credential embedded in the endpoint URL is never printed (userinfo refused by name and shown as <redacted>@, a query shown as ?<redacted>, and a CR/LF in the URL or the key refused before it could be sent); and the live arm's own observation rides in this echo, so an arm whose model made no call cannot read as an arm that proved something. $LIVE_STATUS; a HOST-TOOL call is an ORDINARY function_call (the SAME judge, the SAME denial path) and only the ALLOWED path dispatches it to the compiled-in host registry, whose result reaches the model through the EXISTING outbound substitution keyed on call_id (the pinned pre-S1 proxy crosses the SENTINEL instead); a host tool that collides with a guest verb is REFUSED at startup; and the executor compiled out is caught on the wire as SILENT DEGRADATION (S1 does NOT yet exercise argument judgement — host_time takes no arguments); the exec map is rebuilt across a restart and one call_id is executed at most ONCE; and an executed host call whose substitution never fires is REPORTED as an unresolved-substitution row; and a POLICY FLIP ACROSS A RESUME cannot break the record or lie to the model (S1-fix): a row refreshed to DENIED drops its execution reading and the exec-map key, so the seat still LOADS what its own two runs wrote, a carried DENIED verdict BINDS THE EXECUTOR rather than only the row, a crafted verdict-less exec row is REFUSED at startup, and ONE UNARMED arm witnesses the fail-closed gate instead of assuming it; and S2 THE JUDGED ARGUMENTS + THE TOTALITY CHECK: host_cat(path) is a BOUNDED host-file read (over-cap is REFUSED, never truncated), its path is judged by the operator's alias table through the hosttool(W) bridge (D3 denies a PROTECTED class while every guest-verb arm stays byte-identical), an UNCLASSED path is REFUSED BY NAME (unclassed-arg) with nothing executed, and the two mutation blinds flip exactly their arms — FH_MUTANT_OPS_NO_CLASS (the plan's risk #1 made concrete: the protected AND unclassed paths EXECUTE) and FH_MUTANT_OPS_NO_CANON now gating HOST paths (a ../-spelling reaches the executor and reads the protected file in the mutant, is denied on the canonical path in the real build) — proving the ONE normaliser (fh_canon_abs) is shared by the classifying and executing sides; S2-FIX: the totality check NO LONGER vanishes with the seat — a classed host call under a denylist-only OR loaded-but-inert seat is REFUSED BY NAME (unarmed-ops, where the seat-compiled-out control EXECUTES it and hands the model a protected file), the executor opens O_NOFOLLOW|O_NONBLOCK and refuses anything non-regular BY NAME (a data-classed symlink reads the protected target in the no-plainfile control; a FIFO no longer hangs the lane), NUL content is refused instead of silently cut, the judge extracts the registry's arg_key (the hardcoded-key control denies host_time where the real build allows it, and a table entry that reads with no classed key REFUSES TO START), and the model-chosen path is bounded so no result exceeds the record's cap; and the OPERATOR'S ACCESS TABLE (S1+S2, ENFORCED: policy/access loaded, pinned and TOTALITY-CHECKED over BOTH closed vocabularies at startup — a missing catalog verb, a missing host tool, a name in NEITHER vocabulary, a duplicate row and a stale pin each REFUSE by name before the slave path is published, and the ALLOWING blind (the totality check compiled out) ACCEPTS the same fixture; S2 makes that table an AUTHOR in call_judge, FIRST among the policy authors — a verb it classifies DENY is rewritten to fx_host_denied with the guest dispatching NOTHING and a row reading author=access/refusal_name=tool-not-allowed, the SAME fixture CROSSES and is DISPATCHED on the pre-fix control (both the compiled-out seat and the sha-pinned pre-S2 source), a verb INSIDE the table crosses on BOTH builds so a seat that refused everything could not pass, and the position is asserted with every later author armed, so the refusal is attributed to the operator rather than to the seat that would have spoken next; what this seat is NOT is stated where it is armed — the guest's own allowlist is STILL IN FORCE and STILL IN THE AGENT-WRITABLE CONFIG, so this seat is ADDITIVE to it rather than a replacement, and the host judges the CALL, not the world)"

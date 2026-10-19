@@ -515,6 +515,9 @@ static void emap_remove(const char *call_id);
 /* declared here (redeclared with the calls seat below) because the log
  * writer's ALLOWED-row allow_scope must name the seat that acted */
 static int calls_seat_present(void);
+/* S2: the same, for the operator's access table — the ALLOWED-row scope names
+ * it when it acted (defined with the S1 loader, where its state lives) */
+static int access_seat_present(void);
 static void tb_put(struct tbuf *t, const char *s, size_t n);
 static void tb_puts(struct tbuf *t, const char *s);
 #ifndef FH_MUTANT_NO_DENIAL_RATE /* the instrument is the only caller */
@@ -553,6 +556,17 @@ static char *reasons_breakdown_json(const char *const *names,
 #define FH_AUTHOR_UNARMED "unarmed"
 #define FH_AUTHOR_CLAIM "claim"
 #define FH_REFUSAL_CLAIM "denied-by-claim"
+/* S2 (ACL SPLIT): THE OPERATOR'S ACCESS TABLE is an author — the VOCABULARY
+ * dimension (may this verb be called AT ALL), judged on the same denial path
+ * as every other author and attributed to the operator, not to a policy
+ * engine: the table IS the operator's pinned intent.  `tool-not-allowed`
+ * covers BOTH refusals it can make — classified `deny`, and NOT CLASSIFIED AT
+ * ALL (a name outside the closed vocabulary, which is a refusal and never a
+ * fall-through: silence is not an allow).  The reason text distinguishes
+ * them; the refusal name deliberately does not, because the operator's answer
+ * to the model is one sentence either way. */
+#define FH_AUTHOR_ACCESS "access"
+#define FH_REFUSAL_NOT_ALLOWED "tool-not-allowed"
 /* A refusal-shaped entry that names NO refusing author: an item that never
  * completed was never JUDGED, so no policy refused it.  Used as the reason and
  * (prefixed) as the substitution text for such an item, so the record cannot
@@ -834,25 +848,41 @@ static struct row *row_call_find(const char *call_id) {
  * THE CONTROL (build/fx-hostgate-noscopecarry, -DFH_MUTANT_NO_SCOPE_CARRY) is
  * the pre-fix shape: the stored scope is ignored and the text is recomputed
  * from the current seats, so the gate can catch the REWORD by content. */
+/* S2: the scope names the ACCESS seat too when it is armed, and it is
+ * APPENDED so every reading an earlier release wrote stays a prefix of the
+ * wider one — a reader (and a gate) matching "no operator denial at this
+ * seat" keeps matching, and the sentence a row of that era made is still in
+ * it.  The access sentence is the operator's OWN claim, not a claim about the
+ * world: the table allows the CALL's verb, it says nothing about the paths
+ * that call may touch (the ops seat and the in-guest floor are those). */
+static const char *seat_scope_text(int access, int claim) {
+    if (access && claim)
+        return "seat-scoped: no operator denial and no claim refusal at this "
+               "seat (the justification was judged and derived), and no "
+               "access refusal (the verb is classified allow on the "
+               "operator's access table); the in-guest floor and D2 still "
+               "govern";
+    if (claim)
+        return "seat-scoped: no operator denial and no claim refusal at "
+               "this seat (the justification was judged and derived); "
+               "the in-guest floor and D2 still govern";
+    if (access)
+        return "seat-scoped: no operator denial at this seat, and no access "
+               "refusal (the verb is classified allow on the operator's "
+               "access table); the in-guest floor and D2 still govern";
+    return "seat-scoped: no operator denial at this seat; "
+           "the in-guest floor and D2 still govern";
+}
+
 #ifdef FH_MUTANT_NO_SCOPE_CARRY
 static const char *row_scope_text(const struct row *r) {
     (void)r; /* the pre-fix shape never looks at the row's own reading */
-    return calls_seat_present()
-               ? "seat-scoped: no operator denial and no claim refusal at "
-                 "this seat (the justification was judged and derived); "
-                 "the in-guest floor and D2 still govern"
-               : "seat-scoped: no operator denial at this seat; "
-                 "the in-guest floor and D2 still govern";
+    return seat_scope_text(access_seat_present(), calls_seat_present());
 }
 #else
 static const char *row_scope_text(const struct row *r) {
     if (r->allow_scope) return r->allow_scope;
-    return calls_seat_present()
-               ? "seat-scoped: no operator denial and no claim refusal at "
-                 "this seat (the justification was judged and derived); "
-                 "the in-guest floor and D2 still govern"
-               : "seat-scoped: no operator denial at this seat; "
-                 "the in-guest floor and D2 still govern";
+    return seat_scope_text(access_seat_present(), calls_seat_present());
 }
 #endif
 
@@ -928,12 +958,15 @@ static void log_flush(void) {
             }
             /* P3/P5/P6/P7: the verdict fields render ONLY when a policy actually
              * ran (the brief's honesty rule).  `author` names what ran — the
-             * placeholder denylist, the ops policy at this seat (P6), the
-             * claim policy at this seat (P7) and/or
+             * placeholder denylist, the operator's ACCESS TABLE (S2), the ops
+             * policy at this seat (P6), the claim policy at this seat (P7)
+             * and/or
              * the justification check; on a denial it names the ONE author that refused, and
              * refusal_name is the by-name refusal (P3's denied-by-denylist,
              * P5's absent-/malformed-justification, P6's denied-by-ops,
-             * P7's denied-by-claim, and S2-fix's `unarmed` — the structural
+             * P7's denied-by-claim, S2's tool-not-allowed — the operator's
+             * access table refusing a verb it does not allow, or does not
+             * classify — and S2-fix's `unarmed` — the structural
              * author that refuses a CLASSED host call where no ops seat ran,
              * because nothing classed the argument and an unjudged argument
              * is not an allowed one).
@@ -1480,17 +1513,22 @@ static const char *g_ops_dir;
  * here?" (loaded AND armed). */
 static int calls_seat_present(void);
 static const char *g_calls_dir;
-/* S1 (ACL SPLIT): --access-dir names the OPERATOR'S ACCESS TABLE directory
+/* S1/S2 (ACL SPLIT): --access-dir names the OPERATOR'S ACCESS TABLE directory
  * (policy/access: access-verbs.tsv + PINS).  Absent is the NAMED unarmed
- * state; in this slice the seat judges nothing either way. */
+ * state; S1 loaded and validated the table, S2 makes it an AUTHOR. */
 static const char *g_access_dir;
+/* S2's seat answer, defined with the S1 loader below (it needs the loader's
+ * own state) and declared here because policy_armed() and authors_ran() must
+ * ask it: an armed access table is an AUTHOR, so a call-only access run is an
+ * armed run and its allowed rows have to name it. */
+static int access_seat_present(void);
 
-/* ARMED = an author that can refuse is active.  The denylist (P3), the ops
- * policy at this seat (P6) and the justification check (P5) are three authors;
- * any one alone is armed. */
+/* ARMED = an author that can refuse is active.  The denylist (P3), the access
+ * table (S2), the ops policy at this seat (P6) and the justification check
+ * (P5) are authors; any one alone is armed. */
 static int policy_armed(void) {
     return g_ndeny > 0 || g_require_justify || ops_seat_present()
-           || calls_seat_present();
+           || calls_seat_present() || access_seat_present();
 }
 
 static int policy_denied(const char *name) {
@@ -5131,11 +5169,26 @@ static int ops_judge(const char *name, const char *args, char *why, size_t whyca
  * The proxy gains a THIRD host-side author, the OPERATOR'S ACCESS TABLE
  * (policy/access/access-verbs.tsv): the verb ALLOW table, over BOTH closed
  * name lists at once — the 13 pinned catalog verbs UNION the host-tool
- * registry (host_time, host_cat).  It judges NOTHING in this slice: this is
- * the INERT WRITER, the loader and its totality check, with no consumer.
- * Named plainly, because it is the failure mode of the whole split: a table
- * that is loaded and validated but never consulted is INDISTINGUISHABLE to a
- * reader from one that is enforced, and every startup line below says so.
+ * registry (host_time, host_cat).
+ *
+ * S1 SHIPPED THE INERT WRITER — the loader and its totality check, with no
+ * consumer — and said so in the startup line, because a table that is loaded
+ * and validated but never consulted is INDISTINGUISHABLE to a reader from one
+ * that is enforced.  S2 IS THE CONSUMER: call_judge consults this table, in
+ * position, before every other policy author (denylist -> ACCESS -> ops ->
+ * justification -> claim), so a verb the operator classified `deny` — or did
+ * not classify at all — is REFUSED BY NAME (author=access,
+ * refusal_name=tool-not-allowed) on the ordinary denial path: the true name
+ * never crosses, nothing executes, and the refusal is the call's result.
+ *
+ * WHAT S2 IS NOT, stated here so the seat's reach is not read wider than it
+ * is: (i) it does NOT move enabled_tools/mcp_servers out of the agent config —
+ * the GUEST's own allowlist is still in force and still lives in the
+ * agent-writable config, so this seat is ADDITIVE to it, not a replacement
+ * (the schema split is the next slice); (ii) it judges the CALL, not the
+ * world — an agent acting outside a tool call is untouched (§6b); (iii) it
+ * says nothing about the PATHS a permitted call may touch, which is the ops
+ * seat's dimension and the in-guest floor's.
  *
  * WHY BOTH VOCABULARIES IN ONE TABLE, and why the check is TOTALITY rather
  * than an allow-list: a table that covered only ONE of the two leaves the
@@ -5238,6 +5291,32 @@ static int access_row_find(const char *verb) {
     for (size_t i = 0; i < ACCESS.n_row; i++)
         if (strcmp(ACCESS.row[i].verb, verb) == 0) return (int)i;
     return -1;
+}
+
+/* S2 — THE SEAT'S OWN ANSWER to "did an author that can refuse run here?".
+ * `loaded` is set only after the pin, the parse and the totality check all
+ * passed, so an access dir that refused to start never reaches this.  The
+ * PRE-FIX CONTROL (build/fx-hostgate-noaccess) returns 0 with the table still
+ * LOADED AND VALIDATED: the pre-S2 shape is not "no table", it is "a table
+ * nobody consults", which is exactly the silent hole this slice closes. */
+static int access_seat_present(void) {
+#ifdef FH_MUTANT_NO_ACCESS_SEAT
+    return 0;
+#else
+    return ACCESS.loaded;
+#endif
+}
+
+/* S2 — THE TABLE'S VERDICT ON ONE NAME: 1 = allowed, 0 = not (a classified
+ * `deny` OR a name with NO row at all).  The second case is the direction the
+ * totality check exists for at startup, and it must be a REFUSAL here too: a
+ * call naming something outside the closed vocabulary is not in the table, and
+ * "not in the table" is not "allowed".  A caller that is not the judge (the
+ * tools injection) reads the same function, so there is one reading of the
+ * table in the process. */
+static int access_allows(const char *name) {
+    int r = access_row_find(name);
+    return r >= 0 && ACCESS.row[r].allow;
 }
 
 /* IS `name` IN THE CLOSED VOCABULARY — the catalog UNION the host-tool
@@ -5470,29 +5549,53 @@ static void access_seat_load(const char *dir) {
 /* THE STARTUP POSITION (main, immediately after fh_catalog_check): the
  * catalog must be pinned and verified BEFORE a table total over it is
  * believed.  An ABSENT --access-dir is the NAMED unarmed state, never an
- * error — and it says, in the line, that every verb is unclassified AND that
- * nothing consults this seat, so the absence changes no call's verdict. */
+ * error — and the line says, in those words, that every verb is unclassified
+ * AND that no call is judged by the table, so the absence changes no call's
+ * verdict.  With a dir the line says the opposite, and it says it out loud
+ * because a seat that is loaded but never consulted is INDISTINGUISHABLE, to
+ * a reader of the source, from one that is enforced (S1 was exactly that
+ * shape, on purpose). */
 static void access_seat_startup(const char *dir) {
     memset(&ACCESS, 0, sizeof ACCESS);
     if (!dir) {
         ACCESS.absent = 1;
         note("access: NO ACCESS TABLE at this seat (--access-dir absent) — "
-             "every verb in both closed vocabularies is UNCLASSIFIED, and S1 "
-             "JUDGES NOTHING: no call is judged by this seat in this slice, so "
-             "the absence changes no call's verdict");
+             "every verb in both closed vocabularies is UNCLASSIFIED, and NO "
+             "ACCESS AUTHOR runs: no call is judged on the vocabulary "
+             "dimension, so this seat's absence changes no call's verdict (the "
+             "denylist, the ops seat and the claim seat are unaffected)");
         return;
     }
     access_seat_load(dir);
-    note("access: table LOADED AND TOTALITY-CHECKED at startup (INERT in this "
-         "slice) — %zu verb(s) classified from the pinned table (%s, sha256 "
-         "%.16s..): %zu allow, %zu deny; the vocabulary is the %zu pinned "
-         "catalog verb(s) UNION the %zu host tool(s) and EVERY name carries a "
-         "row, with EXACT names only (no glob, no regex).  S1 JUDGES NOTHING — "
-         "call_judge does not consult this table, so this line is a statement "
-         "about the TABLE (total, pinned, inspectable), NOT about what any call "
-         "may do",
+#ifdef FH_MUTANT_NO_ACCESS_SEAT
+    /* PRE-FIX CONTROL (build/fx-hostgate-noaccess): the table is loaded, pinned
+     * and totality-checked — and CONSULTED BY NOBODY.  DIRECTION: FAIL-OPEN.
+     * A call the table classifies `deny` crosses to the guest and EXECUTES,
+     * which is the pre-S2 shape (S1 shipped exactly this and said so). */
+    note("access: table LOADED AND TOTALITY-CHECKED at startup (%s, sha256 "
+         "%.16s.., %zu verb(s): %zu allow, %zu deny) — but the ACCESS AUTHOR IS "
+         "COMPILED OUT (FH_MUTANT_NO_ACCESS_SEAT): this is the PRE-FIX control, "
+         "NO call is judged on the vocabulary dimension, and a verb the table "
+         "CLASSIFIES DENY (or does not classify at all) still CROSSES and "
+         "EXECUTES",
+         FH_ACCESS_TSV, ACCESS.sha, ACCESS.n_row, ACCESS.n_allow, ACCESS.n_deny);
+#else
+    note("access: table LOADED AND TOTALITY-CHECKED at startup, and THE ACCESS "
+         "AUTHOR IS LIVE — %zu verb(s) classified from the pinned table (%s, "
+         "sha256 %.16s..): %zu allow, %zu deny; the vocabulary is the %zu "
+         "pinned catalog verb(s) UNION the %zu host tool(s) and EVERY name "
+         "carries a row, with EXACT names only (no glob, no regex).  Judged "
+         "FIRST among the policy authors (denylist -> access -> ops -> "
+         "justification -> claim): a verb classified deny, or named with NO "
+         "row, is DENIED BY NAME (author=access, refusal_name=tool-not-allowed) "
+         "on the ordinary denial path — the guest dispatches NOTHING and the "
+         "refusal is the call's result.  THIS SEAT JUDGES THE CALL'S VERB, NOT "
+         "THE WORLD: it says nothing about the paths a permitted call may touch "
+         "(the ops seat and the in-guest floor are those), and nothing about "
+         "an agent acting outside a tool call at all",
          ACCESS.n_row, FH_ACCESS_TSV, ACCESS.sha, ACCESS.n_allow, ACCESS.n_deny,
          fh_catalog_count(), fh_host_tool_count());
+#endif
 }
 
 /* --print-access: one line per verb, `verb<TAB>allow|deny`, in VOCABULARY
@@ -5550,11 +5653,11 @@ static void access_print(void) {
  * DIFFERENT dimensions of the same call, and the verdict is DENY IF EITHER
  * REFUSES.
  *
- * ORDER IN call_judge: denylist -> ops -> justification (P5) -> claim.  The
- * claim author judges the JUSTIFICATION, so it runs only after P5 has
- * confirmed the justification is present and well-formed.  A denial takes the
- * SAME path as every other author (the true name never crosses; the denial
- * text reaches the model through the existing P3 outbound substitution),
+ * ORDER IN call_judge: denylist -> ACCESS (S2) -> ops -> justification (P5)
+ * -> claim.  The claim author judges the JUSTIFICATION, so it runs only after
+ * P5 has confirmed the justification is present and well-formed.  A denial
+ * takes the SAME path as every other author (the true name never crosses; the
+ * denial text reaches the model through the existing P3 outbound substitution),
  * with author="claim" and refusal_name="denied-by-claim"; the reason embeds
  * the evaluator's OWN refusal name (justified-not-derived / premise-false /
  * hostile-compile / ... — never paraphrased).
@@ -6258,10 +6361,13 @@ static int justification_verdict(const char *args, char *why, size_t whycap) {
 
 #endif /* !FH_MUTANT_NO_JUSTIFY_CHECK && !FH_MUTANT_SINGLE_ITEM */
 
-/* ONE call's verdict: the placeholder denylist (P3) first, then the
- * justification check (P5).  Returns 1 = DENY, 0 = allow; on DENY it fills the
- * refusing AUTHOR, the refusal NAME and the reason (which becomes the denial
- * text the model reads).  Every refusal is by name — never a bare rejection. */
+/* ONE call's verdict, in author order: the placeholder denylist (P3), the
+ * operator's ACCESS TABLE (S2 — the vocabulary: may this verb be called at
+ * all), the operator's ops policy at this seat (P6), the justification check
+ * (P5) and the claim author (P7).  Returns 1 = DENY, 0 = allow; on DENY it
+ * fills the refusing AUTHOR, the refusal NAME and the reason (which becomes
+ * the denial text the model reads).  Every refusal is by name — never a bare
+ * rejection. */
 #ifndef FH_MUTANT_SINGLE_ITEM /* only the per-item serve_stream judges */
 static int call_judge(const char *name, const char *args,
                       const char **author_out, const char **refusal_out,
@@ -6276,6 +6382,56 @@ static int call_judge(const char *name, const char *args,
         *refusal_out = FH_REFUSAL_DENYLIST;
         return 1;
     }
+#ifndef FH_MUTANT_NO_ACCESS_SEAT
+    /* S2 (ACL SPLIT) — THE OPERATOR'S ACCESS TABLE, judged FIRST among the
+     * policy authors (after the placeholder denylist, whose arms keep their
+     * byte-unchanged rows for free).  POSITION DEFENDED: this is the coarsest
+     * and cheapest judgement the seat makes — an exact-name lookup over a
+     * pinned TSV, no JSON parse, no shell, no datalog — and every later
+     * author's rules PRESUPPOSE that the verb may be called at all.  A verb
+     * the operator did not include is not "unjudged by ops", it is not allowed
+     * to exist as a call.
+     *
+     * TWO REFUSALS, ONE NAME.  `deny` is the operator saying no; NO ROW is the
+     * vocabulary not covering this name (a reserved name called directly, a
+     * tool from an MCP server the table never classified, a typo) — and
+     * silence is NOT an allow: a seat that let an unclassified name through
+     * would be exactly the silent allow-all the totality check refuses at
+     * startup, one call at a time.  Both are attributed to `access`
+     * (refusal_name=tool-not-allowed); the reason distinguishes them, because
+     * an operator reading the log needs to know which it was.
+     *
+     * THE PATH IS THE ORDINARY ONE: no new mechanism.  The denial is a
+     * refusal like every other — the true name never crosses (P3's
+     * fx_host_denied rewrite), nothing executes, and this reason is what the
+     * model reads. */
+    if (access_seat_present()) {
+        int ar = access_row_find(name);
+        if (ar < 0) {
+            snprintf(reason, reason_cap,
+                     "\"%s\" was DENIED BY NAME tool-not-allowed: it is NOT IN "
+                     "THE OPERATOR'S ACCESS TABLE at all — not one of the "
+                     "classified catalog verbs or host tools.  An unclassified "
+                     "verb is refused, never allowed: the table is the "
+                     "vocabulary this host will call, and a name it does not "
+                     "classify is a name nobody reviewed", name);
+            *author_out = FH_AUTHOR_ACCESS;
+            *refusal_out = FH_REFUSAL_NOT_ALLOWED;
+            return 1;
+        }
+        if (!ACCESS.row[ar].allow) {
+            snprintf(reason, reason_cap,
+                     "\"%s\" was DENIED BY NAME tool-not-allowed: the "
+                     "operator's pinned access table classifies this verb "
+                     "DENY (policy/access/%s) — the host will not call it, "
+                     "whatever any other author would say about it",
+                     name, FH_ACCESS_TSV);
+            *author_out = FH_AUTHOR_ACCESS;
+            *refusal_out = FH_REFUSAL_NOT_ALLOWED;
+            return 1;
+        }
+    }
+#endif /* FH_MUTANT_NO_ACCESS_SEAT */
 #ifndef FH_MUTANT_NO_OPS_SEAT
     /* P6 — THE OPERATOR AUTHOR at this seat.  The rule vocabulary is the
      * pinned ops policy's; the facts are the ones this seat can DERIVE (see
@@ -6392,32 +6548,39 @@ static int call_judge(const char *name, const char *args,
 #endif /* FH_MUTANT_SINGLE_ITEM */
 
 /* The AUTHOR field on an ALLOWED row: the authors ARMED AND CONSULTED at this
- * seat, joined.  A row claiming an author that did not run would be a record
- * wider than the evidence (the same rule that keeps P2 rows verdict-free) —
- * and, the other way, "armed" is not "evaluated THIS call": the ops judge
- * returns before the pinned policy is consulted for a verb it does not
- * classify as a write, so an allowed non-write row's `ops` names an author
- * that was present, not one that judged the call.  The row's allow_scope
- * carries the reading; the field itself is the seat's author set. */
+ * seat, joined in JUDGE ORDER (denylist -> access -> ops -> claim ->
+ * justification; the justification check is rendered last because it is the
+ * only one that is a CHECK rather than a policy, and that is where it has
+ * always been in this string).  A row claiming an author that did not run
+ * would be a record wider than the evidence (the same rule that keeps P2 rows
+ * verdict-free) — and, the other way, "armed" is not "evaluated THIS call":
+ * the ops judge returns before the pinned policy is consulted for a verb it
+ * does not classify as a write, so an allowed non-write row's `ops` names an
+ * author that was present, not one that judged the call.  The row's
+ * allow_scope carries the reading; the field itself is the seat's author set.
+ *
+ * S2: the ACCESS term is in the set, and it must be — the table is now a
+ * judgement every call passes through, so a row that did not name it would
+ * under-report the seat.  With the access seat armed the string is at least
+ * "access"; with every seat armed it reads
+ * "denylist+access+ops+claim+justification". */
 static const char *authors_ran(void) {
-    int o = ops_seat_present();
-    int c = calls_seat_present();
-    if (g_ndeny > 0 && o && c && g_require_justify) return "denylist+ops+claim+justification";
-    if (g_ndeny > 0 && o && c) return "denylist+ops+claim";
-    if (g_ndeny > 0 && o && g_require_justify) return "denylist+ops+justification";
-    if (g_ndeny > 0 && o) return "denylist+ops";
-    if (g_ndeny > 0 && c && g_require_justify) return "denylist+claim+justification";
-    if (g_ndeny > 0 && c) return "denylist+claim";
-    if (o && c && g_require_justify) return "ops+claim+justification";
-    if (o && c) return "ops+claim";
-    if (o && g_require_justify) return "ops+justification";
-    if (c && g_require_justify) return "claim+justification";
-    if (g_ndeny > 0 && g_require_justify) return "denylist+justification";
-    if (g_ndeny > 0) return FH_AUTHOR_DENYLIST;
-    if (o) return FH_AUTHOR_OPS;
-    if (c) return FH_AUTHOR_CLAIM;
-    if (g_require_justify) return FH_AUTHOR_JUSTIFY;
-    return "none";
+    static char buf[128];
+    size_t n = 0;
+    buf[0] = '\0';
+#define FH_AUTHORS_ADD(s)                                                     \
+    do {                                                                      \
+        n += (size_t)snprintf(buf + n, n < sizeof buf ? sizeof buf - n : 0,   \
+                              "%s%s", n ? "+" : "", (s));                     \
+    } while (0)
+    if (g_ndeny > 0) FH_AUTHORS_ADD(FH_AUTHOR_DENYLIST);
+    if (access_seat_present()) FH_AUTHORS_ADD(FH_AUTHOR_ACCESS);
+    if (ops_seat_present()) FH_AUTHORS_ADD(FH_AUTHOR_OPS);
+    if (calls_seat_present()) FH_AUTHORS_ADD(FH_AUTHOR_CLAIM);
+    if (g_require_justify) FH_AUTHORS_ADD(FH_AUTHOR_JUSTIFY);
+#undef FH_AUTHORS_ADD
+    if (n == 0) return "none";
+    return buf;
 }
 
 /* THE INJECTED CATALOG — one tool per pinned verb, `justification` a REQUIRED
@@ -6434,10 +6597,18 @@ static const char *authors_ran(void) {
 static void tools_inject_json(struct tbuf *t) {
     tb_puts(t, "[");
     size_t n = fh_catalog_count();
+    size_t emitted = 0;
     char name[128];
     for (size_t i = 0; i < n; i++) {
         if (!fh_catalog_nth(i, name, sizeof name)) continue;
-        if (i) tb_puts(t, ",");
+        /* S2: A VERB THE OPERATOR'S TABLE REFUSES IS NOT OFFERED TO THE MODEL.
+         * This is CONVENIENCE, NOT THE BOUND — the bound is call_judge below,
+         * which runs whatever the model asks for, including a name that was
+         * never offered.  Its purpose is only that a model is not invited to
+         * spend a call on a verb that will be refused; a model that ignores
+         * the catalog and names it anyway is denied by the judge. */
+        if (access_seat_present() && !access_allows(name)) continue;
+        if (emitted++) tb_puts(t, ",");
         tb_puts(t, "{\"type\":\"function\",\"name\":\"");
         tb_puts(t, name);
         tb_puts(t,
@@ -6452,7 +6623,9 @@ static void tools_inject_json(struct tbuf *t) {
                 "\"additionalProperties\":true}}");
     }
     for (size_t i = 0; i < fh_host_tool_count(); i++) {
-        if (n || i) tb_puts(t, ",");
+        if (access_seat_present() && !access_allows(fh_host_tools[i].name))
+            continue;
+        if (emitted++) tb_puts(t, ",");
         tb_puts(t, "{\"type\":\"function\",\"name\":\"");
         tb_puts(t, fh_host_tools[i].name);
         tb_puts(t,

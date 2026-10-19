@@ -477,6 +477,14 @@ BIN_HOSTGATE_CATSIBLING := build/fx-hostgate-catsibling
 # UNCLASSIFIED — the direction that matters (an unclassified verb silently
 # allows).  A mutant that over-denied would prove nothing here.
 BIN_HOSTGATE_ACCESSBLIND := build/fx-hostgate-accessblind
+# S2 (ACL SPLIT — THE ENFORCEMENT): THE PRE-FIX CONTROL.  The access AUTHOR is
+# compiled out of call_judge while the table is still loaded, pinned and
+# totality-checked, so the build runs the S1-era proxy: a verb the operator's
+# table classifies DENY (or does not classify at all) CROSSES and EXECUTES.
+# DIRECTION: FAIL-OPEN — the silent hole S2 closes, and the only direction that
+# proves the seat is the one that refuses (a build that refused EVERYTHING would
+# pass the deny arm and prove nothing).
+BIN_HOSTGATE_NOACCESS := build/fx-hostgate-noaccess
 
 test-hostgate: $(BIN_HOSTGATE) $(BIN_HOSTGATE_MUTANT) $(BIN_HOSTGATE_UNBOUND) \
                $(BIN_HOSTGATE_NOREWRITE) $(BIN_HOSTGATE_BLINDADD) \
@@ -506,6 +514,7 @@ test-hostgate: $(BIN_HOSTGATE) $(BIN_HOSTGATE_MUTANT) $(BIN_HOSTGATE_UNBOUND) \
                $(BIN_HOSTGATE_NOSTAGE3) $(BIN_HOSTGATE_NOSTAGE3_SIGSYS) \
                $(BIN_HOSTGATE_NOSANDBOX) $(BIN_HOST_CAT_SIBLING) \
                $(BIN_HOSTGATE_CATSIBLING) $(BIN_HOSTGATE_ACCESSBLIND) \
+               $(BIN_HOSTGATE_NOACCESS) \
                $(PALISADE_STAGE3)
 	bash tests/test_hostgate.sh
 
@@ -953,6 +962,14 @@ $(BIN_HOSTGATE_NOHOSTCOLL): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YY
 $(BIN_HOSTGATE_ACCESSBLIND): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(DATALOG_DIR)/zig-out/lib/libdatalog.so | $(DATALOG_SHIM)
 	@mkdir -p build
 	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_MUTANT_ACCESS_ACCEPT_MISSING -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(HOSTGATE_LIBS)
+
+# S2's PRE-FIX CONTROL — the ACCESS AUTHOR compiled out of call_judge
+# (FH_MUTANT_NO_ACCESS_SEAT): the table still loads, pins and passes the
+# totality check, and NOTHING consults it, so a call the table DENIES crosses
+# to the guest and executes.  Never a product build.
+$(BIN_HOSTGATE_NOACCESS): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(DATALOG_DIR)/zig-out/lib/libdatalog.so | $(DATALOG_SHIM)
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_MUTANT_NO_ACCESS_SEAT -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(HOSTGATE_LIBS)
 
 # (3) THE DISPATCH BLIND — FH_MUTANT_NO_EXEC compiles the registry lookup out of
 #     the allowed path.  The call forwards to the guest, the guest answers

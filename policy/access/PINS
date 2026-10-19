@@ -14,7 +14,8 @@
 # every change to the table is a visible release.  Re-pin with:
 #   sha256sum policy/access/access-verbs.tsv
 #
-# SLICE S1: nothing is judged by this table yet (call_judge does not read it).
-# The pin is the property being delivered here: the bytes that WILL be
-# consulted are the bytes that were reviewed.
-access-verbs.tsv	4082a6e1619ff8ce23193842012d9e8c2810d9388abfbecde8f198672b1ab4d1
+# SLICE S2: the judge CONSULTS this table (call_judge, first among the policy
+# authors).  The pin is what makes that safe to say: the bytes that are
+# consulted per call are the bytes that were reviewed, verified once at startup
+# before any verdict is believed.
+access-verbs.tsv	5652d729c6035e0e19d5096240ad3d7c29a5f13268f416eb516546db18213be9
