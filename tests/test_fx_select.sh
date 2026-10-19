@@ -76,7 +76,7 @@
 #   S15 an excluded CHALLENGER is named and blocks nothing (keep the measured
 #       incumbent) — the mirror of S5a, stated rather than left implicit.
 #   S16 a DAMAGED line naming a candidate poisons it (the merged-line hole
-#       fx-init's un-repaired append produces, init.zig:746-763).
+#       fx-init's un-repaired append produces, init.zig:765-782).
 #   S17 THE BOUND: candidates = {CURRENT, the generation it replaced}; the
 #       intermediate snapshot a two-snapshot publish leaves behind (same
 #       generation genhash as its own predecessor) is NOT a candidate and
@@ -100,7 +100,7 @@
 #   OD    O + an Osier package in the closure that NOBODY runs -> 1.000000
 #         (the tie arm: same run set, different closure)
 # The .bootlog verdict lines are hand-appended in the WRITER's exact shape
-# (init.zig:751 `fprintf(f, "%u %s %u %s\n", v, status, epoch, nonce)`),
+# (init.zig:770 `fprintf(f, "%u %s %u %s\n", v, status, epoch, nonce)`),
 # as the real line PAIR (in-progress then the verdict, test_fx_audit.sh's
 # discipline), with `none` in the nonce field (the writer's placeholder for
 # a boot with no host token).
@@ -190,8 +190,26 @@ pin_init_blob() { # pin_init_blob BLOB FILE CITING...
 # mechanically to every prefixed AND bare continuation cite in
 # tools/fx-select.c and this gate (:870-871 -> :871-872, :4726 -> :4886);
 # each was verified to carry IDENTICAL text at its new line.
-pin_init_blob 201cf9ed6a5303e52e69dc9d40d5f7cf24d558c5 zig/src/init.zig "tools/fx-select.c and tests/test_fx_select.sh"
-echo "test_fx_select: CITATION PIN: init.zig measured for tools/fx-select.c and this gate is fx-init 43d3221 + the disk/no-busybox work (blob 201cf9ed)"
+# REBOOT S3 RE-MEASURE (fx-init bb0642f "reboot S3: PID1 can reboot itself",
+# committed; working tree == HEAD, blob 201cf9ed -> bf8fa631, 5609 -> 5978
+# lines): PID1 gained the `reboot <reason>` ctrl arm, do_soft_reboot, and
+# do_shutdown was factored into stop_services()/close_boot_paths() with the
+# shutdown record appended between them.  The numbering moved NON-UNIFORMLY,
+# so no arithmetic shift was applied: every cite was re-checked against the
+# file's CONTENT at its new line (an old->new map from the two blobs, each
+# remapped cite verified to carry IDENTICAL text).  This gate's cites, all
+# four landing on the same constructs they always named: :746-763 -> :765-782
+# (bootlog_append WHOLE — fn line to its closing brace, so the range still
+# spans exactly the body's torn-tail behaviour), :751 -> :770 (the
+# `fprintf(f, "%u %s %u %s\n", ...)` shape a 5-field line is measured
+# against), :871-872 -> :890-891 (the `none` placeholder in the recovery
+# header's field list) and :4886 -> :5243 (the boot path's in-progress
+# append).  NOTHING in this gate or in tools/fx-select.c was found WRONG in
+# this pass, unlike the two found in fx-audit.c and the eleven in
+# fx-report.c — recorded because "found none" is a result only when the
+# surface was actually read.
+pin_init_blob bf8fa631e442b0c4468fb8946b0cf3deb8d05e57 zig/src/init.zig "tools/fx-select.c and tests/test_fx_select.sh"
+echo "test_fx_select: CITATION PIN: init.zig measured for tools/fx-select.c and this gate is fx-init bb0642f (reboot S3), blob bf8fa631"
 
 DL="$SIBS/datalog-dafsa/zig-out/lib"
 
@@ -784,7 +802,7 @@ grep -q "^candidate	$F1_O_LAST	0	viability	failed	.*the pre-nonce legacy shape" 
 echo "test_fx_select: S10 the 3-field pre-nonce verdict shape is read (and named as such)"
 
 # ── S16: a DAMAGED line naming a candidate POISONS it (rule 2) ──────────
-# A 5-field line is not the writer's shape (init.zig:751 emits 3 or 4).
+# A 5-field line is not the writer's shape (init.zig:770 emits 3 or 4).
 # FAILING DIRECTION: without the poison, v$F1_O_LAST keeps its earlier `ok`,
 # stays viable, and its 1.000000 share wins -> revert-to it on the strength of
 # a record the writer never wrote.
@@ -822,7 +840,7 @@ grep -q '^caveat	bootlog-damage	damaged=0	torn=1	' "$F1/o.s12" \
 echo "test_fx_select: S12 the STRICT torn rule holds: a torn tail naming v$F1_O_LAST ($(state_of "$F1/o.s12" "$F1_O_LAST")) poisons it -> keep $F1_C_LAST"
 
 # ── S13: CURRENT MID-BOOT WITHHOLDS (fix B) ────────────────────────────
-# The writer's own line PAIR is in-progress-then-verdict (init.zig:4886), so
+# The writer's own line PAIR is in-progress-then-verdict (init.zig:5243), so
 # during a boot of the incumbent its LAST line is in-progress.  Treating that
 # as merely "not viable" would recommend — and --apply perform — a rollback of
 # a system that is booting right now.

@@ -69,7 +69,7 @@
  *                      `damaged-line`: the writer never emits that shape, so
  *                      the line's own verdict is unreadable.  This also
  *                      closes the merged-line hole: fx-init appends with
- *                      fopen("a") and NO tail repair (init.zig:746-763), so
+ *                      fopen("a") and NO tail repair (init.zig:765-782), so
  *                      an append after a torn tail MERGES into it and the
  *                      merged line (6+ fields, first token = the version the
  *                      torn write was about) is damaged — the version is
@@ -185,13 +185,13 @@
  *                                          ONE implementation)
  *   <store>/.bootlog                  fx-init's per-boot verdict lines;
  *                                     the WRITER's exact shape
- *                                     (init.zig:751) is
+ *                                     (init.zig:770) is
  *                                     "%u %s %u %s\n" =
  *                                     <version> <status> <epoch>
  *                                     <16-hex-nonce|none>, `none` being
  *                                     the writer's placeholder for a boot
  *                                     with no host token (init.zig
- *                                     :871-872; the JOURNAL's own placeholder line is in its header, operator_journal.zig:186).  A 3-field line is
+ *                                     :890-891; the JOURNAL's own placeholder line is in its header, operator_journal.zig:186).  A 3-field line is
  *                                     the pre-nonce legacy shape and is
  *                                     TOLERATED because its meaning is
  *                                     statable: the same <version>
@@ -457,7 +457,7 @@ static const struct {
  { 1, "candidates", "fxstore timeline --store <store> + fxstore facts generation --as-of <v> --store <store>",
    "THE BOUNDED SET: {CURRENT} + {the NEWEST published version BELOW CURRENT whose generation fact's GENHASH differs from CURRENT's and which is NOT a republication of its immediate predecessor (the same genhash - the intermediate snapshot a two-snapshot activation or soft rollback publishes, which carries its PREDECESSOR's system facts)}. The seat asks IS THE CHANGE WORTH KEEPING? against the incumbent it replaced, not is ANY historical generation better: the share is a TIE-BREAKER (design record 7.1), and a global maximum would make every strictly lower-share change permanently unshippable and every high-water generation a permanent attractor republished at a rising version number. Every other published version prints as not-candidate with its reason and stays as an audit record; a CURRENT with no generation fact leaves the set {CURRENT} and is NAMED; a predecessor REAPED BY `fxstore gc` is crossed silently (bound/predecessor-gap-after-gc) and a below-predecessor version's content identity is only stated where the walk read its genhash (bound/predecessor-content-not-compared)" },
  { 2, "viability", "<store>/.bootlog",
-   "the LAST non-shutdown line naming the version: ok=viable; failed|in-progress|unknown-status=NOT viable (reason named); no line=NOT viable (never-judged). TWO DAMAGE POISONS override a clean verdict, both preferring the false stop: a TORN (unterminated) last line whose first token names the version (the file was mid-write ABOUT it; outcome.c:1032-1035, test_outcome.sh phase 11), and a TERMINATED line that is not the writer's 3-or-4-field shape and whose first token NAMES the version (the writer never emits it, so its verdict is unreadable - this also closes the torn-then-append MERGE that fx-init's un-repaired append produces, init.zig:746-763). Torn wins the tie between the two" },
+   "the LAST non-shutdown line naming the version: ok=viable; failed|in-progress|unknown-status=NOT viable (reason named); no line=NOT viable (never-judged). TWO DAMAGE POISONS override a clean verdict, both preferring the false stop: a TORN (unterminated) last line whose first token names the version (the file was mid-write ABOUT it; outcome.c:1032-1035, test_outcome.sh phase 11), and a TERMINATED line that is not the writer's 3-or-4-field shape and whose first token NAMES the version (the writer never emits it, so its verdict is unreadable - this also closes the torn-then-append MERGE that fx-init's un-repaired append produces, init.zig:765-782). Torn wins the tie between the two" },
  { 3, "share", "fx-osier-share --store <store> --as-of <v>",
    "run_set_share_fraction is THE OBJECTIVE - the oracle's own number, never re-derived here; closure_share_fraction is NEVER read (comparison only, never averaged in, never substituted); a candidate the oracle REFUSES is excluded BY NAME, never counted as 0%" },
  { 4, "coherence", "fxstore verify <rootfs> --as-of <CURRENT> --store <store>",
@@ -732,7 +732,7 @@ static void read_bootlog(void) {
              * seat that can revert must never revert TO a version whose last
              * boot it could not read.  This is also the MERGED-LINE hole:
              * fx-init appends with fopen("a") and no tail repair
-             * (init.zig:746-763), so a line appended after a torn tail joins
+             * (init.zig:765-782), so a line appended after a torn tail joins
              * the fragment and the merged line's first token is the version
              * the interrupted write was about. */
             damaged++;
@@ -780,7 +780,7 @@ static void read_bootlog(void) {
         if (!g_damaged_line[i]) continue;
         g_via[i].state = VIA_DAMAGED;
         snprintf(g_via[i].reason, sizeof g_via[i].reason,
-                 ".bootlog line %u names v%u and is DAMAGED: %u fields, not the writer's 3 or 4 (init.zig:751) — the line's verdict is unreadable, so this version's verdict is UNKNOWN rather than whatever its last clean line said (prefer the false stop)",
+                 ".bootlog line %u names v%u and is DAMAGED: %u fields, not the writer's 3 or 4 (init.zig:770) — the line's verdict is unreadable, so this version's verdict is UNKNOWN rather than whatever its last clean line said (prefer the false stop)",
                  g_damaged_line[i], g_vers[i].v, g_damaged_fields[i]);
     }
     if (torn_names_ok) {

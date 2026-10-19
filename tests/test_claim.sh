@@ -61,7 +61,7 @@
 #              carries a non-ok outcome (dhake-failed — the activation
 #              committed, the live-root reapply failed) and whose operator
 #              RETRY re-lands the SAME genhash ok (the writer's own shapes,
-#              init.zig:3816/:3829) is LIVE and ok-published — its claim
+#              init.zig:3952/:3965) is LIVE and ok-published — its claim
 #              MUST be judged.  The pre-fix binding (the FIRST landing's
 #              row alone decides the outcome) answered verdict=skipped on
 #              it FOREVER: zero eval lines, exit 0, the seat never called.
@@ -78,7 +78,7 @@
 #              landing is a CONTROL-CHANNEL ROLLBACK to its version (the
 #              reviewer's measured sequence: root ok; the claim lands behind
 #              a dhake-failed publish; a later gen goes ok; `fxctl rollback`
-#              returns to the claim's version — the row is init.zig:3920's
+#              returns to the claim's version — the row is init.zig:4056's
 #              exact shape: arg = the target operand, outcome ok, from = the
 #              current before, to-version = the current after the wrap ==
 #              the target).  The pre-fix filter read ACTIVATE rows only, so
@@ -94,7 +94,9 @@
 #              published generation, no eval block, op-from rebound to the
 #              rollback's from-world, or stale-world (the pinned before:
 #              tests/fixtures/claims/rollback-land-before.txt, cmp'd every
-#              run).
+#              run — re-recorded ONCE, at the S3 re-measure, on exactly one
+#              line: the ok ROLLBACK row's cite init.zig:3920 -> :4056, the
+#              diff read before it was applied).
 #   CAP        the round-4 SHOULD-FIX, armed: a journal PAST MAX_OP_ROWS
 #              dies LOUDLY, naming the cap and why the tail matters (the
 #              newest rows — the re-landings — live at the tail; every
@@ -152,7 +154,7 @@
 #              judges JOURNALED landings only, and the writer's own header
 #              (operator_journal.zig:174-183) enumerates landing moves that
 #              write NO .operator row — the AUTOMATIC .recovery roll-forward
-#              (init.zig:1770; .recovery is the AUDIT's file and means
+#              (init.zig:1798; .recovery is the AUDIT's file and means
 #              AUTOMATIC, so the seat does NOT read it — DECISION B), a
 #              host-side `fxstore rollback`, `rollback --hard`, and a
 #              hand-edited CURRENT.  DIRECTION: a claim generation first
@@ -245,6 +247,14 @@ grep -aq generation_config "$FXSTORE" || skip "fxstore at $FXSTORE predates the 
 
 INIT="${FX_INIT_REPO:-$SIBS/fx-init}"
 [ -d "$INIT" ] || skip "fx-init checkout not found at $INIT (set FX_SIBLINGS or FX_INIT_REPO)"
+# NOTE (S3 re-measure): this gate cites fx-init's init.zig BY LINE in its
+# prose (the writer's .operator row shapes: the ctrl arms' terminal rows, the
+# soft rollback, the recovery row) and there is NO blob pin here — the four
+# pins live in test_fx_audit.sh, test_fx_select.sh, test_fx_report.sh and
+# qemu-agent-b2.sh.  Those cites were re-measured by hand against blob
+# bf8fa631 (fx-init bb0642f, 5978 lines) and each was verified to land on the
+# append it names; nothing makes this file's drift LOUD.  Reported, not
+# widened: adding a pin would add an assertion to this gate.
 DL="$SIBS/datalog-dafsa/zig-out/lib"
 [ -f "$DL/libdatalog.so" ] || skip "libdatalog.so missing at $DL (set FX_SIBLINGS)"
 
@@ -434,7 +444,7 @@ oprow_x() { # oprow_x STOREDIR EPOCH CFGPATH FROM TO OUTCOME — a refused/faile
     echo "$2 activate $3 $6 $4 $5 gatenonce" >> "$1/.operator"
 }
 oprow_rb() { # oprow_rb STOREDIR EPOCH TARGET FROM TO OUTCOME — the writer's
-             # ROLLBACK row (init.zig:3877/:3920: the ARG is the target-version
+             # ROLLBACK row (init.zig:4013/:4056: the ARG is the target-version
              # operand; the to-version is the current AFTER the wrap — the
              # RESULT version the SOFT rollback publishes (store.zig:1240:
              # two new versions, CURRENT advances monotonically), its
@@ -743,9 +753,9 @@ read RVC2 RGC2 < <(act "$WORK/cfg-retry-claim.dhall")
 [ "$RGC2" = "$RGC" ] || fail "RETRY: re-activating the same claim config landed a DIFFERENT genhash ($RGC2 != $RGC) — the fixture is not a retry"
 [ "$RVC" -ne "$RVC2" ] || fail "RETRY: the two landings share one version — the fixture cannot separate the first landing from the retry"
 
-# the journal, the REAL writer's measured shapes: init.zig:3816 writes the
+# the journal, the REAL writer's measured shapes: init.zig:3952 writes the
 # failed landing's row with the LANDED version as to-version ('activation
-# committed, live-root reapply failed'), :3829 the retry's ok row (from the
+# committed, live-root reapply failed'), :3965 the retry's ok row (from the
 # first landing's version — the world the retry moved from).  Hand-written
 # in the writer's shape and declared, like every .operator fixture here
 # (fx-init does not run host-side).
@@ -798,7 +808,7 @@ write_cfg_nc "$WORK/cfg-rbr-mid.dhall" rbr-mid
 # generation lands behind a dhake-failed publish -> a later gen goes ok ->
 # the operator's `fxctl rollback` returns to the CLAIM's version, which is
 # the store's live CURRENT from then on.  The journal row is the writer's
-# EXACT shape (init.zig:3920 — arg = the target operand, outcome ok, from =
+# EXACT shape (init.zig:4056 — arg = the target operand, outcome ok, from =
 # the current before, to = the current after fx_store_rollback_wrap: the
 # RESULT version the soft rollback publishes (store.zig:1240), its snapshot
 # naming the rolled-back-to genhash — NOT the target operand; this fixture
@@ -836,7 +846,7 @@ LIVEG=$("$FXSTORE" facts generation --as-of "$BRVC" --store "$WORK/store-rbrec" 
     echo "rollback-land-before:   the claim's genhash:            $BRGC"
     echo "rollback-land-before:   its FIRST landing (version):    $BRVC — activate, dhake-failed, from $BRVR"
     echo "rollback-land-before:   the mid generation (version):   $BRVM"
-    echo "rollback-land-before:   the ok ROLLBACK row (the writer's shape, init.zig:3920):"
+    echo "rollback-land-before:   the ok ROLLBACK row (the writer's shape, init.zig:4056):"
     echo "rollback-land-before:     rollback $BRVC ok $BRVM $BRVC gatenonce"
     echo "rollback-land-before: the pre-fix filter dropped every non-activate row, so the"
     echo "rollback-land-before: only rows naming the claim genhash carried dhake-failed —"
@@ -879,7 +889,7 @@ read CVC2 CGC2 < <(act "$WORK/cfg-cap-claim.dhall")
 
 # the reviewer's measured resurrection (round-4 review): 4094 fillers push
 # the ok retry row past MAX_OP_ROWS.  The fillers are the writer's OWN
-# failed:<rc> rows (init.zig:3665 — outcome failed:<rc>, to '-': the child
+# failed:<rc> rows (init.zig:3801 — outcome failed:<rc>, to '-': the child
 # failed and whether it moved the store is not known from here) — they parse
 # and land nothing, exactly as a long-lived machine accumulates them.
 write_operator "$WORK/store-cap"
@@ -1116,6 +1126,6 @@ echo "test_claim: BOUND: MEASURED, structural: an extraEtc claim row can never n
 echo "test_claim: BOUND: BINDINGS 1/2 canonicalize a generation to its FIRST-appearance version: a comment-only re-activation keeps the genhash and re-asserts generation_config with the newer bytes' sha — the later sha is invisible; the seat judges the bytes the claim rode in against (version=N on the record line)"
 echo "test_claim: BOUND: the round-3 first-match SWEEP — every first-appearance/first-row assumption in the seat is either FIXED (the op-row binding: the outcome now spans ALL landings of a genhash) or MEASURED-EXACT on real stores: one generation row per version and one generation_config row per genhash per snapshot (activate.zig clears then adds exactly one — its own comment: 'exactly one row describes the live generation'); one terminal .operator row per activation (init.zig: refused-config/dhake-failed/unverified/ok, each naming the LANDED version; each publish a fresh version); the first tsv line feeds only the seat's bindings while the evaluator REFUSES a multi-row claim file by name; resolve_from_version's first-appearance dump choice is content-identical across re-landings (measured, round-2 review probes 2/3). Multiplicity beyond these is a hand-tampered artifact — inside the stated host-trust bound"
 
-echo "test_claim: BOUND: the round-4 LANDING SET — the OUTCOME gate reads the writer's terminal .operator rows BY NAME: activate rows, and rollback rows that name their landed target (init.zig:3877/:3920 — refused-config and ok; refused/unverified rollbacks and every shutdown row carry to='-' and land nothing).  A FUTURE writer action that lands versions must be added to the filter BY NAME or its landings are dropped — the round-4 blocker's class, stated (direction: a silent never-judged generation); and the OUTCOME vocabulary is read BY NAME too (strcmp \"ok\"): a FUTURE outcome name meaning 'landed fine' silently counts not-ok — the same residual, sibling cell\n"
-echo "test_claim: BOUND: the round-5 UNJOURNALED LANDINGS — the seat judges a generation from its <store>/.operator rows ALONE (JOURNALED landings); the writer's own header (operator_journal.zig:174-183) enumerates landing moves that write NO row there and are NOT read BY DESIGN (DECISION B): the AUTOMATIC .recovery roll-forward (init.zig:1770 — a flapping machine rolls FORWARD to the newest ok-booted version via the SAME soft rollback, the row lands in .recovery ONLY, which the AUDIT reads and which means AUTOMATIC — the seat does NOT read it), a host-side fxstore rollback, rollback --hard, and a hand-edited CURRENT.  DIRECTION: a claim generation first landed with a non-ok outcome and later RE-LANDED by one of these stays verdict=skipped while live and ok-booted — its claim is never judged, silently.  The bound PRINTS as a bound<TAB>unjournaled-landings line on every run (fx-report's idiom); M8 executes its removal\n"
+echo "test_claim: BOUND: the round-4 LANDING SET — the OUTCOME gate reads the writer's terminal .operator rows BY NAME: activate rows, and rollback rows that name their landed target (init.zig:4013/:4056 — refused-config and ok; refused/unverified rollbacks and every shutdown row carry to='-' and land nothing).  A FUTURE writer action that lands versions must be added to the filter BY NAME or its landings are dropped — the round-4 blocker's class, stated (direction: a silent never-judged generation); and the OUTCOME vocabulary is read BY NAME too (strcmp \"ok\"): a FUTURE outcome name meaning 'landed fine' silently counts not-ok — the same residual, sibling cell\n"
+echo "test_claim: BOUND: the round-5 UNJOURNALED LANDINGS — the seat judges a generation from its <store>/.operator rows ALONE (JOURNALED landings); the writer's own header (operator_journal.zig:174-183) enumerates landing moves that write NO row there and are NOT read BY DESIGN (DECISION B): the AUTOMATIC .recovery roll-forward (init.zig:1798 — a flapping machine rolls FORWARD to the newest ok-booted version via the SAME soft rollback, the row lands in .recovery ONLY, which the AUDIT reads and which means AUTOMATIC — the seat does NOT read it), a host-side fxstore rollback, rollback --hard, and a hand-edited CURRENT.  DIRECTION: a claim generation first landed with a non-ok outcome and later RE-LANDED by one of these stays verdict=skipped while live and ok-booted — its claim is never judged, silently.  The bound PRINTS as a bound<TAB>unjournaled-landings line on every run (fx-report's idiom); M8 executes its removal\n"
 echo "test_claim: ALL ARMS GREEN"

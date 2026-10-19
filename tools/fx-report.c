@@ -58,8 +58,21 @@
  *                                     <outcome> <from-version|-> <to-version|->
  *                                     <boot-nonce|none>" — INCLUDING the ones
  *                                     that failed or were refused (the ctrl
- *                                     arms, init.zig:3556/:3665/:3705/:3730/
- *                                     :3795/:3808/:3828/:3837/:3856/:3899).
+ *                                     arms, init.zig:3692/:3801/:3841/:3866/
+ *                                     :3952/:3965/:3985/:3994/:4013/:4056).
+ *                                     RE-AIMED at the S3 re-measure: this
+ *                                     list was 21 lines short of the arms it
+ *                                     names — the DISK_DEVS insertion was
+ *                                     applied to the FIRST ref of the group
+ *                                     only, so six continuation members kept
+ *                                     the pre-insertion number through two
+ *                                     later passes, naming two RE-ARM
+ *                                     comments, a reply fprintf and three more
+ *                                     comments.  The taxonomy's
+ *                                     `operator-intervention` row below, which
+ *                                     always named the ten appends correctly,
+ *                                     is the in-file control that decided
+ *                                     which of the two lists was stale.
  *                                     The header IN THE FILE is the
  *                                     definition (OPERATOR_HEADER,
  *                                     operator_journal.zig:122 — ONE
@@ -104,10 +117,10 @@
  *    later ──────────────────────────────────────────────────────────────
  * fx-init's runtime datalog — rt_effect/rt_control: activations
  * (rt_effect "version"), REFUSED activations (rt_effect "activate",
- * "failed", init.zig:3667; "dhake-failed", :3818), rollbacks and
- * shutdowns (rt_control, the shared activate|rollback ctrl arm, :3558) —
+ * "failed", init.zig:3803; "dhake-failed", :3954), rollbacks and
+ * shutdowns (rt_control, the shared activate|rollback ctrl arm, :3715) —
  * lives at /run/fx/log.db (DEFAULT_RUN "/run/fx", init.zig:33; path
- * built :4856, opened :4857).  Post-pivot "/" is TMPFS (init.zig's M4
+ * built :4663, opened :4664).  Post-pivot "/" is TMPFS (init.zig's M4
  * pivot: /proc/mounts' root entry reads "tmpfs" after it), so the log
  * DOES NOT SURVIVE A REBOOT, and this seat never reads it.
  *
@@ -998,18 +1011,23 @@ static int claim_cls_known(const char *v) {
 /* The writer's refusal vocabulary, read from the record rather than
  * assumed: an intervention the journal shows did NOT take effect as
  * asked.  `failed:<rc>` and `refused-config` are the activate arm's
- * (init.zig:3665/:3730; refused-config is written by the rollback arm
- * too, :3856 — the writer calls it the same record from the other
+ * (init.zig:3801/:3866; refused-config is written by the rollback arm
+ * too, :4013 — the writer calls it the same record from the other
  * direction), and refused-config means the generation DID land in the
  * store but PID1 REFUSED it: the declared service set is past its bound
  * OR the configuration could not be read at all (read_store_facts rc != 0,
- * the activate arm's two message forms at :3715/:3721 and the rollback
- * arm's at :3864/:3871).  `refused` is the rollback arm's when the STORE
- * rejected the target (:3858).  NOT refusals, and named as such in the
+ * the activate arm's two message forms at :3872/:3878 and the rollback
+ * arm's at :4021/:4028).  `refused` is the rollback arm's when the STORE
+ * rejected the target (:3994).  NOT refusals, and named as such in the
  * taxonomy:
  * `dhake-failed` (the generation DID land; the live-root reapply failed,
- * :3816) and `unverified` (the store could not be re-opened to confirm —
- * the record is AMBIGUOUS, which is not the same as refused), and `ok`. */
+ * :3952) and `unverified` (the store could not be re-opened to confirm —
+ * the record is AMBIGUOUS, which is not the same as refused), and `ok`.
+ * FOUR of the refs above were RE-AIMED at the S3 re-measure: `:3856` named
+ * the rollback REFUSED branch's rationale comment rather than the
+ * refused-config append (:4013), and the four "message forms" refs named
+ * four COMMENT lines rather than the four snfmtRaw calls (:3872/:3878 and
+ * :4021/:4028). */
 static int outcome_is_refusal(const char *o) {
     return !strncmp(o, "failed:", 7) || !strcmp(o, "refused") || !strcmp(o, "refused-config");
 }
@@ -1256,10 +1274,14 @@ static const struct { const char *cls, *record, *absence; } TAXONOMY[] = {
       "<store>/.recovery data row <epoch> <published> <from-failed> <genhash> <nonce> (fx-init, once per successful roll-forward)",
       "no-file=no-automatic-roll-forward-ever-recorded; no-row-naming-v=v-was-not-published-by-the-automatic-path (within the file's retention)" },
     { "operator-intervention",
-      "MEASURED — <store>/.operator rows: one line per intervention on the generation plane, written by PID1's control handler (fx-init ca9cb06) or, since the runtime-record closure, by fx-activate ITSELF for a publish it committed OUTSIDE that handler on a boot carrying an fx.bootnonce= (the file's own OPERATOR_HEADER, operator_journal.zig:122, IS the definition — ONE definition, imported by both writers): <epoch> <action> <arg> <outcome> <from-version|-> <to-version|-> <boot-nonce|none>, appended + fsync'd BEFORE the reply is flushed (operator_append: shutdown :3556, activate-failed :3665, unverified :3705, refused-config :3730, dhake-failed :3816, ok :3829, rollback unverified :3849, refused :3858, refused-config :3877, ok :3920).  SECOND WRITER (the runtime-record closure): fx-activate records the publish IT committed OUTSIDE that handler — one row, activate/ok or activate/unverified, on a boot carrying an fx.bootnonce= — through the SAME grammar and header (selfRecord, fx-init activate.zig:898/:1769/:1755; the writer itself, operator_journal.zig:235).  action = the ctrl arm that wrote it, arg = the operator's operand VERBATIM, outcome = ok | failed:<rc> | refused | refused-config | dhake-failed | unverified.  The journal records the GENERATION PLANE ONLY — its header names what it does NOT record (the reads, file transfers, the shell, per-service commands, probe) and what it cannot record AND cannot DETECT: the paths that bypass PID1's handler (host-side `fxstore rollback`, `rollback --hard`, a hand-edited CURRENT).  DERIVED — the RETAINED FALLBACK, for a store with NO .operator and for exactly those bypass paths: two signatures. (restore) version r whose genhash matches a version TWO-OR-MORE back (a duplicate of only the IMMEDIATELY-PRECEDING generation is fx-activate's own publish-of-live — MEASURED: every activation after the first leaves that benign pair — or gc's publish-first, and is NOT this class) and no .recovery row publishes r — the ctrl rollback arm (init.zig:3853) and host `fxstore rollback` drive the SAME soft rollback and append NOTHING to .recovery; (current-repoint) CURRENT != newest. Both are DERIVED, never a verdict.  `reboot` IS ONE OF THE ACTIONS (fx-init's soft reboot): it moves NO generation (the to-version field is '-') and its arg is the requester's reason token, and its outcome is the SIX-TOKEN admission vocabulary ok | not-decided | boot-failed | shell-open | same-version-loop | exec-error — NOT the activation vocabulary, deliberately: none of those tokens matches this seat's activation-refusal predicate (failed:<rc> / refused / refused-config), so a REFUSED REBOOT is never emitted as an activation refusal while it IS emitted here as an operator intervention.  The row records the ADMISSION, not the execution: an admitted reboot whose execve failed is `exec-error`, and one that was admitted and never ran is visible only as the ABSENCE of a later .bootlog line under that nonce.",
+      "MEASURED — <store>/.operator rows: one line per intervention on the generation plane, written by PID1's control handler (fx-init ca9cb06) or, since the runtime-record closure, by fx-activate ITSELF for a publish it committed OUTSIDE that handler on a boot carrying an fx.bootnonce= (the file's own OPERATOR_HEADER, operator_journal.zig:122, IS the definition — ONE definition, imported by both writers): <epoch> <action> <arg> <outcome> <from-version|-> <to-version|-> <boot-nonce|none>, appended + fsync'd BEFORE the reply is flushed (operator_append: shutdown :3692, activate-failed :3801, unverified :3841, refused-config :3866, dhake-failed :3952, ok :3965, rollback unverified :3985, refused :3994, refused-config :4013, ok :4056).  SECOND WRITER (the runtime-record closure): fx-activate records the publish IT committed OUTSIDE that handler — one row, activate/ok or activate/unverified, on a boot carrying an fx.bootnonce= — through the SAME grammar and header (selfRecord, fx-init activate.zig:898/:1769/:1755; the writer itself, operator_journal.zig:235).  action = the ctrl arm that wrote it, arg = the operator's operand VERBATIM, outcome = ok | failed:<rc> | refused | refused-config | dhake-failed | unverified.  The journal records the GENERATION PLANE ONLY — its header names what it does NOT record (the reads, file transfers, the shell, per-service commands, probe) and what it cannot record AND cannot DETECT: the paths that bypass PID1's handler (host-side `fxstore rollback`, `rollback --hard`, a hand-edited CURRENT).  DERIVED — the RETAINED FALLBACK, for a store with NO .operator and for exactly those bypass paths: two signatures. (restore) version r whose genhash matches a version TWO-OR-MORE back (a duplicate of only the IMMEDIATELY-PRECEDING generation is fx-activate's own publish-of-live — MEASURED: every activation after the first leaves that benign pair — or gc's publish-first, and is NOT this class) and no .recovery row publishes r — the ctrl rollback arm (init.zig:3989) and host `fxstore rollback` drive the SAME soft rollback and append NOTHING to .recovery; (current-repoint) CURRENT != newest. Both are DERIVED, never a verdict.  `reboot` IS ONE OF THE ACTIONS (fx-init's soft reboot): it moves NO generation (the to-version field is '-') and its arg is the requester's reason token, and its outcome is the SIX-TOKEN admission vocabulary ok | not-decided | boot-failed | shell-open | same-version-loop | exec-error — NOT the activation vocabulary, deliberately: none of those tokens matches this seat's activation-refusal predicate (failed:<rc> / refused / refused-config), so a REFUSED REBOOT is never emitted as an activation refusal while it IS emitted here as an operator intervention.  The row records the ADMISSION, not the execution: an admitted reboot whose execve failed is `exec-error`, and one that was admitted and never ran is visible only as the ABSENCE of a later .bootlog line under that nonce.",
       "TWO DIFFERENT STATES, never conflated: (i) .operator PRESENT with zero rows = no generation-plane intervention in the retained journal — a MEASUREMENT, not a gap; (ii) .operator ABSENT = a store PREDATING ca9cb06 (or one never booted under it) — NOT 'none occurred' (see absence/.operator).  For (ii), and for the bypass paths the journal's own header lists as NOT-RECORDED-AND-NOT-DETECTABLE, the DERIVED signature is the fallback and it is a DISJUNCTION: an operator rollback OR a deliberate re-activation of an older config — either way content moved back without the automatic .recovery row — OR a removed .recovery row, which the AUDIT seat's previous-observation comparison, not this seat, is built to catch.  The derived signature is only a backward move or a stale CURRENT, and gc/renumber can destroy both.  A journal row does NOT suppress the derived row: it can EXPLAIN a backward move but cannot prove the journal saw every path that produced one." },
+    /* S3 re-measure: this row cited "DEFAULT_RUN :32", which is
+     * DEFAULT_STORE (DEFAULT_RUN is :33 — the retention table and the
+     * header say so twice).  The row is PRINTED, so the fix is a
+     * behaviour-visible byte change of a citation, nothing else. */
     { "activation-refusal",
-      "MEASURED — <store>/.operator rows whose outcome is a refusal (fx-init ca9cb06): failed:<rc> (the activate executor exited rc; nothing landed — init.zig:3665), refused-config (the generation DID land in the store but PID1 REFUSED it — the declared service set past its bound, or a configuration read_store_facts could not read: :3730 from the activate arm, :3877 from the rollback arm, the writer's own 'same durable record from the other direction'), refused (the STORE rejected a rollback target — :3858).  Recorded in the SAME journal and NOT this class: dhake-failed (:3816 — the generation DID land, the live-root reapply failed) and unverified (:3705 — the store could not be re-opened to confirm, i.e. AMBIGUOUS, which is not the same as refused).  The tmpfs runtime log that held these (rt_effect activate failed|dhake-failed, init.zig:3667/:3818, DEFAULT_RUN :32) still dies at every reboot and is NOT read by this seat.",
+      "MEASURED — <store>/.operator rows whose outcome is a refusal (fx-init ca9cb06): failed:<rc> (the activate executor exited rc; nothing landed — init.zig:3801), refused-config (the generation DID land in the store but PID1 REFUSED it — the declared service set past its bound, or a configuration read_store_facts could not read: :3866 from the activate arm, :4013 from the rollback arm, the writer's own 'same durable record from the other direction'), refused (the STORE rejected a rollback target — :3994).  Recorded in the SAME journal and NOT this class: dhake-failed (:3952 — the generation DID land, the live-root reapply failed) and unverified (:3841 — the store could not be re-opened to confirm, i.e. AMBIGUOUS, which is not the same as refused).  The tmpfs runtime log that held these (rt_effect activate failed|dhake-failed, init.zig:3803/:3954, DEFAULT_RUN :33) still dies at every reboot and is NOT read by this seat.",
       "no-row-with-a-refusal-outcome-in-the-retained-journal = no RECORDED refusal within the journal (a count of RECORDED refusals, never of attempts).  This absence-meaning WAS 'NOT-DURABLY-RECORDED' before ca9cb06 — a refused activation left NOTHING in the store (fx-activate refuses before touching it) and PID1's record of it lived in /run's tmpfs — and it is that again EXACTLY WHEN .operator IS ABSENT: a store predating the journal CANNOT answer this class, and the report says so via absence/.operator instead of printing a zero.  Bounds carried INTO the class: a REFUSAL row is written by PID1's control handler alone (a direct exec records only a publish that reached commit), so an fx-activate that refuses outside that handler is invisible; `unverified` rows are ambiguity, not refusals; and root in-guest can forge or truncate the file exactly as it can .bootlog — a row is CHECKABLE against the store's version/genhash history, not authoritative over it." },
     { "claim",
       "MEASURED — <store>.fx-claim-obs rows (the JUDGE SEAT's observation — fx-claim's format-1 record of the TRIPLE per generation: the claim that rode into the activation as the two extraEtc rows /etc/fx-claim.tsv + /etc/fx-claim.le, the VERDICT the frozen policy's evaluator reached, and the OUTCOME cross-check against the .operator row, content-joined): claim <genhash> version <N> verdict <cls> claim-sha <sha|-> op-from <v|-> (the observation's format header IS the definition — ONE writer).  The claim BYTES live in the retained generation dir (the claim-rows retention row); this seat reads the VERDICT record and recomputes nothing (bound/claim-check-is-a-lever)",
@@ -1319,7 +1341,7 @@ static const struct {
       "survives (disk)", "survives (append — one row per ctrl request whatever its outcome, plus one per direct-exec publish where the boot carries a nonce)",
       "survives (fxstore does not know the file; it outlives pruned versions AND keeps rows naming versions gc has since pruned — a row records the move the operator asked for, it is not a promise the version is still there)",
       "DECIDED (user, 2026-10-12): UNBOUNDED, and NOTHING MAY BE DROPPED — one row per control-channel intervention and fx-audit's append accounting + its previous-observation comparison need the record INTACT (a rotation reads as a REWRITE of a previously observed record and fires on a HEALTHY machine).  Growth is linear in interventions that really happened, whose rate is the OPERATOR's own (§1a gap 4 is now this DECISION, not a gap).  NOT tamper-proof: PID1's control handler owns it and fx-activate adds one row for a publish committed outside that handler on a boot carrying a nonce (its TWO writers, in the file's own header), but root in-guest can forge or truncate it exactly as it can .bootlog" },
-    { "runtime datalog rt_effect/rt_control", "/run/fx/log.db (fx-init init.zig:33 DEFAULT_RUN; path built :4856, opened :4857 by fx_log_open) — read by NOBODY here",
+    { "runtime datalog rt_effect/rt_control", "/run/fx/log.db (fx-init init.zig:33 DEFAULT_RUN; path built :4663, opened :4664 by fx_log_open) — read by NOBODY here",
       "DOES NOT SURVIVE (post-pivot '/' is tmpfs, init.zig M4 pivot — the log dies at every reboot)",
       "n/a (dies with the boot that wrote it)",
       "n/a",
@@ -1375,9 +1397,9 @@ static const struct { const char *id, *text; } BOUNDS[] = {
     { "progress-identity-is-content-not-behaviour",
       "the identity is the store's genhash, which CONTENT-ADDRESSES the config's PARSED fields plus the closure's store paths (fx-init zig/src/activate.zig:774-780, :1235) — it is NOT a behaviour hash.  Two configs that behave identically but move one parsed field produce DIFFERENT identities, and this seat calls the second PROGRESS; a comment-only edit does NOT move the key (activate.zig:1477-1490 keeps the genhash), which is the one thing it is trustworthy about and the reason an idempotent re-activation reads as a REPEAT rather than as work" },
     { "progress-verdict-join-mirrors-the-select-seat",
-      "the per-version verdict (LAST non-`shutdown` .bootlog status in FILE ORDER, an UNRESOLVED `in-progress` tail counting as a failure) MIRRORS fx-select's viability term (tools/fx-select.c:755-768, the via_t last-non-shutdown rule) rather than sharing it — the same named risk the reach class carries as bound/reach-attribution-mirrors-the-seat — and the mirror is NOT EXACT, which is said here instead of being papered over: fx-select separates VIA_UNKNOWN / VIA_NEVER / VIA_TORN / VIA_DAMAGED and prefers the false stop on a line that is not the writer's field count, while this seat reads .bootlog through the report's ONE pre-existing parser (it REFUSES, exit 2, a line it cannot parse to three fields, but takes the status token of a parseable over-long line).  A drift between the two seats makes one call a version VIABLE while the other calls its content FAILED, and fx-init's guard_stats_for (zig/src/init.zig:1218) is the THIRD independent computation of the same quantity — which is why a divergence is a finding about the seats rather than a matter of taste" },
+      "the per-version verdict (LAST non-`shutdown` .bootlog status in FILE ORDER, an UNRESOLVED `in-progress` tail counting as a failure) MIRRORS fx-select's viability term (tools/fx-select.c:755-768, the via_t last-non-shutdown rule) rather than sharing it — the same named risk the reach class carries as bound/reach-attribution-mirrors-the-seat — and the mirror is NOT EXACT, which is said here instead of being papered over: fx-select separates VIA_UNKNOWN / VIA_NEVER / VIA_TORN / VIA_DAMAGED and prefers the false stop on a line that is not the writer's field count, while this seat reads .bootlog through the report's ONE pre-existing parser (it REFUSES, exit 2, a line it cannot parse to three fields, but takes the status token of a parseable over-long line).  A drift between the two seats makes one call a version VIABLE while the other calls its content FAILED, and fx-init's guard_stats_for (zig/src/init.zig:1246) is the THIRD independent computation of the same quantity — which is why a divergence is a finding about the seats rather than a matter of taste" },
     { "progress-is-not-a-policy",
-      "this class is a MEASUREMENT: it does not gate, deny, refuse, reorder or stop anything, and the report's own decision, candidate table and exit code are unchanged by a ratcheting store (the S4 precedent, egress-reach-widened/sandbox-reach-widened, proved that a loud row with a deliberately OPEN consequence is the house form).  Its recurrence threshold IS fx-init's RECOVERY_CONTENT_FAIL_MAX (zig/src/init.zig:1050, value 2) via guard_stats_for (:1218) — REUSED, NOT CHOSEN — because the boot guardrail ALREADY ACTS on exactly that count: a second actuator for one quantity would be a second policy with no owner, and the two could disagree silently.  The seat that GRADES must not be the seat that ACTS, and an instrument that can act has to be right, whereas a measurement may be incomplete provided it says so" },
+      "this class is a MEASUREMENT: it does not gate, deny, refuse, reorder or stop anything, and the report's own decision, candidate table and exit code are unchanged by a ratcheting store (the S4 precedent, egress-reach-widened/sandbox-reach-widened, proved that a loud row with a deliberately OPEN consequence is the house form).  Its recurrence threshold IS fx-init's RECOVERY_CONTENT_FAIL_MAX (zig/src/init.zig:1078, value 2) via guard_stats_for (:1246) — REUSED, NOT CHOSEN — because the boot guardrail ALREADY ACTS on exactly that count: a second actuator for one quantity would be a second policy with no owner, and the two could disagree silently.  The seat that GRADES must not be the seat that ACTS, and an instrument that can act has to be right, whereas a measurement may be incomplete provided it says so" },
     { "progress-cannot-see-a-changing-content-loop",
       "the recurrence finding fires on ONE identity failing again, and a loop that commits ALWAYS-NEW content and ALWAYS fails never reaches it: every identity fails exactly once, no count ever reaches the threshold, and the seat reports FULL PROGRESS over a wall of failures.  The boot guardrail misses that shape by construction too (its fail_n is per-genhash, so a fresh content always reads as transient).  The two numbers that describe it print beside the finding — `identities-never-ok` and `longest-failed-streak` — and NEITHER is a finding, deliberately: an honest debugging session (three configs tried, three failures, then the fix) produces exactly this shape, and a check that fires on the healthy path trains its reader to ignore it" },
     { "progress-blind-to-the-self-report",
@@ -3021,7 +3043,7 @@ static ident_t g_idents[MAX_IDENTS];
 static unsigned g_nidents;
 
 /* THE VERDICT JOIN: per version, the LAST non-`shutdown` .bootlog status in
- * FILE ORDER.  MEASURED rule, fx-init's own (init.zig:1087-1099, bootver_apply): raw entry
+ * FILE ORDER.  MEASURED rule, fx-init's own (init.zig:1115-1127, bootver_apply): raw entry
  * counting false-positives — an `in-progress` later RESOLVED to `ok` must read
  * ok — while an UNRESOLVED `in-progress` tail (a crash mid-boot) is exactly the
  * evidence the recovery trigger reads as a stale failure.  `shutdown` is not a
@@ -3034,11 +3056,11 @@ static const char *verdict_of(unsigned v) {
 }
 
 /* REUSED, NOT CHOSEN: the recurrence threshold IS fx-init's
- * RECOVERY_CONTENT_FAIL_MAX (fixpoint-linux/fx-init zig/src/init.zig:1050,
+ * RECOVERY_CONTENT_FAIL_MAX (fixpoint-linux/fx-init zig/src/init.zig:1078,
  * value 2 — "2, not 1: a single failure must still recover exactly as today;
  * only the REPEAT is evidence of a persistent fault rather than a transient
  * one").  The boot guardrail already ACTS on exactly this count through
- * guard_stats_for (:1218: fail_n = distinct published versions carrying the
+ * guard_stats_for (:1246: fail_n = distinct published versions carrying the
  * genhash whose LAST non-shutdown .bootlog status is failed or in-progress),
  * so this seat and the boot path compute the SAME quantity under the SAME
  * threshold from the SAME records, INDEPENDENTLY — a divergence between them
@@ -3128,7 +3150,7 @@ static void emit_progress(void) {
                "recurrence in the RECORD is not a live oscillation); `failed` here is "
                "failed(%u)+in-progress(%u) last verdicts, i.e. EXACTLY fx-init's "
                "guard_stats_for fail_n under RECOVERY_CONTENT_FAIL_MAX=2 "
-               "(zig/src/init.zig:1050,:1218) — REUSED, NOT CHOSEN; the boot guardrail ACTS on "
+               "(zig/src/init.zig:1078,:1246) — REUSED, NOT CHOSEN; the boot guardrail ACTS on "
                "it and this seat only REPORTS it (bound/progress-is-not-a-policy).  It cannot "
                "know INTENT: this may be a deliberate re-application of the same configuration "
                "after an unrelated repair\n",
@@ -3498,7 +3520,7 @@ int main(int argc, char **argv) {
         printf("absence\t.recovery\tno-automatic-roll-forward-recorded\tABSENT\n");
     /* .operator's absence is its OWN state, not "no interventions": the
      * writer's header is ensured on every store at boot (operator_ensure,
-     * init.zig:964), so a file that is not there is a store that never
+     * init.zig:983), so a file that is not there is a store that never
      * booted under ca9cb06 — the derived fallback's domain. */
     if (!g_op_present)
         printf("absence\t.operator\tno-operator-journal-this-store-predates-fx-init-ca9cb06-or-never-booted-under-it\tABSENT\n");
@@ -3880,7 +3902,7 @@ int main(int argc, char **argv) {
             h("PROGRESS verdict join: the LAST non-`shutdown` .bootlog status per version, in "
               "FILE ORDER (an in-progress later RESOLVED to ok reads ok; an UNRESOLVED "
               "in-progress tail counts as failed — the same evidence the recovery trigger "
-              "reads as stale; fx-init init.zig:1087-1099, bootver_apply) — %u ok, %u failed, %u in-progress, "
+              "reads as stale; fx-init init.zig:1115-1127, bootver_apply) — %u ok, %u failed, %u in-progress, "
               "%u not-judged, %u status word(s) outside the writer's set.", v_ok, v_fa, v_ip,
               v_nj, v_ot);
         h("PROGRESS cannot see the OTHER loop shape: ALWAYS-NEW content, always failing — every "

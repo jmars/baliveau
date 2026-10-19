@@ -448,7 +448,46 @@ pin_blob() { # pin_blob REPO BLOB FILE LABEL
 # rationale comment, 21 lines above the refused-config append (:3877) —
 # same text it always pointed at, flagged here rather than re-aimed by
 # guesswork.
-pin_blob "$INIT" 201cf9ed6a5303e52e69dc9d40d5f7cf24d558c5 zig/src/init.zig "fx-init"
+# REBOOT S3 RE-MEASURE (fx-init bb0642f "reboot S3: PID1 can reboot itself",
+# committed; working tree == HEAD, blob 201cf9ed -> bf8fa631, 5609 -> 5978
+# lines): PID1 gained the `reboot <reason>` ctrl arm, do_soft_reboot (execve
+# /proc/self/exe), the re-entry guards, and do_shutdown was FACTORED into
+# stop_services()/close_boot_paths()/teardown() — the shutdown record is
+# appended BETWEEN the phases by do_shutdown, and open_run_state() now owns
+# the .log.db build/open that main() used to inline.  The numbering moved
+# NON-UNIFORMLY, so NO arithmetic shift was applied: every cite in
+# tools/fx-report.c was re-checked against the file's CONTENT at its new line
+# (an old->new map from the two blobs, each remapped cite verified to carry
+# IDENTICAL text; the TWO whose construct changed shape re-aimed at what is
+# there NOW: the .log.db path build/open :4856/:4857 -> :4663/:4664 INSIDE
+# open_run_state(), and the shutdown-path arm refs).
+# ELEVEN CITATIONS IN tools/fx-report.c WERE WRONG, NOT SHIFTED — all one
+# class, the +21-line insertion (fx-init's DISK_DEVS probe, between old :2195
+# and old :2320) that the SLICE 2 pass applied only to the FIRST ref of each
+# group, so a continuation member kept the pre-insertion number and two later
+# passes carried it forward: (i) the ctrl-arms list in the header (:3795/
+# :3808/:3828/:3837/:3856/:3899) named two RE-ARM comments, the ok arm's
+# reply fprintf, a loss-window comment and two more comments — the ten
+# appends it MEANT are :3556/:3665/:3705/:3730/:3816/:3829/:3849/:3858/
+# :3877/:3920, which the taxonomy's `operator-intervention` row below named
+# correctly all along (the in-file control that proves which list was stale);
+# (ii) "the shared activate|rollback ctrl arm, :3558" named the shutdown arm's
+# sigpipe write — the rt_control call the sentence is about is :3579; (iii)
+# the refusal comment's "refused-config ... the rollback arm too, :3856"
+# named the rollback REFUSED branch's rationale comment, not the
+# refused-config append (:3877), and its "two message forms at :3715/:3721"
+# and "the rollback arm's at :3864/:3871" named four COMMENT lines, not the
+# four snfmtRaw calls (:3736/:3742, :3885/:3892); (iv) the taxonomy's
+# `activation-refusal` row cited "DEFAULT_RUN :32", which is DEFAULT_STORE —
+# DEFAULT_RUN is :33 (the same file says so twice elsewhere).  All eleven
+# re-aimed at the record they name and marked at their sites.
+# THE PIN-REPORT FIXTURE (tests/fixtures/claims/report-claims-before.txt) was
+# therefore re-recorded on exactly TWO printed lines, and the diff was READ
+# before it was applied: `taxonomy activation-refusal` and `retention runtime
+# datalog rt_effect/rt_control`, ten and two citation tokens respectively,
+# nothing else — same byte length, no other line moved.  That is the pin's
+# domain changing in the one way a citation repair is allowed to change it.
+pin_blob "$INIT" bf8fa631e442b0c4468fb8946b0cf3deb8d05e57 zig/src/init.zig "fx-init"
 # THE REBOOT CLASS's OWN pin (S4): the class cites fx-init's
 # operator_journal.zig BY LINE — the six-token vocabulary and its meanings
 # (:165-215, the writer's header, which IS the definition), the reboot ctrl
@@ -548,7 +587,7 @@ VB=$(act "$WORK/cfgB.dhall")
 [ "$VB" -gt "$VA" ] || fail "expected VB ($VB) > VA ($VA)"
 
 # the operator-shaped move: fxstore's SOFT rollback (the same call fx-init's
-# automatic roll-forward drives in-guest, init.zig:1770) republishes VA's
+# automatic roll-forward drives in-guest, init.zig:1798) republishes VA's
 # content as a NEW version — the ONLY durable difference between the
 # automatic and the operator path is the .recovery row, and the gate arms
 # exactly that split below.
@@ -776,8 +815,8 @@ grep -q "^progress-finding${TAB}activity-without-progress-recurrence${TAB}genhas
     || fail "PROGRESS(F3): no recurrence finding for $GHB at 2 failed verdicts: $(grep -m1 '^progress-finding' "$WORK/out-p3")"
 grep -q "^progress-finding.*RECOVERY_CONTENT_FAIL_MAX=2" "$WORK/out-p3" \
     || fail "PROGRESS(F3): the threshold is not cited BY NAME"
-grep -q "^progress-finding.*zig/src/init.zig:1050" "$WORK/out-p3" \
-    || fail "PROGRESS(F3): the threshold is not cited BY LOCATION (fx-init zig/src/init.zig:1050)"
+grep -q "^progress-finding.*zig/src/init.zig:1078" "$WORK/out-p3" \
+    || fail "PROGRESS(F3): the threshold is not cited BY LOCATION (fx-init zig/src/init.zig:1078)"
 grep -q "^progress-finding.*bound${TAB}activity-without-progress-cannot-see-intent" "$WORK/out-p3" \
     || fail "PROGRESS(F3): the finding row does not carry its bound INLINE"
 grep -q "^progress-finding.*cannot know INTENT" "$WORK/out-p3" \
@@ -786,7 +825,7 @@ grep -q "^progress-finding.*THE SAME FAULT RETURNING, not proof of a live loop" 
     || fail "PROGRESS(F3): the row must not call a recurrence in the record a live loop"
 grep -q "^progress-content${TAB}$GHA${TAB}" "$WORK/out-p3" \
     || fail "PROGRESS(F3): the finding suppressed the READING (the other identity's row is gone)"
-echo "test_fx_report: PROGRESS(F3) the same content failed twice is a FINDING naming RECOVERY_CONTENT_FAIL_MAX (zig/src/init.zig:1050) and its bound inline"
+echo "test_fx_report: PROGRESS(F3) the same content failed twice is a FINDING naming RECOVERY_CONTENT_FAIL_MAX (zig/src/init.zig:1078) and its bound inline"
 
 # ── AXIS 2: THE LOOP THE RECURRENCE FINDING CANNOT SEE — always-NEW content,
 # always failing.  Two more configs, each activated once and judged failed, so

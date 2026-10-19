@@ -128,7 +128,7 @@
 # inspects with the verbs that DO work in-guest: fx_ls + fx_read (native) and,
 # for the activation, fx_activate — which now execs the RUNNING ROOT's
 # /bin/fx-activate with the SAME argv fx-init's own activate handler uses
-# (init.zig:3617-3618).  See the lane's report: that is an in-repo (fx-harness)
+# (init.zig:3753-3754).  See the lane's report: that is an in-repo (fx-harness)
 # change, no other repo is touched.
 #
 # Env: QEMU_BOOT_TIMEOUT (default 120)  QEMU_KEEP=1  B2_MARKER
@@ -224,8 +224,17 @@ pin_init_blob() { # pin_init_blob BLOB FILE CITING...
 # from the two blobs was applied mechanically and the cite was verified to
 # carry IDENTICAL text at its new line (the activate handler's argv+exec of
 # /bin/fx-activate is unchanged code; only the number moved).
-pin_init_blob 201cf9ed6a5303e52e69dc9d40d5f7cf24d558c5 zig/src/init.zig "tests/qemu-agent-b2.sh"
-echo "qemu-agent-b2: CITATION PIN: init.zig measured for this gate is fx-init 43d3221 + the disk/no-busybox work (blob 201cf9ed); the cited line is :3617-3618"
+# REBOOT S3 RE-MEASURE (fx-init bb0642f "reboot S3: PID1 can reboot itself",
+# committed; working tree == HEAD, blob 201cf9ed -> bf8fa631, 5609 -> 5978
+# lines): the ctrl handler gained the `reboot <reason>` arm AHEAD of the
+# activate|rollback arm (+76 lines at old :3546) and do_shutdown was factored
+# into stop_services()/close_boot_paths().  The numbering moved
+# NON-UNIFORMLY, so NO arithmetic shift was applied: this gate's cited line
+# was re-checked against the file's CONTENT at its new line and carries
+# IDENTICAL text — the activate handler's argv[] build + exec of
+# /bin/fx-activate, :3617-3618 -> :3753-3754.
+pin_init_blob bf8fa631e442b0c4468fb8946b0cf3deb8d05e57 zig/src/init.zig "tests/qemu-agent-b2.sh"
+echo "qemu-agent-b2: CITATION PIN: init.zig measured for this gate is fx-init bb0642f (reboot S3), blob bf8fa631; the cited line is :3753-3754"
 
 PIN="$INIT/scripts/kernel-pin.txt"
 [ -f "$PIN" ] || skip "scripts/kernel-pin.txt missing"

@@ -31,7 +31,10 @@
  *   the OUTCOME   the .operator terminal rows for the publish(es) that
  *                 landed this generation — ALL of them, activate AND
  *                 rollback (the writer's ok/refused-config rollback rows
- *                 name the target version they landed; init.zig:3877/3920):
+ *                 name the target version they landed; init.zig:4013/4056
+ *                 — the refs were re-measured at the S3 re-measure; note
+ *                 that the SECOND member carries no colon of its own, the
+ *                 form that let two earlier passes remap half a group):
  *                 a genhash can land at more than one version — + the
  *                 generation facts (the store's own account of what the
  *                 activation did).
@@ -79,14 +82,14 @@
  *     generation's claim was NEVER judged: a seat never called is
  *     indistinguishable from an absent seat).  The generation is a judged
  *     one when ANY terminal row landing this genhash — an `activate` row,
- *     or the writer's terminal `rollback` row (init.zig:3920 appends it
+ *     or the writer's terminal `rollback` row (init.zig:4056 appends it
  *     when the rollback LANDED; a `fxctl rollback` publishes exactly as
  *     an activate does; the round-3 filter dropped those rows
  *     and a rollback-published generation was never judged, measured
  *     round-4) — has outcome `ok`; only when rows land it and NONE is ok
  *     is it SKIPPED — stated, never judged (the plan's risk-6 class:
  *     `dhake-failed` and `refused-config` LANDED their version —
- *     init.zig:3730/:3816/:3877, the config was refused after the publish
+ *     init.zig:3866/:3952/:4013, the config was refused after the publish
  *     committed — while `refused`/`unverified`/`failed:<rc>` name no
  *     landed version; no judgment either way).  The
  *     from-version cross-check itself binds the FIRST landing's ACTIVATE
@@ -112,7 +115,7 @@
  *     enumerates landing moves that write NO row there and are NOT
  *     DETECTABLE from it: the AUTOMATIC .recovery roll-forward (a flapping
  *     machine rolls FORWARD to the newest ok-booted version via the SAME
- *     soft rollback — init.zig:1770 — re-landing the generation with no
+ *     soft rollback — init.zig:1798 — re-landing the generation with no
  *     .operator row; the row lands in .recovery, which the AUDIT reads and
  *     which means AUTOMATIC — so this seat deliberately does NOT read it),
  *     a host-side `fxstore rollback`, `fxstore rollback --hard`, and a
@@ -429,7 +432,7 @@ static const char *genhash_at_version(unsigned v) {
  * first appearance's row (the round-2 binding, which skipped a re-landed-ok
  * generation forever; measured, round-2 review).  Round 4: the row's ACTION
  * is checked by the caller (activate, or the writer's terminal rollback
- * rows — ok/refused-config name the landed target, init.zig:3877/3920).
+ * rows — ok/refused-config name the landed target, init.zig:4013/4056).
  * A '-' or unparsable to-version (the writer's `refused`/`unverified`/
  * `failed:<rc>` rows, and every `shutdown` row) lands nothing. */
 static int row_lands(const char *tov, const gen_t *G) {
@@ -878,7 +881,7 @@ int main(int argc, char **argv) {
            "residual; the "
            "from-version cross-check binds the FIRST landing's ACTIVATE row — the claim's "
            "authoring context (plan risk 6 for the skipped class)\n");
-    printf("bound\tunjournaled-landings\tthe OUTCOME gate reads only <store>/.operator (JOURNALED landings); the writer's own header (operator_journal.zig:174-183) enumerates landing moves that write NO row there and are NOT DETECTABLE from it, NOT read BY DESIGN (DECISION B, round-5): the AUTOMATIC .recovery roll-forward (a flapping machine rolls FORWARD to the newest ok-booted version via the SAME soft rollback — init.zig:1770 — the row lands in .recovery ONLY, which the AUDIT reads and which means AUTOMATIC), a host-side `fxstore rollback`, `fxstore rollback --hard`, and a hand-edited store CURRENT.  DIRECTION: a claim generation first landed with a non-ok outcome and later RE-LANDED by one of these stays verdict=skipped while live and ok-booted — its claim is never judged, silently.  Stated, never read: .recovery's AUTOMATIC meaning is the audit's\n");
+    printf("bound\tunjournaled-landings\tthe OUTCOME gate reads only <store>/.operator (JOURNALED landings); the writer's own header (operator_journal.zig:174-183) enumerates landing moves that write NO row there and are NOT DETECTABLE from it, NOT read BY DESIGN (DECISION B, round-5): the AUTOMATIC .recovery roll-forward (a flapping machine rolls FORWARD to the newest ok-booted version via the SAME soft rollback — init.zig:1798 — the row lands in .recovery ONLY, which the AUDIT reads and which means AUTOMATIC), a host-side `fxstore rollback`, `fxstore rollback --hard`, and a hand-edited store CURRENT.  DIRECTION: a claim generation first landed with a non-ok outcome and later RE-LANDED by one of these stays verdict=skipped while live and ok-booted — its claim is never judged, silently.  Stated, never read: .recovery's AUTOMATIC meaning is the audit's\n");
 
     /* ── read the store (fxstore's own surface; never reimplemented) ─────── */
     {
@@ -1036,7 +1039,7 @@ int main(int argc, char **argv) {
          * ok (the operator's natural retry) answered verdict=skipped
          * FOREVER, and the live, ok-published generation's claim was never
          * judged.  ROUND 4 widened WHICH ROWS the loop reads: the writer's
-         * terminal ROLLBACK rows land too — init.zig:3920 appends the ok
+         * terminal ROLLBACK rows land too — init.zig:4056 appends the ok
          * rollback row when the rollback LANDED, its to-version the
          * CURRENT after the wrap: the RESULT version the SOFT rollback
          * publishes (store.zig:1240 — "two new versions, CURRENT advances
@@ -1047,7 +1050,7 @@ int main(int argc, char **argv) {
          * activate lands; the round-3 filter dropped those rows, and a
          * generation whose live landing was a rollback was skipped forever
          * (measured, round-4 review).  `refused-config` rollback rows name
-         * the target too (init.zig:3877 — the rollback DID land; the
+         * the target too (init.zig:4013 — the rollback DID land; the
          * config was refused after); `refused`/`unverified` rollback rows
          * and every `shutdown` row carry to='-' and land nothing
          * (row_lands).  The FROM-VERSION cross-check (BINDING 3) binds the
@@ -1161,7 +1164,7 @@ int main(int argc, char **argv) {
                  * rows name NO ok outcome is SKIPPED — stated, never judged
                  * (the documented class; the note above names the outcome;
                  * plan risk 6: `dhake-failed`/`refused-config` LANDED their
-                 * version (init.zig:3730/:3816/:3877), `refused`/
+                 * version (init.zig:3866/:3952/:4013), `refused`/
                  * `unverified`/`failed:<rc>` name none — there is no
                  * judgment to run either way) */
                 snprintf(G->cls, sizeof G->cls, "skipped");

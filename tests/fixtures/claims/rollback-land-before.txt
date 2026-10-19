@@ -3,7 +3,7 @@ rollback-land-before: the rollback-recovery fixture:
 rollback-land-before:   the claim's genhash:            03aa0b0a9d49f7e9f26b96a89315b14bafabc622eb6394f01a292b9ee05ed5b1
 rollback-land-before:   its FIRST landing (version):    5 — activate, dhake-failed, from 3
 rollback-land-before:   the mid generation (version):   7
-rollback-land-before:   the ok ROLLBACK row (the writer's shape, init.zig:3920):
+rollback-land-before:   the ok ROLLBACK row (the writer's shape, init.zig:4056):
 rollback-land-before:     rollback 5 ok 7 5 gatenonce
 rollback-land-before: the pre-fix filter dropped every non-activate row, so the
 rollback-land-before: only rows naming the claim genhash carried dhake-failed —
