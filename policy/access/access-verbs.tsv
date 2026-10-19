@@ -46,13 +46,17 @@
 # unclassified name through would be the silent allow-all this table exists to
 # prevent, one call at a time.
 #
-# WHAT THIS SEAT IS NOT, so its reach is not read wider than it is:
-#  - It does NOT move enabled_tools/mcp_servers out of the agent config.  The
-#    GUEST's own allowlist is STILL IN FORCE and STILL LIVES IN THE
-#    AGENT-WRITABLE CONFIG, so this seat is ADDITIVE to it, not a replacement.
-#    Removing that field from the guest schema is the NEXT slice; until then the
-#    effective vocabulary is (this table) INTERSECT (the lane config's list),
-#    and only the table half is host-owned.
+# WHAT THIS SEAT IS NOW -- and this paragraph was REWRITTEN when it stopped
+# being true, because a header that describes a previous slice is the defect
+# this project keeps finding in its own instruments:
+#  - THE GUEST CONFIG CAN NO LONGER EXPRESS THIS.  enabled_tools, disabled_tools,
+#    mcp_servers, providers[] and models[] were REMOVED from the guest schema, and
+#    agent_main builds an EMPTY ToolPolicy: the guest keeps only the SHAPE (a
+#    "(tool disabled)" path with nothing to disable).  So THIS TABLE IS THE TOOL
+#    VOCABULARY AUTHORITY -- not an addition to some other list, and there is no
+#    longer a config list to intersect with.  A config that still carries a moved
+#    field is REFUSED AT LOAD, BY NAME, naming the file that now owns it; silence
+#    would leave an agent running allow-all with NOTHING at rest recording it.
 #  - It judges the CALL, not the WORLD: an agent acting outside a tool call is
 #    untouched (a root agent in the guest can still run what it can run).
 #  - It says NOTHING about the PATHS a permitted call may touch.  That is the

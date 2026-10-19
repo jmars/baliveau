@@ -231,6 +231,22 @@ $(BIN_BLIND): src/agent/agent_main_main.c $(ALL_SRC) $(DATALOG_DIR)/zig-out/lib/
 	    -L$(DATALOG_DIR)/zig-out/lib \
 	    -Wl,-rpath,$(abspath $(DATALOG_DIR)/zig-out/lib) -ldatalog
 
+# THE PRE-FIX ARTIFACT of the ACL split's SCHEMA slice (S3, src/agent/config.c):
+# the SAME sources with the moved-field MIGRATION REFUSAL compiled out
+# (-DFX_ACCEPT_MOVED_ACCESS).  It is not a feature and not a runtime switch: it
+# exists so the gate can show that a lane config still carrying enabled_tools is
+# ACCEPTED-AND-SILENTLY-IGNORED when the refusal is gone — i.e. that S3's arm
+# goes RED under the blind, instead of passing on a config that was never loaded.
+# tests/test_hostgate.sh's S3 phases run the SAME fixture through both builds.
+BIN_ACCEPTMOVED := build/fx-agent-acceptmoved
+acceptmoved: $(BIN_ACCEPTMOVED)
+
+$(BIN_ACCEPTMOVED): src/agent/agent_main_main.c $(ALL_SRC) $(DATALOG_DIR)/zig-out/lib/libdatalog.so | $(DATALOG_SHIM)
+	@mkdir -p build
+	$(CC) $(CFLAGS) -DFX_ACCEPT_MOVED_ACCESS $(LDFLAGS) -o $@ src/agent/agent_main_main.c $(ALL_SRC) \
+	    -L$(DATALOG_DIR)/zig-out/lib \
+	    -Wl,-rpath,$(abspath $(DATALOG_DIR)/zig-out/lib) -ldatalog
+
 # The first oracle: Osier CODE SHARE of the ACTIVE GENERATION (host tool —
 # native only, no musl variant; it shells fxstore's read-only `facts` and
 # needs the sibling fxstore checkout built with it).
@@ -514,7 +530,7 @@ test-hostgate: $(BIN_HOSTGATE) $(BIN_HOSTGATE_MUTANT) $(BIN_HOSTGATE_UNBOUND) \
                $(BIN_HOSTGATE_NOSTAGE3) $(BIN_HOSTGATE_NOSTAGE3_SIGSYS) \
                $(BIN_HOSTGATE_NOSANDBOX) $(BIN_HOST_CAT_SIBLING) \
                $(BIN_HOSTGATE_CATSIBLING) $(BIN_HOSTGATE_ACCESSBLIND) \
-               $(BIN_HOSTGATE_NOACCESS) \
+               $(BIN_HOSTGATE_NOACCESS) $(BIN_ACCEPTMOVED) \
                $(PALISADE_STAGE3)
 	bash tests/test_hostgate.sh
 
@@ -1262,4 +1278,4 @@ test: all blind
 	bash tests/test_outcome.sh
 	bash tests/test_sameboot.sh
 
-.PHONY: all musl blind clean test
+.PHONY: all musl blind acceptmoved clean test

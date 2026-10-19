@@ -18,4 +18,4 @@
 # authors).  The pin is what makes that safe to say: the bytes that are
 # consulted per call are the bytes that were reviewed, verified once at startup
 # before any verdict is believed.
-access-verbs.tsv	5652d729c6035e0e19d5096240ad3d7c29a5f13268f416eb516546db18213be9
+access-verbs.tsv	566d34a7979d0611dd7a304b4f703134ceb4aca27634ea9747d27c6d0728aaf2

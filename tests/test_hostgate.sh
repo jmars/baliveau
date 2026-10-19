@@ -213,6 +213,10 @@ GATEEXTRAUNCL="$ROOT/build/fx-hostgate-extrauncl"
 # has to be this direction: the failure is an unclassified verb silently
 # allowing, and an over-denying mutant would prove nothing about it.
 GATEACCESSBLIND="$ROOT/build/fx-hostgate-accessblind"
+# S3 (ACL SPLIT — THE SCHEMA): the moved-field REFUSAL compiled out
+# (-DFX_ACCEPT_MOVED_ACCESS) — the accepting blind, i.e. the SILENT-IGNORE
+# direction the migration pass exists to prevent.  Same sources, one macro.
+BIN_ACCEPTMOVED="$ROOT/build/fx-agent-acceptmoved"
 # S2 (ACL SPLIT — THE ENFORCEMENT): THE PRE-FIX CONTROL — the access AUTHOR
 # compiled out of call_judge while the table still loads, pins and passes the
 # totality check.  DIRECTION: FAIL-OPEN (a verb the table DENIES crosses and
@@ -260,6 +264,7 @@ POLICY_FIELDS="verdict allowed author allow_scope refusal_name reason denial_tex
 fail() { echo "FAIL $*" >&2; exit 1; }
 
 [ -x "$BIN" ] || fail "phase 0: $BIN missing — run make first"
+[ -x "$BIN_ACCEPTMOVED" ] || fail "phase 0: $BIN_ACCEPTMOVED missing — run make test-hostgate (make alone does not build it)"
 [ -x "$GATE" ] || fail "phase 0: $GATE missing — run make first"
 [ -x "$GATEMUT" ] || fail "phase 0: $GATEMUT missing — run make first"
 [ -x "$GATEUNB" ] || fail "phase 0: $GATEUNB missing — run make first"
@@ -1952,6 +1957,13 @@ DHALL
 # the ALLOW-ALL property is asserted, not assumed: no tool list anywhere in
 # this lane's config (a config that DID list fx_host_denied would refuse the
 # call in the guest and the arm would prove nothing about the collision).
+# RE-READ AFTER THE ACL SPLIT (S3): the token check alone is now VACUOUS — the
+# schema has no such field, so no lane can declare one and the grep could never
+# fail.  It is kept because it states the fixture's shape, and the REAL
+# assertion is the one below it: the run reaches the marker and the guest
+# DISPATCHES the colliding name, i.e. the lane is allow-all AT RUNTIME.  A
+# config that still carried a moved field would instead be REFUSED by name
+# (config_check_moved, phase 122) and never get this far.
 grep -q 'enabled_tools\|disabled_tools' "$TMP/cfg-collide/config.dhall" \
     && fail "phase 28: the lane declares a tool list — it is not the ALLOW-ALL lane this arm is about"
 "$GATENONAME" --upstream "$TMP/upstream2.sse" --slave-file "$TMP/slave28" \
@@ -6924,7 +6936,7 @@ bin_id() { sha256sum "$1" | cut -d' ' -f1; }
 # the shipped table's sha, RESTATED here (the catalogue-pin discipline): an
 # edit to the table without a re-pin now fails in TWO places — the proxy
 # refuses to start, and this constant.
-ACCESS_SHA_EXPECTED="5652d729c6035e0e19d5096240ad3d7c29a5f13268f416eb516546db18213be9"
+ACCESS_SHA_EXPECTED="566d34a7979d0611dd7a304b4f703134ceb4aca27634ea9747d27c6d0728aaf2"
 [ "$GATE" -nt "$ROOT/tools/fx-hostgate.c" ] \
     || fail "phase 114: $GATE is OLDER than tools/fx-hostgate.c — make alone does not build the gate binaries, so the binary this arm ran is STALE"
 got=$(sha256sum "$ROOT/policy/access/access-verbs.tsv" | cut -d' ' -f1)
@@ -7511,6 +7523,254 @@ else
     n=$(pyq "$ACC_LOG" "len([r for r in rows if r.get('refusal_name')=='tool-not-allowed'])")
     [ "$n" -eq 0 ] || fail "phase 121: the pre-S2 proxy wrote an access verdict — it has no access author"
     echo "   OK asymmetry: the SAME fixture crosses on the pinned pre-S2 source (${PRE_S2_REV:0:12}, source sha256 ${PRE_S2_SRC_SHA:0:12}.., binary $(bin_id "$PRE_S2_GATE" | cut -c1-12)..) — the refusal is this slice's doing, not the scenario's"
+fi
+
+echo "== phase 122: S3 (ACL SPLIT) THE SCHEMA SPLIT — a lane config carrying a MOVED access-control field is REFUSED BY NAME"
+# THE DIRECTION IS SILENCE, AND IT IS THE WORST ONE HERE.  src/agent/config.h/.c
+# DROPPED the access-control fields (enabled_tools / disabled_tools /
+# providers[] / models[]), so the schema can no longer HOLD them — which is the
+# point of the split and also exactly the failure mode: a config still carrying
+# one would be IGNORED, reading as constrained while the agent ran
+# unconstrained, with NOTHING at rest recording the difference.  So every
+# assertion below is about the REFUSAL and about WHICH FIELD and WHICH HOST FILE
+# it names — never about the exit status alone (a config that failed for any
+# other reason satisfies rc!=0 and proves nothing).
+#
+# THE POSITION (plan handoff-aclsplit-plan, risk R4): the pass must NOT live
+# inside config_load's fail-open path, and must not sit behind a path that
+# returns early.  Asserted three ways: (a) a refusal by name per moved field;
+# (b) it lands BEFORE the --store validation — which is itself before the
+# observation loop AND before config_load, so precedence over it is precedence
+# over all of them (an outcome-report or same-boot return could otherwise skip a
+# refusal placed lower); (c) the same fixture is ACCEPTED with the refusal
+# compiled out (122b), which is what makes the arm able to go RED at all.
+S3_MARK="FX-S3-LANE-OK-3f31"
+S3_SENTINEL="s3-schema-split-probe"
+s3_bin_sha() { sha256sum "$1" | cut -d' ' -f1; }
+# A FRESH chardev COPY PER PROBE, never a shared fixture: the guest APPENDS its
+# request frame to the file it is handed (fx_transport.c opens O_APPEND), so a
+# reused path would self-read on the next probe.  The "hello" -> MARKER
+# substitution is stage-guest's own, so the assertion is unique.
+s3_dev() {
+    sed "s/\"hello\"/\"$S3_MARK\"/g" "$FIX/responses_simple.sse" > "$1" \
+        || fail "phase 122: cannot write the chardev copy $1"
+    [ "$(grep -c "$S3_MARK" "$1")" -ge 1 ] || fail "phase 122: $1 carries no marker — the substitution did not fire"
+}
+# s3_cfg <dir> <agent-extra-line|""> <root-extra-line|""> — the STAGED LANE'S OWN
+# SHAPE (INTENT only: name + agent_type) plus the moved field the arm is about.
+# The root line is a record continuation, so it must start with a comma.
+s3_cfg() {
+    local d="$1" ag="$2" rt="$3"
+    mkdir -p "$d" || fail "phase 122: cannot create $d"
+    {
+        printf '%s\n' '{ agents ='
+        printf '%s\n' '  [ { name = "fx"'
+        printf '%s\n' '    , agent_type = "agent"'
+        [ -z "$ag" ] || printf '    , %s\n' "$ag"
+        printf '%s\n' '    }'
+        printf '%s\n' '  ]'
+        [ -z "$rt" ] || printf '%s\n' "$rt"
+        printf '%s\n' '}'
+    } > "$d/config.dhall"
+}
+# s3_run <bin> <cfgdir> <datadir> <dev> [extra argv...] — the offline loop, with
+# a FRESH FX_AGENT_DATA per probe and stdout+stderr in $S3_OUT, rc in $S3_RC.
+s3_run() {
+    local bin="$1" cfg="$2" data="$3" dev="$4"
+    shift 4
+    S3_OUT=$(FX_CHARDEV="$dev" FX_AGENT_CONFIG_DIR="$cfg" FX_AGENT_DATA="$data" \
+             HOME="$TMP" timeout 60 "$bin" -p "$S3_SENTINEL" --agent fx \
+             --max-turns "${S3_TURNS:-1}" --output text "$@" 2>&1)
+    S3_RC=$?
+}
+# s3_refusal_holds <bin> <cfgdir> <datadir> <dev> <field> <owner-substring> —
+# TRUE iff this binary refuses this config the way S3 says it must: non-zero,
+# naming the FIELD and its OWNER, with nothing run (the loop's marker absent)
+# and nothing even started (the fresh FX_AGENT_DATA dir never created).  ONE
+# assertion body, used as the ARM here and as the FIREABILITY probe under the
+# blind in 122b — so the arm cannot rot into something the blind also passes.
+s3_refusal_holds() {
+    s3_run "$1" "$2" "$3" "$4"
+    [ "$S3_RC" -ne 0 ] || return 1
+    printf '%s\n' "$S3_OUT" | grep -qF "MOVED access-control field '$5'" || return 1
+    printf '%s\n' "$S3_OUT" | grep -qF "$6" || return 1
+    [ ! -e "$3" ] || return 1
+    if printf '%s\n' "$S3_OUT" | grep -qF "$S3_MARK"; then return 1; fi
+    return 0
+}
+s3_arm() { # <tag> <field> <owner-substring> <agent-extra> <root-extra>
+    local tag="$1" field="$2" owner="$3" ag="$4" rt="$5"
+    local dir="$TMP/$tag"
+    s3_cfg "$dir/cfg" "$ag" "$rt"
+    s3_dev "$dir/dev.sse"
+    s3_refusal_holds "$BIN" "$dir/cfg" "$dir/data" "$dir/dev.sse" "$field" "$owner" \
+        || { printf '%s\n' "$S3_OUT" >&2; fail "phase 122 ($tag): the lane config carrying '$field' was NOT refused by name (rc=$S3_RC) — a moved field silently ignored leaves the agent running allow-all with nothing at rest recording it"; }
+    echo "   OK $tag: '$field' -> rc=$S3_RC, refused BY NAME with its owner ($owner); no FX_AGENT_DATA dir was created, no loop output"
+}
+# EACH MOVED FIELD IS ITS OWN PROBE: one arm cannot prove the other three, and a
+# refusal that named the wrong field would be as unactionable as none.
+s3_arm s3-enabled  enabled_tools  "policy/access/access-verbs.tsv" 'enabled_tools = [ "fx_ls" ]'    ""
+s3_arm s3-disabled disabled_tools "policy/access/access-verbs.tsv" 'disabled_tools = [ "fx_write" ]' ""
+s3_arm s3-providers providers     "tools/fx-hostgate.c" "" \
+    ', providers = [ { name = "p1", api_base = "http://127.0.0.1:1", backend = "openai_responses" } ]'
+s3_arm s3-models    models        "tools/fx-hostgate.c" "" \
+    ', models = [ { name = "m1", provider = "p1" } ]'
+
+# (A) A CLEAN LANE IS ACCEPTED — the arm that stops the four above from being
+# passed by a build that refuses EVERY config (the denying-everything shape).
+S3_OK="$TMP/s3-clean"
+s3_cfg "$S3_OK/cfg" "" ""
+s3_dev "$S3_OK/dev.sse"
+s3_run "$BIN" "$S3_OK/cfg" "$S3_OK/data" "$S3_OK/dev.sse"
+[ "$S3_RC" -eq 0 ] || { printf '%s\n' "$S3_OUT" >&2; fail "phase 122 (clean): the CLEAN lane exited rc=$S3_RC — the migration pass is refusing configs it must accept"; }
+printf '%s\n' "$S3_OUT" | grep -qF "$S3_MARK" \
+    || { printf '%s\n' "$S3_OUT" >&2; fail "phase 122 (clean): the clean lane ran but did not print the marker — the run above is not the honest lane"; }
+grep -qF "MOVED access-control field" <<< "$S3_OUT" \
+    && fail "phase 122 (clean): the clean lane carried a moved-field refusal — the fixture, not the schema, is doing the work"
+echo "   OK clean: the SAME shape the image stages (name + agent_type, nothing else) runs to the marker — the refusal is the moved field's doing, not the lane's"
+
+# (B) THE PASS READS THE CONFIG'S **KEYS**, NOT ITS STRINGS — a lane whose VALUE
+# merely spells a moved name is a lane, not an access-control declaration, and
+# refusing it would make the migration unshippable for an honest config.
+S3_VAL="$TMP/s3-value"
+s3_cfg "$S3_VAL/cfg" 'model = "enabled_tools"' ""
+s3_dev "$S3_VAL/dev.sse"
+s3_run "$BIN" "$S3_VAL/cfg" "$S3_VAL/data" "$S3_VAL/dev.sse"
+[ "$S3_RC" -eq 0 ] \
+    || { printf '%s\n' "$S3_OUT" >&2; fail "phase 122 (value): a model named after a moved field was REFUSED (rc=$S3_RC) — the pass is scanning text, not the config's keys"; }
+echo "   OK value: \`model = \"enabled_tools\"\` is accepted (rc=0) — the check is on object KEYS, so a string that spells a field is not a field"
+
+# (C) THE POSITION — the pass runs BEFORE the --store validation, which is
+# itself before the observation loop and before config_load.  An INVALID --store
+# must therefore never get to complain: if the store refused first, the
+# migration pass would be sitting behind a path that can return early.
+S3_POS="$TMP/s3-position"
+s3_cfg "$S3_POS/cfg" 'enabled_tools = [ "fx_ls" ]' ""
+s3_dev "$S3_POS/dev.sse"
+s3_run "$BIN" "$S3_POS/cfg" "$S3_POS/data" "$S3_POS/dev.sse" --store "$TMP/s3-no-such-store"
+[ "$S3_RC" -eq 1 ] \
+    || { printf '%s\n' "$S3_OUT" >&2; fail "phase 122 (position): rc=$S3_RC, want 1 (the migration refusal) — another path answered first"; }
+printf '%s\n' "$S3_OUT" | grep -qF "MOVED access-control field 'enabled_tools'" \
+    || { printf '%s\n' "$S3_OUT" >&2; fail "phase 122 (position): the moved-field refusal did not fire"; }
+grep -qF "the store is never guessed" <<< "$S3_OUT" \
+    && fail "phase 122 (position): the --store validation answered BEFORE the migration pass — the pass sits behind an early-return path and a run that returns early can skip it (risk R4)"
+echo "   OK position: with an INVALID --store the migration refusal still fires first (rc=$S3_RC) — the pass precedes --store, the observation loop and config_load, so no early-return path can reach a run with a moved field unrefused"
+
+echo "== phase 122b: S3 THE BLIND IS THE SILENT-IGNORE DIRECTION — the refusal compiled OUT accepts the SAME config and drops the field"
+# WHY THIS DIRECTION: the failure S3 exists to prevent is a moved field being
+# ACCEPTED AND IGNORED (the config reads as constrained, the agent runs
+# unconstrained, nothing at rest says so).  So the mutation is a build that does
+# exactly that — never one that over-refuses, which would prove only that a
+# second refusal exists.  `make test-hostgate` builds it; a stale binary would
+# measure the old build, so its mtime and sha are asserted.
+[ -x "$BIN_ACCEPTMOVED" ] || fail "phase 122b: $BIN_ACCEPTMOVED missing — make test-hostgate builds it"
+[ "$BIN_ACCEPTMOVED" -nt "$ROOT/src/agent/config.c" ] \
+    || fail "phase 122b: $BIN_ACCEPTMOVED is OLDER than src/agent/config.c — the binary this arm ran is STALE"
+S3_BLIND="$TMP/s3-blind"
+s3_cfg "$S3_BLIND/cfg" 'enabled_tools = [ "fx_ls" ]' ""
+s3_dev "$S3_BLIND/dev.sse"
+s3_run "$BIN_ACCEPTMOVED" "$S3_BLIND/cfg" "$S3_BLIND/data" "$S3_BLIND/dev.sse"
+[ "$S3_RC" -eq 0 ] \
+    || { printf '%s\n' "$S3_OUT" >&2; fail "phase 122b: the blind REFUSED the config (rc=$S3_RC) — it is not the accepting build this arm needs"; }
+grep -qF "MOVED-FIELD REFUSAL COMPILED OUT (FX_ACCEPT_MOVED_ACCESS)" <<< "$S3_OUT" \
+    || { printf '%s\n' "$S3_OUT" >&2; fail "phase 122b: the blind did not say its refusal is compiled out — the mutant did not run"; }
+printf '%s\n' "$S3_OUT" | grep -qF "$S3_MARK" \
+    || { printf '%s\n' "$S3_OUT" >&2; fail "phase 122b: the blind accepted the config but never ran the loop — the acceptance is not the agent running allow-all"; }
+# THE FIREABILITY PROBE: the ARM's own assertion body, applied to the blind, must
+# FAIL.  That is what "the arm goes RED under the blind" means, measured instead
+# of asserted in prose.
+S3_BLIND2="$TMP/s3-blind2"
+s3_cfg "$S3_BLIND2/cfg" 'enabled_tools = [ "fx_ls" ]' ""
+s3_dev "$S3_BLIND2/dev.sse"
+if s3_refusal_holds "$BIN_ACCEPTMOVED" "$S3_BLIND2/cfg" "$S3_BLIND2/data" "$S3_BLIND2/dev.sse" \
+        enabled_tools "policy/access/access-verbs.tsv"; then
+    fail "phase 122b: the S3 arm HOLDS on the accepting blind — the arm does not test the refusal at all (it is vacuous)"
+fi
+echo "   OK blind: $(s3_bin_sha "$BIN_ACCEPTMOVED" | cut -c1-12).. ACCEPTS the same lane config (rc=0, the field silently ignored, the loop runs) and the S3 ARM GOES RED on it — the refusal is the schema split's doing, not the fixture's"
+
+echo "== phase 122c: S3 THE ASYMMETRY — the PINNED pre-fix binary ACCEPTED this config, and its allow-list BIT"
+# THE CONTROL IS A PINNED REVISION, NEVER HEAD (the MOVING-REF lesson): the
+# pre-S3 tree is named by its full commit id AND the extracted
+# src/agent/config.c is sha256-pinned, so the control cannot quietly become the
+# working source; a shallow clone or a rewritten history SKIPs LOUDLY rather than
+# comparing the code to itself.  The claim being proved is not just "it starts":
+# pre-split the config EXPRESSED access control — a verb outside enabled_tools is
+# refused IN THE GUEST ('(tool disabled)') and never dispatched — and post-split
+# those same bytes cannot even be loaded.
+PRE_S3_REV=90f1bcc520856f35c07e1ee13afc8610013a90f2
+PRE_S3_CFG_SHA=a618eb7ffc04f8676f30ad27d45383b3a89fcdf3199d2bf25d9a101d3ce2ed0b
+build_pre_s3() { # <dir> — echoes the pinned pre-S3 fx-agent path, or empty
+    local d="$1"
+    PRE_S3_SKIP=""
+    mkdir -p "$d/tree"
+    if ! git -C "$ROOT" cat-file -e "$PRE_S3_REV^{commit}" 2>/dev/null; then
+        PRE_S3_SKIP="pinned revision $PRE_S3_REV unavailable (shallow clone or rewritten history)"
+        return
+    fi
+    if ! git -C "$ROOT" archive --format=tar "$PRE_S3_REV" 2>/dev/null | tar -x -C "$d/tree" 2>/dev/null; then
+        PRE_S3_SKIP="cannot extract the tree at $PRE_S3_REV"
+        return
+    fi
+    local gotsrc
+    gotsrc=$(sha256sum "$d/tree/src/agent/config.c" | cut -d' ' -f1)
+    if [ "$gotsrc" != "$PRE_S3_CFG_SHA" ]; then
+        PRE_S3_SKIP="the extracted src/agent/config.c hashes to $gotsrc, not the pinned $PRE_S3_CFG_SHA — the ref moved (the MOVING REF this pin exists to catch)"
+        return
+    fi
+    if cmp -s "$d/tree/src/agent/config.c" "$ROOT/src/agent/config.c"; then
+        PRE_S3_SKIP="the pinned pre-fix source is IDENTICAL to the working tree — the asymmetry would compare the code to itself"
+        return
+    fi
+    local PREDL="${DATALOG_DIR:-}"
+    [ -z "$PREDL" ] && [ -e "$ROOT/../datalog-dafsa/zig-out/lib/libdatalog.so" ] && PREDL="$ROOT/../datalog-dafsa"
+    [ -z "$PREDL" ] && [ -e "$HOME/fixpoint-linux/datalog-dafsa/zig-out/lib/libdatalog.so" ] && PREDL="$HOME/fixpoint-linux/datalog-dafsa"
+    [ -n "$PREDL" ] || { PRE_S3_SKIP="no datalog sibling is resolvable, so the pinned pre-fix tree cannot be built"; return; }
+    if ! make -C "$d/tree" build/fx-agent DATALOG_DIR="$PREDL" > "$d/make.log" 2>&1; then
+        PRE_S3_SKIP="the pinned pre-fix tree does not build ($(tail -1 "$d/make.log"))"
+        return
+    fi
+    if cmp -s "$d/tree/build/fx-agent" "$ROOT/build/fx-agent"; then
+        PRE_S3_SKIP="the pinned pre-fix BINARY is identical to the working build — the control has become the thing it is a control for"
+        return
+    fi
+    echo "$d/tree/build/fx-agent"
+}
+PRE_S3_BIN=$(build_pre_s3 "$TMP/pre-s3")
+if [ -z "$PRE_S3_BIN" ]; then
+    echo "   SKIP phase 122c (pre-fix control): $PRE_S3_SKIP — the asymmetry half did not run, so what the pre-split binary does with this config is UNMEASURED here (the refusal half above is asserted either way)"
+else
+    S3_PRE="$TMP/s3-pre"
+    mkdir -p "$S3_PRE/cfg"
+    make_marker_stub "$S3_PRE/stub.py" "$S3_PRE/marker"
+    cat > "$S3_PRE/cfg/config.dhall" <<DHALL
+{ agents =
+  [ { name = "fx"
+    , agent_type = "agent"
+    , enabled_tools = [ "fx_ls" ]
+    , mcp_servers = [ { command = "$S3_PRE/stub.py", args = [] : List Text } ]
+    }
+  ]
+}
+DHALL
+    cp "$FIX/responses_tool.sse" "$S3_PRE/dev.sse" \
+        || fail "phase 122c: cannot copy the tool fixture"
+    # TWO turns, MEASURED: with `--max-turns 1` the pre-fix loop hits its limit
+    # with the call still pending and the transcript is never written, so the
+    # '(tool disabled)' evidence would be absent for a reason unrelated to the
+    # policy.  Two turns reach the fixture's own second turn, where the transcript
+    # (and therefore the in-guest refusal row) is durable.
+    S3_TURNS=2 s3_run "$PRE_S3_BIN" "$S3_PRE/cfg" "$S3_PRE/data" "$S3_PRE/dev.sse"
+    [ "$S3_RC" -eq 0 ] || { printf '%s\n' "$S3_OUT" >&2; fail "phase 122c: the pinned pre-S3 binary exited rc=$S3_RC on the config it used to accept — the control is not the pre-split build"; }
+    grep -qF "MOVED access-control field" <<< "$S3_OUT" \
+        && fail "phase 122c: the pre-S3 binary produced a moved-field refusal — it is not the pre-split build"
+    # THE ALLOW-LIST BIT, so the field was a LIVE control and not decoration: the
+    # stub touches its marker only on a dispatch, and the model asked for a verb
+    # the list does not name.
+    [ ! -e "$S3_PRE/marker" ] \
+        || { cat "$S3_PRE/marker" >&2; fail "phase 122c: the pre-S3 binary DISPATCHED a verb outside the config's enabled_tools — the field was not the bound this arm claims"; }
+    grep -qF "tool disabled" "$S3_PRE"/data/sessions/*/messages.jsonl \
+        || fail "phase 122c: the pre-S3 transcript carries no '(tool disabled)' refusal — the in-guest policy never bit"
+    echo "   OK asymmetry: the PINNED pre-S3 binary (${PRE_S3_REV:0:12}, src/agent/config.c sha256 ${PRE_S3_CFG_SHA:0:12}.., binary $(s3_bin_sha "$PRE_S3_BIN" | cut -c1-12)..) ACCEPTS the config, runs the loop (rc=0) and REFUSES a verb outside enabled_tools IN THE GUEST ('(tool disabled)', marker absent) — while the working build refuses those same bytes by name. Access control LEFT the agent config; it did not stop being enforced (policy/access/access-verbs.tsv, at the host seat)"
 fi
 
 # ── THE PASS ECHO, with the LIVE observation folded in (P10-fix 5) ────────

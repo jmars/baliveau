@@ -7,13 +7,20 @@
  * here because runner.c's copies are static; runner.c semantics are untouched.
  *
  * Schema (dhall -> json via dhall-c):
- *   { agents = [ { name, agent_type, model, default_max_turns, mcp_servers } ] }
+ *   { agents = [ { name, agent_type, model, default_max_turns, prompt_file,
+ *                  mcp_servers } ] }
  * Optional fields may be absent (no json key), None/Some (Optional -> null /
  * inner value), or plain values (Text -> string, Natural -> number).  The walk
  * treats NULL/missing as "unset" throughout.
  *
  * FAIL-OPEN: missing/unreadable/malformed config, or an empty/absent agents
  * list, yields an empty RuntimeConfig and returns 0 — never a crash.
+ *
+ * THAT FAIL-OPEN CONTRACT IS FOR INTENT ONLY.  The moved access-control fields
+ * are checked by config_check_moved BELOW — a SEPARATE, FAIL-CLOSED pass that
+ * never returns 0-by-parse-failure and is called by agent_main BEFORE
+ * config_load.  Do not fold it into the fail-open path: a refusal that path can
+ * skip is not a refusal (plan handoff-aclsplit-plan, risk R4).
  */
 #include <stdbool.h>
 #include <stdio.h>
@@ -38,9 +45,6 @@
 #define CONFIG_MAX_MCP_SERVERS  128u
 #define CONFIG_MAX_MCP_ARGS     128u
 #define CONFIG_MAX_MCP_ENV      128u
-#define CONFIG_MAX_PROVIDERS   512u
-#define CONFIG_MAX_MODELS      512u
-#define CONFIG_MAX_TOOL_GLOBS  128u
 
 /* ------------------------------------------------------------------ */
 /* Path + file helpers (mirrors runner.c)                             */
@@ -165,10 +169,6 @@ static void free_config_agent(ConfigAgent *a) {
         free(s->env);
     }
     free(a->mcp_servers);
-    for (size_t i = 0; i < a->n_enabled_tools; i++) free(a->enabled_tools[i]);
-    free(a->enabled_tools);
-    for (size_t i = 0; i < a->n_disabled_tools; i++) free(a->disabled_tools[i]);
-    free(a->disabled_tools);
 }
 
 /* Parse one mcp_servers record into *srv (malloc'd owned copies).  Returns 0 on
@@ -302,79 +302,6 @@ static int parse_mcp_server(yyjson_val *rec, McpToolServer *srv) {
     return 0;
 }
 
-/* Parse one provider record into a fresh ConfigProvider; on success the caller
- * commits it (owns everything).  Returns 0 on success, -1 on OOM. */
-static int parse_provider(RuntimeConfig *out, yyjson_val *rec) {
-    ConfigProvider p;
-    memset(&p, 0, sizeof p);
-
-    yyjson_val *name = yyjson_obj_get(rec, "name");
-    if (!name || !yyjson_is_str(name)) return 0; /* fail-open: skip malformed */
-    p.name = dup_capped(yyjson_get_str(name));
-    if (!p.name) return -1;
-
-    yyjson_val *api_base = yyjson_obj_get(rec, "api_base");
-    if (!api_base || !yyjson_is_str(api_base)) { free(p.name); return 0; }
-    p.api_base = dup_capped(yyjson_get_str(api_base));
-    if (!p.api_base) { free(p.name); return -1; }
-
-    yyjson_val *api_key_env_var = yyjson_obj_get(rec, "api_key_env_var");
-    if (api_key_env_var && yyjson_is_str(api_key_env_var)) {
-        p.api_key_env_var = dup_capped(yyjson_get_str(api_key_env_var));
-        if (!p.api_key_env_var) { free(p.name); free(p.api_base); return -1; }
-    }
-
-    yyjson_val *backend = yyjson_obj_get(rec, "backend");
-    if (!backend || !yyjson_is_str(backend)) { 
-        free(p.name); free(p.api_base); free(p.api_key_env_var); return 0; 
-    }
-    p.backend = dup_capped(yyjson_get_str(backend));
-    if (!p.backend) { free(p.name); free(p.api_base); free(p.api_key_env_var); return -1; }
-
-    if (out->n_providers == out->cap_providers) {
-        size_t ncap = out->cap_providers ? out->cap_providers * 2 : 4;
-        if (ncap > CONFIG_MAX_PROVIDERS) ncap = CONFIG_MAX_PROVIDERS;
-        ConfigProvider *np = realloc(out->providers, ncap * sizeof(ConfigProvider));
-        if (!np) { 
-            free(p.name); free(p.api_base); free(p.api_key_env_var); free(p.backend);
-            return -1; 
-        }
-        out->providers = np;
-        out->cap_providers = ncap;
-    }
-    out->providers[out->n_providers++] = p;
-    return 0;
-}
-
-/* Parse one model record into a fresh ConfigModel; on success the caller
- * commits it (owns everything).  Returns 0 on success, -1 on OOM. */
-static int parse_model(RuntimeConfig *out, yyjson_val *rec) {
-    ConfigModel m;
-    memset(&m, 0, sizeof m);
-
-    yyjson_val *name = yyjson_obj_get(rec, "name");
-    if (!name || !yyjson_is_str(name)) return 0; /* fail-open: skip malformed */
-    m.name = dup_capped(yyjson_get_str(name));
-    if (!m.name) return -1;
-
-    yyjson_val *provider = yyjson_obj_get(rec, "provider");
-    if (provider && yyjson_is_str(provider)) {
-        m.provider = dup_capped(yyjson_get_str(provider));
-        if (!m.provider) { free(m.name); return -1; }
-    }
-
-    if (out->n_models == out->cap_models) {
-        size_t ncap = out->cap_models ? out->cap_models * 2 : 4;
-        if (ncap > CONFIG_MAX_MODELS) ncap = CONFIG_MAX_MODELS;
-        ConfigModel *nm = realloc(out->models, ncap * sizeof(ConfigModel));
-        if (!nm) { free(m.name); free(m.provider); return -1; }
-        out->models = nm;
-        out->cap_models = ncap;
-    }
-    out->models[out->n_models++] = m;
-    return 0;
-}
-
 /* Parse one agent object into a fresh ConfigAgent; on success the caller
  * commits it (owns everything).  Returns 0 on success, -1 on OOM. */
 static int parse_agent(RuntimeConfig *out, yyjson_val *ag, const char *name) {
@@ -438,50 +365,6 @@ static int parse_agent(RuntimeConfig *out, yyjson_val *ag, const char *name) {
         }
     }
 
-    /* Parse enabled_tools (Optional (List Text)) */
-    yyjson_val *enabled = yyjson_obj_get(ag, "enabled_tools");
-    if (enabled && yyjson_is_arr(enabled)) {
-        yyjson_val *it;
-        size_t i, max;
-        yyjson_arr_foreach(enabled, i, max, it) {
-            if (!yyjson_is_str(it)) continue;
-            if (a.n_enabled_tools >= CONFIG_MAX_TOOL_GLOBS) break;
-            if (a.n_enabled_tools == a.cap_enabled_tools) {
-                size_t ncap = a.cap_enabled_tools ? a.cap_enabled_tools * 2 : 4;
-                if (ncap > CONFIG_MAX_TOOL_GLOBS) ncap = CONFIG_MAX_TOOL_GLOBS;
-                char **na = realloc(a.enabled_tools, ncap * sizeof(char *));
-                if (!na) { free_config_agent(&a); return -1; }
-                a.enabled_tools = na;
-                a.cap_enabled_tools = ncap;
-            }
-            char *dup = dup_capped(yyjson_get_str(it));
-            if (!dup) { free_config_agent(&a); return -1; }
-            a.enabled_tools[a.n_enabled_tools++] = dup;
-        }
-    }
-
-    /* Parse disabled_tools (Optional (List Text)) */
-    yyjson_val *disabled = yyjson_obj_get(ag, "disabled_tools");
-    if (disabled && yyjson_is_arr(disabled)) {
-        yyjson_val *it;
-        size_t i, max;
-        yyjson_arr_foreach(disabled, i, max, it) {
-            if (!yyjson_is_str(it)) continue;
-            if (a.n_disabled_tools >= CONFIG_MAX_TOOL_GLOBS) break;
-            if (a.n_disabled_tools == a.cap_disabled_tools) {
-                size_t ncap = a.cap_disabled_tools ? a.cap_disabled_tools * 2 : 4;
-                if (ncap > CONFIG_MAX_TOOL_GLOBS) ncap = CONFIG_MAX_TOOL_GLOBS;
-                char **na = realloc(a.disabled_tools, ncap * sizeof(char *));
-                if (!na) { free_config_agent(&a); return -1; }
-                a.disabled_tools = na;
-                a.cap_disabled_tools = ncap;
-            }
-            char *dup = dup_capped(yyjson_get_str(it));
-            if (!dup) { free_config_agent(&a); return -1; }
-            a.disabled_tools[a.n_disabled_tools++] = dup;
-        }
-    }
-
     if (out->n_agents == out->cap_agents) {
         size_t ncap = out->cap_agents ? out->cap_agents * 2 : 4;
         if (ncap > CONFIG_MAX_AGENTS) ncap = CONFIG_MAX_AGENTS;
@@ -501,36 +384,6 @@ static int parse_config_json(const char *json, RuntimeConfig *out) {
 
     yyjson_val *root = yyjson_doc_get_root(doc);
     if (root && yyjson_is_obj(root)) {
-        /* Parse providers first */
-        yyjson_val *providers = yyjson_obj_get(root, "providers");
-        if (providers && yyjson_is_arr(providers)) {
-            yyjson_val *it;
-            size_t i, max;
-            yyjson_arr_foreach(providers, i, max, it) {
-                if (!yyjson_is_obj(it)) continue;
-                if (out->n_providers >= CONFIG_MAX_PROVIDERS) break;
-                if (parse_provider(out, it) != 0) {
-                    yyjson_doc_free(doc);
-                    return -1;
-                }
-            }
-        }
-
-        /* Parse models */
-        yyjson_val *models = yyjson_obj_get(root, "models");
-        if (models && yyjson_is_arr(models)) {
-            yyjson_val *it;
-            size_t i, max;
-            yyjson_arr_foreach(models, i, max, it) {
-                if (!yyjson_is_obj(it)) continue;
-                if (out->n_models >= CONFIG_MAX_MODELS) break;
-                if (parse_model(out, it) != 0) {
-                    yyjson_doc_free(doc);
-                    return -1;
-                }
-            }
-        }
-
         /* Parse agents */
         yyjson_val *agents = yyjson_obj_get(root, "agents");
         if (agents && yyjson_is_arr(agents)) {
@@ -592,30 +445,8 @@ int config_load(RuntimeConfig *out, char *err, size_t errcap) {
     return rc;
 }
 
-static void free_config_provider(ConfigProvider *p) {
-    if (!p) return;
-    free(p->name);
-    free(p->api_base);
-    free(p->api_key_env_var);
-    free(p->backend);
-}
-
-static void free_config_model(ConfigModel *m) {
-    if (!m) return;
-    free(m->name);
-    free(m->provider);
-}
-
 void config_free(RuntimeConfig *cfg) {
     if (!cfg) return;
-    for (size_t i = 0; i < cfg->n_providers; i++) {
-        free_config_provider(&cfg->providers[i]);
-    }
-    free(cfg->providers);
-    for (size_t i = 0; i < cfg->n_models; i++) {
-        free_config_model(&cfg->models[i]);
-    }
-    free(cfg->models);
     for (size_t i = 0; i < cfg->n_agents; i++) {
         free_config_agent(&cfg->agents[i]);
     }
@@ -633,22 +464,137 @@ const ConfigAgent *config_find_agent(const RuntimeConfig *cfg, const char *name)
     return NULL;
 }
 
-const ConfigProvider *config_find_provider(const RuntimeConfig *cfg, const char *name) {
-    if (!cfg || !name) return NULL;
-    for (size_t i = 0; i < cfg->n_providers; i++) {
-        if (cfg->providers[i].name && strcmp(cfg->providers[i].name, name) == 0) {
-            return &cfg->providers[i];
-        }
+/* ------------------------------------------------------------------ */
+/* THE MOVED-FIELD MIGRATION PASS (FAIL-CLOSED, beside config_load)    */
+/* ------------------------------------------------------------------ */
+
+/* The access-control fields this schema no longer has, and the HOST file that
+ * owns each one now.  The owner string is what the operator is told to edit, so
+ * it names the file, not a role — a refusal that says only "not allowed here"
+ * sends the reader nowhere and invites them to put the field back.
+ *
+ * BOTH spellings of the provider join are listed: a top-level `providers` block
+ * and the `provider` field a model entry used to carry.  `models` is listed
+ * whole because, with the join gone, a name-only models table is data NOTHING
+ * reads — a config field with no consumer is this tree's most productive bug
+ * shape, and the agent names its engine in `agent.model` instead. */
+static const struct {
+    const char *field;
+    const char *owner;
+} CONFIG_MOVED[] = {
+    { "enabled_tools",
+      "policy/access/access-verbs.tsv (the operator's pinned ACCESS TABLE — "
+      "the verb vocabulary, enforced at the host seat tools/fx-hostgate.c)" },
+    { "disabled_tools",
+      "policy/access/access-verbs.tsv (the operator's pinned ACCESS TABLE — "
+      "the verb vocabulary, enforced at the host seat tools/fx-hostgate.c)" },
+    { "providers",
+      "the HOST PROXY (tools/fx-hostgate.c) — it owns the provider endpoint AND "
+      "the credential (FX_HOSTGATE_KEY); the guest has no network at all" },
+    { "api_key_env_var",
+      "the HOST PROXY (tools/fx-hostgate.c) — the credential is the host's; a "
+      "guest-readable NAME for it is only a targeting hint" },
+    { "models",
+      "the HOST PROXY (tools/fx-hostgate.c) — a model entry existed to name a "
+      "provider; the agent names its ENGINE in agent.model instead" },
+    { "provider",
+      "the HOST PROXY (tools/fx-hostgate.c) — the model->provider join is the "
+      "host's (the guest keeps no join and needs none)" },
+};
+
+static const char *moved_owner(const char *key) {
+    if (!key) return NULL;
+    for (size_t i = 0; i < sizeof CONFIG_MOVED / sizeof CONFIG_MOVED[0]; i++) {
+        if (strcmp(key, CONFIG_MOVED[i].field) == 0) return CONFIG_MOVED[i].owner;
     }
     return NULL;
 }
 
-const ConfigModel *config_find_model(const RuntimeConfig *cfg, const char *name) {
-    if (!cfg || !name) return NULL;
-    for (size_t i = 0; i < cfg->n_models; i++) {
-        if (cfg->models[i].name && strcmp(cfg->models[i].name, name) == 0) {
-            return &cfg->models[i];
+/* Recursive search of a JSON VALUE for a MOVED FIELD NAME used as an OBJECT
+ * KEY.  A string VALUE that happens to spell a field name is not a field and is
+ * not refused (it cannot constrain anything). */
+static int json_find_moved(yyjson_val *v, const char **field, const char **owner) {
+    if (!v) return 0;
+    if (yyjson_is_obj(v)) {
+        yyjson_val *k, *val;
+        size_t i, max;
+        yyjson_obj_foreach(v, i, max, k, val) {
+            if (yyjson_is_str(k)) {
+                const char *own = moved_owner(yyjson_get_str(k));
+                if (own) {
+                    *field = yyjson_get_str(k);
+                    *owner = own;
+                    return 1;
+                }
+            }
+            if (json_find_moved(val, field, owner)) return 1;
+        }
+    } else if (yyjson_is_arr(v)) {
+        yyjson_val *it;
+        size_t i, max;
+        yyjson_arr_foreach(v, i, max, it) {
+            if (json_find_moved(it, field, owner)) return 1;
         }
     }
-    return NULL;
+    return 0;
+}
+
+int config_check_moved(char *err, size_t errcap) {
+    if (errcap) err[0] = '\0';
+
+    char dir[PATH_MAX];
+    runtime_config_dir(dir, sizeof(dir));
+    char path[PATH_MAX + 32];
+    snprintf(path, sizeof(path), "%s/config.dhall", dir);
+
+    /* A missing/unreadable config carries no field to move — and the run then
+     * fails loudly downstream anyway (an empty agents list is "agent not
+     * found", exit 1), so this is not a silent path in either direction. */
+    char *src = NULL;
+    if (read_file(path, &src) != 0) return 0;
+
+    pthread_mutex_lock(&g_dhall_eval_lock);
+    char *json = dhall_eval_to_json(src);
+    pthread_mutex_unlock(&g_dhall_eval_lock);
+    free(src);
+    if (!json) {
+        /* Does not EVALUATE.  That is not a moved field and is not this pass's
+         * business: config_load fail-opens to an empty config and the run stops
+         * at "agent not found" — loud, with nothing to ignore. */
+        return 0;
+    }
+
+    const char *field = NULL, *owner = NULL;
+    int hit = 0;
+    yyjson_doc *doc = yyjson_read(json, strlen(json), 0);
+    if (doc) {
+        hit = json_find_moved(yyjson_doc_get_root(doc), &field, &owner);
+        yyjson_doc_free(doc);
+    }
+    free(json);
+    if (!hit) return 0;
+
+#ifdef FX_ACCEPT_MOVED_ACCESS
+    /* THE BLIND (the gate's mutation arm, never a deployment switch): the
+     * refusal is compiled out, which is exactly the SILENT-IGNORE failure
+     * direction — the config still reads as constrained while the schema simply
+     * drops the field.  It says so out loud so the arm cannot mistake itself
+     * for the real build. */
+    fprintf(stderr,
+            "config: MOVED-FIELD REFUSAL COMPILED OUT (FX_ACCEPT_MOVED_ACCESS) — "
+            "config %s carries '%s' and the field is SILENTLY IGNORED; its owner "
+            "is %s\n", path, field, owner);
+    return 0;
+#else
+    if (err && errcap) {
+        snprintf(err, errcap,
+                 "config %s carries the MOVED access-control field '%s' — the "
+                 "agent config can no longer EXPRESS access control (ACL split "
+                 "S3), so accepting it would leave this config reading as "
+                 "constrained while the agent behaved as unconstrained. That "
+                 "field's owner is now %s: edit that host file, not this config.",
+                 path, field, owner);
+    }
+    return 1;
+#endif
 }

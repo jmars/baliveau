@@ -7,16 +7,25 @@
  *   [--workdir <cwd>] --output text [--auto-approve]
  *
  * Flow: parse argv (getopt_long) -> validate agent/session_id/workdir/max_turns
- * via runner.h -> config_load -> config_find_agent (reject subagent) ->
- * resolve the configured provider backend (agent_main_resolve_backend;
- * FAIL-OPEN to the default openai_responses_backend()) + the agent's
- * mcp_servers[0] as the tool server + a ToolPolicy from the agent's
- * enabled_tools/disabled_tools ->
+ * via runner.h -> config_check_moved (THE FAIL-CLOSED MIGRATION PASS: a config
+ * that still carries a MOVED access-control field is REFUSED by name, before
+ * anything else can return early) -> config_load -> config_find_agent (reject
+ * subagent) -> the default backend + the agent's mcp_servers[0] as the tool
+ * server + an EMPTY ToolPolicy ->
  * build the seed message list (ALWAYS a leading role=user message holding the
  * prompt) -> agent_loop_run_ex with a transcript callback that ckpt_appends
  * into a CkptMessages -> write messages.jsonl via ckpt_save + update runstore
  * status via ckpt_run_*.  The final assistant text goes to stdout (--output
  * text).
+ *
+ * THE TOOL POLICY HERE IS A SHAPE, NOT A BOUND (ACL split S3).  The agent
+ * config cannot express a tool list any more — the operator's pinned access
+ * table owns the verb vocabulary and the HOST seat enforces it — so this build
+ * feeds tool_policy_allowed() an EMPTY policy.  The seat is kept because it is
+ * the SHAPE the host denial mirrors ('(tool disabled)' appended without
+ * dispatching, todo.md §8) and the place a future legitimate IN-GUEST
+ * NARROWING would live; a control enforced by the governed component is not a
+ * control (§6b: the agent is root), and this is what that looks like in code.
  *
  * This file exposes agent_main_entry (NO main()) so the hermetic test links it
  * with its own main(); src/agent/agent_main_main.c provides the binary's main().
@@ -473,30 +482,6 @@ static void tui_delta_cb(const Delta *d, void *user) {
     }
 }
 
-/* ── provider routing ──────────────────────────────────────────────────── */
-
-/* Resolve the backend for an agent from the runtime config (see agent_main.h).
- * FAIL-OPEN: any unknown/missing provider (or backend type) falls back to the
- * default openai_responses_backend() — never an error. */
-const Backend *agent_main_resolve_backend(const RuntimeConfig *cfg,
-                                          const ConfigAgent *ag, Backend *out) {
-    if (!cfg || !ag || !out) return openai_responses_backend();
-
-    const ConfigModel *model_entry =
-        ag->model ? config_find_model(cfg, ag->model) : NULL;
-    const ConfigProvider *provider =
-        (model_entry && model_entry->provider)
-            ? config_find_provider(cfg, model_entry->provider)
-            : NULL;
-
-    const char *type     = (provider && provider->backend)     ? provider->backend : "openai_responses";
-    const char *base_url = (provider && provider->api_base)    ? provider->api_base : "http://127.0.0.1:8321";
-    const char *key_env  = (provider && provider->api_key_env_var) ? provider->api_key_env_var : NULL;
-
-    if (backend_build(out, type, base_url, key_env) == 0) return out;
-    return openai_responses_backend(); /* unknown backend type: fail-open */
-}
-
 /* ── entry ───────────────────────────────────────────────────────────────── */
 
 int agent_main_entry(int argc, char **argv) {
@@ -604,6 +589,28 @@ int agent_main_entry(int argc, char **argv) {
         fprintf(stderr, "agent_main: --max-turns must be between 1 and %d, got %d\n",
                 mt, max_turns);
         return 2;
+    }
+
+    /* ── THE MIGRATION PASS: FAIL-CLOSED, AND DELIBERATELY HERE ─────────────
+     * A config that still carries an access-control field the schema dropped
+     * (enabled_tools / disabled_tools / providers / models[].provider) is
+     * REFUSED BY NAME.  It sits BESIDE config_load, not inside it, because
+     * config_load's contract is FAIL-OPEN (missing/malformed -> empty config,
+     * return 0) — a refusal folded into that path would be skipped by exactly
+     * the inputs it exists for (plan handoff-aclsplit-plan, risk R4) — and it
+     * sits HERE, before the --store validation and the observation loop,
+     * because every one of those paths can return before any config is loaded,
+     * and a refusal reachable only after them is a refusal a successful run can
+     * bypass.  The direction it protects: SILENCE.  The schema cannot hold the
+     * field, so a config still declaring one would be ignored — reading as
+     * constrained while the agent ran unconstrained, with nothing at rest
+     * recording the difference. */
+    {
+        char merr[768] = {0};
+        if (config_check_moved(merr, sizeof merr) != 0) {
+            fprintf(stderr, "agent_main: %s\n", merr);
+            return 1;
+        }
     }
 
     /* ── --store: the store is NEVER guessed ────────────────────────────────
@@ -779,18 +786,17 @@ int agent_main_entry(int argc, char **argv) {
     const McpToolServer *tool_srv =
         (ag->n_mcp_servers > 0) ? &ag->mcp_servers[0] : NULL;
 
-    /* Provider routing: resolve the backend from the agent's model (FAIL-OPEN
-     * to the default local-router backend when the provider/model is unknown)
-     * and build the tool allowlist from the agent's enabled_tools/disabled_tools
-     * globs (all-empty -> allow-all). */
-    Backend b;
-    const Backend *backend = agent_main_resolve_backend(&cfg, ag, &b);
-    ToolPolicy policy = {
-        .enabled    = (const char *const *)ag->enabled_tools,
-        .n_enabled  = ag->n_enabled_tools,
-        .disabled   = (const char *const *)ag->disabled_tools,
-        .n_disabled = ag->n_disabled_tools,
-    };
+    /* The backend is the ONE guest adapter the transport can use: the chardev
+     * (src/agent/fx_transport.c) IS the whole network surface — the guest has no
+     * sockets and no credential, and the host proxy owns both.  There was a
+     * provider join here; it moved to the host with the rest of the
+     * access-control fields (ACL split S3). */
+    const Backend *backend = openai_responses_backend();
+    /* AN EMPTY POLICY — a SHAPE, NOT A BOUND (see the file comment).  The agent
+     * config cannot list tools any more: `enabled`/`disabled` are structurally
+     * zero, so tool_policy_allowed() allows everything the LOOP can dispatch and
+     * the bound is the host seat's access author, which judges the CALL. */
+    ToolPolicy policy = { 0 };
 
     /* fx-harness: there is no TLS default-verify step — the transport is a
      * character device with no TLS layer at all (see fx_transport.h). */
