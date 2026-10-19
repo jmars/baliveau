@@ -57,8 +57,32 @@
 # fx-init's own (boot-ok), because the verifier is an agent whose tool call
 # cannot fail the boot.
 #
+# THE ORDER: THE VERDICT FIRST, THEN THE WRITE (ACL split S4).  The agent
+# service starts inside fx-init's grace window, and the operator policy denies
+# any served write whose boot verdict is not ok (rule D2: writable x
+# !boot_verdict(ok)) — so a loop that writes the moment it starts is refused by
+# a TIMING rule, deterministically, 15 s before this boot's own verdict lands.
+# src/agent/agent_main.c therefore WAITS for the verdict before its first tool
+# call, and every arm below asserts the resulting order BY LINE NUMBER:
+#     boot-ok v_A1 -> the agent's write+activate -> the re-armed boot-ok v_N
+# (Before S4 the bracket's window was preempted and never fired; now it settles
+# first, and its verdict is asserted to be the bracket's own.)  The companion
+# assertion is the agent's own console line — "boot verdict: this boot v_A1 is
+# still in-progress" — so the gate proves the WAIT engaged rather than assuming
+# a wall-clock ordering.
+#
+# THE ORDER ARM (host-level, before any boot) is what makes that order
+# LOAD-BEARING rather than decorative: the SAME fixture runs through the
+# working build and through build/fx-agent-nowait (the wait COMPILED OUT), and
+# the blind one's write is REFUSED naming rule D2 and NOT rule D1 — a refusal
+# that reads like a policy decision about the path.  A third run, against a
+# PINNED COPY of the alias table at HEAD (protected=yes), shows D1 still fires:
+# the rule is unchanged, the operator's row is what changed.
+#
 # THE THREE ARMS
 #   ARM 1 (disk1) — THE CHANGE IS COMMITTED LIVE AND SURVIVES THE RESTART
+#     (the boot A1 order is the S4 shape above: verdict -> write -> activate ->
+#     re-armed verdict)
 #     image 1's ramfs CURRENT is the AGENT BRACKET generation (heartbeat + the
 #     fx-agent service carrying the arm-1 fixture).  boot A1: the agent runs its
 #     four recorded tool calls and fx_activate routes through PID1's CONTROL
@@ -809,6 +833,256 @@ DHALL
     echo "                fx_write landed byte-identical under the stub root; fx_activate returned 'as version 8'."
 fi
 
+# ═══ THE ORDER ARM — IS THE WAIT LOAD-BEARING? (host-level, before any boot) ══
+# S4 has TWO teeth (plan handoff-aclsplit-plan) and this arm separates them on
+# ONE fixture, so neither can hide behind the other:
+#
+#   (i)   WAIT build   + the SHIPPED table  -> the write SUCCEEDS.  The loop
+#         works: the write+activate lands AFTER the boot verdict, and the
+#         operator no longer protects the file the loop authors.
+#   (ii)  BLIND build  + the SHIPPED table  -> the SAME fixture is REFUSED, and
+#         the refusal names rule D2 and NOT rule D1.  THAT DISTINCTION IS THE
+#         ARM: D2 is a TIMING rule (writable x !boot_verdict(ok)), so a reader
+#         who "simplifies" the wait away gets a failure that reads like a policy
+#         decision about the path.  Without this arm removing the wait re-kills
+#         the loop SILENTLY.
+#   (iii) WAIT build   + the PINNED PRE-FIX table (protected=yes) -> REFUSED
+#         naming rule D1.  D1 is unchanged and still bites; what removed it for
+#         THIS path was the operator's decision (the alias flip), not a code
+#         change — and the pinned copy is CMP-GUARDED against the working table
+#         so a "control" that had drifted into the shipped file fails VACUOUS.
+#
+# The fixture is the arm-1 payload (fx_ls, fx_read, fx_write, fx_activate); the
+# seat is the REAL build/fx-verbs-server reading a COPY of the shipped policy
+# dir; the bootlog starts `in-progress` and a timed writer flips it to `ok`
+# AFTER the fixture starts, which is what the grace window does to the guest.
+# Every run uses a FRESH FX_AGENT_DATA dir and every writer is time-bounded.
+echo "=== qemu-agent-b2: THE ORDER ARM (the wait is load-bearing; D2 vs D1) ==="
+[ -x build/fx-agent ] || fail "the ORDER arm needs build/fx-agent — run make"
+[ -x build/fx-verbs-server ] || sh tools/build.sh >"$WORK/host-build.log" 2>&1 \
+    || { tail -20 "$WORK/host-build.log" >&2; fail "tools/build.sh failed"; }
+if [ ! -x build/fx-agent-nowait ]; then
+    make build/fx-agent-nowait >"$WORK/nowait-build.log" 2>&1 \
+        || { tail -20 "$WORK/nowait-build.log" >&2; fail "cannot build the blind build/fx-agent-nowait (make build/fx-agent-nowait)"; }
+fi
+[ -x build/fx-agent-nowait ] || fail "build/fx-agent-nowait missing after make"
+SHA_WAIT=$(sha256sum build/fx-agent | awk '{print $1}')
+SHA_BLIND=$(sha256sum build/fx-agent-nowait | awk '{print $1}')
+[ "$SHA_WAIT" != "$SHA_BLIND" ] \
+    || fail "VACUOUS BLIND: build/fx-agent and build/fx-agent-nowait are byte-identical ($SHA_WAIT) — the wait-compiled-out build is not distinct, so the arm would compare the working code to itself"
+echo "qemu-agent-b2: ORDER ARM binaries — wait $SHA_WAIT, blind $SHA_BLIND (DISTINCT)"
+_blind_mark=$(strings build/fx-agent-nowait | grep -c 'WAIT COMPILED OUT')
+[ "$_blind_mark" -ge 1 ] \
+    || fail "the blind binary does not carry its own marker ('WAIT COMPILED OUT') — it is not the -DFX_NO_BOOT_VERDICT_WAIT build"
+strings build/fx-agent | grep -q 'WAIT COMPILED OUT' \
+    && fail "the WORKING binary carries the blind's marker — the two builds are crossed"
+
+ORD="$WORK/order"
+rm -rf "$ORD"; mkdir -p "$ORD" || fail "cannot create $ORD"
+printf 'let x = 1 in x\n' > "$ORD/config.dhall"
+# the payload the fixture writes (a REAL config needs no parsing here: fx_write
+# moves bytes, and fx_activate execs the stub below)
+order_root() { # order_root TAG [PRE] -> a stub root with the policy seat ARMED
+    _r="$ORD/$1"
+    mkdir -p "$_r/usr/fx-agent/policy" "$_r/fx/disk/store/.db/snapshots" \
+             "$_r/etc" "$_r/bin" || return 1
+    for _pf in ops-policy.dl ops-aliases.tsv ops-lexicon.ini ops-hosts.tsv \
+               ops-sandbox.tsv PINS; do
+        cp "policy/ops/$_pf" "$_r/usr/fx-agent/policy/$_pf" || return 1
+    done
+    if [ "${2:-}" = "PRE" ]; then
+        # THE PINNED PRE-FIX TABLE (a COPY of the table at HEAD, protected=yes).
+        # Its sha is pinned in the file beside it and it must DIFFER from the
+        # working table; the alias re-pin below is required because the seat
+        # verifies every pinned sha BEFORE it believes a denial.
+        _pre="tests/fixtures/ops/aliases-protected-yes.tsv"
+        _presha=$(tr -d '[:space:]' < "$_pre.sha256")
+        [ "$(sha256sum "$_pre" | awk '{print $1}')" = "$_presha" ] \
+            || { echo "ORDER PRE: the pre-fix table is not the pinned copy" >&2; return 1; }
+        cmp -s "$_pre" policy/ops/ops-aliases.tsv \
+            && { echo "ORDER PRE: VACUOUS — the pinned pre-fix table is byte-identical to the working table" >&2; return 1; }
+        grep -q '^Agentconfig	Configpath	yes	' "$_pre" \
+            || { echo "ORDER PRE: the pinned copy does not mark Agentconfig protected=yes" >&2; return 1; }
+        cp "$_pre" "$_r/usr/fx-agent/policy/ops-aliases.tsv" || return 1
+        _new=$(sha256sum "$_r/usr/fx-agent/policy/ops-aliases.tsv" | awk '{print $1}')
+        python3 - "$_r/usr/fx-agent/policy/PINS" "$_new" <<'PREPIN'
+import sys
+pins, new = sys.argv[1], sys.argv[2]
+out = []
+for ln in open(pins).read().splitlines(True):
+    out.append("ops-aliases.tsv\t%s\n" % new if ln.startswith("ops-aliases.tsv\t") else ln)
+open(pins, "w").write("".join(out))
+PREPIN
+        [ $? = 0 ] || return 1
+    fi
+    printf '5\n'      > "$_r/fx/disk/store/.db/snapshots/CURRENT"
+    printf 'fixbox'   > "$_r/etc/hostname"
+    # THE STUB SHAPE MATTERS: it refuses a config it cannot read, exactly as the
+    # guest's /bin/fx-activate does ("cannot read config <p>: No such file or
+    # directory", exit 1) — otherwise arm (ii) could not tell "the write was
+    # refused, so there was nothing to activate" from "the activation ran".
+    # (the server passes the GUEST-absolute path, exactly as the guest's own
+    # root does — so the stub resolves it under this root, as "/" would there)
+    cat > "$_r/bin/fx-activate" <<FXACT
+#!/bin/sh
+cfg=""
+while [ \$# -gt 0 ]; do
+    case "\$1" in
+        --config) cfg=\$2; shift 2 ;;
+        *) shift ;;
+    esac
+done
+if [ -z "\$cfg" ] || [ ! -f "$_r\$cfg" ]; then
+    echo "fx-activate: cannot read config \$cfg: No such file or directory" >&2
+    exit 1
+fi
+echo "stub fx-activate: \$*"
+echo "activated 1111111111111111111111111111111111111111111111111111111111111111 as version 8; buildfile /stub/Dhakefile.dhall"
+exit 0
+FXACT
+    printf '#!/bin/sh\necho "stub fxstore: $*"\necho "fxstore: verify OK"\nexit 0\n' > "$_r/bin/fxstore"
+    chmod +x "$_r/bin/fx-activate" "$_r/bin/fxstore"
+    # THE GRACE WINDOW, replayed: this boot's verdict is UNDECIDED at the start
+    # and latches `ok` FLIP_MS later (the guest's 15 s window, shortened).
+    printf '5 in-progress 1791556274\n' > "$_r/fx/disk/store/.bootlog"
+    return 0
+}
+order_lane() { # order_lane TAG -> the lane config naming the REAL tool server
+    mkdir -p "$ORD/cfg-$1" || return 1
+    cat > "$ORD/cfg-$1/config.dhall" <<DHALL
+{ agents =
+  [ { name = "fx"
+    , agent_type = "agent"
+    , mcp_servers =
+      [ { command = "$REPO/build/fx-verbs-server"
+        , args = [] : List Text
+        , env = Some { FX_VERB_ROOT = "$ORD/$1" }
+        }
+      ]
+    }
+  ]
+}
+DHALL
+}
+order_run() { # order_run TAG BINARY -> transcript path; stdout in $ORD/$TAG.out
+    rm -rf "$ORD/data-$1"
+    FX_CHARDEV="$ORD/order.sse" FX_AGENT_CONFIG_DIR="$ORD/cfg-$1" \
+    FX_AGENT_DATA="$ORD/data-$1" HOME="$ORD" \
+    timeout 120 "$2" -p "inspect the system, rewrite the config, apply it" \
+        --agent fx --max-turns 2 --output text \
+        --store "$ORD/$1/fx/disk/store" >"$ORD/$1.out" 2>"$ORD/$1.err"
+    _rc=$?
+    [ "$_rc" = 0 ] || { echo "ORDER $1: the loop exited rc=$_rc" >&2; tail -5 "$ORD/$1.err" >&2; return 1; }
+    _log="$ORD/data-$1/sessions/$(ls "$ORD/data-$1/sessions" 2>/dev/null | head -1)/messages.jsonl"
+    [ -s "$_log" ] || { echo "ORDER $1: no transcript" >&2; return 1; }
+    printf '%s\n' "$_log"
+}
+# THE WINDOW IS GENEROUS ON PURPOSE.  The blind build must reach its write
+# INSIDE it (it is the grace window replayed), and the wait build must find the
+# verdict still undecided when it starts.  Both directions are ASSERTED from the
+# measured wall time of each run, so a box slow enough to invert them fails the
+# arm with the reason named instead of quietly measuring nothing.
+FLIP_S=12
+FLIP_PID=""
+order_flip() { # order_flip ROOT — latch the boot verdict `ok` ${FLIP_S}s in
+    ( sleep "$FLIP_S"; printf '5 ok 1791556274\n' >> "$1/fx/disk/store/.bootlog" ) &
+    FLIP_PID=$!
+}
+order_flip_wait() { # bounded: the writer is a 3 s sleep, and a hung writer is
+                    # killed rather than waited on (a HANGING gate is not a pass)
+    [ -n "${FLIP_PID:-}" ] || return 0
+    _n=0
+    while kill -0 "$FLIP_PID" 2>/dev/null && [ "$_n" -lt 40 ]; do
+        sleep 0.25; _n=$((_n + 1))
+    done
+    kill "$FLIP_PID" 2>/dev/null
+    wait "$FLIP_PID" 2>/dev/null
+    FLIP_PID=""
+    return 0
+}
+
+python3 "$WORK/mkb2.py" "$ORD/order.sse" "ORDER-ARM-RAN" \
+    "/fx/disk/agent-config.dhall" "$ORD/config.dhall" "order" >/dev/null \
+    || fail "the ORDER arm's fixture could not be built"
+
+# ── (i) WAIT + shipped table: the loop's write and activation LAND ──────────
+order_root ship || fail "cannot build the ORDER arm's shipped-table root"
+order_lane ship || fail "cannot write the ORDER arm's lane config"
+order_flip "$ORD/ship"
+T_I0=$(date +%s)
+LOG_I=$(order_run ship "$REPO/build/fx-agent") || { order_flip_wait; fail "ORDER (i): the wait build's run failed"; }
+E_I=$(( $(date +%s) - T_I0 ))
+order_flip_wait
+echo "qemu-agent-b2: ORDER (i) run elapsed ${E_I}s against the ${FLIP_S}s window"
+[ "$E_I" -ge $((FLIP_S - 1)) ] \
+    || fail "ORDER (i): the run finished in ${E_I}s, before the ${FLIP_S}s window closed — it cannot have waited for a verdict that had not latched"
+grep -q 'boot verdict: this boot v5 is still in-progress' "$ORD/ship.err" \
+    || { sed -n '1,5p' "$ORD/ship.err" >&2; fail "ORDER (i): the wait build did NOT report a pending boot verdict — the wait never engaged (an arm that measures nothing)"; }
+grep -q 'boot verdict: decided after' "$ORD/ship.err" \
+    || { sed -n '1,5p' "$ORD/ship.err" >&2; fail "ORDER (i): the wait never saw the verdict latch"; }
+grep -q 'wrote [0-9]* bytes to .*/fx/disk/agent-config.dhall' "$LOG_I" \
+    || { cat "$LOG_I" >&2; fail "ORDER (i): the write did not land AFTER the verdict — the loop is dead on the shipped table"; }
+grep -q 'policy ops-policy rule' "$LOG_I" \
+    && { cat "$LOG_I" >&2; fail "ORDER (i): a policy rule fired on the post-verdict write — the shipped table must permit it"; }
+grep -q 'activated .* as version 8' "$LOG_I" \
+    || { cat "$LOG_I" >&2; fail "ORDER (i): the activation did not run after the write"; }
+cmp -s "$ORD/ship/fx/disk/agent-config.dhall" "$ORD/config.dhall" \
+    || fail "ORDER (i): the write did not land byte-identical under the root"
+echo "qemu-agent-b2: ORDER (i) GREEN — with the wait, the write+activate lands AFTER the verdict (the loop works on the shipped table)"
+
+# ── (ii) BLIND + shipped table: REFUSED, naming D2 and NOT D1 ──────────────
+order_root blind || fail "cannot build the ORDER arm's blind root"
+order_lane blind || fail "cannot write the ORDER arm's blind lane config"
+order_flip "$ORD/blind"
+T_II0=$(date +%s)
+LOG_II=$(order_run blind "$REPO/build/fx-agent-nowait") || { order_flip_wait; fail "ORDER (ii): the blind build's run failed"; }
+E_II=$(( $(date +%s) - T_II0 ))
+order_flip_wait
+echo "qemu-agent-b2: ORDER (ii) run elapsed ${E_II}s against the ${FLIP_S}s window"
+[ "$E_II" -lt "$FLIP_S" ] \
+    || fail "ORDER (ii): the blind finished in ${E_II}s, i.e. AFTER the ${FLIP_S}s window closed — the verdict was already ok, so a permitted write would say nothing about the ORDER; raise FLIP_S"
+grep -q 'WAIT COMPILED OUT' "$ORD/blind.err" \
+    || { sed -n '1,5p' "$ORD/blind.err" >&2; fail "ORDER (ii): the blind build did not announce itself — a stale build/fx-agent-nowait?"; }
+grep -q 'boot verdict: this boot' "$ORD/blind.err" \
+    && fail "ORDER (ii): the blind build WAITED anyway — the wait is not what the flag removes"
+grep -q 'wrote [0-9]* bytes to .*/fx/disk/agent-config.dhall' "$LOG_II" \
+    && { cat "$LOG_II" >&2; fail "ORDER (ii): the blind build's write LANDED — the order arm cannot fail, so it proves nothing"; }
+grep -q 'fx_write REFUSED' "$LOG_II" \
+    || { cat "$LOG_II" >&2; fail "ORDER (ii): the blind build's write was not refused by the seat at all"; }
+grep -q 'policy ops-policy rule D2' "$LOG_II" \
+    || { cat "$LOG_II" >&2; fail "ORDER (ii): the refusal does not NAME rule D2"; }
+grep -q 'policy ops-policy rule D1' "$LOG_II" \
+    && { cat "$LOG_II" >&2; fail "ORDER (ii): the refusal names rule D1 too — the refusal must read as a TIMING refusal (D2), which is the whole distinction this arm exists to keep: D1 is unconditional, D2 is a window"; }
+grep -q 'boot verdict not ok' "$LOG_II" \
+    || { cat "$LOG_II" >&2; fail "ORDER (ii): the refusal does not carry the boot-verdict fact that names the TIMING"; }
+grep -q 'cannot read config' "$LOG_II" \
+    || { cat "$LOG_II" >&2; fail "ORDER (ii): the activation did not fail on the MISSING config — the refusal's consequence is not on record"; }
+grep -q 'activated .* as version 8' "$LOG_II" \
+    && { cat "$LOG_II" >&2; fail "ORDER (ii): the activation SUCCEEDED although the write was refused — nothing was written, so it must have no config to read"; }
+cp "$LOG_II" "$EVID/order-refusal-d2-not-d1.txt"
+printf '%s\n' "ORDER (ii): the blind build's write, refused inside the grace window — the refusal names D2 and NOT D1" >> "$EVID/order-refusal-d2-not-d1.txt"
+echo "qemu-agent-b2: ORDER (ii) GREEN — with the wait COMPILED OUT the same fixture is REFUSED by rule D2 (NOT D1): removing the wait"
+echo "                re-kills the loop with a refusal that reads like a policy decision, which is exactly the silent failure this arm keeps visible"
+
+# ── (iii) WAIT + the PINNED PRE-FIX table: REFUSED, naming D1 ──────────────
+order_root pre PRE || fail "cannot build the ORDER arm's pre-fix-table root"
+order_lane pre || fail "cannot write the ORDER arm's pre-fix-table lane config"
+order_flip "$ORD/pre"
+T_III0=$(date +%s)
+LOG_III=$(order_run pre "$REPO/build/fx-agent") || { order_flip_wait; fail "ORDER (iii): the pre-fix-table run failed"; }
+E_III=$(( $(date +%s) - T_III0 ))
+order_flip_wait
+echo "qemu-agent-b2: ORDER (iii) run elapsed ${E_III}s against the ${FLIP_S}s window"
+[ "$E_III" -ge $((FLIP_S - 1)) ] \
+    || fail "ORDER (iii): the run finished in ${E_III}s, before the ${FLIP_S}s window closed"
+grep -q 'policy ops-policy rule D1' "$LOG_III" \
+    || { cat "$LOG_III" >&2; fail "ORDER (iii): D1 did NOT fire on the pinned pre-fix table — the rule lost its proof along with its real-table subject"; }
+grep -q 'protected(C1)' "$LOG_III" \
+    || { cat "$LOG_III" >&2; fail "ORDER (iii): the D1 refusal does not carry the protected fact (the derivation)"; }
+grep -q 'wrote [0-9]* bytes to .*/fx/disk/agent-config.dhall' "$LOG_III" \
+    && fail "ORDER (iii): the write landed on a PROTECTED path — D1 is not what denies it"
+echo "qemu-agent-b2: ORDER (iii) GREEN — on the PINNED PRE-FIX table (protected=yes) the same request is refused by rule D1: the rule is unchanged, the operator's row is what changed"
+
 # ─── two activations on ONE store, then the images ───────────────────────
 activate() { # activate CFG -> "activated <hash> as version N"
     LD_LIBRARY_PATH="$DL" "$ZB/fx-activate" --store "$STORE" \
@@ -900,6 +1174,26 @@ boot() { # boot IMG CONLOG [with_session]
     done
     return 0
 }
+# THE POST-VERDICT WAIT (S4).  The agent service now WAITS for its boot's
+# verdict before its first tool call (src/agent/agent_main.c), so on every arm
+# the agent's write+activate lands AFTER the first `boot-ok` — which is exactly
+# when boot() returns.  Anything the gate asserts about the agent's effect must
+# therefore WAIT for it, BOUNDED: a gate that hangs is not a pass.
+AGENT_TIMEOUT="${QEMU_AGENT_TIMEOUT:-300}"   # the activation budget is 63-65 s
+wait_console() { # wait_console LOG ERE PATTERN [SECONDS]
+    _wl=$1; _wre=$2; _wsec=${3:-$AGENT_TIMEOUT}; _n=0
+    while [ "$_n" -lt $((_wsec * 2)) ]; do
+        grep -qE "$_wre" "$_wl" && return 0
+        if ! kill -0 "$qemu_pid" 2>/dev/null; then
+            sleep 1
+            grep -qE "$_wre" "$_wl" && return 0
+            return 1
+        fi
+        sleep 0.5
+        _n=$((_n + 1))
+    done
+    return 1
+}
 wait_quiet() { # disk quiescence before the abrupt kill (the store's writes)
     _q=0 _prev=""
     while [ "$_q" -lt $((BOOT_TIMEOUT * 2)) ]; do
@@ -943,32 +1237,61 @@ grep -n 'virtio control up\|boot-ok\|boot-FAILED\|B2-AGENT-RAN\|heartbeat from\|
 grep -q 'fx-init: virtio control up (/dev/vport' "$WORK/con-a1.log" \
     || { tail -30 "$WORK/con-a1.log"; halt; fail "A1: no 'virtio control up' line — the control channel is not attached"; }
 echo "qemu-agent-b2: CONTROL CHANNEL GREEN — fx-init brought the virtio control port up (A1)"
+# THE AGENT'S OWN MARKER IS EMITTED AT THE END OF ITS RUN, so it cannot be
+# asserted before the wait below: with S4's order the loop starts AFTER this
+# boot's verdict, which is exactly when boot() returns.  It is waited for
+# (bounded) after the activation, together with the post-pivot ordering.
+# ── THE ORDER, ASSERTED IN THE GUEST (S4) ─────────────────────────────────
+# THIS BOOT'S VERDICT FIRES FIRST.  Before S4 the agent activated inside the
+# bracket's grace window, which preempted that window (it never fired) and the
+# only verdict in A1 was the re-armed one on the agent's generation.  Now the
+# agent WAITS for the verdict, so the bracket's own window settles first:
+#     boot-ok v_A1   ->   the agent's write+activate   ->   re-armed: boot-ok v_N
+# The order is asserted by LINE NUMBER, not by narrative: the activation line
+# must come AFTER the first boot-ok line.
+BOOTOK1_LN=$(grep -n 'fx-init: boot-ok v' "$WORK/con-a1.log" | head -1 | cut -d: -f1)
+V_A1_RUN=$(sed -n 's/.*fx-init: boot-ok v\([0-9][0-9]*\).*/\1/p' "$WORK/con-a1.log" | head -1)
+[ -n "$BOOTOK1_LN" ] && [ -n "$V_A1_RUN" ] \
+    || { tail -40 "$WORK/con-a1.log"; halt; fail "A1: no boot-ok verdict at all — the bracket's own window never settled"; }
+[ "$V_A1_RUN" = "$V_A1" ] \
+    || fail "A1: this boot's FIRST verdict is v$V_A1_RUN, want the bracket v$V_A1 (an in-window activation preempted it — the wait is gone)"
+echo "qemu-agent-b2: THE VERDICT FIRED FIRST — boot-ok v$V_A1 at console line $BOOTOK1_LN, BEFORE the agent acted"
+# THE WAIT ITSELF, ON THE MACHINE'S OWN CONSOLE (the guest-side twin of the
+# ORDER arm; the agent's stderr is on /dev/console as a console service).
+wait_console "$WORK/con-a1.log" 'agent_main: boot verdict: this boot v[0-9]+ is still in-progress' \
+    || { tail -40 "$WORK/con-a1.log"; halt; fail "A1: the agent never reported a PENDING boot verdict — the wait did not engage, so nothing here proves the order (bounded at $AGENT_TIMEOUT s)"; }
+grep -q 'agent_main: boot verdict: decided after' "$WORK/con-a1.log" \
+    || { grep -n 'boot verdict' "$WORK/con-a1.log" | head; halt; fail "A1: the wait never saw its verdict latch"; }
+grep -qF "agent_main: boot verdict: this boot v$V_A1 is still in-progress" "$WORK/con-a1.log" \
+    || { grep -n 'boot verdict' "$WORK/con-a1.log" | head; halt; fail "A1: the pending verdict the agent reported is not v$V_A1 (the generation this boot is running)"; }
+echo "qemu-agent-b2: THE WAIT ENGAGED — the agent reported 'this boot v$V_A1 is still in-progress' and then 'decided after N ms' on its own console"
+wait_console "$WORK/con-a1.log" '^activated [0-9a-f]+ as version [0-9]+' \
+    || { tail -40 "$WORK/con-a1.log"; halt; fail "A1: no 'activated <hash> as version N' console line within ${AGENT_TIMEOUT}s of the verdict — the in-guest activation never ran"; }
+V_NEW=$(sed -n 's/^activated [0-9a-f]\{40,\} as version \([0-9][0-9]*\).*/\1/p' "$WORK/con-a1.log" | head -1)
+H_NEW=$(sed -n 's/^activated \([0-9a-f]\{40,\}\) as version.*/\1/p' "$WORK/con-a1.log" | head -1)
+[ -n "$V_NEW" ] || { tail -40 "$WORK/con-a1.log"; halt; fail "A1: the activation line carries no version number"; }
+[ "$V_NEW" -gt "$V_A1" ] || fail "A1: the agent's generation v$V_NEW is not above the image's CURRENT v$V_A1"
+ACT_LN=$(grep -n "^activated .* as version $V_NEW" "$WORK/con-a1.log" | head -1 | cut -d: -f1)
+[ -n "$ACT_LN" ] && [ "$ACT_LN" -gt "$BOOTOK1_LN" ] \
+    || fail "A1: THE ORDER IS BROKEN — the activation is at console line ${ACT_LN:-?}, the boot verdict at $BOOTOK1_LN; the write+activate must land AFTER the verdict (see the ORDER arm)"
+echo "qemu-agent-b2: THE ORDER GREEN — the agent's write+activate landed AFTER boot-ok v$V_A1 (activation at line $ACT_LN, verdict at $BOOTOK1_LN)"
+# ...and the RE-ARMED window judges the ACTIVATED generation in this same boot.
+wait_console "$WORK/con-a1.log" "^fx-init: boot-ok v$V_NEW" \
+    || { grep -n 'boot-ok\|boot-FAILED' "$WORK/con-a1.log" | tail -5; halt; fail "A1: the re-armed window never said boot-ok v$V_NEW (within ${AGENT_TIMEOUT}s)"; }
+grep -q "fx-init: boot-FAILED" "$WORK/con-a1.log" \
+    && { halt; fail "A1: a boot-FAILED verdict fired — the activated generation was failed (the second-agent-instance defect this lane catches)"; }
+echo "qemu-agent-b2: HOT-APPLY GREEN — the activation committed LIVE: the re-armed window's verdict is boot-ok v$V_NEW in the SAME boot"
+# THE AGENT'S FINAL TEXT (the loop's own marker), waited for bounded: it is
+# written when the run ends, i.e. after the activation.
+wait_console "$WORK/con-a1.log" "$TEXT_MARKER" \
+    || { tail -40 "$WORK/con-a1.log"; halt; fail "A1: the agent never printed '$TEXT_MARKER' (bounded at ${AGENT_TIMEOUT}s) — the loop did not finish"; }
 PIVOT_LN=$(grep -n 'fx-init: pivoted to tmpfs root' "$WORK/con-a1.log" | head -1 | cut -d: -f1)
 RUN_LN=$(grep -nF "$TEXT_MARKER" "$WORK/con-a1.log" | head -1 | cut -d: -f1)
 [ -n "$RUN_LN" ] || { tail -40 "$WORK/con-a1.log"; halt; fail "A1: the agent never ran (no '$TEXT_MARKER' on the console)"; }
 [ -n "$PIVOT_LN" ] || fail "A1: no pivot line"
 [ "$RUN_LN" -gt "$PIVOT_LN" ] || fail "A1: the agent's marker precedes the pivot — it did not run POST-pivot"
-echo "qemu-agent-b2: AGENT RAN POST-PIVOT — pivot at line $PIVOT_LN, the agent's text at $RUN_LN"
-# A1's verdict is the ACTIVATED generation's: fx_activate routes through
-# PID1's control channel, whose handler COMMITS live — service table rebuilt,
-# root dhake-applied, boot window RE-ARMED for the new generation — so the
-# re-armed window judges v_N IN THIS BOOT (the bracket v_A1's own window is
-# preempted and never fires; measured in the first run of this shape).  The
-# version is parsed from the activation's OWN console line (fx-activate's
-# stdout reaches the console; only its stderr was piped to the handler) —
-# the host cannot know v_N before the agent acts, and the transcript is only
-# readable after the halt.
-V_NEW=$(sed -n 's/^activated [0-9a-f]\{40,\} as version \([0-9][0-9]*\).*/\1/p' "$WORK/con-a1.log" | head -1)
-H_NEW=$(sed -n 's/^activated \([0-9a-f]\{40,\}\) as version.*/\1/p' "$WORK/con-a1.log" | head -1)
-[ -n "$V_NEW" ] || { tail -40 "$WORK/con-a1.log"; halt; fail "A1: no 'activated <hash> as version N' console line — the in-guest activation never ran"; }
-[ "$V_NEW" -gt "$V_A1" ] || fail "A1: the agent's generation v$V_NEW is not above the image's CURRENT v$V_A1"
-V_A1_RUN=$(sed -n 's/.*fx-init: boot-ok v\([0-9][0-9]*\).*/\1/p' "$WORK/con-a1.log" | head -1)
-[ -n "$V_A1_RUN" ] || { tail -40 "$WORK/con-a1.log"; halt; fail "A1: no boot-ok verdict — the activated generation did not settle"; }
-[ "$V_A1_RUN" = "$V_NEW" ] \
-    || fail "A1: the in-boot verdict is v$V_A1_RUN, want v$V_NEW (the re-armed window must judge the ACTIVATED generation)"
-grep -q "fx-init: boot-FAILED" "$WORK/con-a1.log" \
-    && { halt; fail "A1: a boot-FAILED verdict fired — the activated generation was failed (the second-agent-instance defect this lane catches)"; }
-echo "qemu-agent-b2: HOT-APPLY GREEN — the activation committed LIVE: the re-armed window's verdict is boot-ok v$V_NEW in the SAME boot"
+[ "$RUN_LN" -gt "$ACT_LN" ] || fail "A1: the agent's own text ($RUN_LN) precedes its activation ($ACT_LN) — the fixture's turn did not run in order"
+echo "qemu-agent-b2: AGENT RAN POST-PIVOT — pivot at line $PIVOT_LN, the activation at $ACT_LN, the agent's text at $RUN_LN"
 # THE AGENT EXEMPTION, asserted from the machine itself: the config's own
 # agentService row (b2verifier) must NOT be started by the activation's
 # restart sweep.  PID1 says so on the console, and the two symptoms of a
@@ -1064,8 +1387,20 @@ grep -q "fx-init: boot-ok v$V_NEW" "$WORK/con-a2.log" \
 grep -qF "heartbeat from $SVC_PROOF" "$WORK/con-a2.log" \
     || { grep -n 'heartbeat' "$WORK/con-a2.log" | head; halt; fail "A2: the agent-authored service is NOT running in the restarted machine"; }
 echo "qemu-agent-b2: ARM 1 A2 GREEN — the restarted machine runs the AGENT'S service ($SVC_PROOF)"
-grep -qF "$VERIFY_MARKER" "$WORK/con-a2.log" \
-    || { grep -n 'B2-VERIFY\|fxagent\|exec failed' "$WORK/con-a2.log" | head; halt; fail "A2: the post-restart VERIFIER agent did not run"; }
+# THE VERIFIER RUNS AFTER THIS BOOT'S VERDICT (S4's order, same as A1): the
+# b2verifier service starts inside the grace window and waits for the verdict
+# before its first tool call, so its marker lands AFTER boot-ok — wait for it,
+# bounded, instead of assuming it was already there when boot() returned.
+wait_console "$WORK/con-a2.log" "$VERIFY_MARKER" \
+    || { grep -n 'B2-VERIFY\|fxagent\|exec failed' "$WORK/con-a2.log" | head; halt; fail "A2: the post-restart VERIFIER agent did not run within ${AGENT_TIMEOUT}s of the verdict"; }
+# THE ZERO-COST PATH, MEASURED (S4): this boot runs on a store that ALREADY
+# carries an ok verdict (v$V_NEW's own, from A1), so the seat's D2 is satisfied
+# and the harness must NOT wait — the wait's precondition is the SEAT's own
+# predicate, not "always sleep".  A2 is where that path is proved: a run that
+# waited here would pay the grace window on every settled boot forever.
+grep -q 'agent_main: boot verdict: this boot' "$WORK/con-a2.log" \
+    && { grep -n 'boot verdict' "$WORK/con-a2.log" | head; halt; fail "A2: the verifier WAITED although an ok verdict was already on record — the wait must be zero-cost on a settled store (it engages only while rule D2 would deny)"; }
+echo "qemu-agent-b2: NO-WAIT PATH GREEN — with an ok verdict already on record the verifier ran immediately (the wait engages only where D2 would deny)"
 echo "qemu-agent-b2: VERDICT GREEN — the restarted machine's own agent ran and called fx_store_verify (the loop's tool)"
 { echo 'status'; echo 'probe'; echo 'q file'; echo 'grep b2verifier'; } > "$WORK/req-a2.txt"
 ctrl_session "$WORK/req-a2.txt" "$WORK/oracle-a2.txt"
@@ -1273,6 +1608,15 @@ echo "--- B1: the running verdict + the agent ---"
 grep -n 'disk store mounted\|boot-ok\|boot-FAILED\|B2-AGENT-RAN\|heartbeat from\|fakesvc exit' "$WORK/con-b1.log" | head -15
 grep -qF "$TEXT_MARKER" "$WORK/con-b1.log" \
     || { halt; fail "B1: the agent never ran (no '$TEXT_MARKER' on the console)"; }
+# THE CRASHER IS ACTIVATED AFTER THE BRACKET'S VERDICT (S4): the agent waits for
+# v_A2's window to settle before its first tool call, so the activation line
+# arrives after boot() returned.  Bounded wait, then the same assertions.
+wait_console "$WORK/con-b1.log" '^activated [0-9a-f]+ as version [0-9]+' \
+    || { tail -40 "$WORK/con-b1.log"; halt; fail "B1: no 'activated <hash> as version N' within ${AGENT_TIMEOUT}s — the agent's write+activate never landed"; }
+# (B1's store already carries v_P's ok verdict, so D2 is satisfied and the wait
+# must be a no-op here — the same zero-cost property A2 proves.)
+grep -q 'agent_main: boot verdict: this boot' "$WORK/con-b1.log" \
+    && { grep -n 'boot verdict' "$WORK/con-b1.log" | head; halt; fail "B1: the agent WAITED although an ok verdict was already on record (v_P) — the wait must be zero-cost on a settled store"; }
 # the activation is HOT-APPLIED: PID1 rebuilds the table to the crasher's,
 # re-arms the window for v_BAD, and the crasher fails IN THIS BOOT.  v_BAD is
 # parsed from the activation's console line (the host cannot know it before
@@ -1283,8 +1627,8 @@ H_BAD=$(sed -n 's/^activated \([0-9a-f]\{40,\}\) as version.*/\1/p' "$WORK/con-b
 [ "$V_BAD" -gt "$V_A2" ] || fail "B1: the agent's crasher generation v$V_BAD is not above v$V_A2"
 grep -q 'fakesvc exit 7' "$WORK/con-b1.log" \
     || { halt; fail "B1: the crasher's own output is not on the console — the activation was not hot-applied; re-derive"; }
-grep -q "fx-init: boot-FAILED v$V_BAD" "$WORK/con-b1.log" \
-    || { tail -30 "$WORK/con-b1.log"; halt; fail "B1: want boot-FAILED v$V_BAD (the hot-applied crasher must fail the re-armed window IN THIS BOOT)"; }
+wait_console "$WORK/con-b1.log" "^fx-init: boot-FAILED v$V_BAD" \
+    || { tail -30 "$WORK/con-b1.log"; halt; fail "B1: want boot-FAILED v$V_BAD (the hot-applied crasher must fail the re-armed window IN THIS BOOT), within ${AGENT_TIMEOUT}s"; }
 echo "qemu-agent-b2: ARM 2 B1 GREEN — the agent activated the crasher in-guest (v$V_BAD) and the HOT-APPLY failed it IN THE SAME BOOT"
 halt
 # the agent's own record of the failing config it activated
@@ -1336,6 +1680,24 @@ V_ROLL=$(sed -n 's/.*fx-init: boot-ok v\([0-9][0-9]*\).*/\1/p' "$WORK/con-b2.log
 [ "$V_ROLL" -gt "$V_BAD" ] || fail "B2: rolled v$V_ROLL not above v$V_BAD (not a roll FORWARD)"
 grep -q 'fakesvc exit 7' "$WORK/con-b2.log" \
     && { halt; fail "B2: the crasher's generation RAN after the roll-forward"; }
+# ── S4 CHANGES WHO THIS BOOT ROLLS FORWARD TO, AND THE ARM SAYS SO ─────────
+# The bracket v_A2's OWN window now settles BEFORE the agent acts (the wait),
+# so the newest ok generation below v_BAD is v_A2 — a generation that CARRIES
+# the agent service.  The hazard the old shape had removed ("the agent re-runs
+# and re-creates the failure") is therefore back in this arm's shape, and what
+# must stop it is the harness's OWN durable record, not the arm's geometry: the
+# agent re-runs, READS its record, and does NOT re-issue the failed activation.
+# Asserted here rather than assumed — an oscillator would ratchet versions
+# (+2/cycle) and this arm would still "pass" its roll-forward assertions.
+if [ "$V_TGT" = "$V_A2" ]; then
+    wait_console "$WORK/con-b2.log" 'fx-harness: OBSERVED OUTCOME — THE ACTIVATION THIS HARNESS RECORDED FAILED' \
+        || { tail -40 "$WORK/con-b2.log"; halt; fail "B2: the rolled-forward generation carries the agent service, and the agent neither re-ran nor reported its record — the observation loop is not in this path"; }
+    grep -q '^activated [0-9a-f]\{40,\} as version ' "$WORK/con-b2.log" \
+        && { grep -n '^activated ' "$WORK/con-b2.log" | head; halt; fail "B2: the agent RE-ACTIVATED in the rolled-forward boot — the oscillator the durable record exists to stop"; }
+    echo "qemu-agent-b2: B2 OBSERVATION LOOP GREEN — the rolled-forward generation (v$V_A2) carries the agent, and the agent read its own record and did NOT re-issue the failed activation"
+else
+    echo "qemu-agent-b2: B2 NOTE — the roll-forward target is v$V_TGT (agent-free); the record path is exercised in B3"
+fi
 echo "qemu-agent-b2: ARM 2 B2 GREEN — the restart found v$V_BAD stale-failed on the disk and rolled forward to v$V_TGT (boot-ok v$V_ROLL, the crasher's generation NOT booted)"
 # WHICH generation the restarted machine is running, read live over the
 # control channel: the restored generation's own services, and NOT the

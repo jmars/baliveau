@@ -106,6 +106,174 @@ static int same_boot_inprog_cb(void *u, unsigned long version,
  * --store overrides it (and an explicit --store must exist). */
 #define FX_STORE_DEFAULT "/fx/disk/store"
 
+/* ── THE BOOT-VERDICT WAIT: THE ORDER IS THE FIX (ACL split S4) ────────────
+ * The self-reconfiguration loop is: inspect -> write /fx/disk/agent-config.dhall
+ * -> activate -> the next boot comes up in the generation the agent authored.
+ * Two independent operator rules used to deny that write, and only one of them
+ * is about the path:
+ *
+ *   D1  denied(W,P) :- touches, kind(write), class(P,C), protected(C)
+ *       — the pinned alias table marked the agent's own config PROTECTED.  S4
+ *       flips that row to `protected=no` (policy/ops/ops-aliases.tsv, re-pinned):
+ *       the path is the one the loop is meant to author, so protecting it from
+ *       the loop is a contradiction, not a bound.
+ *
+ *   D2  denied(W,P) :- touches, kind(write), writable(P), !boot_verdict(ok)
+ *       — INDEPENDENT of D1, and unprotecting the row does not touch it.  The
+ *       agent service starts inside fx-init's GRACE WINDOW, so at the moment it
+ *       dispatches its write the boot's verdict is still `in-progress` and D2
+ *       denies.  MEASURED, not reasoned: the recorded run has the agent's marker
+ *       at console line 273 and `boot-ok v9` at 306, the bootlog going
+ *       `9 in-progress` -> `9 ok` FIFTEEN SECONDS apart — the write was denied
+ *       deterministically, inside that gap, by a TIMING rule.
+ *
+ * SO THE FIX IS THE ORDER, NOT THE UNPROTECTION.  The loop is brought to D2's
+ * own stated purpose ("writing to a floor-writable path is denied while the boot
+ * verdict is NOT ok") instead of the rule being brought to the loop — the only
+ * direction that is not a loosening.  This function is the whole of it: before
+ * the FIRST tool call of the run, wait until this boot's verdict is latched.
+ *
+ * WHERE THE WAIT LIVES, AND WHY THIS IS THE SMALLEST CORRECT PLACE.  It is one
+ * wait, at the single point where the harness crosses from startup into acting
+ * (immediately before the loop is dispatched), because:
+ *   - the loop is the only thing that can dispatch a tool call, so gating its
+ *     START puts every write and every activation after the verdict — one site,
+ *     not a per-verb gate;
+ *   - it is AFTER every early return above (a duplicate instance stopped by the
+ *     runstore lock, a refusal, a completed task) so it can never delay or
+ *     weaken a refusal;
+ *   - a per-call gate would be ordered around by the model (dispatch a write
+ *     first) and a gate inside the tool server would be a second policy author
+ *     in the governed component (§6b) — the seat must DENY, never wait.
+ * NO NEW RECORD, NO NEW WAIT PRIMITIVE: the predicate is read through
+ * outcome.c's bootlog reader, the SAME read fx_outcome reports from and the SAME
+ * one the seat's ops_boot_ok consults, so there is one reader and no drift.
+ *
+ * THE PREDICATE IS THE SEAT'S OWN, copied rather than re-invented.  The seat
+ * injects boot_verdict(ok) iff the bootlog's newest ok|failed verdict reads ok
+ * (so an OLDER ok verdict already satisfies D2 — this must not wait then), and
+ * injects nothing otherwise.  So this waits only while:
+ *     the bootlog's LAST COMPLETE line is `in-progress`   (this boot is undecided)
+ *  AND no ok|failed verdict on record reads ok            (D2 would deny)
+ * Anything else returns immediately and silently: a settled boot pays nothing,
+ * an ABSENT or unreadable bootlog is not a state to wait in (the seat's
+ * fail-closed denial is the honest answer), and a verdict that latches `failed`
+ * ends the wait too — a decided-not-ok boot is the SEAT's call to refuse, and
+ * turning that into a harness-side hold would be this code authoring policy.
+ *
+ * THE WAIT IS BOUNDED, ALWAYS.  A qemu gate that hangs is not a pass, so the
+ * poll stops at FX_BOOT_VERDICT_WAIT_MS (default 60 s, clamped to [1 s, 600 s])
+ * and says so LOUDLY on stderr, naming rule D2 — the failure it is about to
+ * hand to the seat — so a timeout reads as the timing refusal it is.
+ *
+ * THE BLIND (-DFX_NO_BOOT_VERDICT_WAIT, build/fx-agent-nowait) is the asymmetry
+ * artifact, not a feature and not a runtime switch: it dispatches the first tool
+ * call inside the grace window exactly as the tree did before this change, which
+ * is how tests/qemu-agent-b2.sh proves the ORDER is load-bearing (its write must
+ * be REFUSED, naming rule D2 and NOT rule D1).  Removing the wait silently
+ * re-kills the loop with a refusal that reads like a policy decision — that arm
+ * is what keeps a future "simplification" from doing it unnoticed.
+ *
+ * WHAT THIS DOES NOT DO, said plainly: the agent is root in the guest and can
+ * write that file by hand at any moment (§6b).  This governs the HARNESS path —
+ * the coordinated write+activate the loop performs — not the machine.  And it
+ * does not change D2: the rule still denies inside the window, which is why the
+ * order had to move rather than the rule. */
+#define FX_VERDICT_WAIT_DEFAULT_MS 60000L
+#define FX_VERDICT_WAIT_MAX_MS     600000L
+#define FX_VERDICT_POLL_MS         200L
+
+/* The wait's walk context: the bootlog's LAST COMPLETE line — the verdict this
+ * boot is waiting on.  (outcome.c's FxBootlog carries the newest ok|FAILED
+ * verdict, which is a different question: an in-progress tail is not one.) */
+typedef struct {
+    unsigned long version;
+    char          status[FX_OUTCOME_STATUS_CAP];
+    int           have;
+} VerdictWaitCtx;
+
+static int verdict_wait_last_cb(void *u, unsigned long version,
+                                const char *status, unsigned long epoch) {
+    VerdictWaitCtx *v = u;
+    (void)epoch;
+    if (!status) return 0;
+    v->version = version;
+    snprintf(v->status, sizeof v->status, "%s", status);
+    v->have = 1;
+    return 0; /* never stops the walk: the LAST line wins */
+}
+
+static long verdict_wait_ms(void) {
+    long ms = FX_VERDICT_WAIT_DEFAULT_MS;
+    const char *e = getenv("FX_BOOT_VERDICT_WAIT_MS");
+    if (e && *e) {
+        char *end = NULL;
+        long v = strtol(e, &end, 10);
+        if (end && *end == '\0' && v >= 0) ms = v;
+    }
+    if (ms < 1000) ms = 1000;
+    if (ms > FX_VERDICT_WAIT_MAX_MS) ms = FX_VERDICT_WAIT_MAX_MS;
+    return ms;
+}
+
+/* 1 = the verdict is undecided AND the seat would deny (wait); 0 = do not
+ * wait.  Fills *v/*bl with the read that decided. */
+static int verdict_pending(const char *store, FxBootlog *bl, VerdictWaitCtx *v) {
+    memset(bl, 0, sizeof *bl);
+    memset(v, 0, sizeof *v);
+    if (fx_outcome_bootlog_read(store, verdict_wait_last_cb, v, bl) != 0) return 0;
+    if (bl->absent) return 0;
+    if (!v->have || strcmp(v->status, "in-progress") != 0) return 0;
+    if (bl->have_last && strcmp(bl->last_status, "ok") == 0) return 0;
+    return 1;
+}
+
+static void boot_verdict_wait(const char *store) {
+#ifdef FX_NO_BOOT_VERDICT_WAIT
+    /* THE BLIND (see the block comment above): compiled out on purpose. */
+    (void)store;
+    fprintf(stderr,
+            "agent_main: boot verdict: WAIT COMPILED OUT (FX_NO_BOOT_VERDICT_WAIT) — "
+            "the first tool call is dispatched inside the boot's grace window, so a "
+            "write to a served path will be refused by rule D2\n");
+    return;
+#else
+    FxBootlog bl;
+    VerdictWaitCtx v;
+    if (!verdict_pending(store, &bl, &v)) return; /* settled (or nothing to judge) */
+    long budget = verdict_wait_ms();
+    long waited = 0;
+    fprintf(stderr,
+            "agent_main: boot verdict: this boot v%lu is still in-progress in %s/.bootlog "
+            "(a previous verdict is not ok, or there is none). The operator policy denies "
+            "writes to a served path until the boot verdict is ok (rule D2), so the run "
+            "waits up to %ld ms before its FIRST tool call — the write+activate must land "
+            "AFTER the verdict; that ORDER is what makes the loop work, not a looser rule\n",
+            v.version, store, budget);
+    for (;;) {
+        if (!verdict_pending(store, &bl, &v)) {
+            fprintf(stderr, "agent_main: boot verdict: decided after %ld ms (newest "
+                            "ok|failed verdict: %s%s)\n", waited,
+                    bl.have_last ? bl.last_status : "none",
+                    (bl.have_last && strcmp(bl.last_status, "ok") == 0)
+                        ? " — writes to served paths are permitted" : "");
+            return;
+        }
+        if (waited >= budget) {
+            fprintf(stderr,
+                    "agent_main: boot verdict: STILL in-progress after %ld ms — the grace "
+                    "window outlasted the wait (FX_BOOT_VERDICT_WAIT_MS). Continuing: a write "
+                    "to a served path will be REFUSED by rule D2, which is a TIMING refusal "
+                    "(the verdict was undecided), NOT a policy decision about the path\n",
+                    waited);
+            return;
+        }
+        usleep((useconds_t)FX_VERDICT_POLL_MS * 1000);
+        waited += FX_VERDICT_POLL_MS;
+    }
+#endif
+}
+
 /* Activations that may be in flight at once (one turn can dispatch several tool
  * calls).  A 9th concurrent activation still gets its durable `attempt` line —
  * durability first — it just cannot have its result matched to a config path. */
@@ -1077,6 +1245,14 @@ int agent_main_entry(int argc, char **argv) {
      * streams live.  If stdout/stdin are not a tty (or tui_init fails), the TUI
      * degrades to pass-through; for output parity we fall back to the text path
      * so a non-tty --output tui produces the SAME stdout text as --output text. */
+    /* THE BOOT-VERDICT WAIT — THE WRITE+ACTIVATE MOVES TO AFTER THE VERDICT
+     * (ACL split S4; see the block comment at the top of this file).  Placed
+     * HERE, at the last point before the loop can dispatch ANY tool call and
+     * after every early return, so the order of this run's write+activate is a
+     * property of the harness rather than of the model's call order.  It costs
+     * nothing on a settled boot and is bounded by FX_BOOT_VERDICT_WAIT_MS. */
+    boot_verdict_wait((store && *store) ? store : FX_STORE_DEFAULT);
+
     int use_tui_active = 0;
     Tui *tui = NULL;
     if (output && strcmp(output, "tui") == 0) {

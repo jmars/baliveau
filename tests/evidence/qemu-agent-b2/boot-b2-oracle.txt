@@ -3,5 +3,5 @@ boot_status:
 generation_current:
   9
 service_runtime:
-heartbeat	37	started	0
+heartbeat	36	started	0
 OK

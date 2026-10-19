@@ -2265,8 +2265,17 @@ PYCOPY
     rc=$(report_reach "$WORK/out-reach-b" "$RPOL" \
             --proxy-log "$WORK/call-log-exercised.jsonl" \
             --class-arg path:host_cat=path)
-    grep -q "^reach-row${TAB}ops-aliases.tsv${TAB}line${TAB}[0-9]*${TAB}dimension${TAB}path${TAB}pattern${TAB}/fx/disk/agent-config.dhall${TAB}class${TAB}Configpath${TAB}protected${TAB}yes${TAB}exercised${TAB}YES${TAB}DERIVED" "$WORK/out-reach-b" \
-        || fail "REACH(b): the exercised row does not read YES (the //-spelling must canonicalize, as the seat's own matcher does)"
+    # THE PROTECTED COLUMN IS READ FROM THE TABLE, NOT SPELLED HERE (ACL split
+    # S4).  This arm's subject is `exercised YES ... DERIVED` — the //-spelling
+    # canonicalizing as the seat's own matcher does — and the row's protected
+    # flag is the alias table's PASS-THROUGH, which the operator owns: S4
+    # flipped Agentconfig to `no` (the loop authors that file), so a literal
+    # `yes` here would pin the operator's DATA in a report gate and go red on
+    # every legitimate re-pin.  Read it from the table the report reads.
+    PROT_FLAG=$(awk -F"$TAB" '$1 == "Agentconfig" { print $3 }' "$RPOL/ops-aliases.tsv")
+    case "$PROT_FLAG" in yes|no) ;; *) fail "REACH(b): the alias table's protected flag reads '$PROT_FLAG'" ;; esac
+    grep -q "^reach-row${TAB}ops-aliases.tsv${TAB}line${TAB}[0-9]*${TAB}dimension${TAB}path${TAB}pattern${TAB}/fx/disk/agent-config.dhall${TAB}class${TAB}Configpath${TAB}protected${TAB}$PROT_FLAG${TAB}exercised${TAB}YES${TAB}DERIVED" "$WORK/out-reach-b" \
+        || fail "REACH(b): the exercised row does not read YES (the //-spelling must canonicalize, as the seat's own matcher does) [protected=$PROT_FLAG]"
     grep -q "^stale-class-row${TAB}ops-aliases.tsv${TAB}line${TAB}[0-9]*${TAB}dimension${TAB}path${TAB}pattern${TAB}/fx/disk/agent-data" "$WORK/out-reach-b" \
         || fail "REACH(b): the OTHER row went stale-quiet — the exercised direction is reading every row as used"
     echo "test_fx_report: S4-REACH(b) the exercised direction reads YES for a consumed row and the untouched row still reads STALE"

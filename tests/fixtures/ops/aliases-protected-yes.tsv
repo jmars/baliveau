@@ -1,0 +1,58 @@
+# policy/ops/ops-aliases.tsv — THE PINNED ALIAS TABLE (operator path aliases).
+#
+# THE AUTHOR IS THE OPERATOR.  This table is the bridge across the vocabulary
+# seam: the policy (policy/ops/ops-policy.le) may only spell the CLOSED
+# ABSTRACT vocabulary — letters-only proper nouns — while the enforcement
+# seat sees runtime paths.  Each row maps one ALIAS (declared in the ops
+# lexicon's [names], sort `alias`) to the RUNTIME path pattern it covers and
+# to the PATHCLASS the seat injects for matching paths, plus whether that
+# class is PROTECTED (which is what policy rule D1 consumes).
+#
+# Columns (TAB-separated; '#' starts a comment):
+#   alias       the lexicon proper-noun SURFACE (letters-only — an underscored
+#               name like Fx_write can never be declared, so it is refused
+#               here too, by eval_ops.py --check-aliases)
+#   pathclass   the lexicon proper-noun SURFACE of the class (sort `pathclass`)
+#   protected   yes | no   (yes -> the seat injects protected(<class>))
+#   pattern     the RUNTIME path pattern.  THE GRAMMAR IS TWO FORMS, STATED
+#               AND ENFORCED AT PIN TIME (patterns are fnmatch GLOBS matched
+#               against the ENTIRE runtime path — NEVER A PREFIX):
+#                 * an EXACT path: no glob characters; matches that one path
+#                   and NOTHING else — a bare directory path protects the
+#                   NODE only, never its children;
+#                 * a SUBTREE '<path>/**': the path ITSELF and every
+#                   descendant ('/fx/disk/agent-data/**' covers both
+#                   /fx/disk/agent-data and /fx/disk/agent-data/sub/file).
+#               Any other glob shape (a lone '*', '?', '[...]', '**' anywhere
+#               but the tail, a trailing '/') is REFUSED by eval_ops.py
+#               (alias-ambiguous-pattern): its coverage cannot be stated in
+#               one sentence, and a pattern that matches nothing is a silent
+#               allow-all.  MEASURED (S1 review): a bare directory path
+#               passes a pure absoluteness check, re-pins cleanly, and then
+#               a write to /fx/disk/agent-data/sub/file derives rows=0 —
+#               the tree an operator meant to protect is silently
+#               unprotected.  Spell the subtree form, or protect exact files.
+#
+# AN UNRESOLVABLE ALIAS IS A LOUD REFUSAL, NEVER A SILENT NON-MATCH:
+#   * at pin time, `python3 policy/ops/eval_ops.py --check-aliases` refuses an
+#     alias the lexicon does not declare (alias-undeclared), a class of the
+#     wrong sort (alias-foreign-sort), a bad protected flag, a relative
+#     pattern, an AMBIGUOUS glob shape (alias-ambiguous-pattern — see the
+#     grammar above), a duplicate alias, and a declared alias missing from
+#     this table; every row's stated coverage (exact|subtree) is echoed in
+#     the OK output so the semantics are restated at every release;
+#   * at startup (slice S2), the enforcement seat resolves every pattern
+#     against the paths it serves and refuses loudly if a PROTECTED alias
+#     matches nothing — AND (the other direction, named by the S1 review)
+#     if a SERVED writable path is covered by NO row: an unclassified
+#     writable path is untightened-not-loosened (the floor still governs),
+#     but it must be refused loudly, never silently unguarded.  S2's seat
+#     implements the SAME two-form grammar the checker enforces here.
+# The table is pinned in policy/ops/PINS: editing it is a re-pin (a release),
+# so a swapped table fails the pin check loudly.
+#
+# The deployment's real aliases (MEASURED against fx-verbs-server.c's
+# writable set: /fx/disk/agent-config.dhall is THE agent-writable path, and
+# /fx/disk/agent-data is the durable data disk):
+Agentconfig	Configpath	yes	/fx/disk/agent-config.dhall
+Agentdata	Datadir	no	/fx/disk/agent-data

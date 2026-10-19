@@ -54,5 +54,40 @@
 # The deployment's real aliases (MEASURED against fx-verbs-server.c's
 # writable set: /fx/disk/agent-config.dhall is THE agent-writable path, and
 # /fx/disk/agent-data is the durable data disk):
-Agentconfig	Configpath	yes	/fx/disk/agent-config.dhall
+#
+# THE TWO ROWS, AND WHY NEITHER IS PROTECTED (ACL split S4):
+#   Agentconfig  /fx/disk/agent-config.dhall  was `yes` and is now `no`.
+#     That path is the file the self-reconfiguration loop AUTHORS (inspect ->
+#     write the activation config -> activate -> the next boot comes up in the
+#     generation the agent wrote).  Protecting it from the loop that exists to
+#     write it is a contradiction, not a bound: with D1 armed, the agent's own
+#     write of its own config is denied by the operator policy, and the loop is
+#     dead.  This file carries INTENT ONLY now (hostname/packages/users/
+#     services/extraEtc/bootGraceMs/agentService) — every ACCESS-CONTROL field
+#     moved to the host in the same split (src/agent/config.c: the guest schema
+#     cannot express a tool list, and a config that names one is refused) — so
+#     naming a lane config from here is an INTENT act and needs no protection.
+#   Agentdata    /fx/disk/agent-data          stays `no`; never was protected.
+#
+# THE ROW IS KEPT, AND FLIPPED RATHER THAN DELETED.  The seat refuses at startup
+# if a SERVED writable path is covered by NO row (S2's totality check), so
+# deleting it would break the image for a reason unrelated to this decision; the
+# row still injects class(/fx/disk/agent-config.dhall, Configpath), which is what
+# any future rule about that path would consume.
+#
+# WHAT STILL DENIES THAT WRITE, AND IT IS NOT THIS TABLE: rule D2 —
+# `touches x kind(write) x writable(P) x !boot_verdict(ok)` — denies any served
+# write while the boot verdict is not ok, and the agent service starts INSIDE
+# fx-init's grace window.  Unprotecting this row is NECESSARY BUT NOT SUFFICIENT;
+# the LOOP is brought to the rule instead, by waiting for the verdict before its
+# first tool call (src/agent/agent_main.c, the boot-verdict wait).  D1 itself is
+# unchanged and still proved — on a fixture table with `protected=yes`
+# (tests/test_ops_policy.sh b4a, tests/verbs-smoke.sh's D1 arm) — so the rule
+# losing its ONE real-table subject is not the rule losing its proof.
+#
+# NOT A LOOSENING OF ANY FLOOR: protected is operator DATA, and the compiled-in
+# writable set in tools/fx-verbs-server.c is still the floor (decision =
+# floor_allows && !denied).  §6b is unchanged too: the agent is root and could
+# write that file by hand at any moment; this row governs the HARNESS path.
+Agentconfig	Configpath	no	/fx/disk/agent-config.dhall
 Agentdata	Datadir	no	/fx/disk/agent-data

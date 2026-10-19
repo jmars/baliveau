@@ -106,6 +106,17 @@ SAND="$OPS/ops-sandbox.tsv"
 ART="$OPS/ops-policy.dl"
 PINS="$OPS/PINS"
 FIX="$REPO/tests/fixtures/ops"
+# THE PRE-FIX ALIAS TABLE (ACL split S4).  policy/ops/ops-aliases.tsv marks
+# /fx/disk/agent-config.dhall `protected=no` now: that path is the file the
+# self-reconfiguration loop AUTHORS, so protecting it from the loop was a
+# contradiction, and D1 was denying the agent its own config.  D1 ITSELF IS
+# UNCHANGED and still has to be PROVED, so its subject is a pinned COPY of the
+# table at HEAD (protected=yes), sha-pinned in the file beside it AND
+# cmp-guarded against the working table — a "pin" that has drifted into the
+# working file would make every D1 arm here pass on the SHIPPED table, i.e. a
+# vacuous control (the shape this tree has eaten once already).
+ACL_PRE="$FIX/aliases-protected-yes.tsv"
+ACL_PRE_SHA="$FIX/aliases-protected-yes.tsv.sha256"
 CLAIMS_LEX="$REPO/policy/claims-lexicon.ini"
 CLAIMS_PLEX="$REPO/policy/policy-lexicon.ini"
 
@@ -116,9 +127,24 @@ for f in "$EVAL" "$LEX" "$POLICY" "$TSV" "$HOSTS" "$SAND" "$ART" "$PINS" \
          "$FIX/deny-data-ok.tsv" "$FIX/deny-data-noboot.tsv" \
          "$FIX/deny-data-bootfailed.tsv" "$FIX/deny-data-sub-ok.tsv" \
          "$FIX/read-protected-ok.tsv" "$FIX/deny-hostcat-protected.tsv" \
-         "$FIX/deny-hostcat-data.tsv" "$CLAIMS_LEX" "$CLAIMS_PLEX"; do
+         "$FIX/deny-hostcat-data.tsv" "$ACL_PRE" "$ACL_PRE_SHA" \
+         "$CLAIMS_LEX" "$CLAIMS_PLEX"; do
     [ -f "$f" ] || fail "missing $f"
 done
+
+# ── THE PRE-FIX CONTROL (S4): the D1 subject, pinned and NOT vacuous ──
+_pre_want=$(tr -d "[:space:]" < "$ACL_PRE_SHA")
+[ -n "$_pre_want" ] || fail "$ACL_PRE_SHA is empty — the pre-fix table is unpinned"
+_pre_got=$(sha256sum "$ACL_PRE" | cut -d" " -f1)
+[ "$_pre_got" = "$_pre_want" ] \
+    || fail "$ACL_PRE sha256 $_pre_got is NOT the pinned $_pre_want — the pre-fix table was edited; it is a COPY of a released table, not a live fixture"
+cmp -s "$ACL_PRE" "$TSV" \
+    && fail "VACUOUS CONTROL: $ACL_PRE is byte-identical to the WORKING table $TSV — the D1 arms would be testing the shipped table, not the pre-fix one"
+grep -q "^Agentconfig	Configpath	yes	" "$ACL_PRE" \
+    || fail "$ACL_PRE does not mark Agentconfig protected=yes — it is not the pre-fix table"
+grep -q "^Agentconfig	Configpath	no	" "$TSV" \
+    || fail "$TSV does not mark Agentconfig protected=no — S4's alias flip is absent (the D1 arms below would then be testing themselves)"
+echo "test_ops_policy: pre-fix alias table pinned ($_pre_want, protected=yes); the working table is protected=no and DIFFERS"
 
 W="$REPO/build/ops-policy-gate"
 rm -rf "$W"; mkdir -p "$W" || fail "cannot create $W"
@@ -213,10 +239,10 @@ arm() { # arm NAME WANT_RC PATTERN ARGS...
     echo "test_ops_policy: OK $name (exit $rc, /$pat/)"
 }
 
-deny_arm() { # deny_arm NAME FACTS WANT_ROWS [WANT_ROW]
-    name=$1; fx=$2; want=$3; wantrow=${4:-}
+deny_arm() { # deny_arm NAME FACTS WANT_ROWS [WANT_ROW] [ALIASES]
+    name=$1; fx=$2; want=$3; wantrow=${4:-}; aliases=${5:-$TSV}
     out="$W/$name.txt"
-    python3 "$W/driver.py" --policy "$ART" --aliases "$TSV" --facts "$fx" >"$out" 2>&1
+    python3 "$W/driver.py" --policy "$ART" --aliases "$aliases" --facts "$fx" >"$out" 2>&1
     rc=$?
     [ "$rc" = 0 ] || fail "arm $name: the driver exited $rc: $(cat "$out")"
     grep -q "^rows=$want\$" "$out" || fail "arm $name: expected rows=$want, got $(grep '^rows=' "$out")"
@@ -240,10 +266,10 @@ grep -v "^Agentdata	" "$TSV" > "$W/missing.tsv"
 cmp -s "$TSV" "$W/missing.tsv" && fail "the tsv grep matched NOTHING"
 arm b0c-alias-table-missing 1 'alias-table-missing' --check-aliases --aliases "$W/missing.tsv" --policy-lexicon "$LEX"
 # b0d/b0e: the flag and the pattern are validated, not trusted.
-sed -e "s@^Agentconfig	Configpath	yes@Agentconfig	Configpath	maybe@" "$TSV" > "$W/badflag.tsv"
+sed -e "s@^Agentconfig	Configpath	[[:lower:]]*	@Agentconfig	Configpath	maybe	@" "$TSV" > "$W/badflag.tsv"
 cmp -s "$TSV" "$W/badflag.tsv" && fail "the flag sed matched NOTHING"
 arm b0d-alias-protected-flag 1 'alias-protected-flag' --check-aliases --aliases "$W/badflag.tsv" --policy-lexicon "$LEX"
-sed -e "s@^Agentconfig	Configpath	yes	/@Agentconfig	Configpath	yes	fx/@g" "$TSV" > "$W/badpat.tsv"
+sed -e "s@^Agentconfig	Configpath	\([[:lower:]]*\)	/@Agentconfig	Configpath	\1	fx/@g" "$TSV" > "$W/badpat.tsv"
 cmp -s "$TSV" "$W/badpat.tsv" && fail "the pattern sed matched NOTHING"
 arm b0e-alias-bad-pattern 1 'alias-bad-pattern' --check-aliases --aliases "$W/badpat.tsv" --policy-lexicon "$LEX"
 # b0f: THE SEAM, spelled: an underscored alias can never be a proper noun, so
@@ -347,7 +373,16 @@ echo "test_ops_policy: -- B4 deny-direction, through the engine, over the REAL p
 # b4a: floor ALLOWS (the path is in the compiled-in writable set) and the
 # policy DENIES (the alias's class is protected): D1 fires.  This is the
 # anti-dead-layer arm -- a policy that never denied here would be decoration.
-deny_arm b4a-d1-protected-write "$FIX/deny-protected-ok.tsv" 1 '(fx_write, /fx/disk/agent-config.dhall)'
+# THE SUBJECT IS THE PINNED PRE-FIX TABLE ($ACL_PRE, protected=yes), not the
+# working one: S4 flipped the shipped row to `no` because that path is the file
+# the loop AUTHORS, so the shipped table would derive ZERO rows here — the rule
+# would silently lose its proof along with its subject.  b4a-prop-guard below
+# asserts that ZERO-row direction explicitly, so neither arm can pass for the
+# other's reason.
+deny_arm b4a-d1-protected-write "$FIX/deny-protected-ok.tsv" 1 '(fx_write, /fx/disk/agent-config.dhall)' "$ACL_PRE"
+# ...and the SHIPPED table, same facts: D1 does NOT fire (S4's flip), so the one
+# real-table subject of the rule is gone BY DECISION while the rule is unchanged.
+deny_arm b4a-prop-shipped-unprotected "$FIX/deny-protected-ok.tsv" 0 '' "$TSV"
 # b4b: same floor, UNprotected class, boot ok: ZERO rows.  Negative control
 # for D1 -- and the DENY-ALL detector (an unconditional policy fires here).
 deny_arm b4b-d1-negative "$FIX/deny-data-ok.tsv" 0
@@ -377,10 +412,10 @@ diff "$W/b4e-ok.body" "$W/b4e-failed.body" > "$W/b4e-pair.diff"
 grep -q '^< boot_verdict	ok$' "$W/b4e-pair.diff" && grep -q '^> boot_verdict	failed$' "$W/b4e-pair.diff" \
     || fail "b4e: the differing line is not the boot verdict's VALUE ($(cat "$W/b4e-pair.diff"))"
 # b4d: the kind scope holds: a READ on the protected path is not denied.
-deny_arm b4d-kind-scope "$FIX/read-protected-ok.tsv" 0
+deny_arm b4d-kind-scope "$FIX/read-protected-ok.tsv" 0 '' "$ACL_PRE"
 # b4f: S2 D3's deny-direction — a HOST TOOL touching a PROTECTED path is
 # denied via the hosttool bridge (no kind(write) fact, so only D3 can fire).
-deny_arm b4f-d3-hosttool-protected "$FIX/deny-hostcat-protected.tsv" 1 '(host_cat, /fx/disk/agent-config.dhall)'
+deny_arm b4f-d3-hosttool-protected "$FIX/deny-hostcat-protected.tsv" 1 '(host_cat, /fx/disk/agent-config.dhall)' "$ACL_PRE"
 # b4g: S2 D3's negative control — a host tool touching an UNprotected path is
 # NOT denied (the class is not protected; the DENY-ALL detector for D3).
 deny_arm b4g-d3-hosttool-negative "$FIX/deny-hostcat-data.tsv" 0
@@ -403,7 +438,7 @@ grep -q '^Fxwrite = verb' "$W/lexicon-naive.ini" || fail "the naive-seam mutant 
 python3 "$EVAL" --compile-policy --policy-le "$FIX/naive-spelling.le" --policy-lexicon "$W/lexicon-naive.ini" >"$W/naive.dl" 2>&1 \
     || fail "b5b: the naive policy did not even compile -- the silent direction needs a policy that pins cleanly"
 grep -q 'touches(fxwrite, P1)' "$W/naive.dl" || fail "b5b: the naive dl does not spell the folded constant fxwrite"
-python3 "$W/driver.py" --policy "$W/naive.dl" --aliases "$TSV" --facts "$FIX/deny-protected-ok.tsv" >"$W/b5b.txt" 2>&1
+python3 "$W/driver.py" --policy "$W/naive.dl" --aliases "$ACL_PRE" --facts "$FIX/deny-protected-ok.tsv" >"$W/b5b.txt" 2>&1
 grep -q '^rows=0$' "$W/b5b.txt" || fail "b5b: the naive-spelling policy DID derive on the real facts -- the silent allow-all could not be executed, so the arm proves nothing"
 grep -q '^rows=1$' "$W/b4a-d1-protected-write.txt" || fail "b5b: the honest control (b4a) must derive while the naive one does not"
 echo "test_ops_policy: OK b5b-seam-silent-allow-all (the naive spelling compiles, lints, and derives ZERO rows where the honest policy derives one -- THE failure direction the seam finding is about)"
@@ -411,8 +446,8 @@ echo "test_ops_policy: OK b5b-seam-silent-allow-all (the naive spelling compiles
 # with the pin honestly re-taken (an operator's own consistent bad edit --
 # the pin check cannot catch it), silently stops protecting: no class fact,
 # no protected fact, D1 never fires.  The deny arms are the catch.
-sed -e 's@^Agentconfig	Configpath	yes	/fx/disk/agent-config.dhall$@Agentconfig	Configpath	yes	/fx/disk/agent-config.dhal@' "$TSV" > "$W/typo.tsv"
-cmp -s "$TSV" "$W/typo.tsv" && fail "the typo sed matched NOTHING"
+sed -e 's@^Agentconfig	Configpath	\([[:lower:]]*\)	/fx/disk/agent-config.dhall$@Agentconfig	Configpath	\1	/fx/disk/agent-config.dhal@' "$ACL_PRE" > "$W/typo.tsv"
+cmp -s "$ACL_PRE" "$W/typo.tsv" && fail "the typo sed matched NOTHING"
 grep -q 'agent-config.dhal$' "$W/typo.tsv" || fail "the typo mutant does not mistype the pattern"
 python3 "$W/driver.py" --policy "$ART" --aliases "$W/typo.tsv" --facts "$FIX/deny-protected-ok.tsv" >"$W/b5c.txt" 2>&1
 grep -q '^resolved	class-facts=0	protected-facts=0$' "$W/b5c.txt" || fail "b5c: the typo'd table still resolved -- the silent allow-all through the table could not be executed"
@@ -458,7 +493,7 @@ echo "test_ops_policy: -- B6 each deny rule proved able to fail, per direction -
 sed -e '/kind(W1, write), class(P1, C1)/d' "$ART" > "$W/mutant-d1.dl"
 cmp -s "$ART" "$W/mutant-d1.dl" && fail "the D1 sed matched NOTHING (the mutant would be the original)"
 [ "$(grep -c '^denied(' "$W/mutant-d1.dl")" = 2 ] || fail "the D1 mutant must leave exactly TWO deny rules (D2 and D3)"
-python3 "$W/driver.py" --policy "$W/mutant-d1.dl" --aliases "$TSV" --facts "$FIX/deny-protected-ok.tsv" >"$W/b6a.txt" 2>&1
+python3 "$W/driver.py" --policy "$W/mutant-d1.dl" --aliases "$ACL_PRE" --facts "$FIX/deny-protected-ok.tsv" >"$W/b6a.txt" 2>&1
 grep -q '^rows=0$' "$W/b6a.txt" || fail "b6a: the D1-mutant still denied the protected write -- D1 is not what denies it"
 echo "test_ops_policy: OK b6a-d1-mutant (D1 dropped -> the protected-write denial vanishes: the arm can fail in the allow-all direction)"
 # b6c: drop rule D3 (the hosttool bridge) -- a HOST TOOL touching a protected
@@ -467,7 +502,7 @@ echo "test_ops_policy: OK b6a-d1-mutant (D1 dropped -> the protected-write denia
 sed -e '/hosttool(W1)/d' "$ART" > "$W/mutant-d3.dl"
 cmp -s "$ART" "$W/mutant-d3.dl" && fail "the D3 sed matched NOTHING (the mutant would be the original)"
 [ "$(grep -c '^denied(' "$W/mutant-d3.dl")" = 2 ] || fail "the D3 mutant must leave exactly TWO deny rules (D1 and D2)"
-python3 "$W/driver.py" --policy "$W/mutant-d3.dl" --aliases "$TSV" --facts "$FIX/deny-hostcat-protected.tsv" >"$W/b6c.txt" 2>&1
+python3 "$W/driver.py" --policy "$W/mutant-d3.dl" --aliases "$ACL_PRE" --facts "$FIX/deny-hostcat-protected.tsv" >"$W/b6c.txt" 2>&1
 grep -q '^rows=0$' "$W/b6c.txt" || fail "b6c: the D3-mutant still denied the host tool's protected path -- D3 is not what denies it"
 echo "test_ops_policy: OK b6c-d3-mutant (D3 dropped -> the host-tool protected-path denial vanishes: the host-tool direction can fail in the allow-all direction)"
 # b6b: drop D2's boot condition -- D2 becomes an UNCONDITIONAL writable
@@ -482,7 +517,7 @@ echo "test_ops_policy: OK b6b-d2-mutant (the boot condition dropped -> the ok-bo
 
 echo "test_ops_policy: BOUND -- S1 compiles, lints, pins and VALIDATES only; the enforcement seat at the fx-verbs server's commit sites is slice S2, and nothing here changes any server or floor behavior."
 echo "test_ops_policy: BOUND -- deny-more-only: the policy vocabulary has NO allow predicate; every head is 'denied'; D2 fails CLOSED (an absent/unreadable boot verdict satisfies the denial)."
-echo "test_ops_policy: BOUND -- the seam is designed around, not assumed: spelled runtime symbols are refused LOUDLY at lexicon load (b5a), the naive letters-only spelling is shown to pin cleanly and silently allow (b5b), and a re-pinned typo'd alias pattern does the same through the table (b5c) -- each caught only by the deny-direction arms, which is why those anchor to the REAL pinned table."
+echo "test_ops_policy: BOUND -- the seam is designed around, not assumed: spelled runtime symbols are refused LOUDLY at lexicon load (b5a), the naive letters-only spelling is shown to pin cleanly and silently allow (b5b), and a re-pinned typo'd alias pattern does the same through the table (b5c) -- each caught only by the deny-direction arms.  Those arms anchor to the PINNED PRE-FIX alias table (protected=yes) since S4 flipped the shipped row to `no` -- the rule is unchanged and still proved able to fire and able to fail; the shipped table's own zero-row direction is asserted beside them (b4a-prop-shipped-unprotected), so neither reading can pass for the other's reason."
 echo "test_ops_policy: BOUND -- the driver resolves alias patterns against the fact set's paths; S2's seat must do the same at startup and REFUSE LOUDLY when a protected alias matches nothing (b5c is the defect it prevents), and must implement the SAME two-form pattern grammar the checker enforces (exact, or '<path>/**' subtree -- b5d is the semantics, b0g the refusals)."
 echo "test_ops_policy: BOUND -- the uncovered-path direction (S1 review, nice-to-have (i)): a SERVED writable path covered by NO row is silently unclassified (b5e executes it: the grandchild under a bare-dir row).  Deny-more-only makes this untightened-not-loosened, but S2's startup obligation is BOTH directions: a protected alias matching nothing AND a served path no row covers -- refuse loudly, never silently unguarded."
 echo "test_ops_policy: BOUND -- the folding contract (S1 review, nice-to-have (iii), stated in ops-lexicon.ini): the seat injects FOLDED symbols (Write -> write, Ok -> ok); an unfolded surface would silently non-match (the allow-all direction).  S2 machine-checks it: startup asserts every verb-table row acquired its kind fact, per call that the canon path acquired its class fact; relation-level shape mismatches are already loud (dlb refuses an unknown predicate by name)."

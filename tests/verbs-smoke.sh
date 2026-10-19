@@ -122,7 +122,7 @@ else
 fi
 
 # ── THE PRE-FIX ARTIFACT of the OPS-POLICY seat (the P0 ASYMMETRY arm) ───────
-# The policy-deny case (a protected path + a boot-not-ok verdict, BOTH inside
+# The policy-deny case (a SERVED path + a boot-not-ok verdict, BOTH inside
 # the writable set so the FLOOR passes) must SUCCEED on the pre-seat server
 # and be REFUSED naming rule D2 on the current one — a policy layer proven
 # only post-change is a layer on trust.  The pinned rev is the S1 commit
@@ -1083,10 +1083,45 @@ s4.wait(timeout=5)
 import hashlib
 
 POL_SRC = os.path.join(os.getcwd(), "policy", "ops")
-POL_FILES = ("ops-policy.dl", "ops-aliases.tsv", "ops-lexicon.ini", "ops-hosts.tsv", "PINS")
+# ops-sandbox.tsv is pinned too (palisade S3, c23e50f): the seat verifies EVERY
+# pinned file before it believes a denial, so a policy dir missing it REFUSES
+# STARTUP — this list had drifted behind policy/ops/PINS and every arm below
+# was reading a refusing server instead of the seat.
+POL_FILES = ("ops-policy.dl", "ops-aliases.tsv", "ops-lexicon.ini", "ops-hosts.tsv",
+             "ops-sandbox.tsv", "PINS")
 REPO_DL_SHA = [l.split("\t")[1].strip()
                for l in open(os.path.join(POL_SRC, "PINS")).read().splitlines()
                if l.startswith("ops-policy.dl\t")][0]
+# ── THE PRE-FIX ALIAS TABLE (ACL split S4) ──────────────────────────────────
+# policy/ops/ops-aliases.tsv marks /fx/disk/agent-config.dhall `protected=no`
+# now: that file is the one the self-reconfiguration loop AUTHORS, so D1 was
+# denying the agent its own config and killing the loop.  D1 ITSELF IS
+# UNCHANGED, so its proof moves to a PINNED COPY of the table at HEAD
+# (protected=yes): sha-pinned in the file beside it AND cmp-guarded against the
+# working table, because a "pin" that had drifted into the working file would
+# make these arms pass on the SHIPPED table — the vacuous control this tree has
+# eaten before.  Every D1 arm below runs on this copy; every S4-direction arm
+# runs on the shipped table.
+PRE_TABLE = os.path.join(os.getcwd(), "tests", "fixtures", "ops",
+                         "aliases-protected-yes.tsv")
+PRE_SHA_FILE = PRE_TABLE + ".sha256"
+PRE_SHA = open(PRE_SHA_FILE).read().strip()
+_PRE_GOT = hashlib.sha256(open(PRE_TABLE, "rb").read()).hexdigest()
+ok("S4 pre-fix control: the D1 subject is the PINNED copy of the alias table "
+   "at HEAD (protected=yes), sha for sha",
+   _PRE_GOT == PRE_SHA and bool(PRE_SHA), repr((_PRE_GOT, PRE_SHA)))
+ok("S4 pre-fix control: that copy is NOT the working table (a control equal to "
+   "the file under test is VACUOUS)",
+   open(PRE_TABLE, "rb").read()
+   != open(os.path.join(POL_SRC, "ops-aliases.tsv"), "rb").read()
+   and b"Agentconfig\tConfigpath\tyes\t" in open(PRE_TABLE, "rb").read()
+   and b"Agentconfig\tConfigpath\tno\t"
+       in open(os.path.join(POL_SRC, "ops-aliases.tsv"), "rb").read(),
+   "the shipped row must be protected=no and the pinned copy protected=yes")
+def use_pre_table(pol):
+    """Install the pinned pre-fix table (protected=yes) and re-pin it."""
+    shutil.copy(PRE_TABLE, os.path.join(pol, "ops-aliases.tsv"))
+    repin(pol, "ops-aliases.tsv")
 # BOTH writable paths are covered by the REAL pinned table (Agentconfig exact,
 # Agentdata exact-on-the-node): the config path is PROTECTED (D1), the data
 # node is not — the two shapes the two rules distinguish.
@@ -1225,39 +1260,68 @@ else:
 sp0 = Srv(bin, deny_root, POL_WRITABLE); sp0.handshake()
 dt = sp0.text("fx_write", {"path": "/fx/disk/agent-config.dhall",
                            "content": "x"}, 111)
-ok("P0/P2 deny direction: REFUSED naming rule D1 AND rule D2, each with the "
-   "artifact's own derivation, the verb, the path and the boot verdict",
+ok("P0/P2 deny direction (S4): on the SHIPPED table the refused write names "
+   "rule D2 ALONE \u2014 with its own derivation, the verb, the path and the boot "
+   "verdict, and NOT rule D1 (the alias row is unprotected now: that path is "
+   "the file the loop AUTHORS)",
    dt.startswith("exit=1\n") and "REFUSED" in dt
-   and "policy ops-policy rule D1" in dt and "policy ops-policy rule D2" in dt
-   and "protected(C1)" in dt and "!boot_verdict(ok)" in dt
+   and "policy ops-policy rule D2" in dt and "policy ops-policy rule D1" not in dt
+   and "!boot_verdict(ok)" in dt and "protected(C1)" not in dt
    and "boot verdict not ok" in dt
    and "path /fx/disk/agent-config.dhall" in dt
    and "(verb fx_write" in dt, repr(dt))
 rc, err = sp0.close()
-ok("P0: the denial lines also reach stderr (the stand-alone console copy)",
-   err.count("policy ops-policy rule D") >= 2, repr(err[:400]))
+ok("P0: the denial line also reaches stderr (the stand-alone console copy, "
+   "naming rule D2 and not D1)",
+   err.count("policy ops-policy rule D") == 1 and "rule D2" in err, repr(err[:400]))
 ok("P0: the denied write never reached the filesystem (refused BEFORE open())",
    not os.path.exists(os.path.join(deny_root, "fx/disk/agent-config.dhall")))
 
+# D1's PROOF MOVES, IT DOES NOT VANISH (S4).  The rule is unchanged; what
+# changed is that the operator no longer protects the ONE path the loop exists
+# to author.  So D1 is proved on the PINNED PRE-FIX table (protected=yes) —
+# the same request, the same boot verdict — and the SHIPPED table is asserted
+# to derive ZERO rows for it, in the same breath, so neither reading can pass
+# for the other's reason.
+d1_root = build_policy_root("d1pre", "ok", mutate=use_pre_table)
+sd1 = Srv(bin, d1_root, POL_WRITABLE); sd1.handshake()
+t = sd1.text("fx_write", {"path": "/fx/disk/agent-config.dhall",
+                          "content": "x"}, 119)
+ok("P2 D1-only attribution (PINNED PRE-FIX table, protected=yes): the ok-boot "
+   "write names rule D1 alone, with boot verdict ok — the rule still bites",
+   t.startswith("exit=1\n") and "rule D1" in t and "rule D2" not in t
+   and "protected(C1)" in t and "boot verdict ok" in t, repr(t))
+ok("P2 (S4) the pre-fix control can FAIL southward: the refused write did not "
+   "reach the filesystem",
+   not os.path.exists(os.path.join(d1_root, "fx/disk/agent-config.dhall")), "")
+rc, err = sd1.close()
+ok("P2: on the PRE-FIX table the denial line reaches stderr too",
+   err.count("policy ops-policy rule D") == 1 and "rule D1" in err, repr(err[:400]))
+
 # P2-allow side + P3 — the over-refusal guard on the REAL pinned table: the
-# ok-boot protected write is STILL denied (D1 is unconditional — that is the
-# operator's pinned intent), with the attribution naming D1 alone and the
-# boot verdict ok; the ok-boot UNPROTECTED covered write SUCCEEDS.
+# ok-boot write to the AGENT-CONFIG path now SUCCEEDS (S4's direction: the loop
+# must be able to author its own config), and the ok-boot UNPROTECTED covered
+# write still does.
 ok_root = build_policy_root("okboot", "ok")
 sok = Srv(bin, ok_root, POL_WRITABLE); sok.handshake()
 t = sok.text("fx_write", {"path": "/fx/disk/agent-config.dhall",
                           "content": "x"}, 120)
-ok("P2 D1-only attribution: the ok-boot protected write names rule D1 alone, "
-   "with boot verdict ok",
-   t.startswith("exit=1\n") and "rule D1" in t and "rule D2" not in t
-   and "boot verdict ok" in t, repr(t))
+ok("P2 (S4) THE LOOP'S OWN PATH IS WRITABLE on the shipped table: the ok-boot "
+   "write to /fx/disk/agent-config.dhall SUCCEEDS — no policy rule denies it "
+   "any more (D1 flipped by decision, D2 satisfied by the verdict)",
+   t.startswith("exit=0\n") and "wrote" in t, repr(t))
 t3 = sok.text("fx_write", {"path": "/fx/disk/agent-data", "content": "x"}, 121)
 ok("P3 over-refusal guard: the ok-boot unprotected covered write SUCCEEDS",
    t3.startswith("exit=0\n") and "wrote" in t3, repr(t3))
 rc, err = sok.close()
+_RULE_N = sum(1 for _l in open(os.path.join(POL_SRC, "ops-policy.dl"))
+              if _l.startswith("denied("))
 ok("the loaded startup line names the artifact, rules, rows and served set",
-   "ops-policy: loaded" in err and "2 rule(s)" in err and "2 alias row(s)" in err
-   and "2 served writable path(s)" in err and REPO_DL_SHA[:16] in err, repr(err))
+   "ops-policy: loaded" in err and ("%d rule(s)" % _RULE_N) in err
+   and _RULE_N >= 2
+   and "2 alias row(s)" in err
+   and "2 served writable path(s)" in err and REPO_DL_SHA[:16] in err,
+   "rules=%d: %r" % (_RULE_N, err))
 
 # THE VERDICT MOVES, per call, within ONE server: the R3 wrong-moment risk —
 # the boot verdict is recomputed fresh per call and a denial never LATCHES.
@@ -1302,6 +1366,10 @@ sda.close()
 # The seat must refuse STARTUP loudly: an unresolvable protected alias is
 # never silently unmatched.
 def mutate_pattern(pol):
+    # Starts from the PINNED PRE-FIX table (protected=yes): on the shipped table
+    # this mutation would exercise the OTHER direction (a served path no row
+    # covers) and the PROTECTED direction would go unproved.
+    use_pre_table(pol)
     p = os.path.join(pol, "ops-aliases.tsv")
     txt = open(p).read().replace(
         "Agentconfig\tConfigpath\tyes\t/fx/disk/agent-config.dhall",
@@ -1323,10 +1391,16 @@ ok("P4a THE SILENT ALLOW-ALL CATCH: the re-pinned never-matching protected "
    and "sha256 mismatch" not in err, repr(err))
 
 # P4b — the mutation that IS silent (the protected FLAG flipped, pin
-# re-taken): the P2 denial DISAPPEARS — the ok-boot protected write SUCCEEDS.
-# This is the allow-all executed; the paired control is the P2 D1-only arm
-# above on the real table, which refuses the same request.
+# re-taken): the D1 denial DISAPPEARS — the ok-boot write to the agent-config
+# path SUCCEEDS.  This is the allow-all executed; the paired control is the P2
+# D1-only arm above on the SAME pinned pre-fix table, which refuses the same
+# request.  NOTE THE DIRECTION: this mutation reproduces what S4 did to the
+# SHIPPED row, deliberately and with a reason (the loop authors that file) —
+# which is exactly why the arm must keep running: the difference between this
+# mutant and the release is the reason, not the bytes, so the denial losing its
+# real-table subject has to stay VISIBLE in a gate.
 def mutate_unprotect(pol):
+    use_pre_table(pol)
     p = os.path.join(pol, "ops-aliases.tsv")
     txt = open(p).read().replace("Agentconfig\tConfigpath\tyes\t",
                                  "Agentconfig\tConfigpath\tno\t")
@@ -1340,9 +1414,9 @@ ok("P4b: the flag-flip mutant loads clean (well-formed; re-pinned)",
    sb4.handshake())
 t = sb4.text("fx_write", {"path": "/fx/disk/agent-config.dhall",
                           "content": "x"}, 150)
-ok("P4b THE DENIAL DISAPPEARS: with D1's protected row silently flipped (pin "
-   "re-taken), the ok-boot protected write SUCCEEDS — the paired P2 arm is "
-   "what would fail, and does fail, without it",
+ok("P4b THE DENIAL DISAPPEARS: with the pre-fix table's protected row flipped "
+   "(pin re-taken), the ok-boot write to that path SUCCEEDS — the paired P2 "
+   "D1-only arm is what fails without the flip, and does fail",
    t.startswith("exit=0\n"), repr(t))
 sb4.close()
 
@@ -1505,6 +1579,7 @@ else:
 
 # F5 — the separator and cap cosmetics, both directions armed.
 def mutate_crlf(pol):
+    use_pre_table(pol)   # D1's subject is the PINNED PRE-FIX row (S4)
     p = os.path.join(pol, "ops-aliases.tsv")
     txt = open(p, newline="").read().replace("\n", "\r\n")
     open(p, "w", newline="").write(txt)

@@ -2764,6 +2764,38 @@ ops_repin() {
     mv "$d/PINS.new" "$d/PINS"
 }
 
+# ── THE PINNED PRE-FIX POLICY DIR (ACL split S4) ───────────────────────────
+# ONE copy, built once, used by every arm whose subject is a PROTECTED path
+# (D1 at the write seat, D3 at the host-tool seat): the sha-pinned COPY of the
+# alias table at HEAD (protected=yes, tests/fixtures/ops/) installed in a copy of
+# the shipped policy dir and re-pinned — a valid pinned release of the SAME
+# artifacts, so the arm tests the RULE, not the pin.  The shared
+# policy/ops is NEVER mutated: a gate that dies mid-phase would otherwise leave
+# the tree carrying a table nobody chose.
+OPS_PRE_TSV="$ROOT/tests/fixtures/ops/aliases-protected-yes.tsv"
+OPS_PRE_DIR="$TMP/ops-preflight-pol"
+rm -rf "$OPS_PRE_DIR"
+mkdir -p "$OPS_PRE_DIR" || fail "S4: cannot create $OPS_PRE_DIR"
+cp "$OPS_DIR"/ops-policy.dl "$OPS_DIR"/ops-lexicon.ini "$OPS_DIR"/ops-hosts.tsv \
+   "$OPS_DIR"/ops-sandbox.tsv "$OPS_DIR"/PINS "$OPS_PRE_DIR/" \
+    || fail "S4: cannot copy the pinned policy dir"
+OPS_PRE_SHA="$(tr -d '[:space:]' < "$OPS_PRE_TSV.sha256")"
+[ "$(sha256sum "$OPS_PRE_TSV" | cut -d' ' -f1)" = "$OPS_PRE_SHA" ] \
+    || fail "S4: the pre-fix alias table is not the pinned copy — the D1/D3 subject would be unpinned"
+cmp -s "$OPS_PRE_TSV" "$OPS_DIR/ops-aliases.tsv" \
+    && fail "S4: VACUOUS — the pinned pre-fix table is byte-identical to the working table, so these arms would test the shipped row"
+grep -q "$(printf '^Agentconfig\tConfigpath\tyes\t')" "$OPS_PRE_TSV" \
+    || fail "S4: the pinned copy does not mark Agentconfig protected=yes"
+grep -q "$(printf '^Agentconfig\tConfigpath\tno\t')" "$OPS_DIR/ops-aliases.tsv" \
+    || fail "S4: the SHIPPED table does not mark Agentconfig protected=no (the flip is absent)"
+cp "$OPS_PRE_TSV" "$OPS_PRE_DIR/ops-aliases.tsv" || fail "S4: cannot install the pre-fix table"
+ops_repin "$OPS_PRE_DIR"
+_pre_got=$(sha256sum "$OPS_PRE_DIR/ops-aliases.tsv" | cut -d' ' -f1)
+_pre_pin=$(awk -F"$(printf '\t')" '$1=="ops-aliases.tsv"{print $2}' "$OPS_PRE_DIR/PINS")
+[ "$_pre_got" = "$_pre_pin" ] \
+    || fail "S4: the pre-fix copy did not re-pin (table $_pre_got, PINS $_pre_pin)"
+echo "   OK S4 D1/D3 subject: a pinned PRE-FIX policy copy (protected=yes) is built for the protected arms; the SHIPPED table (protected=no) is untouched"
+
 echo "== phase 38: P6 THE SEAT'S STARTUP LINE NAMES THE D1/D2 SPLIT (and the floor it does NOT have)"
 # (a) THE SPLIT IS READ OUT OF THE ARTIFACT, not asserted from a plan: the
 # rules of policy/ops/ops-policy.dl are quoted here and must appear verbatim,
@@ -2829,8 +2861,20 @@ echo "== phase 39: P6 D1 DENIES AT THE HOST SEAT — a real call, the P3 invaria
 # Agentconfig row's EXACT pattern, protected=yes, so D1 fires.  Everything is
 # asserted by CONTENT (the run exits 0 in every arm, the log looks protective
 # in every arm).
+# THE PROTECTED ARMS' SUBJECT IS THE PINNED PRE-FIX TABLE (ACL split S4).
+# policy/ops/ops-aliases.tsv marks /fx/disk/agent-config.dhall protected=no now
+# — that path is the file the self-reconfiguration loop AUTHORS, so protecting
+# it from the loop was a contradiction, and D1 was denying the agent its own
+# config.  D1 ITSELF IS UNCHANGED and still has to be proved AT THIS SEAT, so
+# every arm below whose SUBJECT is a protected path runs against
+# $OPS_PRE_DIR: a COPY of the pinned policy dir with the sha-pinned pre-fix
+# alias table (protected=yes) installed and re-pinned.  The copy is cmp-guarded
+# and sha-guarded (a "pin" that had drifted into the working table would make
+# these arms test the shipped row and prove nothing), and phase 85b asserts the
+# SHIPPED direction on the same call, so the flip's effect is measured rather
+# than inferred from a rule going quiet.
 ops_stream "$TMP/ops-protected.sse" fx_write "/fx/disk/agent-config.dhall" call_OP_0001
-ops_guest_arm "$GATE" "$TMP/ops-protected.sse" protected "$OPS_DIR"
+ops_guest_arm "$GATE" "$TMP/ops-protected.sse" protected "$OPS_PRE_DIR"
 [ "$OG_RC" -eq 0 ] || { sed -n '1,10p' "$OG_ERR" >&2; fail "phase 39: the guest run rc=$OG_RC"; }
 [ -f "$OG_TR" ] || fail "phase 39: no guest transcript — the arm is not the real scenario"
 # (a) THE CHANNEL INVARIANT holds for an OPS denial too
@@ -2859,7 +2903,7 @@ echo "   OK D1 at the host seat: fx_host_denied on the wire (never fx_write), NO
 # not assumed: one pass, two calls, DIFFERENT verdicts.
 ops_stream "$TMP/ops-two.sse" fx_write "/fx/disk/agent-config.dhall" call_OP_L1 \
     fx_write "/fx/disk/agent-data" call_OP_L2
-proxy_roundtrip "$GATE" "$TMP/ops-two.sse" opslatch --ops-policy-dir "$OPS_DIR"
+proxy_roundtrip "$GATE" "$TMP/ops-two.sse" opslatch --ops-policy-dir "$OPS_PRE_DIR"
 [ "$RT_RC" -eq 0 ] || fail "phase 39: the no-latch arm exited rc=$RT_RC"
 grep -q 'fx_host_denied' "$RT_CAP" \
     || fail "phase 39: the protected call was not denied in the two-call pass"
@@ -2883,7 +2927,7 @@ echo "== phase 40: P6 PRE-FIX CONTROL — FAIL-OPEN (the seat compiled out)"
 # and would run none of this scenario.  The seat compiled out of the SAME
 # source is therefore the only build in which the pre-seat behavior on this
 # scenario can be measured, and it IS that behavior (P3's proxy).
-ops_guest_arm "$GATENOOPS" "$TMP/ops-protected.sse" noops "$OPS_DIR"
+ops_guest_arm "$GATENOOPS" "$TMP/ops-protected.sse" noops "$OPS_PRE_DIR"
 [ "$OG_RC" -eq 0 ] || fail "phase 40: the pre-fix control run rc=$OG_RC (it must start AND serve)"
 grep -qF "SEAT COMPILED OUT (FH_MUTANT_NO_OPS_SEAT)" "$OG_ERR" \
     || fail "phase 40: the build does not say the seat is compiled out — it is not the control this arm needs"
@@ -2947,8 +2991,11 @@ if [ ! -x "$ROOT/build/fx-verbs-server" ]; then
     echo "   SKIP phase 41 (in-guest half): build/fx-verbs-server is not built — the REAL in-guest seat is the only oracle for D2 and no stand-in may replace it"
 else
 mkdir -p "$TMP/p6-inguest/root/usr/fx-agent/policy" "$TMP/p6-inguest/run/fx"
-cp "$OPS_DIR"/ops-policy.dl "$OPS_DIR"/ops-aliases.tsv "$OPS_DIR"/ops-lexicon.ini \
-   "$OPS_DIR"/ops-hosts.tsv "$OPS_DIR"/ops-sandbox.tsv "$OPS_DIR"/PINS \
+# THE PRE-FIX COPY (S4): this arm's subject is D1 on a PROTECTED path, so it
+# runs on the pinned pre-fix table + its matching PINS — the same artifacts the
+# protected host-seat arms use, never the shipped row.
+cp "$OPS_PRE_DIR"/ops-policy.dl "$OPS_PRE_DIR"/ops-aliases.tsv "$OPS_PRE_DIR"/ops-lexicon.ini \
+   "$OPS_PRE_DIR"/ops-hosts.tsv "$OPS_PRE_DIR"/ops-sandbox.tsv "$OPS_PRE_DIR"/PINS \
    "$TMP/p6-inguest/root/usr/fx-agent/policy/"
 python3 - "$ROOT" "$TMP/p6-inguest" <<'PY'
 import json, os, subprocess, sys
@@ -3069,7 +3116,7 @@ echo "== phase 43: P6 THE PATH CANONICALIZATION — the port that a raw match wo
 # (the in-guest floor and D1 still refuse the write at the commit site), but
 # the host's own decision would be wrong, so the port is gated.
 ops_stream "$TMP/ops-dotdot.sse" fx_write "/fx/disk/agent-data/../agent-config.dhall" call_OP_0004
-proxy_roundtrip "$GATE" "$TMP/ops-dotdot.sse" dotdot --ops-policy-dir "$OPS_DIR"
+proxy_roundtrip "$GATE" "$TMP/ops-dotdot.sse" dotdot --ops-policy-dir "$OPS_PRE_DIR"
 [ "$RT_RC" -eq 0 ] || fail "phase 43: the real build exited rc=$RT_RC"
 grep -q 'fx_host_denied' "$RT_CAP" \
     || fail "phase 43: an equivalent spelling of the PROTECTED path was NOT denied — the seat does not canonicalize"
@@ -3077,7 +3124,7 @@ grep -q 'fx_write' "$RT_CAP" && fail "phase 43: the true name crossed for a cano
 n=$(pyq "$RT_LOG" "len([r for r in rows if r.get('call_id')=='call_OP_0004' and r.get('verdict')=='denied' and r.get('author')=='ops' and '/fx/disk/agent-config.dhall' in (r.get('reason') or '')])")
 [ "$n" -ge 1 ] || fail "phase 43: the denial does not quote the CANONICAL path the rule matched"
 echo "   OK canonicalization: a \"..\"-spelled protected path is denied, and the row quotes the canonical path"
-proxy_roundtrip "$GATEOPSNOCANON" "$TMP/ops-dotdot.sse" noconon --ops-policy-dir "$OPS_DIR"
+proxy_roundtrip "$GATEOPSNOCANON" "$TMP/ops-dotdot.sse" noconon --ops-policy-dir "$OPS_PRE_DIR"
 [ "$RT_RC" -eq 0 ] || fail "phase 43: the canonicalization-blind build exited rc=$RT_RC"
 grep -qF "FH_MUTANT_OPS_NO_CANON" "$RT_ERR" \
     || fail "phase 43: the blind build does not say it matches the raw path"
@@ -3153,7 +3200,11 @@ grep -q 'fx_write' "$RT_CAP" || fail "phase 44: the D2-only seat did not serve t
 grep -q 'fx_host_denied' "$RT_CAP" && fail "phase 44: the D2-only seat rewrote the call — an inert policy must not deny"
 n=$(pyq "$RT_LOG" "len([r for r in rows for k in ('verdict','author','allow_scope','refusal_name','reason','denial_text') if k in r])")
 [ "$n" -eq 0 ] || fail "phase 44: the D2-only roundtrip's log carries $n verdict field(s)"
-proxy_roundtrip "$GATE" "$TMP/ops-protected.sse" inert-off --ops-policy-dir "$OPS_DIR"
+# THE CONTROL RUNS ON THE PINNED PRE-FIX TABLE (S4): its subject is D1 firing on
+# a PROTECTED path, and the shipped row is protected=no now.  Same binary, same
+# bytes, same full pinned artifact — only the operator's row differs, which is
+# exactly what phase 44's contrast needs.
+proxy_roundtrip "$GATE" "$TMP/ops-protected.sse" inert-off --ops-policy-dir "$OPS_PRE_DIR"
 [ "$RT_RC" -eq 0 ] || fail "phase 44: the pinned-policy control roundtrip exited rc=$RT_RC"
 grep -q 'fx_host_denied' "$RT_CAP" \
     || fail "phase 44: the SAME bytes under the FULL pinned policy were NOT denied — the inert arm is not attributable to the rule set"
@@ -5905,7 +5956,7 @@ echo "== phase 85: S2 host_cat a PROTECTED path is DENIED by D3 — nothing exec
 # /fx/disk/agent-config.dhall is the Agentconfig row (protected=yes), so D3
 # fires (hosttool + protected class).  The denial is the ordinary ops denial
 # (fx_host_denied on the wire, nothing executes), attributed to rule D3.
-s2_run "$GATE" protected "$OPS_DIR" "$S2_PROTECTED"
+s2_run "$GATE" protected "$OPS_PRE_DIR" "$S2_PROTECTED"
 [ "$S2_GUEST_RC" -eq 0 ] || { sed -n '1,10p' "$S2_ERR" >&2; fail "phase 85: the guest run rc=$S2_GUEST_RC"; }
 [ "$S2_RC" -eq 0 ] || fail "phase 85: the proxy exited rc=$S2_RC"
 grep -q "host-execute call_id=" "$S2_ERR" \
@@ -5917,6 +5968,28 @@ n=$(pyq "$S2_LOG" "len([r for r in rows if r.get('call_id')=='$S2CALL' and r.get
 n=$(s2_out_n "$S2_DUMP" "o.startswith('(denied by host policy:')")
 [ "$n" -ge 1 ] || { cat "$S2_DUMP" >&2; fail "phase 85: the D3 denial text did not reach the model"; }
 echo "   OK protected: D3 denies (author=ops, refusal_name=denied-by-ops, rule D3 named), nothing executes, the denial reaches the model"
+
+echo "== phase 85b: S4 THE SHIPPED TABLE'S DIRECTION — the same host_cat call CROSSES, because the operator no longer protects that path"
+# THE FLIP'S EFFECT, MEASURED AT THIS SEAT (phase 85 is its control).  S4 moved
+# /fx/disk/agent-config.dhall to protected=no: that file is the one the
+# self-reconfiguration loop AUTHORS.  So the SAME call on the SHIPPED pinned
+# table must CROSS — and if it were still denied, the loop would be dead at the
+# host seat too.  Without this arm phase 85 alone cannot tell "the flip landed"
+# from "D3 stopped working".
+s2_run "$GATE" shipped-unprotected "$OPS_DIR" "$S2_PROTECTED"
+[ "$S2_GUEST_RC" -eq 0 ] || { sed -n '1,10p' "$S2_ERR" >&2; fail "phase 85b: the guest run rc=$S2_GUEST_RC"; }
+[ "$S2_RC" -eq 0 ] || fail "phase 85b: the proxy exited rc=$S2_RC"
+grep -q "host-execute call_id=" "$S2_ERR" \
+    || fail "phase 85b: the host did NOT execute the call the SHIPPED table leaves unprotected — S4's flip is not in force at this seat (or the totality check is refusing a row that is right there)"
+n=$(pyq "$S2_LOG" "len([r for r in rows if r.get('call_id')=='$S2CALL' and r.get('exec')=='host'])")
+[ "$n" -ge 1 ] || fail "phase 85b: the log carries no exec=host row for the now-unprotected path"
+# the row's author field is the JOINED armed set (e.g. 'denylist+ops'), so the
+# assertion is that the ops author is IN it — not that it is alone.
+n=$(pyq "$S2_LOG" "len([r for r in rows if r.get('call_id')=='$S2CALL' and r.get('verdict')=='allowed' and 'ops' in (r.get('author') or '')])")
+[ "$n" -eq 1 ] || { grep -F "$S2CALL" "$S2_LOG" >&2; fail "phase 85b: no row carries verdict=allowed with the ops author for the now-unprotected path"; }
+n=$(pyq "$S2_LOG" "len([r for r in rows if r.get('call_id')=='$S2CALL' and 'rule D3' in (r.get('reason') or '')])")
+[ "$n" -eq 0 ] || fail "phase 85b: a D3 denial still fired on the SHIPPED table — the alias row the loop needs is still protected"
+echo "   OK shipped direction: the SAME host_cat call is DENIED on the pinned pre-fix table (phase 85) and ALLOWED on the shipped one — the operator's row, not the rule, is what changed"
 
 echo "== phase 86: S2 host_cat an UNCLASSED path is REFUSED BY NAME — nothing executes"
 # THE TOTALITY CHECK: a path that matches NO alias row has an unknown class,
@@ -5939,7 +6012,7 @@ echo "== phase 87: S2 MUTATION BLIND FH_MUTANT_OPS_NO_CLASS — a classed-out pa
 # The class resolution AND the totality check compiled out: the protected path
 # (which D3 would deny) and the unclassed path (which the totality check would
 # refuse) BOTH reach the executor.  The dispatch marker is the witness.
-s2_run "$GATEOPSNOCLASS" noclass-prot "$OPS_DIR" "$S2_PROTECTED"
+s2_run "$GATEOPSNOCLASS" noclass-prot "$OPS_PRE_DIR" "$S2_PROTECTED"
 [ "$S2_GUEST_RC" -eq 0 ] || { sed -n '1,10p' "$S2_ERR" >&2; fail "phase 87: the blind's guest run rc=$S2_GUEST_RC"; }
 [ "$S2_RC" -eq 0 ] || fail "phase 87: the blind exited rc=$S2_RC"
 grep -q "host-execute call_id=" "$S2_ERR" \
@@ -6413,7 +6486,7 @@ n=$(s2_out_n "$S2_DUMP" "o.startswith('(denied by host policy:')")
 echo "   OK denylist: --deny host_cat is the ordinary denylist denial (same path, same row shape)"
 # (b) the operator's classing/totality on arg_key: a PROTECTED path is denied by
 # D3 (the SAME rule that denies a protected guest write path)
-s2_run "$GATE" protected-b "$OPS_DIR" "$S2_PROTECTED"
+s2_run "$GATE" protected-b "$OPS_PRE_DIR" "$S2_PROTECTED"   # S4: a PROTECTED subject -> the pinned pre-fix table
 [ "$S2_GUEST_RC" -eq 0 ] || { sed -n '1,10p' "$S2_ERR" >&2; fail "phase 100: the protected run's guest rc=$S2_GUEST_RC"; }
 [ "$S2_RC" -eq 0 ] || fail "phase 100: the protected run's proxy exited rc=$S2_RC"
 grep -q "host-execute call_id=" "$S2_ERR" \

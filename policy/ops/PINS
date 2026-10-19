@@ -9,6 +9,6 @@
 # fails LOUDLY: the release is artifact + PINS in the SAME commit.
 ops-lexicon.ini	8cb55c4249d11be2b3c7b60bf117fa4bcf8e31b3fa3ce371be5fd25050461f20
 ops-policy.dl	58362a09fbbb9c0ced08b32ff75b120749f651f48ab0b28e97752f79fa6168b1
-ops-aliases.tsv	29354b2b6c467662038a3a20c0dae13442016450f4d4c144dd8ad31b6eb00da0
+ops-aliases.tsv	6c18b8de43088edd601b597ff16e4be938ef20499e78f9f3f24aed84406cfc0e
 ops-hosts.tsv	543ea19c777f3e15e22a97fb56157e11504c08bbd7c16e91b73f17731f523963
 ops-sandbox.tsv	d59462e14284c889dfbbc5029b415d44a50af30c7456ac06744b3040cccc6173

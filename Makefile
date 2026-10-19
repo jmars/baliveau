@@ -247,6 +247,27 @@ $(BIN_ACCEPTMOVED): src/agent/agent_main_main.c $(ALL_SRC) $(DATALOG_DIR)/zig-ou
 	    -L$(DATALOG_DIR)/zig-out/lib \
 	    -Wl,-rpath,$(abspath $(DATALOG_DIR)/zig-out/lib) -ldatalog
 
+# THE PRE-FIX ARTIFACT of the ACL split's COLLISION slice (S4,
+# src/agent/agent_main.c's boot-verdict wait): the SAME sources with the WAIT
+# COMPILED OUT (-DFX_NO_BOOT_VERDICT_WAIT).  It is not a feature and not a
+# runtime switch: it dispatches the first tool call inside the boot's grace
+# window exactly as the tree did before S4, so the gate can show that THE ORDER
+# IS LOAD-BEARING — the same fixture, the same agent-authored config path, and
+# the write is REFUSED by rule D2 (NOT rule D1: the alias row is unprotected
+# either way).  Without that arm, removing the wait re-kills the loop SILENTLY,
+# with a refusal that reads like a policy decision rather than a timing one.
+# tests/qemu-agent-b2.sh's ORDER arm runs the SAME fixture through both builds
+# and asserts the two binaries are NOT byte-identical (a blind that collapsed
+# into the working build would make the arm vacuous).
+BIN_NOWAIT := build/fx-agent-nowait
+nowait: $(BIN_NOWAIT)
+
+$(BIN_NOWAIT): src/agent/agent_main_main.c $(ALL_SRC) $(DATALOG_DIR)/zig-out/lib/libdatalog.so | $(DATALOG_SHIM)
+	@mkdir -p build
+	$(CC) $(CFLAGS) -DFX_NO_BOOT_VERDICT_WAIT $(LDFLAGS) -o $@ src/agent/agent_main_main.c $(ALL_SRC) \
+	    -L$(DATALOG_DIR)/zig-out/lib \
+	    -Wl,-rpath,$(abspath $(DATALOG_DIR)/zig-out/lib) -ldatalog
+
 # The first oracle: Osier CODE SHARE of the ACTIVE GENERATION (host tool —
 # native only, no musl variant; it shells fxstore's read-only `facts` and
 # needs the sibling fxstore checkout built with it).
@@ -1278,4 +1299,4 @@ test: all blind
 	bash tests/test_outcome.sh
 	bash tests/test_sameboot.sh
 
-.PHONY: all musl blind acceptmoved clean test
+.PHONY: all musl blind acceptmoved nowait clean test
