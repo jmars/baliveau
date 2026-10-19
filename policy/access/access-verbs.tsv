@@ -1,0 +1,86 @@
+# policy/access/access-verbs.tsv — THE PINNED ACCESS TABLE (the operator's verb
+# ALLOW table — THE VOCABULARY DIMENSION).
+#
+# THE AUTHOR IS THE OPERATOR (host/deployment), the third host-side author
+# beside policy/ops (the operator's PATH rules) and policy/calls (the claim
+# judgment).  What makes this table distinct, so it is not a second copy of
+# either: policy/ops judges a PATH CLASS (D1/D3) or a RUNTIME STATE (D2), and
+# policy/calls judges whether a call is JUSTIFIED.  This table judges the
+# VOCABULARY — which verbs may be called AT ALL — over BOTH closed name lists
+# at once: the 13 pinned catalog verbs (the guest's fx-verbs vocabulary) UNION
+# the host-tool registry (host_time, host_cat — what the HOST executes on the
+# allowed path of a judged call).  One grammar, one pin, one author, because a
+# table that covered only ONE of the two vocabularies would leave the other
+# silently unclassified.
+#
+# THIS FILE IS HOST-GLOBAL, NOT PER-GENERATION, and the reason is ROLLBACK:
+# the store keeps old generations, and a grant stored per-generation means
+# rolling back to an older generation ROLLS THE GRANT BACK — including back to
+# a WIDER grant a later release deliberately removed.  A bound a rollback can
+# widen is not a bound.  (Second reason, the tree decided it once already for
+# ops: a per-generation artifact is what the per-boot record cannot see.  See
+# policy/ops/ops-sandbox.tsv's header — do not re-open that decision.)
+#
+# SILENCE IS NOT AN ALLOW, AND THERE IS NO THIRD STATE: a name in either
+# vocabulary with NO row here is an UNCLASSIFIED VERB, and the loader REFUSES
+# TO START on it (a named exit-1, before the slave path is published) rather
+# than letting it through.  That is THE TOTALITY CHECK, and both failure
+# directions are why it exists: a per-name ALLOW list silently allows every
+# FUTURE verb (the day a 14th verb lands in the catalog, the vocabulary widens
+# with no gate firing), and a per-name DENY list silently denies a typo while
+# allowing everything else.  A name in NEITHER vocabulary (a misspelling) is
+# also refused, and so is a duplicate row.
+#
+# EXACT NAMES ONLY — no globs, no regex.  The flag column is exactly `allow`
+# or `deny`; a row is `verb<TAB>allow|deny` and nothing more.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# SLICE S1 STATUS — READ THIS BEFORE READING THE ROWS.
+#
+# THIS TABLE IS NOT CONSULTED YET.  S1 delivers the INERT writer: the table
+# exists, is pinned, is loaded and totality-checked at startup, and is
+# INSPECTABLE at rest (`build/fx-hostgate --access-dir policy/access
+# --print-access`).  NOTHING is judged by it: call_judge does not read it, so
+# EVERY call is judged exactly as before this file existed.  A table that is
+# loaded and validated but never consulted is INDISTINGUISHABLE — to a reader —
+# from one that is enforced, which is why the startup line says so out loud and
+# why this paragraph exists.  The enforcement seat is the NEXT slice; until it
+# lands, do not describe this file as a bound.
+#
+# WHY EVERY ROW BELOW SAYS `allow`: this table classifies the CURRENT
+# vocabulary as it actually is — every catalog verb is callable by the guest
+# today, and both host tools are in the registry.  The rows are a
+# CLASSIFICATION, not yet a narrowing; the day a verb is set to `deny` is a
+# release that says so.  Starting from the true state means arming the seat
+# (the next slice) changes no existing behaviour, so any later change in reach
+# is visibly the table's doing rather than the arming's.
+#
+# Columns (TAB-separated; '#' starts a comment):
+#   verb        an EXACT name from ONE of the two closed vocabularies
+#               (`build/fx-hostgate --print-catalog` and
+#               `build/fx-hostgate --print-host-tools` — which is also how a
+#               reader checks this table against the vocabularies at rest)
+#   decision    allow | deny   (no other value; the loader refuses anything else)
+#
+# THIS TABLE IS PINNED in policy/access/PINS.  Editing it is a RE-PIN — table
+# and PINS in the same commit, so every edit to it is a visible release.  A
+# stale or swapped table fails the pin check loudly at startup, naming both
+# shas.
+#
+# fh_catalog_check's catalog, in table order (tools/fx-hostgate.c:2411-2423):
+fx_query	allow
+fx_status	allow
+fx_activate	allow
+fx_rollback	allow
+fx_what	allow
+fx_why	allow
+fx_store_verify	allow
+fx_build	allow
+fx_outcome	allow
+fx_generation	allow
+fx_read	allow
+fx_write	allow
+fx_ls	allow
+# the HOST-TOOL registry, in table order (tools/fx-hostgate.c:2670-2673):
+host_time	allow
+host_cat	allow

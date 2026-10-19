@@ -472,6 +472,11 @@ BIN_HOSTGATE_NOSTAGE3_SIGSYS := build/fx-hostgate-nostage3-sigsys
 BIN_HOSTGATE_NOSANDBOX := build/fx-hostgate-nosandboxtable
 BIN_HOST_CAT_SIBLING := build/fx-host-cat-sibling
 BIN_HOSTGATE_CATSIBLING := build/fx-hostgate-catsibling
+# S1 (ACL SPLIT — the access table): THE ALLOWING BLIND.  The totality check is
+# compiled out, so a table MISSING a row is ACCEPTED and the missing verb stays
+# UNCLASSIFIED — the direction that matters (an unclassified verb silently
+# allows).  A mutant that over-denied would prove nothing here.
+BIN_HOSTGATE_ACCESSBLIND := build/fx-hostgate-accessblind
 
 test-hostgate: $(BIN_HOSTGATE) $(BIN_HOSTGATE_MUTANT) $(BIN_HOSTGATE_UNBOUND) \
                $(BIN_HOSTGATE_NOREWRITE) $(BIN_HOSTGATE_BLINDADD) \
@@ -500,7 +505,7 @@ test-hostgate: $(BIN_HOSTGATE) $(BIN_HOSTGATE_MUTANT) $(BIN_HOSTGATE_UNBOUND) \
                $(BIN_HOSTGATE_WRITE) \
                $(BIN_HOSTGATE_NOSTAGE3) $(BIN_HOSTGATE_NOSTAGE3_SIGSYS) \
                $(BIN_HOSTGATE_NOSANDBOX) $(BIN_HOST_CAT_SIBLING) \
-               $(BIN_HOSTGATE_CATSIBLING) \
+               $(BIN_HOSTGATE_CATSIBLING) $(BIN_HOSTGATE_ACCESSBLIND) \
                $(PALISADE_STAGE3)
 	bash tests/test_hostgate.sh
 
@@ -939,6 +944,15 @@ $(BIN_HOSTGATE_HOSTCOLLIDE): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(Y
 $(BIN_HOSTGATE_NOHOSTCOLL): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(DATALOG_DIR)/zig-out/lib/libdatalog.so | $(DATALOG_SHIM)
 	@mkdir -p build
 	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_MUTANT_NO_HOST_COLLISION $(HOSTTOOL_COLLIDING_NAME) $(HOSTTOOL_COLLIDING_PIN) -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(HOSTGATE_LIBS)
+
+# (S1 ACL SPLIT) THE ALLOWING BLIND — FH_MUTANT_ACCESS_ACCEPT_MISSING compiles
+# THE TOTALITY CHECK out of the access loader, so a table that is missing a
+# vocabulary row is ACCEPTED at startup instead of refused.  That is the
+# direction the failure actually runs (an unclassified verb silently allows);
+# a build that over-denied would prove nothing.  Never a product build.
+$(BIN_HOSTGATE_ACCESSBLIND): tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(DATALOG_DIR)/zig-out/lib/libdatalog.so | $(DATALOG_SHIM)
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(LDFLAGS) -DFH_MUTANT_ACCESS_ACCEPT_MISSING -o $@ tools/fx-hostgate.c src/vendor/dhall-c/sha256.c $(YYJSON_SRC) $(HOSTGATE_LIBS)
 
 # (3) THE DISPATCH BLIND — FH_MUTANT_NO_EXEC compiles the registry lookup out of
 #     the allowed path.  The call forwards to the guest, the guest answers

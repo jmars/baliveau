@@ -1480,6 +1480,10 @@ static const char *g_ops_dir;
  * here?" (loaded AND armed). */
 static int calls_seat_present(void);
 static const char *g_calls_dir;
+/* S1 (ACL SPLIT): --access-dir names the OPERATOR'S ACCESS TABLE directory
+ * (policy/access: access-verbs.tsv + PINS).  Absent is the NAMED unarmed
+ * state; in this slice the seat judges nothing either way. */
+static const char *g_access_dir;
 
 /* ARMED = an author that can refuse is active.  The denylist (P3), the ops
  * policy at this seat (P6) and the justification check (P5) are three authors;
@@ -5122,6 +5126,396 @@ static int ops_judge(const char *name, const char *args, char *why, size_t whyca
 }
 #endif /* !FH_MUTANT_NO_OPS_SEAT */
 
+/* ── S1 (ACL SPLIT): THE OPERATOR'S ACCESS TABLE — THE VOCABULARY DIMENSION ─ */
+/*
+ * The proxy gains a THIRD host-side author, the OPERATOR'S ACCESS TABLE
+ * (policy/access/access-verbs.tsv): the verb ALLOW table, over BOTH closed
+ * name lists at once — the 13 pinned catalog verbs UNION the host-tool
+ * registry (host_time, host_cat).  It judges NOTHING in this slice: this is
+ * the INERT WRITER, the loader and its totality check, with no consumer.
+ * Named plainly, because it is the failure mode of the whole split: a table
+ * that is loaded and validated but never consulted is INDISTINGUISHABLE to a
+ * reader from one that is enforced, and every startup line below says so.
+ *
+ * WHY BOTH VOCABULARIES IN ONE TABLE, and why the check is TOTALITY rather
+ * than an allow-list: a table that covered only ONE of the two leaves the
+ * other silently unclassified, and an UNCLASSIFIED VERB SILENTLY ALLOWS —
+ * that is the direction this check exists for.  A per-name ALLOW list silently
+ * allows every FUTURE verb (a 14th catalog verb widens the vocabulary with no
+ * gate firing); a per-name DENY list silently denies a typo and allows
+ * everything else.  So EVERY name in the union must carry a row (allow|deny,
+ * NO third state), a name in NEITHER vocabulary is refused (it classifies
+ * nothing — R2's `fx_actvate` shape, where the real verb stays unclassified
+ * while the typo is "handled"), a duplicate row is refused (the table would
+ * say two things about one verb), and a stale or swapped pin is refused.
+ *
+ * EXACT NAMES ONLY — no globs, no regex: the grammar question is already
+ * settled in this tree (ops-aliases.tsv) and the answer was the restrictive
+ * one; a pattern that matches nothing is a silent allow-all.
+ *
+ * THE POSITION (the P4 fh_catalog_check seat, :3557, called first in main):
+ * every refusal below is a NAMED exit-1 BEFORE the slave path is published,
+ * because "the proxy started and the table was not total" has no later moment
+ * at which it could be made loud.
+ *
+ * WHAT IS HOST-GLOBAL, AND WHY IT IS NOT PER-GENERATION: the table is a fact
+ * about THIS HOST's exposure (which verbs this host will execute), not about a
+ * generation's content — a per-generation grant means a ROLLBACK CAN RESTORE A
+ * WIDER GRANT a later release removed, and a bound a rollback can widen is not
+ * a bound.  (Same decision, same reason, as policy/ops/ops-sandbox.tsv's
+ * header.)
+ *
+ * PROTECTION IS NOT AN ALIAS ROW: this file never exists in the guest, so no
+ * operator alias pattern can cover it ("no guest path can cover it").  What
+ * protects it is SEPARATION (outside the guest entirely), THE PIN (below), and
+ * the release rule (table + PINS in the same commit).
+ */
+#define FH_ACCESS_TSV      "access-verbs.tsv"
+#define FH_ACCESS_PINS     "PINS"
+#define FH_ACCESS_MAX_FILE (1024u * 1024u) /* the artifact cap */
+
+typedef struct {
+    char *verb; /* owned (strdup) — the table's own bytes are freed */
+    int   allow;
+} FhAccessRow;
+
+static struct {
+    int loaded;
+    int absent; /* --access-dir absent: the NAMED unarmed state, never an error */
+    char dir[PATH_MAX];
+    char sha[65]; /* the PIN's value for the table, for the startup line */
+    FhAccessRow *row;
+    size_t n_row;
+    size_t n_allow, n_deny;
+} ACCESS;
+
+/* A LOUD startup refusal, before the slave path is published — the same
+ * posture (and the same moment) as ops_gate_die/fh_catalog_check. */
+static void access_gate_die(const char *fmt, ...) {
+    fputs("fx-hostgate: access REFUSED: ", stderr);
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+    fputc('\n', stderr);
+    exit(1);
+}
+
+/* Read a whole file, or NULL (errno set; EFBIG over the cap).  A local copy of
+ * the ops seat's reader ON PURPOSE: that one lives inside the ops seat's
+ * compile-out guard (a pre-fix control build must not need the seat it
+ * blinded), and this seat must exist in every build. */
+static char *access_read_file(const char *path, size_t *len_out) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return NULL;
+    size_t cap = 8192, len = 0;
+    char *buf = malloc(cap + 1);
+    if (!buf) { fclose(f); return NULL; }
+    for (;;) {
+        if (len == cap) {
+            if (cap >= FH_ACCESS_MAX_FILE) {
+                errno = EFBIG;
+                free(buf); fclose(f); return NULL;
+            }
+            cap *= 2;
+            char *nb = realloc(buf, cap + 1);
+            if (!nb) { free(buf); fclose(f); return NULL; }
+            buf = nb;
+        }
+        size_t n = fread(buf + len, 1, cap - len, f);
+        len += n;
+        if (n == 0) break;
+    }
+    if (ferror(f)) { free(buf); fclose(f); return NULL; }
+    fclose(f);
+    buf[len] = '\0';
+    if (len_out) *len_out = len;
+    return buf;
+}
+
+/* EXACT-NAME resolution: the row index for `verb`, or -1. */
+static int access_row_find(const char *verb) {
+    for (size_t i = 0; i < ACCESS.n_row; i++)
+        if (strcmp(ACCESS.row[i].verb, verb) == 0) return (int)i;
+    return -1;
+}
+
+/* IS `name` IN THE CLOSED VOCABULARY — the catalog UNION the host-tool
+ * registry?  The union is the point: one table, two vocabularies. */
+static int access_vocab_has(const char *name) {
+    size_t cn = fh_catalog_count();
+    char nm[128];
+    for (size_t i = 0; i < cn; i++)
+        if (fh_catalog_nth(i, nm, sizeof nm) && strcmp(nm, name) == 0) return 1;
+    for (size_t i = 0; i < fh_host_tool_count(); i++)
+        if (strcmp(fh_host_tools[i].name, name) == 0) return 1;
+    return 0;
+}
+
+/* PARSE the verified bytes: `verb<TAB>allow|deny`, '#' comments, EXACT names.
+ * Refuses (a) a row that is not two columns, (b) a flag that is neither
+ * `allow` nor `deny` — there is no third state, (c) a name in NEITHER
+ * vocabulary, (d) a duplicate row. */
+static void access_parse(const char *path, char *bytes) {
+    size_t lineno = 0;
+    char *save = NULL;
+    for (char *line = strtok_r(bytes, "\n", &save); line;
+         line = strtok_r(NULL, "\n", &save)) {
+        lineno++;
+        while (*line == ' ' || *line == '\t') line++;
+        char *cr = strchr(line, '\r');
+        if (cr) *cr = '\0';
+        if (!*line || *line == '#') continue;
+        char *tab = strchr(line, '\t');
+        if (!tab)
+            access_gate_die("%s:%zu: a row is verb<TAB>allow|deny, got "
+                            "'%.80s' — the table is TWO columns and nothing "
+                            "else; REFUSING TO START", path, lineno, line);
+        *tab = '\0';
+        const char *verb = line, *flag = tab + 1;
+        if (strchr(flag, '\t'))
+            access_gate_die("%s:%zu: row \"%s\" carries a THIRD column — the "
+                            "table is verb<TAB>allow|deny, and a column after "
+                            "the flag would be read by nobody while it looked "
+                            "authoritative; REFUSING TO START",
+                            path, lineno, verb);
+        int allow;
+        if (strcmp(flag, "allow") == 0) allow = 1;
+        else if (strcmp(flag, "deny") == 0) allow = 0;
+        else
+            access_gate_die("%s:%zu: verb \"%s\" carries the flag '%s' — the "
+                            "flag is EXACTLY 'allow' or 'deny'.  THERE IS NO "
+                            "THIRD STATE: a name whose classification nobody "
+                            "can spell at rest is a name no verdict can be "
+                            "attributed to; REFUSING TO START",
+                            path, lineno, verb, flag);
+        if (!access_vocab_has(verb))
+            access_gate_die("%s:%zu: the table classifies \"%s\", which is in "
+                            "NEITHER vocabulary — it is not one of the %zu "
+                            "pinned catalog verb(s) (%s) and not one of the %zu "
+                            "host tool(s) (%s).  A name in neither vocabulary "
+                            "classifies NOTHING: a per-name allow list would "
+                            "then allow only the typo while the REAL verb stays "
+                            "unclassified (the `fx_actvate` shape).  Fix the "
+                            "spelling or drop the row; REFUSING TO START",
+                            path, lineno, verb, fh_catalog_count(),
+                            FH_CATALOG_PROVENANCE, fh_host_tool_count(),
+                            FH_HOSTTOOL_PROVENANCE);
+        int prev = access_row_find(verb);
+        if (prev >= 0)
+            access_gate_die("%s:%zu: \"%s\" appears TWICE — already classified "
+                            "%s, and this row says %s.  The table must say ONE "
+                            "thing about a verb: two rows are two readings of "
+                            "one name, and whichever a consumer took last would "
+                            "decide silently; REFUSING TO START",
+                            path, lineno, verb,
+                            ACCESS.row[prev].allow ? "allow" : "deny",
+                            allow ? "allow" : "deny");
+        FhAccessRow *nr = realloc(ACCESS.row,
+                                  (ACCESS.n_row + 1) * sizeof *nr);
+        if (!nr) access_gate_die("cannot grow the access row set");
+        ACCESS.row = nr;
+        char *owned = strdup(verb);
+        if (!owned) access_gate_die("cannot copy the access verb \"%s\"", verb);
+        ACCESS.row[ACCESS.n_row].verb = owned;
+        ACCESS.row[ACCESS.n_row].allow = allow;
+        ACCESS.n_row++;
+        if (allow) ACCESS.n_allow++;
+        else ACCESS.n_deny++;
+    }
+    if (ACCESS.n_row == 0)
+        access_gate_die("%s yields NO rows — an empty table classifies nothing "
+                        "at all (the totality check below would refuse every "
+                        "verb, one by one; this refusal says it once); REFUSING "
+                        "TO START", path);
+}
+
+/* THE TOTALITY CHECK — every name of the closed vocabulary (catalog UNION
+ * host tools) must be classified.  ALL missing names are named in ONE refusal,
+ * so an operator adding rows does not discover them one boot at a time. */
+static void access_totality(void) {
+#ifdef FH_MUTANT_ACCESS_ACCEPT_MISSING
+    /* S1 MUTATION BLIND (build/fx-hostgate-accessblind): the totality check is
+     * compiled OUT.  DIRECTION: this is the ALLOWING mutant, and it has to be —
+     * the failure this check prevents is an UNCLASSIFIED VERB SILENTLY
+     * ALLOWING, so a mutant that OVER-DENIED would prove nothing about the
+     * direction that matters.  Paired with a table missing a row, the real
+     * build REFUSES AT STARTUP and this one STARTS and serves. */
+    note("ACCESS TOTALITY: COMPILED OUT (FH_MUTANT_ACCESS_ACCEPT_MISSING) — a "
+         "vocabulary verb with NO row is NOT refused and stays UNCLASSIFIED.  "
+         "This is the ALLOWING direction (an unclassified verb would silently "
+         "allow the day the table is consulted); a build that over-denied "
+         "would prove nothing here");
+    return;
+#else
+    struct tbuf missing = {0};
+    size_t n_missing = 0;
+    char b[192];
+    size_t cn = fh_catalog_count();
+    char nm[128];
+    for (size_t i = 0; i < cn; i++) {
+        if (!fh_catalog_nth(i, nm, sizeof nm)) continue;
+        if (access_row_find(nm) >= 0) continue;
+        int l = snprintf(b, sizeof b, "%s%s (catalog verb)",
+                         n_missing ? ", " : "", nm);
+        if (l > 0) tb_put(&missing, b, (size_t)l);
+        n_missing++;
+    }
+    for (size_t i = 0; i < fh_host_tool_count(); i++) {
+        const char *hn = fh_host_tools[i].name;
+        if (access_row_find(hn) >= 0) continue;
+        int l = snprintf(b, sizeof b, "%s%s (host tool)",
+                         n_missing ? ", " : "", hn);
+        if (l > 0) tb_put(&missing, b, (size_t)l);
+        n_missing++;
+    }
+    if (n_missing) {
+        char *list = missing.p ? missing.p : (char *)"";
+        access_gate_die("%s/%s does not classify %zu name(s) of the closed "
+                        "vocabulary: %s.  The vocabulary is the %zu pinned "
+                        "catalog verb(s) (%s) UNION the %zu host tool(s) (%s), "
+                        "and EVERY name must carry a row (allow or deny, with "
+                        "NO third state).  An UNCLASSIFIED VERB SILENTLY ALLOWS "
+                        "— a per-name allow list silently allows every FUTURE "
+                        "verb, a per-name deny list silently denies a typo and "
+                        "allows everything else.  Add the row(s) and re-pin; "
+                        "REFUSING TO START",
+                        ACCESS.dir, FH_ACCESS_TSV, n_missing, list, cn,
+                        FH_CATALOG_PROVENANCE, fh_host_tool_count(),
+                        FH_HOSTTOOL_PROVENANCE);
+    }
+    free(missing.p);
+#endif /* FH_MUTANT_ACCESS_ACCEPT_MISSING */
+}
+
+/* THE PIN CHECK (the ops/calls discipline, ported): every file PINS names must
+ * exist with the pinned sha256, the table must be pinned AT ALL, and the
+ * verified bytes are the bytes the parser receives (no window for a swap
+ * between hash and load).  Both shas are named on a mismatch: the operator's
+ * diagnosis is "which bytes did I expect vs which am I holding". */
+static void access_seat_load(const char *dir) {
+    struct stat st;
+    if (stat(dir, &st) != 0 || !S_ISDIR(st.st_mode))
+        access_gate_die("%s is not a readable directory — a --access-dir must "
+                        "name the directory holding %s and %s",
+                        dir, FH_ACCESS_TSV, FH_ACCESS_PINS);
+    snprintf(ACCESS.dir, sizeof ACCESS.dir, "%s", dir);
+
+    char pins_path[PATH_MAX], tsv_path[PATH_MAX];
+    snprintf(pins_path, sizeof pins_path, "%s/%s", dir, FH_ACCESS_PINS);
+    snprintf(tsv_path, sizeof tsv_path, "%s/%s", dir, FH_ACCESS_TSV);
+
+    size_t plen = 0;
+    char *pins = access_read_file(pins_path, &plen);
+    if (!pins)
+        access_gate_die("%s cannot be read: %s — a present access dir must "
+                        "carry a verifiable pin set (an UNPINNED table is a "
+                        "table nobody reviewed); REFUSING TO START",
+                        pins_path, strerror(errno));
+    char *tsv_bytes = NULL;
+    int saw_tsv = 0;
+    char *save = NULL;
+    for (char *line = strtok_r(pins, "\n", &save); line;
+         line = strtok_r(NULL, "\n", &save)) {
+        while (*line == ' ' || *line == '\t') line++;
+        if (!*line || *line == '#') continue;
+        char *tab = strchr(line, '\t');
+        if (!tab)
+            access_gate_die("%s: a pin row is name<TAB>sha256, got '%.80s'",
+                            pins_path, line);
+        *tab = '\0';
+        char *name = line, *want = tab + 1;
+        char *cr = strchr(want, '\r');
+        if (cr) *cr = '\0';
+        char path[PATH_MAX];
+        int n = snprintf(path, sizeof path, "%s/%s", dir, name);
+        if (n <= 0 || n >= (int)sizeof path)
+            access_gate_die("pin path too long: %s", name);
+        size_t flen = 0;
+        char *bytes = access_read_file(path, &flen);
+        if (!bytes)
+            access_gate_die("pinned file %s is MISSING or unreadable (: %s) "
+                            "(pinned sha256 %s) — restore it or re-pin; "
+                            "REFUSING TO START", path, strerror(errno), want);
+        char got[65];
+        sha256_hex(bytes, flen, got);
+        if (strcmp(got, want) != 0) {
+            free(bytes);
+            access_gate_die("pinned file %s sha256 mismatch: pinned %s != "
+                            "actual %s — the deployed table is stale or "
+                            "swapped; an access-table edit is a re-pin (table + "
+                            "PINS in the same release); REFUSING TO START",
+                            path, want, got);
+        }
+        if (strcmp(name, FH_ACCESS_TSV) == 0) {
+            free(tsv_bytes);
+            tsv_bytes = bytes;
+            snprintf(ACCESS.sha, sizeof ACCESS.sha, "%s", want);
+            saw_tsv = 1;
+        } else {
+            free(bytes);
+        }
+    }
+    free(pins);
+    if (!saw_tsv)
+        access_gate_die("%s does not pin %s — the table this seat would load "
+                        "goes unverified; REFUSING TO START",
+                        pins_path, FH_ACCESS_TSV);
+    access_parse(tsv_path, tsv_bytes); /* frees nothing: it strdups each name */
+    free(tsv_bytes);
+    access_totality();
+    ACCESS.loaded = 1;
+}
+
+/* THE STARTUP POSITION (main, immediately after fh_catalog_check): the
+ * catalog must be pinned and verified BEFORE a table total over it is
+ * believed.  An ABSENT --access-dir is the NAMED unarmed state, never an
+ * error — and it says, in the line, that every verb is unclassified AND that
+ * nothing consults this seat, so the absence changes no call's verdict. */
+static void access_seat_startup(const char *dir) {
+    memset(&ACCESS, 0, sizeof ACCESS);
+    if (!dir) {
+        ACCESS.absent = 1;
+        note("access: NO ACCESS TABLE at this seat (--access-dir absent) — "
+             "every verb in both closed vocabularies is UNCLASSIFIED, and S1 "
+             "JUDGES NOTHING: no call is judged by this seat in this slice, so "
+             "the absence changes no call's verdict");
+        return;
+    }
+    access_seat_load(dir);
+    note("access: table LOADED AND TOTALITY-CHECKED at startup (INERT in this "
+         "slice) — %zu verb(s) classified from the pinned table (%s, sha256 "
+         "%.16s..): %zu allow, %zu deny; the vocabulary is the %zu pinned "
+         "catalog verb(s) UNION the %zu host tool(s) and EVERY name carries a "
+         "row, with EXACT names only (no glob, no regex).  S1 JUDGES NOTHING — "
+         "call_judge does not consult this table, so this line is a statement "
+         "about the TABLE (total, pinned, inspectable), NOT about what any call "
+         "may do",
+         ACCESS.n_row, FH_ACCESS_TSV, ACCESS.sha, ACCESS.n_allow, ACCESS.n_deny,
+         fh_catalog_count(), fh_host_tool_count());
+}
+
+/* --print-access: one line per verb, `verb<TAB>allow|deny`, in VOCABULARY
+ * order (catalog, then host tools) so the output is canonical regardless of
+ * the table's row order.  Requires the table to be loaded (i.e. pins + parse +
+ * totality all passed), so the printed state is the state a run would hold. */
+static void access_print(void) {
+    char nm[128];
+    size_t cn = fh_catalog_count();
+    for (size_t i = 0; i < cn; i++) {
+        if (!fh_catalog_nth(i, nm, sizeof nm)) continue;
+        int r = access_row_find(nm);
+        if (r < 0) continue; /* unreachable: the totality check ran */
+        printf("%s\t%s\n", nm, ACCESS.row[r].allow ? "allow" : "deny");
+    }
+    for (size_t i = 0; i < fh_host_tool_count(); i++) {
+        const char *hn = fh_host_tools[i].name;
+        int r = access_row_find(hn);
+        if (r < 0) continue;
+        printf("%s\t%s\n", hn, ACCESS.row[r].allow ? "allow" : "deny");
+    }
+}
+
 /* ── P7: THE CLAIM AUTHOR at the HOST SEAT ─────────────────────────────── */
 /*
  * The proxy gains the CLAIM author — the second of the design's two visibly
@@ -8271,12 +8665,29 @@ static void usage(void) {
     note("                  (name<TAB>promises<TAB>static-landlock, one line per");
     note("                  tool) — the executor's baseline plus the tool's");
     note("                  sidecar, exactly what the spawn applies");
+    note("  --access-dir DIR  arm S1 (ACL split): THE OPERATOR'S ACCESS TABLE at");
+    note("                  this seat.  DIR holds the PINNED table (PINS +");
+    note("                  access-verbs.tsv, e.g. policy/access): one row per");
+    note("                  verb of the CLOSED VOCABULARY (the 13 pinned catalog");
+    note("                  verbs UNION the host tools), allow|deny, EXACT names");
+    note("                  only.  Verified against PINS at startup and");
+    note("                  TOTALITY-CHECKED (a verb with no row, a name in");
+    note("                  neither vocabulary, a duplicate row or a stale pin");
+    note("                  REFUSES to start, before the slave path is");
+    note("                  published).  INERT IN THIS SLICE: nothing judges by");
+    note("                  it yet, so no call's verdict changes");
+    note("  --print-access   load the --access-dir table exactly as the seat");
+    note("                  does and print one line per verb of the closed");
+    note("                  vocabulary (verb<TAB>allow|deny, in vocabulary");
+    note("                  order), then exit — the table inspectable at rest");
+    note("                  rather than implicit");
 }
 
 int main(int argc, char **argv) {
     const char *upstream_path = NULL;
     const char *slave_file = NULL;
     const char *print_log_state = NULL;
+    int print_access = 0;
     long max_turns = -1; /* -1: serve forever */
 
     for (int i = 1; i < argc; i++) {
@@ -8309,6 +8720,12 @@ int main(int argc, char **argv) {
             g_ops_dir = argv[++i];
         } else if (!strcmp(argv[i], "--calls-policy-dir") && i + 1 < argc) {
             g_calls_dir = argv[++i];
+        } else if (!strcmp(argv[i], "--access-dir") && i + 1 < argc) {
+            g_access_dir = argv[++i];
+        } else if (!strcmp(argv[i], "--print-access")) {
+            /* handled AFTER the loop, so it is order-independent with respect
+             * to --access-dir (a query about the BINARY, not a run). */
+            print_access = 1;
         } else if (!strcmp(argv[i], "--dump-requests") && i + 1 < argc) {
             g_dump_path = argv[++i];
         } else if (!strcmp(argv[i], "--print-log-state") && i + 1 < argc) {
@@ -8379,6 +8796,21 @@ int main(int argc, char **argv) {
         log_state_print();
         return 0;
     }
+    /* S1's query mode: the SAME loader a served run uses (never a second
+     * parser), so a claim about the table is a read of the real state — and a
+     * table missing a row, a name in neither vocabulary, a duplicate row or a
+     * stale pin refuses HERE too. */
+    if (print_access) {
+        if (!g_access_dir) {
+            note("FATAL: --print-access needs --access-dir DIR (the directory "
+                 "holding PINS and access-verbs.tsv)");
+            usage();
+            return 2;
+        }
+        access_seat_startup(g_access_dir);
+        access_print();
+        return 0;
+    }
 
     if (!slave_file || !g_log_path) {
         usage();
@@ -8394,6 +8826,12 @@ int main(int argc, char **argv) {
      * "the proxy started and the reserved name was callable" is a silent allow
      * with no later moment at which it could be made loud. */
     fh_catalog_check();
+
+    /* S1 (ACL SPLIT) — THE ACCESS TABLE, still BEFORE the slave path is
+     * published and immediately after the name contract: the catalog must be
+     * pinned and verified before a table TOTAL OVER IT is believed.  In this
+     * slice the seat loads, validates and reports; it judges nothing. */
+    access_seat_startup(g_access_dir);
 
     /* P6 — THE OPERATOR AUTHOR.  Loaded (and refused, loudly) AFTER the name
      * contract and still BEFORE the slave path is published: a policy that

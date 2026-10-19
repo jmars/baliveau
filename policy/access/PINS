@@ -1,0 +1,20 @@
+# policy/access/PINS -- the frozen-table pin (the policy/PINS discipline; the
+# same auditable triple inventory/fingerprint/verify baseline the ops and calls
+# seats use).  name<TAB>sha256.
+#
+# policy/access/access-verbs.tsv is the OPERATOR'S ACCESS TABLE (the
+# vocabulary dimension: which verbs may be called at all, over the 13 pinned
+# catalog verbs UNION the host-tool registry).  The loader in
+# tools/fx-hostgate.c sha256-verifies it AT STARTUP, before any verdict is
+# believed, and the verified bytes are the bytes it parses (no window for a
+# swap between hash and load).  A stale or swapped table is a LOUD STARTUP
+# REFUSAL naming both shas, never a silent allow-all.
+#
+# A policy edit is a RE-PIN: the artifact and this file in the SAME commit, so
+# every change to the table is a visible release.  Re-pin with:
+#   sha256sum policy/access/access-verbs.tsv
+#
+# SLICE S1: nothing is judged by this table yet (call_judge does not read it).
+# The pin is the property being delivered here: the bytes that WILL be
+# consulted are the bytes that were reviewed.
+access-verbs.tsv	4082a6e1619ff8ce23193842012d9e8c2810d9388abfbecde8f198672b1ab4d1
