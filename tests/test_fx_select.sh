@@ -39,6 +39,20 @@
 #       newest.  FAILING DIRECTION: "always keep the newest" returns keep.
 #   S4  a TIE does not cause a revert (keep the incumbent).
 #   S4-mutant: the tie clause dropped -> the older twin wins on a tie.
+#   S5-ACCESS the ACCESS TABLE as the reach term's THIRD DIMENSION (§7.1a at
+#       the dimension the ACL split created).  THE GATE'S ASYMMETRY IS A
+#       REPRODUCED BLINDNESS: the PRE-FIX seat (pinned from the commit before
+#       this slice), given two observation files differing ONLY in one access
+#       row, emits BYTE-IDENTICAL output and names NOTHING — and the new build
+#       NAMES the deny->allow widening (with the loud egress-reach-widened
+#       row).  BOTH directions: allow->deny is reported as a NARROWING and is
+#       NEVER counted as a widening.  Both consequences are proved OPEN (the
+#       decision, the candidate table and the exit code are identical with and
+#       without the dimension), every absence direction is NOT-KNOWN, a table
+#       edited without a re-pin is a TOOL ERROR (the reading is the loader's
+#       own, so the pin is inherited), a sed-mutant with the widening branches
+#       emptied reads NONE while the vocabulary widened (caught), and the
+#       frozen BOUNDS row count is asserted as a NUMBER.
 #   S4b versions ABOVE CURRENT are outside the bound (`fxstore rollback
 #       --hard` leaves them in the timeline): they are named not-candidate
 #       and cannot be reverted forward to.
@@ -1041,6 +1055,275 @@ grep -q '^sandbox-delta	-	NONE	DERIVED' "$F1/o.sb-mut" \
     || fail "S4-SANDBOX(e): the mutant did not reproduce the dangerous shape the arm refuses (a seat reading NONE while the sandbox widened)"
 echo "test_fx_select: S4-SANDBOX(e) MUTANT (the addition branch emptied) reports NONE while a sidecar declared inet — an oracle blind to a capability change, caught"
 
+# ═══ S5-ACCESS — the ACCESS TABLE as the reach term's THIRD DIMENSION ════
+# §7.1a, at the dimension the ACL split created: policy/access/access-verbs.tsv
+# is now THE tool-vocabulary authority at the judge (S2) and the guest's own
+# list is gone (S3), so flipping one row deny->allow is a capability WIDENING.
+# THE GATE'S ASYMMETRY IS A REPRODUCED BLINDNESS, not a description: the
+# PRE-FIX seat (pinned from the commit before this slice) is given two
+# observation files that differ ONLY in one access row and produces
+# BYTE-IDENTICAL output — it cannot tell "the operator just widened the
+# vocabulary" from "nothing changed".  The new build NAMES it.  THAT PAIR IS
+# THE ARM.
+#
+# THE PRE-FIX CONTROL is the SOURCE at the commit before this slice, pinned by
+# object name (a fixed object, so it stays exact after later commits) and
+# cmp-PROVEN different from the working tree — a pin that happened to equal the
+# subject would make the arm compare the code to itself.
+PIN_SEL=9748109
+git -C "$REPO" cat-file -e "$PIN_SEL^{commit}" 2>/dev/null \
+    || fail "S5-ACCESS PIN $PIN_SEL: the pinned pre-fix revision does not exist in $REPO (shallow clone?) — the control is a FIXED object name, never 'whatever HEAD is'"
+git -C "$REPO" show "$PIN_SEL:tools/fx-select.c" > "$WORK/fx-select-prefix.c" \
+    || fail "S5-ACCESS PIN $PIN_SEL: cannot extract tools/fx-select.c"
+cmp -s "$WORK/fx-select-prefix.c" "$REPO/tools/fx-select.c" \
+    && fail "S5-ACCESS PIN $PIN_SEL: the pinned source is IDENTICAL to the working tree — the control equals its subject and proves nothing"
+grep -q 'access-delta' "$WORK/fx-select-prefix.c" \
+    && fail "S5-ACCESS PIN $PIN_SEL: the pinned source already knows the access dimension — the pin is not pre-fix"
+grep -q 'access-delta' "$REPO/tools/fx-select.c" \
+    || fail "S5-ACCESS: the working tree's seat has no access dimension — the change under test is missing"
+cc -std=c11 -O2 -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
+    -o "$WORK/fx-select-prefix" "$WORK/fx-select-prefix.c" \
+    || fail "S5-ACCESS PIN $PIN_SEL: the pinned source does not compile"
+# THE STALE-BINARY MARKER: the run below must be the FRESH build, and the two
+# builds must be distinguishable.  R1's measured lesson in this tree is that a
+# stale binary silently measures the OLD behaviour — "make" alone does not
+# rebuild every seat — so both shas are printed and the marker is asserted on
+# the binary actually used.
+S5_SHA=$(sha256sum "$SELECT" | cut -d' ' -f1)
+S5_PSHA=$(sha256sum "$WORK/fx-select-prefix" | cut -d' ' -f1)
+[ "$S5_SHA" != "$S5_PSHA" ] \
+    || fail "S5-ACCESS: the pinned pre-fix build and the seat under test are the SAME binary ($S5_SHA) — nothing would prove the change"
+grep -aq 'access-delta' "$SELECT" \
+    || fail "S5-ACCESS: the seat under test carries no 'access-delta' marker — the binary is STALE (rebuild it: make test-select)"
+grep -aq 'access-delta' "$WORK/fx-select-prefix" \
+    && fail "S5-ACCESS: the pinned pre-fix binary carries the marker — it is not the pre-fix build"
+echo "test_fx_select: S5-ACCESS the control is the pinned pre-fix source ($PIN_SEL), built and marker-checked (seat $S5_SHA, control $S5_PSHA)"
+
+# the two observation files: IDENTICAL except ONE access row.  The rows are the
+# proxy's OWN --print-access output in the shared grammar, so the fixture is the
+# record shape fx-audit writes per boot (one grammar, two producers).
+APOL="$F1/access-pol"
+cp -r "$REPO/policy/access" "$APOL" || fail "S5-ACCESS SETUP: cannot copy the pinned access table"
+accrows() { "$GATE_BIN" --print-access --access-dir "$1" 2>/dev/null | sed 's/^/reach-verb\t/'; }
+accrows "$REPO/policy/access" | grep -q '^reach-verb	fx_write	allow$' \
+    || fail "S5-ACCESS SETUP: the shipped table does not classify fx_write allow (the fixture premise is gone)"
+{ "$GATE_BIN" --print-host-tools | sed 's/^/reach-tool\t/'
+  sed -n 's/^example\.com\t\(.*\)\t\(.*\)$/reach-grant\tauthority\texample.com\t\1\t\2/p' "$RPOL/ops-hosts.tsv"
+  awk -F'\t' '!/^#/ && NF==4 { printf "reach-grant\tpath\t%s\t%s\t%s\n", $4, $2, $3 }' "$RPOL/ops-aliases.tsv"
+  accrows "$REPO/policy/access"
+} > "$F1/acc-prev-allow.txt"
+{ cat "$F1/acc-prev-allow.txt" | sed 's/^reach-verb	fx_write	allow$/reach-verb	fx_write	deny/'
+} > "$F1/acc-prev-deny.txt"
+# the fixture is the SHAPE the arm claims: exactly one row, and it is fx_write
+_accdiff=$(diff "$F1/acc-prev-allow.txt" "$F1/acc-prev-deny.txt" | grep -c '^[<>]')
+[ "$_accdiff" = "2" ] \
+    || fail "S5-ACCESS SETUP: the two observations differ in $_accdiff line(s), not in exactly ONE row (2 diff lines: one <, one >)"
+[ "$(diff "$F1/acc-prev-allow.txt" "$F1/acc-prev-deny.txt" | grep -c 'fx_write')" = "2" ] \
+    || fail "S5-ACCESS SETUP: the differing row is not fx_write — the fixture does not differ in ONE ACCESS ROW"
+# ONE fixed path for the previous observation across the arms below: the seat
+# PRINTS the file it was handed, so two different names would differ in the
+# summary even when the content is identical — the fixture must differ in ONE
+# ACCESS ROW and in nothing else, the filename included.
+ACCPREV="$F1/acc-prev.input"
+prev_as() { cp "$1" "$ACCPREV" || fail "S5-ACCESS SETUP: cannot stage the previous observation"; }
+echo "test_fx_select: S5-ACCESS SETUP the two previous observations differ in EXACTLY one access row (fx_write allow -> deny), staged at ONE path"
+
+# ── (a) THE REPRODUCED BLINDNESS (the fail-before) ──────────────────────
+# The PRE-FIX seat, given the two files above, produces BYTE-IDENTICAL output:
+# it has no access dimension at all, so a widened vocabulary is INVISIBLE to
+# the seat that judges generations — §7.1a's failure, measured.
+prev_as "$F1/acc-prev-allow.txt"
+FXSTORE_BIN="$FXSTORE" "$WORK/fx-select-prefix" --store "$S1" --rootfs "$F1/rootfs" \
+    --fxstore "$FXSTORE" --oracle "$OSIER" --package-set "$P1" --proxy "$GATE_BIN" \
+    --ops-policy-dir "$RPOL" --reach-prev "$ACCPREV" \
+    > "$F1/o.pre-allow" 2>&1
+PRE_RC_ALLOW=$?
+prev_as "$F1/acc-prev-deny.txt"
+FXSTORE_BIN="$FXSTORE" "$WORK/fx-select-prefix" --store "$S1" --rootfs "$F1/rootfs" \
+    --fxstore "$FXSTORE" --oracle "$OSIER" --package-set "$P1" --proxy "$GATE_BIN" \
+    --ops-policy-dir "$RPOL" --reach-prev "$ACCPREV" \
+    > "$F1/o.pre-deny" 2>&1
+PRE_RC_DENY=$?
+grep -q '^decision	' "$F1/o.pre-deny" \
+    || fail "S5-ACCESS(a): the pre-fix control produced no decision — it did not really run"
+cmp -s "$F1/o.pre-allow" "$F1/o.pre-deny" \
+    || fail "S5-ACCESS(a): the pre-fix seat ALREADY distinguishes the two observations — the blindness this slice claims is not theirs to reproduce (did the pin drift?)"
+grep -q '^access-delta' "$F1/o.pre-deny" \
+    && fail "S5-ACCESS(a): the pre-fix seat printed an access-delta row — the pin is not pre-fix"
+grep -q '^egress-reach-widened' "$F1/o.pre-deny" \
+    && fail "S5-ACCESS(a): the pre-fix seat raised the loud widening row for an access row"
+[ "$PRE_RC_ALLOW" = "$PRE_RC_DENY" ] \
+    || fail "S5-ACCESS(a): the pre-fix exit codes differ ($PRE_RC_ALLOW vs $PRE_RC_DENY) — then the split was visible after all"
+echo "test_fx_select: S5-ACCESS(a) REPRODUCED BLINDNESS: the pinned pre-fix seat, given two observations differing ONLY in one access row, emits BYTE-IDENTICAL output and names NOTHING (exit $PRE_RC_DENY both ways)"
+
+# ── (b) THE NEW BUILD NAMES THE WIDENING (deny->allow) ──────────────────
+prev_as "$F1/acc-prev-deny.txt"
+rc=$(run_select "$F1/o.acc-wide" $REACH --ops-policy-dir "$RPOL" \
+        --access-dir "$REPO/policy/access" --reach-prev "$ACCPREV")
+grep -q '^access-delta	fx_write	WIDENED	DERIVED' "$F1/o.acc-wide" \
+    || fail "S5-ACCESS(b): the seat did NOT name the deny->allow flip as a widening: $(grep -m1 '^access-delta' "$F1/o.acc-wide")"
+grep -q '^egress-reach-widened	1	DERIVED' "$F1/o.acc-wide" \
+    || fail "S5-ACCESS(b): the loud egress-reach-widened row does not count the access widening: $(grep -m1 '^egress-reach-widened' "$F1/o.acc-wide")"
+grep -q 'THE CONSEQUENCE IS OPEN (order step 6)' "$F1/o.acc-wide" \
+    || fail "S5-ACCESS(b): the widening row does not carry its OPEN consequence in its OWN bytes"
+grep -q '^reach-verb	fx_write	allow$' "$F1/o.acc-wide" \
+    || fail "S5-ACCESS(b): the current vocabulary is not printed in the SHARED grammar (so no other seat can use this run as a baseline)"
+WIDE_RC="$rc"; WIDE_DEC="$(decision_kind "$F1/o.acc-wide") $(decision_version "$F1/o.acc-wide")"
+echo "test_fx_select: S5-ACCESS(b) the deny row is NAMED: access-delta fx_write WIDENED + egress-reach-widened 1, with the OPEN consequence in the row's own bytes"
+
+# ── (c) NO WIDENING WHERE NONE EXISTS + the grammar is SHARED ───────────
+prev_as "$F1/acc-prev-allow.txt"
+rc=$(run_select "$F1/o.acc-none" $REACH --ops-policy-dir "$RPOL" \
+        --access-dir "$REPO/policy/access" --reach-prev "$ACCPREV")
+grep -q '^access-delta	-	NONE	DERIVED' "$F1/o.acc-none" \
+    || fail "S5-ACCESS(c): the same table on both sides did not read NONE: $(grep -m1 '^access-delta' "$F1/o.acc-none")"
+grep -q '^egress-reach-widened' "$F1/o.acc-none" \
+    && fail "S5-ACCESS(c): a widening was FABRICATED where the two observations agree"
+NONE_RC="$rc"; NONE_DEC="$(decision_kind "$F1/o.acc-none") $(decision_version "$F1/o.acc-none")"
+# THE SEAT'S OWN OUTPUT IS A VALID BASELINE (one grammar, two runs)
+rc=$(run_select "$F1/o.acc-self" $REACH --ops-policy-dir "$RPOL" \
+        --access-dir "$REPO/policy/access" --reach-prev "$F1/o.acc-none")
+grep -q '^access-delta	-	NONE	DERIVED' "$F1/o.acc-self" \
+    || fail "S5-ACCESS(c): the seat's own output is not a valid vocabulary baseline (the grammar is not shared): $(grep -m1 '^access-delta' "$F1/o.acc-self")"
+cmp -s "$F1/o.acc-none" "$F1/o.acc-wide" \
+    && fail "S5-ACCESS(c): the two runs are byte-identical — the dimension reported nothing at all"
+echo "test_fx_select: S5-ACCESS(c) nothing changed reads NONE, and the seat's own output is a valid baseline for the next run"
+
+# ── (d) THE CONSEQUENCE IS OPEN, AND PROVEN OPEN ────────────────────────
+# The requirement is byte-identical decision/table/exit code WITH AND WITHOUT
+# the dimension: the term NAMES a capability change and decides nothing.
+[ "$WIDE_RC" = "$NONE_RC" ] \
+    || fail "S5-ACCESS(d): the exit code CHANGED under a vocabulary widening ($WIDE_RC vs $NONE_RC) — the consequence is supposed to be OPEN"
+[ "$WIDE_DEC" = "$NONE_DEC" ] \
+    || fail "S5-ACCESS(d): the DECISION changed under a vocabulary widening ($WIDE_DEC vs $NONE_DEC) — this seat NAMES, it does not gate"
+sed -n 's/^candidate	\([0-9]*\).*/\1/p' "$F1/o.acc-none" > "$F1/cands-accnone.txt"
+sed -n 's/^candidate	\([0-9]*\).*/\1/p' "$F1/o.acc-wide" > "$F1/cands-accwide.txt"
+cmp -s "$F1/cands-accnone.txt" "$F1/cands-accwide.txt" \
+    || fail "S5-ACCESS(d): the candidate TABLE changed under a vocabulary widening"
+# ... and with the dimension ABSENT altogether (no --access-dir): same answer
+prev_as "$F1/acc-prev-deny.txt"
+rc=$(run_select "$F1/o.acc-absent" $REACH --ops-policy-dir "$RPOL" --reach-prev "$ACCPREV")
+[ "$rc" = "$WIDE_RC" ] \
+    || fail "S5-ACCESS(d): naming the widening changed the exit code ($rc vs $WIDE_RC)"
+[ "$(decision_kind "$F1/o.acc-absent") $(decision_version "$F1/o.acc-absent")" = "$WIDE_DEC" ] \
+    || fail "S5-ACCESS(d): naming the widening changed the decision — it must be a MEASUREMENT, not a policy"
+sed -n 's/^candidate	\([0-9]*\).*/\1/p' "$F1/o.acc-absent" > "$F1/cands-accabsent.txt"
+cmp -s "$F1/cands-accwide.txt" "$F1/cands-accabsent.txt" \
+    || fail "S5-ACCESS(d): the candidate table differs between a run WITH and WITHOUT the dimension — the term is not decision-neutral"
+grep -q '^access-delta	-	NOT-KNOWN' "$F1/o.acc-absent" \
+    || fail "S5-ACCESS(d): without --access-dir the dimension is not NOT-KNOWN (never 'no change')"
+echo "test_fx_select: S5-ACCESS(d) the widening leaves the decision ($WIDE_DEC), the table and the exit code ($WIDE_RC) untouched — WITH and WITHOUT the dimension: a measurement, not a policy"
+
+# ── (e) THE NARROWING DIRECTION (allow->deny), and it is NOT a widening ─
+ANAR="$F1/access-narrow"
+cp -r "$REPO/policy/access" "$ANAR" || fail "S5-ACCESS(e) SETUP: cannot copy the table"
+sed -i 's/^fx_write	allow$/fx_write	deny/' "$ANAR/access-verbs.tsv" \
+    || fail "S5-ACCESS(e) SETUP: cannot flip the row"
+grep -q '^fx_write	deny$' "$ANAR/access-verbs.tsv" || fail "S5-ACCESS(e) SETUP: the flip did not land"
+# the table is PINNED, so the copy is RE-PINNED in the same move: the reading is
+# taken through the proxy's loader, which refuses a stale pin — inheritance the
+# (g) arm below proves directly
+_nar_sha=$(sha256sum "$ANAR/access-verbs.tsv" | cut -d' ' -f1)
+_old_sha=$(sed -n 's/^access-verbs.tsv	//p' "$ANAR/PINS")
+[ -n "$_old_sha" ] || fail "S5-ACCESS(e) SETUP: PINS does not pin access-verbs.tsv"
+sed -i "s/^access-verbs.tsv	$_old_sha$/access-verbs.tsv	$_nar_sha/" "$ANAR/PINS"
+grep -q "^access-verbs.tsv	$_nar_sha$" "$ANAR/PINS" || fail "S5-ACCESS(e) SETUP: the re-pin did not land"
+prev_as "$F1/acc-prev-allow.txt"
+rc=$(run_select "$F1/o.acc-narrow" $REACH --ops-policy-dir "$RPOL" \
+        --access-dir "$ANAR" --reach-prev "$ACCPREV")
+grep -q '^access-delta	fx_write	NARROWED	DERIVED' "$F1/o.acc-narrow" \
+    || fail "S5-ACCESS(e): the allow->deny flip is NOT reported as a NARROWING: $(grep -m1 '^access-delta' "$F1/o.acc-narrow")"
+grep -q '^access-delta	fx_write	WIDENED' "$F1/o.acc-narrow" \
+    && fail "S5-ACCESS(e): the seat called a NARROWING a widening — the direction is the whole substance"
+grep -q '^egress-reach-widened' "$F1/o.acc-narrow" \
+    && fail "S5-ACCESS(e): a NARROWING raised the loud widening row (and its count)"
+grep -q '0 WIDENING(s) and 1 narrowing(s) of the tool vocabulary' "$F1/o.acc-narrow" \
+    || fail "S5-ACCESS(e): the summary does not read 0 widenings / 1 narrowing: $(grep -m1 '^# ACCESS' "$F1/o.acc-narrow")"
+[ "$rc" = "$NONE_RC" ] || fail "S5-ACCESS(e): the narrowing changed the exit code ($rc vs $NONE_RC)"
+echo "test_fx_select: S5-ACCESS(e) the MIRROR direction: allow->deny is named a NARROWING, counted as 0 widenings, and decides nothing"
+
+# ── (f) EVERY ABSENCE DIRECTION IS NOT-KNOWN, never "no change" ─────────
+prev_as "$F1/acc-prev-deny.txt"
+rc=$(run_select "$F1/o.acc-nodir" $REACH --ops-policy-dir "$RPOL" --reach-prev "$ACCPREV")
+grep -q '^access-delta	-	NOT-KNOWN' "$F1/o.acc-nodir" \
+    || fail "S5-ACCESS(f): without --access-dir the delta is not NOT-KNOWN"
+grep -q '^access-absence	table' "$F1/o.acc-nodir" \
+    || fail "S5-ACCESS(f): the missing access half is not named as its own absence row"
+grep -q '^access-delta	fx_write' "$F1/o.acc-nodir" \
+    && fail "S5-ACCESS(f): a vocabulary delta was computed against NO access reading"
+# --access-dir WITHOUT --proxy: there is no reader, and that is NOT "no change"
+rc=$(run_select "$F1/o.acc-noreader" --store "$S1" --rootfs "$F1/rootfs" --fxstore "$FXSTORE" \
+        --oracle "$OSIER" --package-set "$P1" --ops-policy-dir "$RPOL" \
+        --access-dir "$REPO/policy/access" --reach-prev "$ACCPREV")
+grep -q '^access-absence	reader' "$F1/o.acc-noreader" \
+    || fail "S5-ACCESS(f): --access-dir with no --proxy is not named as 'no reader'"
+grep -q '^access-delta	-	NOT-KNOWN' "$F1/o.acc-noreader" \
+    || fail "S5-ACCESS(f): an unread table is not NOT-KNOWN"
+# a previous observation taken BEFORE the vocabulary was recorded
+rc=$(run_select "$F1/o.acc-oldbase" $REACH --ops-policy-dir "$RPOL" \
+        --access-dir "$REPO/policy/access" --reach-prev "$F1/reach-prev.txt")
+grep -q 'holds NO reach-verb row' "$F1/o.acc-oldbase" \
+    || fail "S5-ACCESS(f): a baseline with NO reach-verb row is not named as such (an old baseline is not 'every row is a widening')"
+echo "test_fx_select: S5-ACCESS(f) all three absence directions (no dir, no reader, an old baseline) are NOT-KNOWN with their own named row"
+
+# ── (g) THE READING IS THE LOADER'S, so a STALE PIN IS A TOOL ERROR ─────
+# The table is read through the proxy's own loader, which sha256-verifies it:
+# a table edited without a re-pin REFUSES THERE, and this seat reports a TOOL
+# ERROR (exit 2) rather than a change.  Direction matters: a seat that read the
+# stale table as a delta would report a capability change no release licensed.
+ADRT="$F1/access-drift"
+cp -r "$REPO/policy/access" "$ADRT" || fail "S5-ACCESS(g) SETUP: cannot copy the table"
+sed -i 's/^fx_ls	allow$/fx_ls	deny/' "$ADRT/access-verbs.tsv" || fail "S5-ACCESS(g) SETUP: cannot edit"
+grep -q '^fx_ls	deny$' "$ADRT/access-verbs.tsv" || fail "S5-ACCESS(g) SETUP: the edit did not land"
+prev_as "$F1/acc-prev-allow.txt"
+rc=$(run_select "$F1/o.acc-drift" $REACH --ops-policy-dir "$RPOL" \
+        --access-dir "$ADRT" --reach-prev "$ACCPREV")
+[ "$rc" = "2" ] || fail "S5-ACCESS(g): a table edited without a re-pin must be a TOOL ERROR (exit 2), got $rc: an unverifiable table read as a delta would report a change nothing released"
+grep -q '^decision	' "$F1/o.acc-drift" \
+    && fail "S5-ACCESS(g): a decision was printed off a table the loader refused"
+echo "test_fx_select: S5-ACCESS(g) a table edited without a re-pin is REFUSED by the loader and reported as a TOOL ERROR (exit $rc), never as a delta"
+
+# ── (h) THE MUTANT: the widening branches emptied — the seat reads NONE
+# while the operator's vocabulary GREW.  §7.1a's failure made concrete, and the
+# direction is the one that matters: a blind seat and a wrong label both pass a
+# shape test, so the arm must catch the instrument that cannot SEE.
+sed -e 's/if (!P->allow \&\& C->allow) {/if (0) { \/* mutant: deny->allow blind *\//' \
+    -e 's/if (C->allow) {/if (0) { \/* mutant: new-allow-verb blind *\//' \
+    "$REPO/tools/fx-select.c" > "$WORK/fx-select-accblind.c" \
+    || fail "S5-ACCESS(h): cannot write the mutant source"
+cmp -s "$WORK/fx-select-accblind.c" "$REPO/tools/fx-select.c" \
+    && fail "S5-ACCESS(h): the mutant source is IDENTICAL to the seat — the sed matched nothing"
+grep -q 'mutant: deny->allow blind' "$WORK/fx-select-accblind.c" \
+    || fail "S5-ACCESS(h): the sed did not land the deny->allow blind (check the source text)"
+grep -q 'mutant: new-allow-verb blind' "$WORK/fx-select-accblind.c" \
+    || fail "S5-ACCESS(h): the sed did not land the new-allow-verb blind (check the source text)"
+cc -std=c11 -O2 -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE -o "$WORK/fx-select-accblind" \
+    "$WORK/fx-select-accblind.c" || fail "S5-ACCESS(h): the mutant does not compile"
+FXSTORE_BIN="$FXSTORE" "$WORK/fx-select-accblind" --store "$S1" --rootfs "$F1/rootfs" \
+    --fxstore "$FXSTORE" --oracle "$OSIER" --package-set "$P1" --proxy "$GATE_BIN" \
+    --ops-policy-dir "$RPOL" --access-dir "$REPO/policy/access" \
+    --reach-prev "$ACCPREV" > "$F1/o.acc-mut" 2>&1
+grep -q '^access-delta	fx_write	WIDENED' "$F1/o.acc-mut" \
+    && fail "S5-ACCESS(h): the blind mutant STILL names the widening — the arm is not load-bearing"
+grep -q '^egress-reach-widened' "$F1/o.acc-mut" \
+    && fail "S5-ACCESS(h): the blind mutant still raises the loud widening row"
+grep -q '^access-delta	-	NONE	DERIVED' "$F1/o.acc-mut" \
+    || fail "S5-ACCESS(h): the mutant did not reproduce the dangerous shape the arm refuses (a seat reading NONE while the vocabulary widened)"
+echo "test_fx_select: S5-ACCESS(h) MUTANT (both widening branches emptied) reports NONE while a deny->allow flip widened the vocabulary — an oracle blind to the capability change, caught"
+
+# ── (i) THE BOUNDS TABLE IS A COUNT, not a vibe ─────────────────────────
+# Every bound in the frozen table is one row, printed on every run; the access
+# dimension brings its own, and the count is asserted AS A NUMBER so a bound
+# that silently stops printing (or a new one added without a gate) is caught.
+N_BOUNDS=$(grep -c '^bound	' "$F1/o.acc-wide")
+[ "$N_BOUNDS" = "10" ] \
+    || fail "S5-ACCESS(i): the frozen BOUNDS table printed $N_BOUNDS row(s), not 10 (a bound stopped printing, or a new one landed without this count being updated)"
+grep -q '^bound	access-visible-is-not-a-policy	' "$F1/o.acc-wide" \
+    || fail "S5-ACCESS(i): the bound that keeps a VISIBLE vocabulary change from reading as a POLICY is not printed"
+grep -q 'does NOT gate, deny or stop anything' "$F1/o.acc-wide" \
+    || fail "S5-ACCESS(i): that bound does not say the measurement gates nothing"
+echo "test_fx_select: S5-ACCESS(i) the BOUNDS table prints $N_BOUNDS rows (asserted as a number), including the access bound that says it is a measurement and not a policy"
+
 # ═══ fix2 — order E OC O: CURRENT has the top share and DRIFTS ═════════
 build_fixture fix2 "E OC O"
 F2="$WORK/fix2"; S2="$F2/store"; P2="$F2/package-set.dhall"
@@ -1242,5 +1525,5 @@ grep -q 'cannot be run' "$F4/o.s11" || fail "S11: the tool error is not named: $
 grep -q '^decision' "$F4/o.s11" && fail "S11: a decision was produced off a missing oracle"
 echo "test_fx_select: S11 a missing oracle -> exit 2, no decision, named"
 
-echo "test_fx_select: PASS (the order is enforced: S1/S1-mutant, S2/S2-mutant, S3, S4/S4-mutant, S4b, S5a, S5b, S6, S7, S8a, S8b, S8c/S8d, S9, S4-reach/S4-reach-mutant, S10, S11, S12, S12b, S13, S15, S16, S17)"
+echo "test_fx_select: PASS (the order is enforced: S1/S1-mutant, S2/S2-mutant, S3, S4/S4-mutant, S4b, S5a, S5b, S6, S7, S8a, S8b, S8c/S8d, S9, S4-reach/S4-reach-mutant, S4-SANDBOX, S5-ACCESS (the reproduced blindness, the widening NAMED, the narrowing NOT called one, both consequences OPEN, the absence directions, the loader's pin refusal, the dimension-blind mutant, the BOUNDS count), S10, S11, S12, S12b, S13, S15, S16, S17)"
 exit 0

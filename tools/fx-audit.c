@@ -732,6 +732,62 @@ static int g_sb_pins_state = -1;      /* 1 = ops-sandbox.tsv hashes to PINS, 0 =
                                        * -1 = unverifiable (loud side) */
 static char g_sb_pins_detail[512];
 
+/* ── S5 (ACL SPLIT): THE ACCESS TABLE, AND THE ARMED-AUTHOR SET ──────────
+ * §7.1a aimed at the last dimension the audit could not see.  S2 made
+ * `policy/access/access-verbs.tsv` THE tool-vocabulary authority at the judge
+ * and S3 removed the guest's own list, so flipping one row deny -> allow is a
+ * capability WIDENING — and a seat that judges generations (fx-select) reads
+ * its baseline from THIS seat's per-boot record.  So the audit records the
+ * vocabulary beside the boot it ran after, in the SHARED grammar
+ * (`reach-verb<TAB>verb<TAB>allow|deny`), and names any change against its OWN
+ * previous observation.
+ *
+ * THE DIRECTION, named both ways: deny -> allow is a WIDENING and is the
+ * finding `access-widened-unreleased` UNLESS the table still hashes to
+ * policy/access/PINS (then it is a RELEASE — named, not a finding, exactly the
+ * asymmetry reach-widened-unreleased already uses); allow -> deny is a
+ * NARROWING, named and NOT a finding, because a tightening needs no release
+ * and is the direction this mechanism exists to encourage.
+ *
+ * THE READING IS THE FILE (`<--access-dir>/access-verbs.tsv`), NOT the proxy's
+ * loader — and that is forced by the question, not a preference: the loader
+ * REFUSES a table whose bytes do not hash to PINS, so a table that drifted from
+ * its release can never reach the printer, and "was this widening released?"
+ * would answer "yes" for every reading that exists.  Reading the declared file
+ * and verifying it against this directory's PINS keeps all three states real
+ * (the bytes, the release, the difference).  THE LOADER'S OWN REFUSAL IS STILL
+ * THE JUDGE'S: it is what stops a SERVED run on a stale table — this seat
+ * reports the same fact as DRIFT plus an UNRELEASED widening.
+ *
+ * THE ARMED-AUTHOR SET: a boot's record also says WHICH AUTHORS COULD REFUSE
+ * as this observation saw them (R5's durable-absence requirement: an access
+ * seat armed on the gates and absent on the real lane must leave a record
+ * rather than be inferred from a transient stderr line).  THE SCOPE IS STATED
+ * RATHER THAN IMPLIED: the set is a LOWER BOUND derived from the inputs THIS
+ * observation was given — `access` when the table was read, `ops` when the
+ * pinned class tables were read — and the denylist, the justification arm and
+ * the claim author are NOT queryable from this seat, which the row says in its
+ * own bytes.  Its change between observations is NAMED with the direction that
+ * matters: an author REMOVED is a WIDENING (fewer seats can refuse) and an
+ * author ADDED is a NARROWING. */
+#define MAX_ACCESS_VERBS 256
+typedef struct { char name[128]; int allow; } accessverb_t;
+static const char *g_accessdir;      /* --access-dir: policy/access (PINS + table) */
+static accessverb_t g_atab[MAX_ACCESS_VERBS];  static size_t g_natab = 0;
+static accessverb_t g_patab[MAX_ACCESS_VERBS]; static size_t g_npatab = 0;
+static int g_atab_known = 0;         /* the declared table was read */
+static int g_obs_access_known = 0;   /* the previous observation recorded the table */
+static int g_access_pins_state = -1; /* 1 = access-verbs.tsv hashes to PINS, 0 = drift,
+                                      * -1 = unverifiable (the loud side) */
+static char g_access_pins_detail[512];
+/* the armed-author set of THIS observation, "+"-joined ("none" when nothing
+ * was seen armed — which is itself the R5 shape worth recording), and the
+ * previous observation's value */
+static char g_armed[256] = "none";
+static char g_obs_armed[256];
+static int  g_obs_armed_known = 0;
+static int  g_armed_known = 0;       /* any input was given, so the set means something */
+
 /* previous observation's halves */
 static int g_obs_plog_known = 0;
 static size_t g_obs_plog_bytes = 0; static char g_obs_plog_sha[65];
@@ -1471,6 +1527,152 @@ static int sandbox_verify_pins(void) {
     return state;
 }
 
+/* ── S5: the access-table reader, its release check, and the armed set ──── */
+
+/* Read the operator's access table FROM THE FILE — and the reason is the
+ * RELEASE QUESTION itself, stated because the surprising half is the route:
+ *
+ *   THE PROXY'S LOADER (`--print-access`) cannot answer what this seat is for.
+ *   It sha256-verifies the table against PINS and REFUSES TO START on a stale
+ *   one, so a table that has drifted from its release never reaches the
+ *   printer — and "was this widening RELEASED?" would then always answer "yes"
+ *   for every reading that exists.  An instrument that can only ever report
+ *   the licensed case is the blind shape this tree keeps finding.
+ *
+ *   So the audit reads the DECLARED file (the same way it reads
+ *   ops-aliases.tsv/ops-hosts.tsv) and verifies it against THIS DIRECTORY's
+ *   PINS itself.  The three states are then real: the bytes on disk, the
+ *   release that pins them, and the difference between them.  The loader's
+ *   own refusal is not lost — it is what stops a JUDGE from running on a stale
+ *   table; here the same fact is reported as DRIFT plus an unreleased
+ *   widening, which is the finding (a silent no-change would be the failure).
+ *
+ * The grammar is the pinned one — `verb<TAB>allow|deny`, exact names, '#'
+ * comments and blank lines skipped — and a row this seat cannot read is LOUD
+ * (a skipped row is a capability that vanishes from the delta). */
+static void access_read_table(void) {
+    if (!g_accessdir) return;
+    char path[4096];
+    snprintf(path, sizeof path, "%s/access-verbs.tsv", g_accessdir);
+    size_t len = 0; int absent = 0;
+    char *b = read_file(path, &len, &absent);
+    if (absent)
+        die("--access-dir '%s' holds no access-verbs.tsv: an absent table is NOT an empty "
+            "vocabulary (the judge refuses to start without one, so reading it as 'every verb "
+            "unchanged' — or as 'nothing is allowed' — would invent a state)", g_accessdir);
+    char *save = NULL;
+    size_t ln = 0;
+    for (char *line = strtok_r(b, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
+        ln++;
+        size_t ll = strlen(line);
+        if (ll && line[ll - 1] == '\r') line[--ll] = 0;
+        if (!ll || line[0] == '#') continue;
+        char *f[3] = {0};
+        int nf = 0;
+        char *lsave = NULL;
+        for (char *tok = strtok_r(line, "\t", &lsave); tok && nf < 3;
+             tok = strtok_r(NULL, "\t", &lsave))
+            f[nf++] = tok;
+        if (nf != 2 || (strcmp(f[1], "allow") && strcmp(f[1], "deny")))
+            die("%s:%zu: an access row is verb<TAB>allow|deny (the table has no third state, so "
+                "a row this seat cannot read is refused, never skipped): \"%s\"", path, ln, line);
+        if (g_natab >= MAX_ACCESS_VERBS)
+            die("%s: more than %u verbs", path, (unsigned)MAX_ACCESS_VERBS);
+        accessverb_t *V = &g_atab[g_natab++];
+        snprintf(V->name, sizeof V->name, "%s", f[0]);
+        V->allow = !strcmp(f[1], "allow");
+    }
+    free(b);
+    if (g_natab == 0)
+        die("%s holds no access row: the table is TOTAL over a non-empty closed vocabulary, so "
+            "an empty reading is a tool error, not a vocabulary with nothing in it", path);
+    g_atab_known = 1;
+}
+
+/* THE RELEASE CHECK for the access table: is the file on disk the bytes
+ * policy/access/PINS froze?  1 = yes (a re-pin RELEASE — a widening is then a
+ * named operator act, not a finding), 0 = drift, -1 = unverifiable (PINS
+ * absent, not naming the table, or the table missing) — the last takes the
+ * LOUD side, because an unverifiable release is not a release. */
+static int access_verify_pins(void) {
+    if (!g_accessdir) {
+        snprintf(g_access_pins_detail, sizeof g_access_pins_detail, "no --access-dir");
+        return -1;
+    }
+    char path[4096];
+    snprintf(path, sizeof path, "%s/PINS", g_accessdir);
+    size_t len = 0; int absent = 0;
+    char *b = read_file(path, &len, &absent);
+    if (absent) {
+        snprintf(g_access_pins_detail, sizeof g_access_pins_detail, "%.400s does not exist", path);
+        return -1;
+    }
+    int state = -1;
+    char *save = NULL;
+    for (char *line = strtok_r(b, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
+        size_t ll = strlen(line);
+        if (ll && line[ll - 1] == '\r') line[--ll] = 0;
+        if (!ll || line[0] == '#') continue;
+        char *tab = strchr(line, '\t');
+        if (!tab) die("%s: a PINS row is <artifact><TAB><sha256>: \"%s\"", path, line);
+        *tab = 0;
+        if (strcmp(line, "access-verbs.tsv")) continue;
+        char apath[4096];
+        snprintf(apath, sizeof apath, "%s/%s", g_accessdir, line);
+        size_t alen = 0; int aabsent = 0;
+        char *ab = read_file(apath, &alen, &aabsent);
+        if (aabsent) {
+            state = 0;
+            snprintf(g_access_pins_detail, sizeof g_access_pins_detail,
+                     "%.200s is named by PINS and is NOT THERE", line);
+            break;
+        }
+        char sha[65];
+        sha256_hex(ab, alen, sha);
+        free(ab);
+        if (strcmp(sha, tab + 1) != 0) {
+            state = 0;
+            snprintf(g_access_pins_detail, sizeof g_access_pins_detail,
+                     "%.200s hashes to %s but PINS pins %s", line, sha, tab + 1);
+        } else {
+            state = 1;
+            snprintf(g_access_pins_detail, sizeof g_access_pins_detail,
+                     "%.200s hashes to its PIN", line);
+        }
+        break;
+    }
+    free(b);
+    if (state == -1)
+        snprintf(g_access_pins_detail, sizeof g_access_pins_detail,
+                 "%.400s/PINS does not name access-verbs.tsv", g_accessdir);
+    return state;
+}
+
+/* THE ARMED-AUTHOR SET, as THIS observation can see it, "+"-joined in judge
+ * order (denylist -> access -> ops -> justification -> claim).  Only the
+ * middle members are observable from here — the denylist is compiled into the
+ * proxy, and the justification arm and the claim author are flags of the
+ * JUDGE, not of this seat — so the value is a LOWER BOUND and every row that
+ * prints it says so.  Recorded rather than left to a transient stderr line:
+ * "the access seat was armed on the gates and absent on the real lane" is the
+ * shape R5 names, and a boot's record is the only place that absence can be
+ * durable. */
+static void armed_authors_compute(void) {
+    if (!g_proxy && !g_opsdir && !g_accessdir) return;
+    size_t n = 0;
+    g_armed[0] = 0;
+#define ARMED_ADD(s)                                                          \
+    do {                                                                      \
+        n += (size_t)snprintf(g_armed + n, n < sizeof g_armed ? sizeof g_armed - n : 0, \
+                              "%s%s", n ? "+" : "", (s));                     \
+    } while (0)
+    if (g_atab_known) ARMED_ADD("access");
+    if (g_grants_known) ARMED_ADD("ops");
+#undef ARMED_ADD
+    if (n == 0) snprintf(g_armed, sizeof g_armed, "none");
+    g_armed_known = 1;
+}
+
 /* The boot this observation is anchored to: the LAST line .bootlog holds.
  * The reach measured NOW belongs to the boot the audit ran after — the seat
  * says exactly that and never attributes today's registry to an earlier
@@ -1486,11 +1688,16 @@ static void reach_anchor_boot(void) {
 /* Emit the observation in the SHARED grammar (the tags fx-select prints and
  * consumes), plus the boot it is anchored to. */
 static void emit_reach_rows(void) {
-    if (!g_proxy && !g_opsdir) return;
+    if (!g_proxy && !g_opsdir && !g_accessdir) return;
     for (size_t i = 0; i < g_nrtools; i++) printf("reach-tool\t%s\n", g_rtools[i].name);
     for (size_t i = 0; i < g_ngrants; i++)
         printf("reach-grant\t%s\t%s\t%s\t%s\n", g_rgrants[i].dim, g_rgrants[i].pattern,
                g_rgrants[i].cls, g_rgrants[i].prot ? "yes" : "no");
+    /* S5: the tool VOCABULARY, in the SHARED grammar fx-select consumes via
+     * --reach-prev — so the seat that judges generations builds its baseline
+     * from what THIS seat recorded around a boot, never from a second read. */
+    for (size_t i = 0; i < g_natab; i++)
+        printf("reach-verb\t%s\t%s\n", g_atab[i].name, g_atab[i].allow ? "allow" : "deny");
     if (g_reach_boot_known)
         printf("reach-boot\t%lu\tnonce\t%s\tMEASURED\tthe reach recorded around this boot "
                "(the LAST .bootlog line): the host tool(s) and pinned class row(s) above are "
@@ -1507,6 +1714,31 @@ static void emit_reach_rows(void) {
     if (!g_opsdir)
         printf("reach-absence\tclass-tables\tnot-given-no---ops-policy-dir-so-the-grant-half-"
                "of-the-reach-observation-is-NOT-KNOWN (NOT 'nothing is granted')\tABSENT\n");
+    if (!g_accessdir)
+        printf("reach-absence\taccess-table\tnot-given-no---access-dir-so-the-VOCABULARY-half-"
+               "of-the-reach-observation-is-NOT-KNOWN (NOT 'no verb is allowed' and NOT 'no "
+               "verb changed')\tABSENT\n");
+
+    /* S5: WHICH AUTHORS COULD REFUSE, as this observation saw them, beside the
+     * boot it was taken around — the durable record R5 asks for, with its own
+     * scope stated in its own bytes (a LOWER BOUND: only the members this
+     * seat's inputs make observable). */
+    if (g_armed_known) {
+        if (g_reach_boot_known)
+            printf("authors-armed\t%s\tboot\t%lu\tnonce\t%s\tMEASURED\tthe AUTHORS this "
+                   "observation could SEE armed (access = the operator's access table was read, "
+                   "ops = the pinned class tables were read), recorded around the LAST .bootlog "
+                   "line: a LOWER BOUND, NOT a statement about the judge's own flags — the "
+                   "compiled-in denylist, the justification arm and the claim author are not "
+                   "queryable from this seat and are therefore NOT in this set.  A boot's record "
+                   "says what could have refused; 'none' here is the absence made durable rather "
+                   "than inferred from a transient stderr line\n", g_armed, g_reach_boot_v,
+                   g_reach_boot_nonce);
+        else
+            printf("authors-armed\t%s\tboot\t-\tnonce\t-\tABSENT\tthe AUTHORS this "
+                   "observation could SEE armed (a LOWER BOUND: see the bound line) — this store "
+                   "has no .bootlog line, so the set is NOT attributed to any boot\n", g_armed);
+    }
 }
 
 /* Emit the composed sandbox in the SHARED grammar (the tag fx-select prints
@@ -1627,6 +1859,16 @@ static void obs_write(void) {
             fprintf(f, "sandbox_tool\t%s\t%s\t%s\n", g_sbt[i].name, g_sbt[i].promises,
                     g_sbt[i].landlock);
     }
+    /* S5: the TOOL VOCABULARY this observation measured, and the authors it
+     * could see armed.  Both are written only when they were READ: a baseline
+     * without them is NOT-KNOWN for that dimension (never "the vocabulary was
+     * empty" and never "no author was armed" — the last being the exact
+     * reading a durable absence must not fabricate). */
+    if (g_atab_known)
+        for (size_t i = 0; i < g_natab; i++)
+            fprintf(f, "access_verb\t%s\t%s\n", g_atab[i].name,
+                    g_atab[i].allow ? "allow" : "deny");
+    if (g_armed_known) fprintf(f, "armed_authors\t%s\n", g_armed);
     fprintf(f, "end\n");
     fflush(f);
     if (ferror(f)) die("cannot write observation '%s'", tmp);
@@ -1723,6 +1965,32 @@ static void obs_read(void) {
             S->promises[strcspn(S->promises, "\r\n")] = 0;
             S->landlock[strcspn(S->landlock, "\r\n")] = 0;
             g_obs_sandbox_known = 1;
+            continue;
+        }
+        if (strncmp(line, "access_verb\t", 12) == 0) {
+            char *c = line + 12;
+            char *f2[3] = {0};
+            int nf2 = 0;
+            char *asave = NULL;
+            for (char *tok = strtok_r(c, "\t", &asave); tok && nf2 < 3;
+                 tok = strtok_r(NULL, "\t", &asave))
+                f2[nf2++] = tok;
+            if (nf2 < 2) die("bad access_verb row in observation: %s", line);
+            f2[1][strcspn(f2[1], "\r\n")] = 0;
+            if (strcmp(f2[1], "allow") && strcmp(f2[1], "deny"))
+                die("bad access_verb decision in observation (allow|deny only): %s", line);
+            if (g_npatab >= MAX_ACCESS_VERBS) die("observation has too many access_verb rows");
+            accessverb_t *V = &g_patab[g_npatab++];
+            snprintf(V->name, sizeof V->name, "%.*s", (int)sizeof V->name - 1, f2[0]);
+            V->allow = !strcmp(f2[1], "allow");
+            g_obs_access_known = 1;
+            continue;
+        }
+        if (strncmp(line, "armed_authors\t", 14) == 0) {
+            snprintf(g_obs_armed, sizeof g_obs_armed, "%.*s", (int)sizeof g_obs_armed - 1,
+                     line + 14);
+            g_obs_armed[strcspn(g_obs_armed, "\r\n")] = 0;
+            g_obs_armed_known = 1;
             continue;
         }
         if (strncmp(line, "reach_tool\t", 11) == 0) {
@@ -2140,6 +2408,231 @@ static void check_sandbox(void) {
         info("sandbox: %u narrowing(s) and %u changed row(s) between the observations (no "
              "widening) — recorded, not findings: a tightening is the direction this mechanism "
              "exists for", n_narrow, n_change);
+}
+
+/* ── S5 (ACL SPLIT): THE ACCESS RECORD AND THE ARMED-AUTHOR SET ─────────── */
+
+/* THE VOCABULARY, compared with THIS audit's own previous observation, row by
+ * row.  THE CLASSIFICATION IS TOTAL AND SYMMETRIC (the same rule fx-select
+ * applies to the same rows, so the two seats cannot disagree about a
+ * direction):
+ *   deny -> allow, or a DENY row withdrawn   WIDENED
+ *   allow -> deny, or an ALLOW row withdrawn NARROWED
+ *   a row present on one side only           classified by that row's decision
+ * A WIDENING is the finding `access-widened-unreleased` UNLESS
+ * policy/access/PINS still freezes the table — then it is a RELEASE, named and
+ * not a finding (the exact asymmetry reach-widened-unreleased uses, because a
+ * re-pin release is how reach is SUPPOSED to change).  A NARROWING is named
+ * and is never a finding: a tightening needs no release.
+ *
+ * THE ARMED-AUTHOR SET's change between observations is named HERE too, with
+ * the direction that matters and no more: an author REMOVED is a WIDENING
+ * (fewer seats could refuse — what a seat used to be able to refuse, nothing
+ * now does) and an author ADDED is a NARROWING.  NEITHER is a finding, and
+ * the row says why: the set follows the INPUTS an invocation was given, no pin
+ * covers an invocation, and the access table's own release question is
+ * answered by the pin check above — a finding here would be a policy about how
+ * the audit was called, which is not this seat's dimension. */
+/* THE ARMED-AUTHOR SET's change between observations, named with the
+ * direction that matters: an author REMOVED is a WIDENING (fewer seats can
+ * refuse) and an author ADDED is a NARROWING.  NEITHER is a finding — the set
+ * follows the INPUTS an invocation was given, no pin covers an invocation, and
+ * the vocabulary's own release question is answered by check_access's pin row;
+ * a finding here would be a policy about how the audit was CALLED.
+ *
+ * It runs even when the access table itself was not read this time (the "-access"
+ * direction is exactly that case: the set can lose a member while the dimension
+ * it names is absent, and that absence is the R5 shape a durable record
+ * exists to keep). */
+static void armed_authors_delta(void) {
+    if (!g_obs_armed_known || !g_armed_known) return;
+    /* THE ARMED-AUTHOR SET's change, named before the table delta so it is
+     * reported even when the previous observation carries no table baseline
+     * (the set can be recorded while the vocabulary was not). */
+    {
+        unsigned n_add = 0, n_del = 0;
+        char added[256] = "", removed[256] = "";
+        char *sv0 = NULL;
+        /* walk the union: an author in one set and not the other */
+        char bulk[600];
+        snprintf(bulk, sizeof bulk, "%s+%s", g_armed, g_obs_armed);
+        char *dup = xstrdup(bulk), *sv = NULL;
+        for (char *t = strtok_r(dup, "+", &sv); t; t = strtok_r(NULL, "+", &sv)) {
+            if (!strcmp(t, "none")) continue;
+            int now = sb_set_has(g_armed, '+', t), was = sb_set_has(g_obs_armed, '+', t);
+            if (now && !was && !sb_set_has(added, ' ', t)) {
+                size_t l = strlen(added);
+                snprintf(added + l, sizeof added - l, "%s%s", l ? " " : "", t);
+            } else if (!now && was && !sb_set_has(removed, ' ', t)) {
+                size_t l = strlen(removed);
+                snprintf(removed + l, sizeof removed - l, "%s%s", l ? " " : "", t);
+            }
+        }
+        free(dup);
+        /* counted on COPIES: strtok_r writes over its input, and the lists
+         * themselves are printed below */
+        char *cnt = xstrdup(added);
+        for (char *q = strtok_r(cnt, " ", &sv0); q; q = strtok_r(NULL, " ", &sv0)) n_add++;
+        free(cnt);
+        cnt = xstrdup(removed);
+        sv0 = NULL;
+        for (char *q = strtok_r(cnt, " ", &sv0); q; q = strtok_r(NULL, " ", &sv0)) n_del++;
+        free(cnt);
+        if (removed[0])
+            printf("authors-armed-delta\t-%s\tWIDENED\tDERIVED\tan author that COULD REFUSE "
+                   "at the previous observation could not at this one (%s): fewer seats can "
+                   "refuse, so what a seat used to be able to refuse nothing now does — the "
+                   "WIDENING direction.  Named against THIS audit's own previous observation "
+                   "(\"%s\" -> \"%s\"); NOT a finding: the set follows the inputs an "
+                   "invocation was given, no pin covers an invocation, and the table's own "
+                   "release question is the access-pin row above\n", removed, removed,
+                   g_obs_armed, g_armed);
+        if (added[0])
+            printf("authors-armed-delta\t+%s\tNARROWED\tDERIVED\tan author that could not "
+                   "refuse at the previous observation can at this one (%s): MORE seats can "
+                   "refuse — the narrowing direction, named as one and never raised as a "
+                   "widening (\"%s\" -> \"%s\")\n", added, added, g_obs_armed, g_armed);
+        if (!added[0] && !removed[0])
+            printf("authors-armed-delta\t-\tNONE\tDERIVED\tthe previous observation and this "
+                   "one saw the SAME authors armed (\"%s\" vs \"%s\", compared as SETS): no "
+                   "author was armed or disarmed between these two observations\n", g_armed,
+                   g_obs_armed);
+        else
+            info("authors armed: \"%s\" now against \"%s\" at the previous observation (%u "
+                 "added, %u removed) — the access/ops members are the ones this seat's inputs "
+                 "make observable; the denylist, the justification arm and the claim author are "
+                 "not queryable here", g_armed, g_obs_armed, n_add, n_del);
+    }
+
+}
+
+static void check_access(void) {
+    /* FIRST, before any access-dir branch: the armed set can LOSE a member
+     * while the dimension it names is absent, and that absence ("armed on the
+     * gates, absent on the real lane") is exactly the change this record
+     * exists to keep. */
+    armed_authors_delta();
+    if (!g_accessdir) {
+        info("access: NOT ARMED (no --access-dir) — this audit cannot say what the tool "
+             "VOCABULARY of the running host is, so it can name no vocabulary change (§7.1a's "
+             "blindness at the dimension S2 created, named rather than left to be discovered)");
+        return;
+    }
+    if (!g_atab_known) {
+        info("access: --access-dir '%s' was given but the table was NOT READ — the vocabulary of "
+             "this observation is NOT-KNOWN, never 'every verb unchanged' and never 'every verb "
+             "denied'", g_accessdir);
+        return;
+    }
+    g_access_pins_state = access_verify_pins();
+    if (g_access_pins_state == 1)
+        printf("access-pin\taccess-verbs.tsv\tMATCH\tMEASURED\t%s\ta widening found under "
+               "this state is a RE-PIN RELEASE — a named operator act, not an incoherence\n",
+               g_access_pins_detail);
+    else if (g_access_pins_state == 0)
+        printf("access-pin\taccess-verbs.tsv\tDRIFT\tMEASURED\t%s\tthe table is NOT the bytes "
+               "the release froze: a widening found under this state is the covert direction "
+               "§7.1a names\n", g_access_pins_detail);
+    else
+        printf("access-pin\taccess-verbs.tsv\tNOT-KNOWN\tABSENT\t%s\tthe release CANNOT be "
+               "verified (never 'no edit'), and an unverifiable release is not a release: a "
+               "widening found under this state takes the LOUD side\n", g_access_pins_detail);
+
+    if (!g_have_obs || !g_obs_access_known) {
+        info("access: %zu verb(s) recorded as the vocabulary baseline (from %s/%s)%s — the "
+             "delta starts on the next observation", g_natab, g_accessdir, "access-verbs.tsv",
+             g_have_obs ? " (the baseline predates the access record: it cannot be compared)"
+                        : " (first observation of this store)");
+        return;
+    }
+
+    unsigned n_wide = 0, n_narrow = 0;
+    char wide[LINE_MAX_]; wide[0] = 0;
+    int wide_cut = 0;
+#define ACC_WIDE_ADD(...) do { \
+        size_t _l = strlen(wide); \
+        int _w = snprintf(wide + _l, sizeof wide - _l, __VA_ARGS__); \
+        if (_w < 0 || (size_t)_w >= sizeof wide - _l) { wide_cut = 1; wide[sizeof wide - 1] = 0; } \
+    } while (0)
+
+    for (size_t i = 0; i < g_natab; i++) {
+        accessverb_t *C = &g_atab[i], *P = NULL;
+        for (size_t j = 0; j < g_npatab; j++)
+            if (!strcmp(g_patab[j].name, C->name)) { P = &g_patab[j]; break; }
+        if (!P) {
+            if (C->allow) {
+                printf("access-delta\t%s\tWIDENED\tDERIVED\tthe table classifies this verb "
+                       "ALLOW and the previous observation carried no row for it: a CALLABLE "
+                       "verb where the vocabulary said nothing — a WIDENING\n", C->name);
+                ACC_WIDE_ADD("verb '%s' newly classified allow; ", C->name);
+                n_wide++;
+            } else {
+                printf("access-delta\t%s\tNARROWED\tDERIVED\tthe table classifies this verb "
+                       "DENY and the previous observation carried no row for it: a REFUSABLE "
+                       "verb where the vocabulary said nothing — a NARROWING, not a widening\n",
+                       C->name);
+                n_narrow++;
+            }
+            continue;
+        }
+        if (!P->allow && C->allow) {
+            printf("access-delta\t%s\tWIDENED\tDERIVED\tthe row flipped deny->allow: a verb "
+                   "the operator's table REFUSED is now callable — the tool VOCABULARY grew by "
+                   "one named row (§7.1a's capability increase, at the dimension S2 created)\n",
+                   C->name);
+            ACC_WIDE_ADD("verb '%s' deny->allow; ", C->name);
+            n_wide++;
+        } else if (P->allow && !C->allow) {
+            printf("access-delta\t%s\tNARROWED\tDERIVED\tthe row flipped allow->deny: a verb "
+                   "that was callable is now REFUSED — a NARROWING, named as the mirror "
+                   "direction and never raised as a widening (a tightening needs no release)\n",
+                   C->name);
+            n_narrow++;
+        }
+    }
+    for (size_t j = 0; j < g_npatab; j++) {
+        accessverb_t *P = &g_patab[j];
+        int seen = 0;
+        for (size_t i = 0; i < g_natab; i++)
+            if (!strcmp(g_atab[i].name, P->name)) { seen = 1; break; }
+        if (seen) continue;
+        if (P->allow) {
+            printf("access-delta\t%s\tNARROWED\tDERIVED\tthe previous observation carried an "
+                   "ALLOW row and the table carries none now: a permitted verb's row was "
+                   "WITHDRAWN — a NARROWING\n", P->name);
+            n_narrow++;
+        } else {
+            printf("access-delta\t%s\tWIDENED\tDERIVED\tthe previous observation carried a "
+                   "DENY row and the table carries none now: the REFUSAL was withdrawn — a "
+                   "WIDENING\n", P->name);
+            ACC_WIDE_ADD("verb '%s' deny row withdrawn; ", P->name);
+            n_wide++;
+        }
+    }
+#undef ACC_WIDE_ADD
+
+    if (!n_wide && !n_narrow)
+        printf("access-delta\t-\tNONE\tDERIVED\tthe previous observation and this one carry "
+               "the SAME access table, verb by verb — no vocabulary change BETWEEN THESE TWO "
+               "OBSERVATIONS\n");
+    if (n_wide && g_access_pins_state == 1)
+        info("access: %u WIDENING(s) of the tool vocabulary, and the table hashes to its PIN — a "
+             "RELEASED declaration (named, NOT a finding: a re-pin release is how the vocabulary "
+             "is supposed to change).  The widenings: %s", n_wide, wide);
+    else if (n_wide)
+        add_finding("access-widened-unreleased",
+                    "%u WIDENING(s) of the TOOL VOCABULARY between the previous observation and "
+                    "this one, and the operator's access table was NOT RELEASED (%s) — a "
+                    "capability change nothing pinned: %s%s(the check is PINS, exactly as the "
+                    "egress term's is: a RELEASED widening is an operator act with a record, and "
+                    "an unreleased one is the covert direction §7.1a names)",
+                    n_wide, g_access_pins_detail, wide,
+                    wide_cut ? "[the list above was CUT at this message's bound — every widening "
+                               "is named on its own access-delta row] " : "");
+    else if (n_narrow)
+        info("access: %u NARROWING(s) of the tool vocabulary between the observations (no "
+             "widening) — recorded, not a finding: a tightening is the direction this mechanism "
+             "exists to encourage, and it needs no release", n_narrow);
 }
 
 /* ── the checks (each its own assertion with its own message) ──────────── */
@@ -3464,6 +3957,21 @@ static void usage(FILE *f) {
         "                   `sandbox-widened-unreleased`: the operator table can only\n"
         "                   tighten the APPLIED spec, so it can never widen the\n"
         "                   composition, and nothing pins the baseline or a sidecar\n"
+        "  --access-dir DIR  the operator's PINNED ACCESS TABLE (policy/access: PINS +\n"
+        "                   access-verbs.tsv) — the tool VOCABULARY.  The FILE is read and\n"
+        "                   sha256-verified against policy/access/PINS here (not through the\n"
+        "                   proxy's loader, which REFUSES a stale table and so could only\n"
+        "                   ever report the released case: the unreleased widening is the\n"
+        "                   finding this dimension exists for).  A row the grammar cannot\n"
+        "                   read, or an absent table, is LOUD.\n"
+        "                   The table is recorded per boot in the shared reach-verb\n"
+        "                   grammar and a change is NAMED against this audit's previous\n"
+        "                   observation: deny->allow is a WIDENING and is\n"
+        "                   `access-widened-unreleased` unless the table hashes to PINS\n"
+        "                   (a re-pin RELEASE, named not a finding); allow->deny is a\n"
+        "                   NARROWING, named and never a finding.  The per-boot record\n"
+        "                   also carries the ARMED-AUTHOR SET this observation could SEE\n"
+        "                   (a LOWER BOUND, stated as such) and names a change in it\n"
         "  --obs-dir DIR   observation store dir (default $FX_AUDIT_OBS_DIR, else\n"
         "                  the sibling dir <store>.fx-audit-obs).  MUST NOT be\n"
         "                  inside the store — the observation is host memory.\n"
@@ -3502,6 +4010,8 @@ int main(int argc, char **argv) {
         }
         else if (!strcmp(argv[i], "--ops-policy-dir") && i + 1 < argc) g_opsdir = argv[++i];
         else if (!strncmp(argv[i], "--ops-policy-dir=", 17)) g_opsdir = argv[i] + 17;
+        else if (!strcmp(argv[i], "--access-dir") && i + 1 < argc) g_accessdir = argv[++i];
+        else if (!strncmp(argv[i], "--access-dir=", 13)) g_accessdir = argv[i] + 13;
         else if (!strcmp(argv[i], "--re-enroll")) g_reenroll = 1;
         else if (!strcmp(argv[i], "--nonces") && i + 1 < argc) {
             g_nonces_path = argv[++i];
@@ -3711,6 +4221,11 @@ int main(int argc, char **argv) {
     reach_read_proxy();
     sandbox_read_composed();
     reach_read_tables();
+    /* S5: the access table (the DECLARED file, verified against its PINS by
+     * the check) and the armed-author set this observation can see — both read
+     * BEFORE the emission below, so the per-boot record carries them. */
+    access_read_table();
+    armed_authors_compute();
     reach_anchor_boot();
     emit_reach_rows();
     emit_sandbox_rows();
@@ -3736,6 +4251,7 @@ int main(int argc, char **argv) {
     run_check("proxy-log-record", check_proxy_log);
     run_check("egress-reach", check_reach);
     run_check("sandbox-record", check_sandbox);
+    run_check("access-record", check_access);
     run_check("previous-observation", observation_compare);
 
     size_t pass = 0, skip = 0, fail = 0;
@@ -3757,6 +4273,7 @@ int main(int argc, char **argv) {
     printf("bound: this seat sees REWRITES and TRUNCATIONS of records it previously observed, cross-record INCOHERENCE, and — anchored on --boots and the per-boot nonce ledger (--nonces) — APPENDED .bootlog/.recovery growth the host cannot account for. IN THE NONCE REGIME (the host issues fx.bootnonce= per boot and every window boot is covered) the forged line-PAIR in a silent boot's slack is CLOSED: every ADDED line must wear a nonce the host issued for a boot in this window, the per-nonce IN-PROGRESS budget is the boot's OWN line plus one activate RE-ARM per version the store FIRST PUBLISHED in this window (each naming a version newer than the one its boot booted — init.zig:3860), the re-arm ip budget being ONE per first-published VERSION per WINDOW (a publish allocates a version number exactly once) AND naming a version NOT ALREADY BOOTED in the window (a re-arm names the version the activate JUST published, max+1, which has never been booted — this is what refuses the roll-forward REPUBLISH forge), shutdown / .recovery rows hold at one per boot, and the VERDICT accounting is per VERSION — one verdict per in-progress line the window added for that version, plus ONE more ONLY for a first-published version carrying NO re-arm ip of its own (the OLD-writer re-arm shape, init.zig:3933-3936). THE RE-ARM LINE'S OWN DELTA: that legitimate line RE-OPENS the forged-PAIR shape for a version that is first-published in the window AND newer than the boot's own, on ANY real window boot's nonce (the closure there is per VERSION, not per nonce — ONE re-arm in-progress per first-published version per window, so a forged pair cannot ride a second window nonce to buy a second verdict, whether the version was activated or republished — the republish shape is refused by the not-already-booted clause — and the legitimate line grants no verdict slot the +1 did not already grant). RESIDUAL, named: a forged pair for a version first published WITHOUT an activation and NOT YET BOOTED in the window (the operator `rollback` during a live boot, before the next boot boots it) still reads as a legitimate re-arm and lands the version's FIRST verdict — indistinguishable from a real activation without the .operator journal this seat does not read; the automatic roll-forward has no such window (the republish and the boot are one PID1 start), and the moment the version IS booted the not-already-booted clause refuses the same forge. What a forger still cannot mint is an in-progress for a version the store did not publish in this window, or one NOT newer than that nonce's own first line (the per-nonce rule fires on both) — and an unclaimed nonce is REPORTED as a silent boot. What this seat CANNOT see, stated as its bound: a verdict SUBSTITUTED inside a LIVE boot — the agent is root in the guest and can read its own /proc/cmdline nonce, so it can append the verdict itself in the writer's exact shape wearing the live nonce and suppress fx-init's own (a panic before grace expiry); that leaves ONE verdict for one (nonce, version) with every anchor satisfied, and the line's authorship inside the boot that owns the nonce is NOT distinguishable from the host — auditing, not proofing (the defence against substitution is the rollback machinery plus the observation hashes, not this reader); window boots the ledger does not cover (a mixed/manual regime — nonce-less lines are named and counted, but a forged pair in an UNCOVERED boot's slack still passes the arithmetic); boots started off the counting host, or a miscounted / moved --obs-file reuse (the count and the ledger are only as true as the host's own bookkeeping); a coherent tamper on a store first seen at enrollment (the enrollment gap — first run trusts, loudly). ANCHOR (c), the SOFT REBOOT, is the newest widening and it is named here: a legitimate soft reboot is a NEW PID1 LIFETIME under the SAME kernel boot's nonce, delimited by an ADMITTED .operator `reboot` row (no host boot starts, so the boot count can never account for its lines), and an anchor-(c) pair must still name an EXISTING published version under a nonce the HOST issued, with ONE row per lifetime. What that COSTS: a forger who writes a reboot row buys a plausible in-progress + verdict pair for an existing version — one row per pair, on a machine whose agent is root either way; and the journal is NOT watched the way .bootlog/.recovery are (it is not in this seat's observation hash), so a row may be added, rewritten or removed between audits without this seat seeing the change — it judges the pairs against whatever the journal says NOW, and dropping a row can only make a pair FIRE, never pass. That is the trade, stated rather than left to be discovered. That is the honest bound of auditing, not proofing (§6b), printed on every run so the tool never implies more than it knows.\n");
     printf("bound (S4): the host proxy's ONE LOG is a KNOWN record only from the bytes it has NOW onward — this seat records them and re-hashes the prefix, so a TAMPER AFTER an observation is caught and a tamper BEFORE the first one is not (the same enrollment bound as every other record here); a log the caller does not name is NOT-KNOWN, never 'no call was made'.  The DECLARED REACH is measured WHEN THE OBSERVATION IS TAKEN (the proxy's registry as it prints now, the operator's tables as they hash now) and attributed to the LAST boot in .bootlog — it is NOT a reconstruction of what any EARLIER boot's generation could reach, and this seat does not claim one.  'Released' means the two class tables hash to their PINS (an operator act with a record); a widening under an UNVERIFIABLE release (no PINS) takes the loud side by construction, which can be a FALSE POSITIVE on a host with no pinned table set — named here rather than discovered.\n");
     printf("bound (S4b): the COMPOSED SANDBOX is recorded per boot (the proxy's own --print-sandbox: the executor baseline + each tool's sidecar, plus one sha over the block) and a change is NAMED against THIS audit's previous observation.  What that can and cannot see, said rather than left to be discovered: the operator's ops-sandbox.tsv is the ONLY pinned half, it is DENY-MORE-ONLY and it narrows only what the spawn APPLIES — so it cannot WIDEN --print-sandbox, and therefore a widening of the composition can only come from the executor BASELINE or a SIDECAR, NEITHER of which any pin covers.  There is no released-widening path in v1: every widening takes the loud side (sandbox-widened-unreleased), and a deliberately, legitimately widened sidecar is a false positive this seat cannot distinguish — the pin's reach is the bound.  A NARROWING needs no release and is named.  And VISIBLE IS NOT STRONG: the promises are coarse (`inet` is any destination), the confinement is per-process and not per-call, there is no uid drop, and this record says what was DECLARED and APPLIED, never which syscalls a call made.\n");
+    printf("bound (S5): the ACCESS TABLE (the tool VOCABULARY) is recorded per boot in the shared reach-verb grammar and a change is NAMED against THIS audit's previous observation; deny->allow is a WIDENING and is the finding access-widened-unreleased unless the table still hashes to policy/access/PINS (then it is a RE-PIN RELEASE: named, not a finding), and allow->deny is a NARROWING (named, never a finding).  What that CANNOT see: this seat reads the DECLARED file and pins it here, so it says what the table SAYS and whether that was released — not what a served judge has loaded (the loader's startup refusal is that seat's own guard, and it fires before any verdict); and it says nothing about the PATHS a permitted call may touch (the ops seat and the in-guest floor are those) nor about an agent acting outside a tool call.  The ARMED-AUTHOR SET in the per-boot record is a LOWER BOUND taken from the INPUTS this observation was given (access = the table was read, ops = the pinned class tables were read): the compiled-in denylist, the justification arm and the claim author are NOT queryable from this seat, so 'none' means 'none was visible HERE', never 'nothing could refuse'.\n");
     printf("evidence: the store's own records only — attempts.jsonl (the harness self-report) is never opened.\n");
 
     if (g_nfindings > 0) {

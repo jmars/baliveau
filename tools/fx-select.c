@@ -113,6 +113,20 @@
  *                  `egress-reach-widened` row; the mirror cases are
  *                  NARROWINGS; a row bound to another class is CHANGED and
  *                  is never dressed as a widening.
+ *                  THE THIRD DIMENSION (S5, the ACL split) is the
+ *                  operator's PINNED ACCESS TABLE (`--access-dir` ->
+ *                  the proxy's own `--print-access`), i.e. the tool
+ *                  VOCABULARY — the authority S2 gave the judge, so a row
+ *                  flipped deny->allow is a capability WIDENING and the
+ *                  seat that judges generations must SEE it.  THE DIRECTION
+ *                  IS NAMED BOTH WAYS: deny->allow (and a withdrawn DENY
+ *                  row) is a WIDENING, one named `access-delta ... WIDENED`
+ *                  row per verb, counted into THIS step's loud
+ *                  `egress-reach-widened`; allow->deny (and a withdrawn
+ *                  ALLOW row) is a NARROWING, printed AS a narrowing and
+ *                  never counted as a widening.  A tightening being visible
+ *                  does not by itself make the system narrower, and the
+ *                  seat says so at the site.
  *                  THE CONSEQUENCE IS DELIBERATELY OPEN AND REVERSIBLE
  *                  (the plan's own choice, and a decision this seat does not
  *                  bake): step 6 does NOT change eligibility, does NOT
@@ -122,9 +136,10 @@
  *                  NOT open is that the widening is SEEN and NAMED rather
  *                  than invisible to the seat that judges generations.
  *                  Absence, once per side: no --reach-prev is NOT-KNOWN
- *                  (never "no widening"); no --proxy/--ops-policy-dir is
- *                  NOT-KNOWN for that half; a named proxy that cannot be run
- *                  is a TOOL ERROR, never "no host tools".
+ *                  (never "no widening"); no --proxy/--ops-policy-dir/
+ *                  --access-dir is NOT-KNOWN for that half; a named proxy
+ *                  that cannot be run is a TOOL ERROR, never "no host
+ *                  tools" and never "no verb is allowed".
  *   7. REACH-SANDBOX  THE SANDBOX TERM, ADDITIVE TO STEP 6 (§7.1a at the
  *                  layer S3 made structural: a SANDBOX SPEC IS A CAPABILITY
  *                  DECLARATION — the executor's baseline + a tool's sidecar,
@@ -400,6 +415,61 @@ static reachsandbox_t g_psbt[MAX_REACH_TOOLS];
 static unsigned g_npsbt;
 static int g_prev_sandbox_known; /* the previous file carried reach-sandbox rows */
 
+/* ── S5 (ACL SPLIT): THE ACCESS TABLE, the reach term's THIRD DIMENSION ───
+ * §7.1a applies to the VOCABULARY exactly as it applies to an egress grant:
+ * `policy/access/access-verbs.tsv` is now THE tool-vocabulary authority (S2
+ * made it an author at the judge, S3 removed the guest's own list), so
+ * flipping one row deny -> allow is a capability WIDENING, and a seat that
+ * judges generations must SEE it.  MEASURED BEFORE THIS CODE EXISTED: given
+ * two observation files differing ONLY in one access row (staged at ONE path,
+ * since this seat prints the path it was handed), the pre-fix seat produced
+ * BYTE-IDENTICAL output — the blindness is reproduced by the gate, not
+ * described here.
+ *
+ * THE DIRECTION IS THE WHOLE SUBSTANCE, and it is symmetric by construction:
+ *   deny  -> allow   WIDENING  (the vocabulary grew: a verb the operator
+ *                              refused is now callable) — one named
+ *                              `access-delta ... WIDENED` row per verb, and
+ *                              the missing half of a reading is NEVER read as
+ *                              "no change".
+ *   allow -> deny    NARROWING (the vocabulary shrank) — named as a
+ *                              narrowing, and NEVER counted as a widening:
+ *                              a seat that reported a tightening as a widening
+ *                              would be crying wolf on the direction the
+ *                              operator is supposed to move.
+ *   row added/withdrawn: classified by the row's own decision, both ways.
+ *
+ * WHERE THE READING COMES FROM: THE PROXY'S OWN LOADER (`--print-access
+ * --access-dir DIR`), not a second parser here — the same rule the composed
+ * sandbox follows, and for a stronger reason: that loader is what
+ * sha256-verifies the table against policy/access/PINS and runs the
+ * TOTALITY check, so the state it prints is the state a run would hold.  A
+ * proxy that cannot answer is a TOOL ERROR (exit 2), never "no verb is
+ * allowed" — reading a failed probe as an empty/narrow vocabulary is the one
+ * direction a widening detector must never fail in.
+ *
+ * THE CONSEQUENCE IS DELIBERATELY OPEN, exactly as steps 6 and 7 say of
+ * their own terms: this dimension changes no eligibility flag, no winner and
+ * no exit code.  Whether a widening of the VOCABULARY should disqualify a
+ * generation is the operator's reversible decision; what is NOT open is that
+ * it is seen and named. */
+#define MAX_ACCESS_VERBS 256
+
+typedef struct {
+    char name[128];   /* an EXACT verb name from the table's closed vocabulary */
+    int  allow;       /* 1 = allow, 0 = deny (there is no third state) */
+} accessverb_t;
+
+static const char *g_accessdir;  /* --access-dir: policy/access (PINS + access-verbs.tsv) */
+static accessverb_t g_atab[MAX_ACCESS_VERBS];
+static unsigned g_natab;
+static int g_atab_known;         /* the proxy's loader answered */
+static accessverb_t g_patab[MAX_ACCESS_VERBS];
+static unsigned g_npatab;
+static int g_prev_access_known;  /* the previous file carried reach-verb rows */
+static unsigned g_access_wide;   /* counted into the loud egress-reach-widened row */
+static unsigned g_access_narrow;
+
 /* exit codes, stated in the header and the usage text */
 #define EX_DECISION    0
 #define EX_NO_ELIGIBLE 1
@@ -464,8 +534,8 @@ static const struct {
    "exit 0 = no drift = coherent; judged FOR CURRENT ONLY, because the live rootfs corresponds to the CURRENT generation alone - every other candidate is not-live (NON-disqualifying) and this seat never claims to have verified a generation it did not materialize" },
  { 5, "eligibility", "IN the candidate set AND viable AND (coherent if CURRENT)",
    "a candidate that is not in the bounded set, not viable, or is CURRENT with drift, can NEVER win, whatever its share - the order is ENFORCED, not printed and hoped for" },
- { 6, "reach", "--proxy BIN (the compiled-in host-tool registry: --print-host-tools) + --ops-policy-dir DIR (the operator's PINNED class tables + PINS) against --reach-prev FILE (the PREVIOUS observation, the shared reach-tool/reach-grant grammar the audit records per boot)",
-   "THE REACH-DELTA TERM (§7.1a's residual: an egress grant is a CAPABILITY INCREASE and a code-only oracle is blind to it). The seat compares TWO OBSERVATIONS of DECLARED REACH and NAMES each difference: a host tool absent before and present now, a pinned class row absent before and present now, and a row whose protected flag flipped yes->no are WIDENINGS (one named reach-delta row each, plus the loud egress-reach-widened row); the mirror cases are NARROWINGS; a row whose CLASS changed is CHANGED, never dressed as a widening. THE CONSEQUENCE IS DELIBERATELY OPEN AND REVERSIBLE: this step does NOT change eligibility, does NOT change the winner and does NOT change the exit code — v1 makes a widening LOUD and does not bake policy, so whether widening DISQUALIFIES a generation stays the operator's decision. What is NOT open is that a widening is SEEN and NAMED. Absence: no --reach-prev = NOT-KNOWN (never 'no widening'); no --proxy/--ops-policy-dir = the current half is NOT-KNOWN; a named proxy that cannot be run is a TOOL ERROR, never 'no host tools'. This seat never verifies the tables' shas: that is the proxy's startup pin check and fx-report's pin-drift finding" },
+ { 6, "reach", "--proxy BIN (the compiled-in host-tool registry: --print-host-tools) + --ops-policy-dir DIR (the operator's PINNED class tables + PINS) + --access-dir DIR (the operator's PINNED ACCESS TABLE, the tool VOCABULARY, read through the proxy's own loader: --print-access) against --reach-prev FILE (the PREVIOUS observation, the shared reach-tool/reach-grant/reach-verb grammar the audit records per boot)",
+   "THE REACH-DELTA TERM (§7.1a's residual: an egress grant is a CAPABILITY INCREASE and a code-only oracle is blind to it). The seat compares TWO OBSERVATIONS of DECLARED REACH and NAMES each difference: a host tool absent before and present now, a pinned class row absent before and present now, and a row whose protected flag flipped yes->no are WIDENINGS (one named reach-delta row each, plus the loud egress-reach-widened row); the mirror cases are NARROWINGS; a row whose CLASS changed is CHANGED, never dressed as a widening. THE THIRD DIMENSION IS THE OPERATOR'S ACCESS TABLE (policy/access: the tool VOCABULARY, which S2 made the judge's authority), and its DIRECTION is named both ways: a row flipped deny->allow is a WIDENING (one named access-delta row per verb, COUNTED INTO THIS STEP'S loud egress-reach-widened row, because the vocabulary is the reach term's third dimension), and a row flipped allow->deny is a NARROWING, reported AS a narrowing and never counted as a widening. THE CONSEQUENCE IS DELIBERATELY OPEN AND REVERSIBLE: this step does NOT change eligibility, does NOT change the winner and does NOT change the exit code — v1 makes a widening LOUD and does not bake policy, so whether widening DISQUALIFIES a generation stays the operator's decision. What is NOT open is that a widening is SEEN and NAMED. Absence: no --reach-prev = NOT-KNOWN (never 'no widening'); no --proxy/--ops-policy-dir = the current half is NOT-KNOWN; a named proxy that cannot be run is a TOOL ERROR, never 'no host tools'. This seat never verifies the tables' shas: that is the proxy's startup pin check and fx-report's pin-drift finding" },
  { 7, "reach-sandbox", "--proxy BIN (the composed sandbox per tool: the executor baseline + each tool's sidecar, read via --print-sandbox) against --reach-prev FILE (the previous observation, whose shared reach-sandbox rows the audit records per boot)",
    "THE SANDBOX TERM, ADDITIVE TO STEP 6 (§7.1a at the layer S3 made structural: a SANDBOX SPEC IS A CAPABILITY DECLARATION, so a generation judged on a host whose composed spec WIDENED must be seen to have changed). The seat compares the composed spec per tool NOW against the previous observation's reach-sandbox rows and NAMES each difference: a promise token or a static landlock entry ADDED, and a tool whose composed sandbox did not exist before, are WIDENINGS (one named sandbox-delta row each plus the loud sandbox-reach-widened row); REMOVED entries and a vanished tool are NARROWINGS.  THE CONSEQUENCE IS DELIBERATELY OPEN, exactly as step 6's: this term does NOT change eligibility, does NOT change the winner and does NOT change the exit code.  THE BOUNDS ARE NAMED, not implied: --print-sandbox prints the DECLARATION (baseline + sidecar), a SIDECAR is pinned by nothing, and this seat never reads PINS — so it NAMES a difference and does not claim the change was unlicensed (the pin judgement is fx-report's pin-drift and fx-audit's release classification).  Absence, once per side: no --proxy = NOT-KNOWN; no --reach-prev = NOT-KNOWN; a previous file with no reach-sandbox row = NOT-KNOWN (never 'every spec is new')" },
  { 8, "winner", "greatest share among ELIGIBLE candidates",
@@ -483,6 +553,8 @@ static const struct { const char *id, *text; } BOUNDS[] = {
    "the candidate walk runs over the versions the store LISTS. A predecessor reaped by `fxstore gc --retain N` is therefore crossed with NO record that a version was ever there, and the version this seat names as 'the generation CURRENT replaced' can then be OLDER than the one CURRENT actually replaced - a revert can rest on that. Retention is unpoliced (design record 1a gap 4), and this seat STATES the bound rather than policing it, which is why the gap is worth naming: version numbers are assigned SEQUENTIALLY by the publisher, so a missing number between the incumbent's and the predecessor's is a REAPED version (a number that was never published cannot be missing), and the printed per-version table therefore lets a reader see the gap even though nothing here ACTS on it" },
  { "predecessor-content-not-compared",
    "the walk reads a generation fact only where it must: for each version it crosses, and for the duplicate test on the one below. Versions BELOW the predecessor are labelled from the genhash only when the walk happened to read them; otherwise their label says so and their genhash column reads not-read. The alternative - reading every listed version's generation fact so the whole table carries content identity - was MEASURED at ~22ms per fxstore call on the gate's fixture (20 calls in 0.44s), i.e. one call per historical version for a label NO RULE ACTS ON, so the deliberate choice is the lazy walk plus this stated limit rather than an O(history) subprocess pass" },
+ { "access-visible-is-not-a-policy",
+   "the ACCESS-TABLE dimension makes a VOCABULARY change VISIBLE and claims only that.  It does NOT gate, deny or stop anything: the table already does that at the judge (author=access, per call), and this seat only SAYS that a row changed and in which direction.  A NARROWING being visible does not by itself make the system narrower — the table is still the operator's to widen or tighten, and the consequence of a WIDENING (whether it should DISQUALIFY a generation) is left OPEN on purpose.  What this dimension does NOT see: what an agent does OUTSIDE a tool call (a root agent in the guest runs what it can run), and the PATHS a permitted call may touch (that is the ops seat's dimension and the in-guest floor's).  What it does NOT verify for itself: the table's PIN — the reading is taken through the proxy's own loader, which is what sha256-verifies the table and runs the TOTALITY check, so a stale table REFUSES there rather than being reported here as a change" },
  { "sandbox-visible-is-not-strong",
    "the sandbox term makes a capability change VISIBLE and claims only that.  --print-sandbox prints the DECLARATION (the executor's baseline + the tool's sidecar) and the per-call applied spec is recorded only in the proxy's log (fx-report's column and fx-audit's per-boot record read THAT, not this seat); a sidecar is pinned by nothing, so a widening named here cannot be classified as released or unreleased by this seat, and it does not try.  And the sandbox itself is not strong: the promises are COARSE (`inet` is any destination, so the destination control is the operator's class tables, a different mechanism), the confinement is PER-PROCESS and not per-call, and there is no uid drop" },
  { "candidate-set-is-a-pair",
@@ -1274,6 +1346,70 @@ static void reach_read_tables(void) {
     }
 }
 
+/* THE ACCESS HALF (S5, ACL split): the operator's PINNED access table, read
+ * THROUGH THE PROXY'S OWN LOADER — `--print-access --access-dir DIR`, one
+ * `verb<TAB>allow|deny` line per verb of the closed vocabulary in VOCABULARY
+ * order (canonical regardless of the table's row order).
+ *
+ * WHY NOT A SECOND PARSER HERE: the loader is the thing that sha256-verifies
+ * the table against policy/access/PINS and runs the TOTALITY check (a verb
+ * with no row, a name in neither vocabulary, a duplicate row or a stale pin
+ * REFUSES TO START), so the state it prints is the state a run would hold.  A
+ * mirror parser here would be a second spelling of a pinned grammar, and a
+ * drifting mirror is how an instrument goes quietly blind (the same reason
+ * step 7 reads the composed sandbox from the binary that owns it).
+ *
+ * A PROXY THAT CANNOT ANSWER IS A TOOL ERROR (exit 2) — never "no verb is
+ * allowed".  Reading a failed probe as an empty vocabulary would report the
+ * NARROWEST possible reach, the one direction this dimension must never fail
+ * in. */
+static void reach_read_access(void) {
+    if (!g_accessdir || !g_proxy) return;
+    check_safe_path(g_accessdir, "--access-dir");
+    char cmd[PATH_MAX_ * 2];
+    snprintf(cmd, sizeof cmd, "'%s' --print-access --access-dir '%s' 2>/dev/null",
+             g_proxy, g_accessdir);
+    int rc = -1;
+    char *out = run_capture(cmd, &rc);
+    if (!out || rc != 0) {
+        char m[512];
+        first_line(out, m, sizeof m);
+        free(out);
+        die("the host proxy '%s' did not answer '--print-access --access-dir %s' (exit %d: %s): "
+            "the ACCESS TABLE the judge consults cannot be read, and reading a failed probe as "
+            "'no verb is allowed' (or as 'nothing changed') would report the narrowest possible "
+            "vocabulary — a TOOL ERROR, never an empty table", g_proxy, g_accessdir, rc,
+            m[0] ? m : "no output");
+    }
+    char *save = NULL;
+    for (char *line = strtok_r(out, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
+        size_t ll = strlen(line);
+        if (ll && line[ll - 1] == '\r') line[--ll] = 0;
+        if (!ll) continue;
+        char *f[3] = {0};
+        int nf = 0;
+        char *lsave = NULL;
+        for (char *tok = strtok_r(line, "\t", &lsave); tok && nf < 3;
+             tok = strtok_r(NULL, "\t", &lsave))
+            f[nf++] = tok;
+        if (nf != 2 || (strcmp(f[1], "allow") && strcmp(f[1], "deny")))
+            die("'%s --print-access' printed a row that is not verb<TAB>allow|deny: \"%s\" — a "
+                "row this seat cannot read is REFUSED, never skipped (there is no third state "
+                "in the table, and a skipped row would vanish from the delta)", g_proxy, line);
+        if (g_natab >= MAX_ACCESS_VERBS)
+            die("the access table carries more than %u verbs", (unsigned)MAX_ACCESS_VERBS);
+        accessverb_t *V = &g_atab[g_natab++];
+        snprintf(V->name, sizeof V->name, "%s", f[0]);
+        V->allow = !strcmp(f[1], "allow");
+    }
+    free(out);
+    if (g_natab == 0)
+        die("'%s --print-access' printed NO verb: the table is TOTAL over a non-empty closed "
+            "vocabulary, so an empty reading is a tool error, not a vocabulary with nothing in "
+            "it", g_proxy);
+    g_atab_known = 1;
+}
+
 /* THE PREVIOUS HALF: a file in the SHARED observation grammar.  Lines this
  * seat does not own are IGNORED on purpose — the file may be a full audit
  * run, and the delta reads exactly its two tags.  A file given and NOT THERE
@@ -1331,6 +1467,25 @@ static void reach_read_prev(void) {
             snprintf(G->cls, sizeof G->cls, "%.*s", (int)sizeof G->cls - 1, f[2]);
             G->prot = !strcmp(f[3], "yes");
             g_prev_known = 1;
+        } else if (!strncmp(line, "reach-verb\t", 11)) {
+            char *c = line + 11;
+            char *f[3] = {0};
+            int nf = 0;
+            char *lsave = NULL;
+            for (char *tok = strtok_r(c, "\t", &lsave); tok && nf < 3;
+                 tok = strtok_r(NULL, "\t", &lsave))
+                f[nf++] = tok;
+            if (nf < 2 || (strcmp(f[1], "allow") && strcmp(f[1], "deny")))
+                die("%s: a reach-verb row is reach-verb<TAB>verb<TAB>allow|deny (the table has "
+                    "no third state, so a row this seat cannot read is refused rather than "
+                    "guessed at): \"%s\"", g_reach_prev, line);
+            if (g_npatab >= MAX_ACCESS_VERBS)
+                die("%s: more than %u previous access verbs", g_reach_prev,
+                    (unsigned)MAX_ACCESS_VERBS);
+            accessverb_t *V = &g_patab[g_npatab++];
+            snprintf(V->name, sizeof V->name, "%.*s", (int)sizeof V->name - 1, f[0]);
+            V->allow = !strcmp(f[1], "allow");
+            g_prev_access_known = 1;
         }
     }
     free(b);
@@ -1520,6 +1675,152 @@ static void emit_sandbox_delta(void) {
           "named on its own sandbox-delta row.)");
 }
 
+/* THE ACCESS DELTA (S5, ACL split): the operator's PINNED ACCESS TABLE now
+ * against the previous observation's `reach-verb` rows, the reach term's
+ * THIRD DIMENSION beside the host tools/class rows (step 6) and the composed
+ * sandbox (step 7).  It is ADDITIVE and it touches no decision value, no
+ * eligibility flag and no exit code — the same OPEN consequence the other
+ * dimensions carry, said in each row's own bytes.
+ *
+ * THE CLASSIFICATION IS TOTAL AND SYMMETRIC, so no reading falls through:
+ *   both sides present, deny -> allow   WIDENED  (the vocabulary grew)
+ *   both sides present, allow -> deny   NARROWED (the vocabulary shrank —
+ *                                       named as such and NEVER counted as a
+ *                                       widening)
+ *   present only now, allow             WIDENED  (a verb newly classified
+ *                                       ALLOW: callable where it was
+ *                                       unclassified)
+ *   present only now, deny              NARROWED (a verb newly classified
+ *                                       DENY)
+ *   present only before, allow          NARROWED (a permitted verb's row is
+ *                                       GONE)
+ *   present only before, deny           WIDENED  (a DENIED verb's row is
+ *                                       gone: the refusal was withdrawn)
+ * A widening's count is handed to the reach term, which raises the LOUD
+ * `egress-reach-widened` row — the access table is the vocabulary half of
+ * egress, so it belongs in THAT row rather than in one of its own. */
+static void emit_access_delta(void) {
+    /* the CURRENT observation, in the SHARED grammar: this is the form
+     * --reach-prev consumes, and fx-audit writes the same rows per boot, so
+     * one seat's output is the other's baseline */
+    for (unsigned i = 0; i < g_natab; i++)
+        printf("reach-verb\t%s\t%s\n", g_atab[i].name, g_atab[i].allow ? "allow" : "deny");
+    if (!g_accessdir)
+        printf("access-absence\ttable\tnot-given-no---access-dir-so-the-ACCESS-TABLE-third-"
+               "dimension-of-the-reach-term-is-NOT-KNOWN (NOT 'the table did not change' and "
+               "NOT 'no verb is allowed')\tABSENT\n");
+    else if (!g_proxy)
+        printf("access-absence\treader\t---access-dir-was-given-with-NO---proxy-and-the-access-"
+               "table-is-read-THROUGH-the-proxy's-own-loader-(--print-access,-the-thing-that-"
+               "verifies-PINS-and-runs-the-totality-check)-so-with-no-proxy-there-is-no-reader-"
+               "and-this-half-is-NOT-KNOWN (never 'no change')\tABSENT\n");
+
+    g_access_wide = 0;
+    g_access_narrow = 0;
+    if (!g_accessdir) {
+        printf("access-delta\t-\tNOT-KNOWN\tABSENT\tno---access-dir-was-given: the tool "
+               "VOCABULARY of the running host is not part of this observation, so a change in "
+               "it cannot be named — 'no vocabulary change' is NOT derivable from a reading "
+               "that never included it\n");
+        return;
+    }
+    if (!g_atab_known) {
+        printf("access-delta\t-\tNOT-KNOWN\tABSENT\tthe access table could not be READ (the "
+               "reader is the proxy's own --print-access and no --proxy answered), so it cannot "
+               "be compared with any previous observation: an unread table is NOT 'every verb "
+               "unchanged', and it is NOT 'every verb denied' either\n");
+        return;
+    }
+    if (!g_reach_prev) {
+        printf("access-delta\t-\tNOT-KNOWN\tABSENT\tno---reach-prev-was-given-so-there-is-no-"
+               "PREVIOUS-vocabulary-to-compare-against: one reading cannot show a change, and "
+               "this seat will not print 'no widening' from it\n");
+        return;
+    }
+    if (!g_prev_access_known) {
+        printf("access-delta\t-\tNOT-KNOWN\tABSENT\t%s was given and holds NO reach-verb row: a "
+               "baseline taken before the vocabulary was recorded is NOT a baseline that says "
+               "every current row is a widening\n", g_reach_prev);
+        return;
+    }
+
+    for (unsigned i = 0; i < g_natab; i++) {
+        accessverb_t *C = &g_atab[i], *P = NULL;
+        for (unsigned j = 0; j < g_npatab; j++)
+            if (!strcmp(g_patab[j].name, C->name)) { P = &g_patab[j]; break; }
+        if (!P) {
+            if (C->allow) {
+                printf("access-delta\t%s\tWIDENED\tDERIVED\tthe access table now classifies "
+                       "this verb ALLOW and the previous observation did not carry a row for it "
+                       "at all: a verb CALLABLE where the vocabulary said nothing — a WIDENING "
+                       "of the tool vocabulary.  THE CONSEQUENCE IS OPEN (order step 6): this "
+                       "row changes no eligibility, no winner and no exit code\n", C->name);
+                g_access_wide++;
+            } else {
+                printf("access-delta\t%s\tNARROWED\tDERIVED\tthe access table now classifies "
+                       "this verb DENY and the previous observation carried no row for it: a "
+                       "verb REFUSABLE where the vocabulary said nothing — a NARROWING, named "
+                       "as one (a tightening is not raised as a widening)\n", C->name);
+                g_access_narrow++;
+            }
+            continue;
+        }
+        if (!P->allow && C->allow) {
+            printf("access-delta\t%s\tWIDENED\tDERIVED\tthe row flipped deny->allow: a verb the "
+                   "operator's table REFUSED is now callable — the tool vocabulary GREW by one "
+                   "named row.  THE CONSEQUENCE IS OPEN (order step 6): this row changes no "
+                   "eligibility, no winner and no exit code, and whether a widened vocabulary "
+                   "should DISQUALIFY a generation stays the operator's reversible decision — "
+                   "what is not open is that the widening is SEEN\n", C->name);
+            g_access_wide++;
+        } else if (P->allow && !C->allow) {
+            printf("access-delta\t%s\tNARROWED\tDERIVED\tthe row flipped allow->deny: a verb "
+                   "that was callable is now REFUSED by the operator's table — a NARROWING.  "
+                   "Named as the mirror direction so a reader cannot mistake it for a widening "
+                   "(and this seat does not count it as one); a narrowing being VISIBLE does not "
+                   "by itself make the system narrower — the table is still the operator's to "
+                   "widen\n", C->name);
+            g_access_narrow++;
+        }
+    }
+    for (unsigned j = 0; j < g_npatab; j++) {
+        accessverb_t *P = &g_patab[j];
+        int seen = 0;
+        for (unsigned i = 0; i < g_natab; i++)
+            if (!strcmp(g_atab[i].name, P->name)) { seen = 1; break; }
+        if (seen) continue;
+        if (P->allow) {
+            printf("access-delta\t%s\tNARROWED\tDERIVED\tthe previous observation carried an "
+                   "ALLOW row for this verb and the table carries none now: a permitted verb's "
+                   "row was WITHDRAWN — a NARROWING (a withdrawn permission), never a "
+                   "widening\n", P->name);
+            g_access_narrow++;
+        } else {
+            printf("access-delta\t%s\tWIDENED\tDERIVED\tthe previous observation carried a DENY "
+                   "row for this verb and the table carries none now: the REFUSAL was "
+                   "withdrawn, so what a policy denied it no longer even classifies — a "
+                   "WIDENING.  THE CONSEQUENCE IS OPEN (order step 6): this row changes no "
+                   "eligibility, no winner and no exit code\n", P->name);
+            g_access_wide++;
+        }
+    }
+
+    if (!g_access_wide && !g_access_narrow)
+        printf("access-delta\t-\tNONE\tDERIVED\tthe previous observation and this one carry the "
+               "SAME access table, verb by verb (allow|deny, compared by EXACT name): no "
+               "widening and no narrowing of the tool vocabulary BETWEEN THESE TWO "
+               "OBSERVATIONS — a measurement about the two records, never a claim about the "
+               "whole fleet\n");
+    h("ACCESS (the reach term's third dimension, S5): %u verb(s) classified; the delta against "
+      "%s names %u WIDENING(s) and %u narrowing(s) of the tool vocabulary.",
+      g_natab, g_reach_prev ? g_reach_prev : "(no previous observation)", g_access_wide,
+      g_access_narrow);
+    if (g_access_wide)
+        h("  a vocabulary widening is NAMED and it does NOT decide anything (the consequence is "
+          "OPEN, exactly as steps 6 and 7): it does not gate, deny or stop a call — the table "
+          "already does that at the judge — this seat only SAYS it changed and which way.");
+}
+
 /* Emit the two observations (so the record carries WHAT was compared, not
  * only the verdict on it), then the delta. */
 static void emit_reach(void) {
@@ -1543,27 +1844,39 @@ static void emit_reach(void) {
      * NOT-KNOWN rather than silent). */
     emit_sandbox_delta();
 
+    /* S5: the ACCESS half, emitted from the SAME position and for the SAME
+     * reason — its own early returns cover every absence direction, so no
+     * path can reach the reach term without the vocabulary dimension having
+     * been either measured or named NOT-KNOWN. */
+    emit_access_delta();
+
+    /* The counters — AND the access dimension's counts — are hoisted ABOVE the
+     * absence branches so the loud widening row is reachable from every one of
+     * them: a vocabulary widening can be named while the tool/grant halves have
+     * no baseline at all (a previous observation carrying reach-verb rows and
+     * nothing else), and a widening that printed its own row but never reached
+     * the loud row would be a half-report of exactly the change this term
+     * exists to surface. */
+    unsigned n_widen = g_access_wide, n_narrow = g_access_narrow, n_change = 0;
     if (!g_proxy && !g_opsdir) {
         printf("reach-delta\t-\t-\tNOT-KNOWN\tABSENT\tneither half of the CURRENT observation was "
                "given: this seat cannot say what the host can reach now, so it says nothing "
                "about whether that changed\n");
-        return;
+        goto reach_loud;
     }
     if (!g_reach_prev) {
         printf("reach-delta\t-\t-\tNOT-KNOWN\tABSENT\tno---reach-prev-was-given-so-there-is-no-"
                "PREVIOUS-observation-to-compare-against: 'no widening' is NOT derivable from "
                "one reading, and this seat will not print it\n");
-        return;
+        goto reach_loud;
     }
     if (!g_prev_known) {
         printf("reach-delta\t-\t-\tNOT-KNOWN\tABSENT\t%s was given and holds NO reach-tool/"
                "reach-grant line: an unreadable-or-empty previous observation is NOT a baseline "
                "that says every current row is new (which would make every row a widening)\n",
                g_reach_prev);
-        return;
+        goto reach_loud;
     }
-
-    unsigned n_widen = 0, n_narrow = 0, n_change = 0;
     /* tools: the registry's closed list */
     for (unsigned i = 0; i < g_nrtools; i++) {
         int seen = 0;
@@ -1641,22 +1954,29 @@ static void emit_reach(void) {
         n_narrow++;
     }
 
+    /* (the access dimension's counts were folded in at the declaration above,
+     * so a vocabulary-only change SUPPRESSES this NONE row instead of printing
+     * "no widening" beside the loud one) */
     if (!n_widen && !n_narrow && !n_change)
         printf("reach-delta\t-\t-\tNONE\tDERIVED\tthe two observations carry the SAME host tools "
                "and the SAME pinned class rows (pattern, class and protected flag): no widening "
                "and no narrowing WITHIN THESE TWO OBSERVATIONS — a measurement about the two "
-               "records, never a claim about the whole fleet\n");
+               "records, never a claim about the whole fleet.  This row speaks for its OWN two "
+               "halves only: the ACCESS-TABLE dimension above says its own reading, and where "
+               "that reading was NOT-KNOWN this row does not stand in for it\n");
+reach_loud:
     if (n_widen)
         printf("egress-reach-widened\t%u\tDERIVED\tEGRESS REACH WIDENED: %u named widening(s) "
-               "above (host tool(s) and/or pinned class row(s) that did not exist, or a "
-               "protection removed).  THE CONSEQUENCE IS DELIBERATELY OPEN (order step 6): this "
-               "row does NOT change eligibility, does NOT change the winner and does NOT change "
-               "this seat's exit code — v1 makes a widening LOUD and does not bake policy; "
-               "whether it should DISQUALIFY a generation is the operator's decision, and it "
-               "stays reversible\n", n_widen, n_widen);
-    h("REACH (§7.1a's residual, order step 6): %u host tool(s) and %u pinned class row(s) in "
-      "the current observation; the delta against %s names %u WIDENING(s), %u narrowing(s), "
-      "%u changed row(s).", g_nrtools, g_ngrants,
+               "above (host tool(s) and/or pinned class row(s) that did not exist, a protection "
+               "removed, and/or ACCESS-TABLE row(s) flipped deny->allow — %u of them access-table "
+               "rows).  THE CONSEQUENCE IS DELIBERATELY OPEN (order step 6): this row does NOT "
+               "change eligibility, does NOT change the winner and does NOT change this seat's "
+               "exit code — v1 makes a widening LOUD and does not bake policy; whether it should "
+               "DISQUALIFY a generation is the operator's decision, and it stays reversible\n",
+               n_widen, n_widen, g_access_wide);
+    h("REACH (§7.1a's residual, order step 6): %u host tool(s), %u pinned class row(s) and %u "
+      "access-table verb(s) in the current observation; the delta against %s names %u "
+      "WIDENING(s), %u narrowing(s), %u changed row(s).", g_nrtools, g_ngrants, g_natab,
       g_reach_prev ? g_reach_prev : "(no previous observation)", n_widen, n_narrow, n_change);
     if (n_widen)
         h("  a widening is NAMED and it does NOT decide anything: the disqualification "
@@ -1673,7 +1993,8 @@ static void usage(FILE *f) {
         "fx-select — THE SELECTION STEP (host-side; READ-ONLY unless --apply)\n"
         "usage: fx-select --store DIR [--rootfs DIR] [--fxstore BIN] [--oracle BIN]\n"
         "                  [--package-set PATH] [--apply]\n"
-        "                  [--proxy BIN] [--ops-policy-dir DIR] [--reach-prev FILE]\n"
+        "                  [--proxy BIN] [--ops-policy-dir DIR] [--access-dir DIR]\n"
+        "                  [--reach-prev FILE]\n"
         "  --store DIR      the store to select over (REQUIRED; a seat that guesses\n"
         "                   which store it is deciding about is guessing the decision)\n"
         "  --rootfs DIR     a host view of the LIVE rootfs, judged against CURRENT\n"
@@ -1695,10 +2016,20 @@ static void usage(FILE *f) {
         "                   ops-hosts.tsv, ops-sandbox.tsv): the 'declared grants'\n"
         "                   half (this seat does NOT verify their shas — the proxy's\n"
         "                   startup pin check and fx-report's pin-drift do)\n"
+        "  --access-dir DIR  the operator's PINNED ACCESS TABLE (policy/access: PINS +\n"
+        "                   access-verbs.tsv), the reach term's THIRD DIMENSION — the\n"
+        "                   tool VOCABULARY.  Read THROUGH the proxy's own loader\n"
+        "                   (--print-access), so the state named is the state a run\n"
+        "                   would hold and a stale/unreadable table is a TOOL ERROR\n"
+        "                   (never 'no verb is allowed').  A row flipped deny->allow is\n"
+        "                   a WIDENING (counted into the loud egress-reach-widened row)\n"
+        "                   and allow->deny is a NARROWING, named as one — never as a\n"
+        "                   widening, and it does not change the decision either way\n"
         "  --reach-prev FILE  the PREVIOUS reach observation (the shared reach-tool/\n"
-        "                   reach-grant/reach-sandbox grammar this seat prints and the\n"
-        "                   audit records per boot).  Without it the DELTA IS NOT-KNOWN —\n"
-        "                   never 'no widening'.  A named delta does NOT change the\n"
+        "                   reach-grant/reach-verb/reach-sandbox grammar this seat\n"
+        "                   prints and the audit records per boot).  Without it the\n"
+        "                   DELTA IS NOT-KNOWN (never 'no widening').  A named delta\n"
+        "                   does NOT change the\n"
         "                   decision: whether widening DISQUALIFIES stays OPEN (step 6),\n"
         "                   and so does the sandbox term's consequence (step 7)\n"
         "  --apply          THE THIN TRIGGER: on `revert-to <v>` ONLY, drive the\n"
@@ -1877,6 +2208,8 @@ int main(int argc, char **argv) {
         else if (!strncmp(argv[i], "--ops-policy-dir=", 17)) g_opsdir = argv[i] + 17;
         else if (!strcmp(argv[i], "--reach-prev") && i + 1 < argc) g_reach_prev = argv[++i];
         else if (!strncmp(argv[i], "--reach-prev=", 13)) g_reach_prev = argv[i] + 13;
+        else if (!strcmp(argv[i], "--access-dir") && i + 1 < argc) g_accessdir = argv[++i];
+        else if (!strncmp(argv[i], "--access-dir=", 13)) g_accessdir = argv[i] + 13;
         else if (!strcmp(argv[i], "--apply")) g_apply = 1;
         else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) { usage(stdout); return EX_DECISION; }
         else { fprintf(stderr, "fx-select: unknown arg '%s'\n", argv[i]); usage(stderr); return EX_TOOL_ERROR; }
@@ -2036,6 +2369,7 @@ int main(int argc, char **argv) {
     reach_read_proxy();
     reach_read_sandbox();
     reach_read_tables();
+    reach_read_access();
     reach_read_prev();
     emit_reach();
 

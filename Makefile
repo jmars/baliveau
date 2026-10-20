@@ -299,6 +299,13 @@ $(BIN_OSIER): tools/fx-osier-share.c $(DHALL_SRC) $(YYJSON_SRC)
 # OBSERVATION (kept on host disk, never inside the store), which is the only
 # thing that catches a COHERENT in-guest rewrite of history.  The response is
 # the EXISTING rollback machinery, driven by the thin --rollback trigger.
+#   S5 adds the ACCESS TABLE (the tool VOCABULARY, S2's judge authority) to the
+#   per-boot record in the shared reach-verb grammar, with its own release
+#   check (an unreleased deny->allow is `access-widened-unreleased`; a re-pinned
+#   one is a named RELEASE; an allow->deny is a named NARROWING), plus the
+#   ARMED-AUTHOR SET this observation could see (a LOWER BOUND, stated as one)
+#   with a change in it named against the previous observation — an author
+#   REMOVED is a WIDENING.
 #   tools/fx-audit.c is the seat; tests/test_fx_audit.sh is the
 #   discrimination proof: a clean store passes, each named incoherence fires
 #   from its own fixture, the coherent tamper is caught ONLY by the
@@ -318,8 +325,19 @@ BIN_AUDIT := build/fx-audit
 # pin), so a gate that "passes" because a stale binary happened to be there is
 # exactly the failure this ordering prevents.
 BIN_HOSTGATE := build/fx-hostgate
+# S5 (ACL SPLIT) — THE ACCESS TABLE.  Since S2 policy/access/access-verbs.tsv is
+# the tool-VOCABULARY authority at the judge, so BOTH host-seat gates read it:
+# tests/test_fx_select.sh names a change in it (its reach term's third
+# dimension) and tests/test_fx_audit.sh records it per boot with its own release
+# check.  Declared HERE for the same READ-IN reason as BIN_HOSTGATE above: a :=
+# after the prerequisite list that names it expands EMPTY.  Named as
+# PREREQUISITES because the table IS an input of both gates — an edit that was
+# not re-pinned, or a release that moved the bytes under the arms' fixtures, has
+# to re-run them rather than leave a stale green.
+ACCESS_TABLE := policy/access/access-verbs.tsv
+ACCESS_PINS  := policy/access/PINS
 
-test-audit: $(BIN_AUDIT) $(BIN_HOSTGATE)
+test-audit: $(BIN_AUDIT) $(BIN_HOSTGATE) $(ACCESS_TABLE) $(ACCESS_PINS)
 	bash tests/test_fx_audit.sh
 
 $(BIN_AUDIT): tools/fx-audit.c src/vendor/dhall-c/sha256.c src/vendor/dhall-c/dhall.h
@@ -360,8 +378,16 @@ BIN_SELECT := build/fx-select
 
 # S4's reach term shells the proxy's OWN --print-host-tools (the declared
 # reach of the host is read from the seat that holds it, never re-spelled),
-# so the gate needs the real proxy binary.
-test-select: $(BIN_SELECT) $(BIN_OSIER) $(BIN_HOSTGATE)
+# so the gate needs the real proxy binary — and S5's third dimension reads the
+# operator's ACCESS TABLE through the proxy's own --print-access (the loader is
+# what verifies PINS and runs the totality check), so the real proxy is
+# load-bearing for the vocabulary dimension too.  The gate's S5 arms reproduce
+# the pre-fix BLINDNESS (a pinned control built from the commit before the
+# slice, given two observations differing in ONE access row, emits
+# byte-identical output and names nothing) and then show the new build NAMING
+# the widening and the narrowing, with the disqualification consequence proved
+# OPEN (decision, candidate table and exit code identical with and without it).
+test-select: $(BIN_SELECT) $(BIN_OSIER) $(BIN_HOSTGATE) $(ACCESS_TABLE) $(ACCESS_PINS)
 	bash tests/test_fx_select.sh
 
 $(BIN_SELECT): tools/fx-select.c

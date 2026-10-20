@@ -40,6 +40,24 @@
 #               this file's own idiom: `mutate proxy-log-record` makes the
 #               truncated log coherent and `mutate egress-reach` makes the
 #               unreleased widening coherent.
+#   S5-ACCESS   the ACCESS TABLE (the tool VOCABULARY, which S2 made the judge's
+#               authority and S3 removed from the guest) recorded per boot in
+#               the shared reach-verb grammar, with its own release check
+#               against policy/access/PINS: an unchanged vocabulary reads NONE,
+#               a deny->allow flip whose table does NOT hash to PINS is
+#               `access-widened-unreleased` (the covert direction §7.1a names),
+#               the SAME flip WITH a re-pin is a RELEASE (named, coherent), and
+#               an allow->deny flip is a NARROWING — named, coherent, never
+#               dressed as a widening.  The per-boot record also carries the
+#               ARMED-AUTHOR SET this observation could SEE (a LOWER BOUND,
+#               stated as one: the denylist, the justification arm and the
+#               claim author are not queryable here), and a change in it is
+#               named against the audit's own previous observation — an author
+#               REMOVED is a WIDENING (fewer seats can refuse, R5's "armed on
+#               the gates, absent on the real lane"), an author ADDED a
+#               NARROWING, and neither is a finding (the set follows an
+#               invocation's inputs and no pin covers an invocation).
+#               `mutate access-record` makes the unreleased widening coherent.
 #   GONE        deleting a store dir the provides facts name fires
 #               facts-path-gone.
 #   CHAIN       CURRENT=99 (not a published version) fires version-chain;
@@ -2507,6 +2525,200 @@ grep -q '^sandbox-delta	host_time	WIDER' "$WORK/out.s4sb-drift" \
     && fail "S4b(e): an operator-table edit was reported as a SPEC widening — the two are different questions"
 echo "test_fx_audit: S4b(e) the operator table's own release state is reported (DRIFT) and is kept distinct from a spec widening"
 
+# ══ S5: THE ACCESS TABLE AND THE ARMED-AUTHOR SET, PER BOOT ═══════════════
+# §7.1a at the dimension the ACL split created: policy/access/access-verbs.tsv
+# is THE tool-vocabulary authority at the judge (S2) and the guest's own list is
+# gone (S3), so flipping one row deny -> allow is a capability WIDENING — and
+# the seat that judges GENERATIONS (fx-select) builds its baseline from THIS
+# seat's per-boot record, which is why the vocabulary is recorded here at all.
+# The audit's own discipline applies unchanged: record it beside the boot, name
+# any change against ITS OWN previous observation, and classify a widening by
+# PINS (RELEASED vs `access-widened-unreleased`), while a narrowing is named
+# and never raised.
+#
+# THE ARMED-AUTHOR SET is the other half: a boot's record says WHICH AUTHORS
+# COULD REFUSE as this observation could see them (R5's durable-absence
+# requirement — "armed on the gates, absent on the real lane" must leave a
+# record rather than be inferred from a transient stderr line), and a change in
+# that set between observations is NAMED with the direction that matters: an
+# author REMOVED is a WIDENING (fewer seats can refuse), an author ADDED is a
+# NARROWING.
+S5POL="$WORK/s5-pol"       # a COPY of the shipped table: the pinned dir is READ, never edited
+S5NAR="$WORK/s5-nar"       # fx_write DENIED, re-pinned (a RELEASED narrowing)
+S5WIDE="$WORK/s5-wide"     # fx_write allowed again, re-pinned (a RELEASED widening)
+S5UNREL="$WORK/s5-unrel"   # widened with PINS left at the narrow bytes (UNRELEASED)
+cp -r "$REPO/policy/access" "$S5POL" || fail "S5 SETUP: cannot copy the pinned access table"
+ACCESS_GATE="$REPO/build/fx-hostgate"
+[ -x "$ACCESS_GATE" ] || fail "S5 SETUP: build/fx-hostgate missing (the registry half of the reach record)"
+"$ACCESS_GATE" --print-access --access-dir "$S5POL" >/dev/null 2>&1 \
+    || fail "S5 SETUP: the copied table does not load through the proxy's own loader"
+s5_pin() { # s5_pin DIR — re-pin DIR/access-verbs.tsv in DIR/PINS (a RELEASE)
+    _d="$1"
+    _h=$(sha256sum "$_d/access-verbs.tsv" | cut -d' ' -f1)
+    sed -i "s/^access-verbs.tsv	.*$/access-verbs.tsv	$_h/" "$_d/PINS" \
+        || fail "S5 SETUP: cannot re-pin $_d"
+    grep -q "^access-verbs.tsv	$_h$" "$_d/PINS" || fail "S5 SETUP: the re-pin did not land in $_d"
+}
+cp -r "$S5POL" "$S5NAR" || fail "S5 SETUP: cp"
+sed -i 's/^fx_write	allow$/fx_write	deny/' "$S5NAR/access-verbs.tsv" || fail "S5 SETUP: cannot flip fx_write"
+grep -q '^fx_write	deny$' "$S5NAR/access-verbs.tsv" || fail "S5 SETUP: the flip did not land"
+s5_pin "$S5NAR"
+"$ACCESS_GATE" --print-access --access-dir "$S5NAR" 2>/dev/null | grep -q '^fx_write	deny$' \
+    || fail "S5 SETUP: the narrowed copy does not read as denied — the fixture is not a narrowing"
+cp -r "$S5POL" "$S5WIDE" || fail "S5 SETUP: cp"
+cp -r "$S5POL" "$S5UNREL" || fail "S5 SETUP: cp"
+sed -i 's/^fx_write	allow$/fx_write	deny/' "$S5UNREL/access-verbs.tsv" \
+    || fail "S5 SETUP: cannot narrow the unreleased base"
+s5_pin "$S5UNREL"
+# the UNRELEASED shape: the table allows what PINS still freezes as DENIED
+sed -i 's/^fx_write	deny$/fx_write	allow/' "$S5UNREL/access-verbs.tsv" \
+    || fail "S5 SETUP: cannot widen the unreleased copy"
+grep -q '^fx_write	allow$' "$S5UNREL/access-verbs.tsv" || fail "S5 SETUP: the unreleased widening did not land"
+s5_run() { # s5_run OUT OBSFILE [extra args...] -> exit code
+    _o="$1"; _ob="$2"; shift 2
+    audit "$STORE" "$ROOT" 4 "$WORK/nonces-main.led" --obs-file "$_ob" "$@" > "$_o" 2>&1
+    echo $?
+}
+
+# ── (a) NOT ARMED IS NAMED (no --access-dir), and nothing is fabricated ──
+rc=$(s5_run "$WORK/out.s5-unarmed" "$WORK/s5-unarmed.obs")
+expect_coh "$WORK/out.s5-unarmed" "$rc" "S5(a) unarmed"
+grep -q 'access: NOT ARMED (no --access-dir)' "$WORK/out.s5-unarmed" \
+    || fail "S5(a): the unarmed vocabulary dimension is not named (§7.1a's blindness, stated not discovered)"
+grep -q '^reach-verb' "$WORK/out.s5-unarmed" \
+    && fail "S5(a): a vocabulary row was emitted with NO table — fabricated"
+grep -q '^authors-armed' "$WORK/out.s5-unarmed" \
+    && fail "S5(a): an armed-author set was recorded with NO inputs — fabricated (an empty set is not 'none was armed')"
+grep -q 'bound (S5)' "$WORK/out.s5-unarmed" \
+    || fail "S5(a): the bound that says what the access record and the armed set CANNOT see is not printed"
+echo "test_fx_audit: S5(a) an audit with no access inputs names the dimension NOT ARMED, records no vocabulary, and prints the S5 bound"
+
+# ── (b) ENROL: vocabulary + armed set recorded BESIDE THE BOOT ──────────
+S5OB="$WORK/s5.obs"
+rc=$(s5_run "$WORK/out.s5-enrol" "$S5OB" --proxy "$ACCESS_GATE" \
+        --ops-policy-dir "$SBPOL" --access-dir "$S5NAR")
+expect_coh "$WORK/out.s5-enrol" "$rc" "S5(b) enrol on the narrowed, released table"
+grep -q '^reach-verb	fx_write	deny$' "$WORK/out.s5-enrol" \
+    || fail "S5(b): the vocabulary is not recorded in the SHARED grammar (reach-verb<TAB>verb<TAB>allow|deny) that fx-select consumes"
+grep -q '^reach-verb	host_cat	allow$' "$WORK/out.s5-enrol" \
+    || fail "S5(b): the vocabulary is incomplete (a host-tool row is missing)"
+grep -q '^access-pin	access-verbs.tsv	MATCH' "$WORK/out.s5-enrol" \
+    || fail "S5(b): the table's own release state is not reported: $(grep -m1 '^access-pin' "$WORK/out.s5-enrol")"
+S5BV=$(tail -1 "$STORE/.bootlog" | awk '{print $1}')
+S5BN=$(tail -1 "$STORE/.bootlog" | awk '{print $4}')
+grep -q "^authors-armed	access+ops	boot	$S5BV	nonce	$S5BN	MEASURED" "$WORK/out.s5-enrol" \
+    || fail "S5(b): the per-boot record does not carry the ARMED-AUTHOR SET anchored to the LAST .bootlog line (v$S5BV nonce $S5BN): $(grep -m1 '^authors-armed' "$WORK/out.s5-enrol")"
+grep -q 'a LOWER BOUND, NOT a statement about the judge' "$WORK/out.s5-enrol" \
+    || fail "S5(b): the armed-author row does not state its own scope (a lower bound, not the judge's flags)"
+grep -q '^access-delta' "$WORK/out.s5-enrol" \
+    && fail "S5(b): a vocabulary delta was computed against no baseline (the first observation must ENROL)"
+echo "test_fx_audit: S5(b) the vocabulary (reach-verb, shared grammar) and the armed-author set (access+ops) are recorded beside boot v$S5BV, with the pin and the scope stated"
+
+# ── (c) NOTHING CHANGED -> NONE in BOTH new row families ───────────────
+rc=$(s5_run "$WORK/out.s5-same" "$S5OB" --proxy "$ACCESS_GATE" \
+        --ops-policy-dir "$SBPOL" --access-dir "$S5NAR")
+expect_coh "$WORK/out.s5-same" "$rc" "S5(c) unchanged"
+grep -q '^access-delta	-	NONE	DERIVED' "$WORK/out.s5-same" \
+    || fail "S5(c): the same table on both sides did not read NONE: $(grep -m1 '^access-delta' "$WORK/out.s5-same")"
+grep -q '^authors-armed-delta	-	NONE	DERIVED' "$WORK/out.s5-same" \
+    || fail "S5(c): the same armed set on both sides did not read NONE: $(grep -m1 '^authors-armed-delta' "$WORK/out.s5-same")"
+grep -q '^access-delta	fx_write	WIDENED' "$WORK/out.s5-same" \
+    && fail "S5(c): a vocabulary widening was FABRICATED where nothing changed"
+echo "test_fx_audit: S5(c) an unchanged vocabulary AND an unchanged armed set both read NONE — the negative direction in both families"
+
+# ── (d) A RELEASED WIDENING IS NAMED, NOT A FINDING ────────────────────
+# The SAME baseline (fx_write denied), then the table allows it AND PINS was
+# re-pinned: a capability change an operator made visibly — named, coherent.
+cp "$S5OB" "$WORK/s5-rel.obs"
+rc=$(s5_run "$WORK/out.s5-released" "$WORK/s5-rel.obs" --proxy "$ACCESS_GATE" \
+        --ops-policy-dir "$SBPOL" --access-dir "$S5WIDE")
+expect_coh "$WORK/out.s5-released" "$rc" "S5(d) released widening"
+grep -q '^access-delta	fx_write	WIDENED	DERIVED' "$WORK/out.s5-released" \
+    || fail "S5(d): the deny->allow flip is not NAMED as a widening: $(grep -m1 '^access-delta' "$WORK/out.s5-released")"
+grep -q '^access-pin	access-verbs.tsv	MATCH' "$WORK/out.s5-released" \
+    || fail "S5(d): the re-pinned table does not verify"
+grep -q 'a RELEASED declaration (named, NOT a finding' "$WORK/out.s5-released" \
+    || fail "S5(d): a released widening is not distinguished from an unreleased one"
+echo "test_fx_audit: S5(d) deny->allow WITH a re-pin is NAMED as a RELEASE (coherent) — the licensed direction of change"
+
+# ── (e) THE SAME WIDENING, UNRELEASED, IS AN INCOHERENCE ───────────────
+# The table widened while PINS still freezes the DENIED bytes: a capability
+# change nothing released — §7.1a's covert direction, and the reason this seat
+# reads the FILE rather than the loader (the loader REFUSES a stale table, so
+# the printer could only ever show the released case).
+S5UOB="$WORK/s5-unrel.obs"
+rc=$(s5_run "$WORK/out.s5-unrel-enrol" "$S5UOB" --proxy "$ACCESS_GATE" \
+        --ops-policy-dir "$SBPOL" --access-dir "$S5NAR")
+expect_coh "$WORK/out.s5-unrel-enrol" "$rc" "S5(e) enrol the denied baseline"
+rc=$(s5_run "$WORK/out.s5-unrel" "$S5UOB" --proxy "$ACCESS_GATE" \
+        --ops-policy-dir "$SBPOL" --access-dir "$S5UNREL")
+expect_incoh "$WORK/out.s5-unrel" "$rc" "S5(e) unreleased vocabulary widening" access-widened-unreleased
+grep -q '^access-delta	fx_write	WIDENED	DERIVED' "$WORK/out.s5-unrel" \
+    || fail "S5(e): the widening is not NAMED row by row"
+grep -q '^access-pin	access-verbs.tsv	DRIFT' "$WORK/out.s5-unrel" \
+    || fail "S5(e): the table's own release state is not reported as DRIFT: $(grep -m1 '^access-pin' "$WORK/out.s5-unrel")"
+grep -q 'NOT RELEASED' "$WORK/out.s5-unrel" \
+    || fail "S5(e): the finding does not say the declaration was not released"
+echo "test_fx_audit: S5(e) a deny->allow flip whose table does not hash to PINS is INCOHERENT (access-widened-unreleased), named row by row"
+
+# ── (f) THE MIRROR: allow->deny is NAMED and is NOT a finding ──────────
+S5NOB="$WORK/s5-nar.obs"
+rc=$(s5_run "$WORK/out.s5-nar-enrol" "$S5NOB" --proxy "$ACCESS_GATE" \
+        --ops-policy-dir "$SBPOL" --access-dir "$S5POL")
+expect_coh "$WORK/out.s5-nar-enrol" "$rc" "S5(f) enrol the shipped (all-allow) table"
+rc=$(s5_run "$WORK/out.s5-narrow" "$S5NOB" --proxy "$ACCESS_GATE" \
+        --ops-policy-dir "$SBPOL" --access-dir "$S5NAR")
+expect_coh "$WORK/out.s5-narrow" "$rc" "S5(f) released narrowing"
+grep -q '^access-delta	fx_write	NARROWED	DERIVED' "$WORK/out.s5-narrow" \
+    || fail "S5(f): the allow->deny flip is not NAMED as a NARROWING: $(grep -m1 '^access-delta' "$WORK/out.s5-narrow")"
+grep -q '^access-delta	fx_write	WIDENED' "$WORK/out.s5-narrow" \
+    && fail "S5(f): the seat called a NARROWING a widening — the direction is the whole substance"
+grep -q '^INCOHERENT access-widened-unreleased' "$WORK/out.s5-narrow" \
+    && fail "S5(f): a tightening was raised as a finding (a tightening needs no release)"
+grep -q 'a tightening is the direction this mechanism exists to encourage' "$WORK/out.s5-narrow" \
+    || fail "S5(f): the narrowing is not attributed to the direction this mechanism encourages: $(grep -i 'access:' "$WORK/out.s5-narrow" | tail -2)"
+echo "test_fx_audit: S5(f) the MIRROR direction: allow->deny is named a NARROWING, coherent, and never dressed as a widening"
+
+# ── (g) THE ARMED-AUTHOR SET'S CHANGE, named against the PREVIOUS observation
+# Baseline: access+ops.  Next: the SAME store and tables with NO --access-dir —
+# the access author is no longer visible, i.e. R5's "armed on the gates, absent
+# on the real lane", named against THIS audit's own previous observation.  An
+# author REMOVED is a WIDENING: fewer seats can refuse.
+S5AOB="$WORK/s5-armed.obs"
+rc=$(s5_run "$WORK/out.s5-arm-base" "$S5AOB" --proxy "$ACCESS_GATE" \
+        --ops-policy-dir "$SBPOL" --access-dir "$S5POL")
+expect_coh "$WORK/out.s5-arm-base" "$rc" "S5(g) establish the access+ops baseline"
+grep -q '^authors-armed	access+ops	boot	' "$WORK/out.s5-arm-base" \
+    || fail "S5(g): the baseline does not record the access+ops set: $(grep -m1 '^authors-armed' "$WORK/out.s5-arm-base")"
+rc=$(s5_run "$WORK/out.s5-arm-drop" "$S5AOB" --proxy "$ACCESS_GATE" \
+        --ops-policy-dir "$SBPOL")
+expect_coh "$WORK/out.s5-arm-drop" "$rc" "S5(g) the access author dropped"
+grep -q '^authors-armed	ops	boot	' "$WORK/out.s5-arm-drop" \
+    || fail "S5(g): the dropped-author run does not record the smaller set: $(grep -m1 '^authors-armed' "$WORK/out.s5-arm-drop")"
+grep -q '^authors-armed-delta	-access	WIDENED	DERIVED' "$WORK/out.s5-arm-drop" \
+    || fail "S5(g): the author REMOVED is not named as a WIDENING: $(grep -m1 '^authors-armed-delta' "$WORK/out.s5-arm-drop")"
+grep -q 'fewer seats can refuse' "$WORK/out.s5-arm-drop" \
+    || fail "S5(g): the widening row does not say WHY (fewer seats can refuse)"
+grep -q '^INCOHERENT' "$WORK/out.s5-arm-drop" \
+    && fail "S5(g): a change in the OBSERVED armed set was raised as a finding — the set follows an invocation's inputs and no pin covers an invocation"
+# THE MIRROR: back to access+ops — MORE seats can refuse, a NARROWING
+rc=$(s5_run "$WORK/out.s5-arm-add" "$S5AOB" --proxy "$ACCESS_GATE" \
+        --ops-policy-dir "$SBPOL" --access-dir "$S5POL")
+expect_coh "$WORK/out.s5-arm-add" "$rc" "S5(g) the access author back"
+grep -q '^authors-armed-delta	+access	NARROWED	DERIVED' "$WORK/out.s5-arm-add" \
+    || fail "S5(g): the author ADDED is not named as a NARROWING: $(grep -m1 '^authors-armed-delta' "$WORK/out.s5-arm-add")"
+grep -q '^authors-armed-delta	+access	WIDENED' "$WORK/out.s5-arm-add" \
+    && fail "S5(g): an author ADDED was called a widening — arming a seat NARROWS what can be done"
+echo "test_fx_audit: S5(g) an author REMOVED is named a WIDENING and an author ADDED a NARROWING — against the audit's OWN previous observation, and neither is a finding"
+
+# ── (h) THE WHOLE RECORD IS IN THE OBSERVATION, not only in stdout ─────
+grep -q '^access_verb	fx_write	allow$' "$S5AOB" 2>/dev/null \
+    || grep -q '^access_verb	fx_write	deny$' "$S5AOB" 2>/dev/null \
+    || fail "S5(h): the observation carries no access_verb row — the vocabulary baseline is not persisted, so the next observation cannot compare"
+grep -q '^armed_authors	access+ops$' "$S5AOB" \
+    || fail "S5(h): the observation does not persist the armed-author set: $(grep -m1 '^armed_authors' "$S5AOB")"
+echo "test_fx_audit: S5(h) both new records are PERSISTED in the observation (access_verb rows + armed_authors), so the comparison has a baseline at rest"
+
 # ══ THE MUTATION CONTROL (positive control, per check) ══════════════════
 # a detector with exactly one check's registration deleted must go COHERENT
 # on that check's fixture (and the blind seat goes coherent on the COHERENT
@@ -2567,6 +2779,19 @@ echo "test_fx_audit: S4 MUTANTS the two new checks are load-bearing: without pro
 # S4b: the SANDBOX check is load-bearing, on ITS OWN fixture (the sidecar
 # widening), and the WIDENING BRANCH itself is proven: a build where an
 # addition is re-derived (has_add := 0) reports NONE while the spec widened.
+mutate access-record             "$WORK/mut-s5-access"
+cp "$WORK/s5-unrel.obs" "$WORK/s5-unrel-mut.obs"
+rc=$(FXSTORE_BIN="$FXSTORE" "$WORK/mut-s5-access" --store "$STORE" --rootfs "$ROOT" --boots 4 \
+        --nonces "$WORK/nonces-main.led" --obs-file "$WORK/s5-unrel-mut.obs" \
+        --proxy "$ACCESS_GATE" --ops-policy-dir "$SBPOL" --access-dir "$S5UNREL" \
+        > "$WORK/out.m-s5-access" 2>&1; echo $?)
+expect_coh "$WORK/out.m-s5-access" "$rc" \
+    "MUTANT access-record (the UNRELEASED vocabulary widening goes coherent — the check is load-bearing)"
+grep -q "^INCOHERENT access-widened-unreleased" "$WORK/out.m-s5-access" \
+    && fail "MUTANT access-record: the mutant still fired the finding"
+grep -q '^access-delta	fx_write	WIDENED' "$WORK/out.m-s5-access" \
+    && fail "MUTANT access-record: the mutant still named the widening"
+echo "test_fx_audit: MUTANT access-record (the check's registration sed-ed out) goes COHERENT on the UNRELEASED vocabulary widening — the access dimension is load-bearing, not decoration"
 mutate sandbox-record            "$WORK/mut-s4sb"
 rc=$(FXSTORE_BIN="$FXSTORE" "$WORK/mut-s4sb" --store "$STORE" --rootfs "$ROOT" --boots 4 \
         --nonces "$WORK/nonces-main.led" --obs-file "$WORK/s4sb.obs" \
