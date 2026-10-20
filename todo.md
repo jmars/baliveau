@@ -201,11 +201,21 @@ access control**. That is what this arc built.
       yes`), with D1's proof moved to a sha-pinned fixture table.
       **NOT OVERCLAIMED: the ORDER makes the loop work, not the unprotection** — and §6b stands (root can
       write that file by hand; this governs the HARNESS path).
-- [ ] **S5 — STILL OWED: the oracle must SEE the access table.** `fx-select`'s reach term gains the access
+- [x] **S5 — the oracle SEES the access table** (`12e075c`). **DONE.** `fx-select`'s reach term gains the access
       table as a **third dimension** (allow→deny is a NARROWING; deny→allow is a **WIDENING** with a named
       row and the loud `egress-reach-widened`), and `fx-audit`'s per-boot record carries the **armed-author
       set** including `access`. The fail-before is a REPRODUCED BLINDNESS: today's `fx-select`, given two
       observations differing only in one access row, sees nothing.
+      *Verified by invoking:* **S5-ACCESS(a)** runs the **pinned pre-fix seat** on two observation files that
+      differ ONLY in one access row and shows **byte-identical output** — the blindness reproduced rather than
+      described — while the new seat names the widening; **S5-ACCESS(h)** empties both widening branches and
+      reports NONE while a deny→allow flip widened the vocabulary (caught by content). `fx-select` reads the
+      table **through the proxy's own loader** (`--print-access`), the `--print-sandbox` precedent, so there
+      is **one parser** and the loader's PINS verification is the one that applies. `fx-audit` records the
+      vocabulary **and the armed-author set (access+ops)** beside each boot, names the dimension **NOT ARMED**
+      when absent (never a silent zero), and reads **NONE** in both families when nothing changed.
+      **This work survived a MACHINE REBOOT** — it sat uncommitted when the machine restarted mid-verification
+      and killed the run; every gate was re-run after the restart rather than trusting the dead run's notes.
 
 ## 1b. The second goal — observability sufficient for a third-party EU AI Act report
 
