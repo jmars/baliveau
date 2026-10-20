@@ -1051,7 +1051,7 @@ regulator** — §6b's audit stance is what makes these records evidentially usa
       non-zero on the single-writer runstore and mark its OWN new generation FAILED (`qemu-agent-b2.sh`
       went red), the activation no longer starts the agent service at all: exempted BY IDENTITY via the
       required `agentService` field, now persisted as the `agent_svc` store fact.
-- [ ] **No in-guest reboot.** The control protocol carries `status|log|activate|rollback|shutdown`
+- [x] **No in-guest reboot — SUPERSEDED: THE MACHINE NOW REBOOTS ITSELF (2026-10-17).** `reboot <reason>` on the control channel admits through a PURE admission function (six outcome tokens, `not-decided` a TIMING vs `boot-failed` a STATE), records the `.operator` row, REPLIES, and only then re-enters the boot path via `execve("/proc/self/exe")` in a fresh address space — which structurally eliminates the "forgot to reset a global" class. The historical statement below stands as the state it replaced: the control protocol carried `status|log|activate|rollback|shutdown`
       and no reboot (`init.zig:3119-3249`); the guest tests pass qemu `-no-reboot` with the HOST
       restarting the VM. "Activate … (causing a reboot into it)" needs a reboot the machine can
       perform on its own.
@@ -1156,7 +1156,7 @@ regulator** — §6b's audit stance is what makes these records evidentially usa
       **NAMED, not papered over:** the anchor is **not window-scoped** (`.operator` is not in the
       observation hash), and the observation format was deliberately NOT bumped — that would refuse every
       existing baseline without closing the forgery.
-- [ ] **REBOOT S3/S4 still owed:** S3 (fx-init, the wiring: `teardown()` factored out of `do_shutdown`
+- [x] **REBOOT S3 AND S4 — BOTH LANDED (fx-init `bb0642f`, baliveau `3810063`).** S3: (fx-init, the wiring: `teardown()` factored out of `do_shutdown`
       with `do_shutdown` PROVABLY unchanged, the guards, the ctrl arm, `do_soft_reboot`, and a
       `tests/qemu_reboot.sh` whose blind is `MUT-NOEXEC` — admit, record, reply, SKIP the execve, so only
       the SECOND-boot assertions fail) and S4 (the REBOOT block in `fx-report`). — re-scoped by the oscillator from a *retention* question
@@ -1496,7 +1496,7 @@ argument matching no operator class row is REFUSED BY NAME — rather than by a 
       **Declared scope extension:** +30 lines in `tests/test_osier_share.sh` (that tool's only gate) so the
       blindness statement is asserted rather than merely printed.
 
-- [ ] **PALISADE SANDBOXING** — the user's ask: *"do palisade - we should be able to configure the sandbox
+- [x] **PALISADE SANDBOXING — BUILT (S0 `0f2174f`, S1 `6dc963f`, S2 `6dd6395`, S3 `c23e50f`, S4 `342cb1c`).** The user's ask: *"do palisade - we should be able to configure the sandbox
       via policies in datalog or dhall, vendor palisade so we can make changes to it if needed"*. Plan:
       `handoff-palisade-plan`. **The "datalog or dhall" question is SETTLED and must not be re-opened:** the
       **operator's datalog/ops policy owns the spec**, because the proxy is the only process at the spawn
@@ -1598,19 +1598,19 @@ argument matching no operator class row is REFUSED BY NAME — rather than by a 
       sandbox**; and an observation reader keeping the line terminator, firing INCOHERENT on every
       unchanged composition).
 
-- [ ] **THE OLD DESIGN ITEMS BELOW ARE NOW LARGELY SUPERSEDED** (kept for the reasoning they carry):
+- [x] **THE OLD DESIGN ITEMS BELOW ARE SUPERSEDED, and the reasoning they carry is kept deliberately** — the SHAPE was revised twice by the user (*"the same as the tool call + policies but the calls run on the host, not HTTP specific"*, then *"why are we building in http as a special thing … with a binary or something?"*), so the type layer below is DEAD and egress is host tools + the same policies. Read them as the record of a design that was argued down, not as pending work:
       **A closed, host-owned catalog of network PRIMITIVES** (`http.get`/`http.post` + allowed hosts,
       methods, size caps) that Dhall declarations may only **instantiate, never invent** — modelled on
       fxstore's `Action` union. Without it a "Dhall tool schema" is a signature with no implementation,
       or a generic escape hatch.
-- [ ] **Read and publish as DIFFERENT TYPES** — exfiltration *is* a publish.
-- [ ] **The extension of the existing Dhall schemas**: the runtime config already carries
+- [x] **Read and publish as DIFFERENT TYPES — SUPERSEDED.** A union-type split was the type-layer design; the user chose JUDGED ARGUMENTS instead (a destination is a parameter the operator's table classes, not a type). The observation that *exfiltration is a publish* still stands and is why the access table is host-global. This is the item the whole type layer rested on.
+- [x] **The extension of the existing Dhall schemas — SUPERSEDED, and INVERTED by the ACL split.** It predicted access control would move INTO Dhall; instead it moved OUT (S3 removed the fields from the guest schema entirely, and `policy/access/` — a pinned operator TSV — is the authority). The historical statement:
       `mcp_servers` and a tool policy (`enabled_tools`/`disabled_tools` → `ToolPolicy`); the system
       config already declares a `Service` record. This extends both.
-- [ ] **The broker over the chardev**, so `CONFIG_NET` stays unset and the audit is *declared reach
+- [x] **The broker over the chardev — BUILT** (`tools/fx-hostgate.c`): one device, all egress; `CONFIG_NET` stays unset, and the audit is declared-vs-observed reach with `fx-select`/`fx-report`/`fx-audit` reading it. The statement it was built to satisfy:
       (the generation's Dhall, queryable) vs observed reach (the host's one log)* — the difference is
       the finding.
-- [ ] Residual, stated not solved: **prompt injection** is not fixed by typing. Visible and logged,
+- [ ] Residual, stated not solved, AND STILL TRUE: **prompt injection** is not fixed by typing. Visible and logged,
       not silently contained.
 
 ## 7. The v86 lane (the browser demo) — the HARDER lane
