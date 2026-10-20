@@ -4633,7 +4633,7 @@ echo "   OK writer/loader drift closed: an unarmed run's own record loads and CO
 #       endpoint captures the POST body, and it must EQUAL the dumped frame.
 #
 # NEW FIXTURE: tests/fixtures/responses_live_justified.sse is a RECORDED LIVE
-# STREAM — captured from the live endpoint http://10.0.0.1:8321/v1/responses
+# STREAM — captured from the live endpoint http://<host>:<port>/v1/responses
 # (model deepseek-v4-flash, served as deepseek-flash) on 2026-10-16 ~22:49Z,
 # the request carrying the proxy's exact injected tools array (13 fx-verbs,
 # justification REQUIRED).  It carries two function_call items — fx_read

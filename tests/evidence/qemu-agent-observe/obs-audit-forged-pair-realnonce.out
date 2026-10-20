@@ -1,4 +1,4 @@
-fx-audit: store /tmp/qemuobs.btzzNy/audit-ext4f2/store (fxstore /home/jaye/fixpoint-linux/fxstore/zig-out/bin/fxstore)
+fx-audit: store /tmp/qemuobs.btzzNy/audit-ext4f2/store (fxstore $HOME/fixpoint-linux/fxstore/zig-out/bin/fxstore)
 fx-audit: host boots on this store: 4 (the off-disk anchor; the guest can neither see nor set it)
 fx-audit: observation /tmp/qemuobs.btzzNy/audit-obs-b2.obs
 check version-chain: pass

@@ -1,6 +1,6 @@
 : PROVENANCE (the fixture carries it so it travels alone) — RECORDED LIVE
 : STREAM, not a hand-written stand-in.  Captured from the live endpoint
-: http://10.0.0.1:8321/v1/responses (a deepseek proxy serving deepseek-flash)
+: http://<host>:<port>/v1/responses (a LOCAL model proxy serving deepseek-flash)
 : on 2026-10-16 ~22:49Z, with the request carrying the hostgate proxy's EXACT
 : injected tools array (13 fx-verbs, justification REQUIRED).  n=1: this is one
 : recorded trace of a deepseek-v4-flash generation, whose reasoning items carry

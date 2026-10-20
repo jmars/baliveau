@@ -1815,7 +1815,7 @@ judges it; **claim + verdict + outcome are one record** and the **disagreement**
       (exit 77)** when the endpoint is absent, unreachable, https or malformed. The canned-file arm stays
       **byte-identical** (it is every existing phase's control). A live unauthenticated OpenAI-compatible
       endpoint serving the **Responses API over SSE** exists on this host at
-      `http://10.0.0.1:8321/v1/responses` (I probed it directly; the canned fixtures were plainly recorded
+      `http://<host>:<port>/v1/responses` (I probed it directly; the canned fixtures were plainly recorded
       from it — same field set, same `parallel_tool_calls: true`).
       **THE THREE QUESTIONS THE REVIEWS PARKED ARE NOW MEASURED — this was the slice's real value:**
       **(a) A LIVE PROVIDER DOES NOT INTERLEAVE.** Driven into three calls in one turn, the provider echoes
