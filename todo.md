@@ -160,6 +160,33 @@ certifies coherence; neither says "improved".
       ("proxy did not exit within 40s", phase 100) and rc=0 in isolation; my full run was clean. A
       load-sensitive wait loop — recorded rather than reconciled, and worth watching.
 
+## 1d. Residuals this session earned — stated, not solved
+
+Not tasks. Each is a bound on what the work above actually buys, and each was measured rather than assumed.
+They live here so they are not only in the agent memory graph.
+
+- **The in-guest reboot's exec-FAILURE branch has NO gate.** `do_soft_reboot` (`fx-init init.zig:4741`)
+  has a carefully written recovery after `reexec_self()` returns — loud lines, re-open the run-state DBs
+  (or a clean `do_shutdown` if that fails), restart services from the in-memory table — and
+  `tests/qemu_reboot.sh` **counts** it (`exec-FAILED=$N_NFAIL`) with the treat arm asserting **0**. So the
+  gate verifies the branch did NOT fire; **nothing makes it fire.** Exercising it needs `/proc/self/exe` to
+  be unexecutable at that instant. If a future change broke the recovery, the gate would still pass.
+- **https is REFUSED, not implemented** (egress / the host proxy). The configured endpoint speaks plain
+  http; a hand-rolled TLS stack would be exactly the silent-wrong surface this tree avoids. A live lane
+  over https fails loudly rather than insecurely.
+- **The live-lane measurements are n=1.** That a real provider SERIALIZES `function_call` items (rather
+  than interleaving) and that it HONORS the injected tools schema are single-run observations, repeatable
+  via the gate's live phase, **not** proofs of invariant provider behaviour.
+- **The evidence redaction is NOT durable.** `tests/evidence/` was scrubbed of the developer home path for
+  publication, but those files are WRITTEN by their gates — 22 `cp`-to-EVID sites in `qemu-agent-observe.sh`
+  alone, across five gates — so the next run re-records the absolute path from whatever machine runs it.
+  Durable means redacting at the capture site, which is a deliberate change to the qemu harnesses.
+  (`tests/evidence/README.md` says the same thing where a reader meets the files.)
+- **5 of 116 PUBLISHED commits carry dev-box detail** — a username path in three, the private
+  model-proxy endpoint in two (accepted, option A, on publication of `jmars/baliveau`). No credentials,
+  keys or tokens exist anywhere in the tree or the history; a rewrite would have rehashed every commit
+  from 2026-10-11 and severed every hash citation in this file and the memory graph.
+
 ## 1c. The ACL split — access control out of the agent's config
 
 **USER DIRECTIVE: "move the access control stuff out of the system config the agent is using to control
@@ -1114,7 +1141,7 @@ regulator** — §6b's audit stance is what makes these records evidentially usa
       history must read the store, never the accepted set.
       **The number must be a NAMED, PINNED constant** (in the seat that applies it, cited to this
       entry), never a literal — the same discipline `RECOVERY_CONTENT_FAIL_MAX` gets.
-- [ ] **THE IN-GUEST REBOOT (planned: `handoff-reboot-plan`).** "A reboot the machine can perform on its
+- [x] **THE IN-GUEST REBOOT — BUILT AND PUBLISHED (S1 `fx-init c0aa45b`, S2 `e563b43`, S3 `bb0642f`, S4 `3810063`).** The design record below stands as the plan it was built from: "A reboot the machine can perform on its
       own" — decided as **`execve("/proc/self/exe")` from PID1**, which re-enters `main()` in a FRESH
       address space and so structurally eliminates the "forgot to reset a global" class (53 file-scope
       `g_*` in `init.zig`, several latched once); it works under `-no-reboot` because it is not a kernel
